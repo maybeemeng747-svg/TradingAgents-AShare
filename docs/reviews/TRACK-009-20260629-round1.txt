@@ -1,0 +1,3586 @@
+Task: TRACK-009 - 跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1）
+Date: 2026-06-29_18:52:31
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f1300-9460-7d02-b5ad-4a53e7d996c7
+--------
+user
+current changes
+2026-06-29T10:50:34.603298Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-29T10:50:34.745262Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-29T10:50:34.997858Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-29T10:50:35.141115Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/main.py
+ M api/runtime_tier.py
+ M api/services/portfolio_import_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M frontend/src/components/TrackingBoardV2Panel.tsx
+ M frontend/src/services/api.ts
+ M frontend/src/types/index.ts
+?? docs/task_runs/TRACK-009-20260629-182604/
+?? tests/test_track009_holdings_import.py
+/Users/maybee/TradingAgents-AShare
+ api/main.py                                      |  73 +++
+ api/runtime_tier.py                              |   3 +
+ api/services/portfolio_import_service.py         | 630 +++++++++++++++++++++++
+ docs/DEVLOG.md                                   |  70 +++
+ docs/TASKS.md                                    |   4 +-
+ docs/tradeflow_trial_acceptance.md               |   2 +-
+ docs/tradeflow_trial_acceptance_v2.md            |   2 +-
+ docs/tradeflow_trial_acceptance_v3.md            |   2 +-
+ frontend/src/components/TrackingBoardV2Panel.tsx | 397 +++++++++++++-
+ frontend/src/services/api.ts                     |  31 +-
+ frontend/src/types/index.ts                      |  84 +++
+ 11 files changed, 1283 insertions(+), 15 deletions(-)
+
+exec
+/bin/zsh -lc 'git diff -- api/main.py api/runtime_tier.py api/services/portfolio_import_service.py tests/test_track009_holdings_import.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/api/main.py b/api/main.py
+index 987aafc..b782540 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -1106,6 +1106,19 @@ class PortfolioImportSyncRequest(BaseModel):
+     auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
+ 
+ 
++# [TRACK-009] holdings_import_contract — dry-run / text-import request models
++class PortfolioImportDryRunRequest(BaseModel):
++    text: Optional[str] = Field(None, description="持仓文本，支持 JSON / CSV / TSV / whitespace；与 positions 二选一")
++    positions: Optional[List[PortfolioPositionItem]] = Field(None, description="结构化持仓列表；与 text 二选一")
++    source: str = Field("manual", description="持仓来源标识，用于 dry-run 差异对比")
++
++
++class PortfolioImportTextRequest(BaseModel):
++    text: str = Field(..., description="持仓文本，支持 JSON / CSV / TSV / whitespace")
++    source: str = Field("manual", description="持仓来源标识")
++    auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
++
++
+ class UserTokenResponse(BaseModel):
+     id: str
+     name: str
+@@ -4604,6 +4617,66 @@ def clear_portfolio_import_state(
+     portfolio_import_service.clear_imported_portfolio(db, current_user.id)
+ 
+ 
++# [TRACK-009] holdings_import_contract — OpenClaw/外部持仓契约（只读）
++@app.get("/v1/portfolio/imports/contract")
++def get_portfolio_import_contract(
++    current_user: UserDB = Depends(_require_api_user),
++):
++    return portfolio_import_service.OPENCLAW_HOLDINGS_CONTRACT
++
++
++# [TRACK-009] holdings_import_contract — dry-run 预览（不写库）
++@app.post("/v1/portfolio/imports/dry-run")
++def portfolio_import_dry_run(
++    body: PortfolioImportDryRunRequest,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    if (body.text is None or body.text.strip() == "") and not body.positions:
++        raise HTTPException(400, "text 或 positions 至少需要提供一项")
++    try:
++        if body.text is not None and body.text.strip() != "":
++            raw_rows = portfolio_import_service.parse_positions_text(body.text)
++        else:
++            raw_rows = [p.model_dump() for p in (body.positions or [])]
++        validated = portfolio_import_service.validate_positions(raw_rows)
++    except ValueError as exc:
++        raise HTTPException(400, str(exc)) from exc
++    diff = portfolio_import_service.dry_run_import(
++        db=db,
++        user_id=current_user.id,
++        positions=validated["valid"],
++        source=body.source,
++    )
++    # Preserve invalid-row diagnostics even though they're excluded from the
++    # valid set used for the diff.
++    diff["errors"] = validated["invalid"]
++    diff["warnings"] = validated["warnings"]
++    diff["valid_count"] = validated["valid_count"]
++    diff["invalid_count"] = validated["invalid_count"]
++    return diff
++
++
++# [TRACK-009] holdings_import_contract — 从文本解析并提交
++@app.post("/v1/portfolio/imports/import-text")
++def portfolio_import_from_text(
++    body: PortfolioImportTextRequest,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    try:
++        result = portfolio_import_service.import_positions_from_text(
++            db=db,
++            user_id=current_user.id,
++            text=body.text,
++            source=body.source,
++            auto_apply_scheduled=body.auto_apply_scheduled,
++        )
++    except ValueError as exc:
++        raise HTTPException(400, str(exc)) from exc
++    return result
++
++
+ @app.post("/v1/portfolio/parse-image")
+ async def parse_position_image_endpoint(
+     file: UploadFile = File(...),
+diff --git a/api/runtime_tier.py b/api/runtime_tier.py
+index 4bcfe5b..5253837 100644
+--- a/api/runtime_tier.py
++++ b/api/runtime_tier.py
+@@ -86,6 +86,9 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
+     "investment_controller_context",  # [IC-TA-001] investment_controller_context
+     "notification_draft_dry_run",  # [TRACK-NOTIFY-001] notification_payload_dry_run
+     "controller_briefing_dry_run",  # [IC-TA-003] controller_briefing_dry_run
++    "portfolio_holdings_import_dry_run",  # [TRACK-009] holdings_import_contract
++    "portfolio_holdings_import_text",     # [TRACK-009] holdings_import_contract
++    "portfolio_holdings_import_contract", # [TRACK-009] holdings_import_contract
+ }
+ 
+ 
+diff --git a/api/services/portfolio_import_service.py b/api/services/portfolio_import_service.py
+index 113d790..97d7ed1 100644
+--- a/api/services/portfolio_import_service.py
++++ b/api/services/portfolio_import_service.py
+@@ -6,6 +6,9 @@ No dependency on any specific broker SDK.
+ """
+ from __future__ import annotations
+ 
++import csv
++import io
++import json
+ import logging
+ import re
+ from datetime import datetime, timezone
+@@ -23,6 +26,28 @@ logger = logging.getLogger(__name__)
+ 
+ _CODE_RE = re.compile(r"^(\d{6})\.(SH|SZ|BJ)$")
+ 
++# [TRACK-009] holdings_import_contract — strong action verbs must NEVER leak
++# into imported free-text fields (e.g. stock name). Mirror the controller
++# contract so the de-facto list stays in one place.
++_STRONG_ACTION_PATTERNS: tuple[str, ...] = (
++    "立即买入", "立即卖出", "满仓", "清仓", "全仓",
++)
++
++# [TRACK-009] holdings_import_contract — fields the import path tracks.
++# Order matters: this is the canonical field list used for diff/reporting.
++_TRACKED_FIELDS: tuple[str, ...] = (
++    "name",
++    "current_position",
++    "available_position",
++    "average_cost",
++    "market_value",
++    "current_position_pct",
++)
++
++_NUMERIC_FIELDS: frozenset[str] = frozenset(
++    f for f in _TRACKED_FIELDS if f != "name"
++)
++
+ 
+ # ---------------------------------------------------------------------------
+ # Public API
+@@ -225,3 +250,608 @@ def _to_float(value: Any) -> float | None:
+ def _latest_imported_at(positions: list[dict[str, Any]]) -> str | None:
+     dates = [p["last_imported_at"] for p in positions if p.get("last_imported_at")]
+     return max(dates) if dates else None
++
++
++# ===========================================================================
++# [TRACK-009] holdings_import_contract
++# Holdings import dry-run / validate / contract helpers.
++#
++# Design notes (per AGENTS.md adversarial-review mindset):
++#   * dry_run_import MUST NOT touch the DB. It only queries current rows
++#     for the (user_id, source) pair and computes a diff.
++#   * import_positions_from_text MUST route the actual write through the
++#     existing sync_positions() — no side-channel DB writes.
++#   * If every parsed row is invalid, raise instead of committing an empty
++#     snapshot that would silently erase the user's holdings.
++#   * ImportedPortfolioPositionDB has no `notes` column, so watchlist /
++#     observation warehouse notes are structurally isolated from this path.
++# ===========================================================================
++
++
++# Header alias map for CSV/TSV parsing. Keys are normalised lower-case.
++_HEADER_ALIASES: dict[str, str] = {
++    # symbol
++    "symbol": "symbol",
++    "code": "symbol",
++    "代码": "symbol",
++    "股票代码": "symbol",
++    "证券代码": "symbol",
++    # name
++    "name": "name",
++    "名称": "name",
++    "股票名称": "name",
++    "证券名称": "name",
++    # current_position
++    "current_position": "current_position",
++    "shares": "current_position",
++    "position": "current_position",
++    "持仓": "current_position",
++    "持仓数": "current_position",
++    "持仓数量": "current_position",
++    "数量": "current_position",
++    # available_position
++    "available_position": "available_position",
++    "可用": "available_position",
++    "可用数量": "available_position",
++    # average_cost
++    "average_cost": "average_cost",
++    "avg_cost": "average_cost",
++    "cost": "average_cost",
++    "成本价": "average_cost",
++    "成本": "average_cost",
++    "买入均价": "average_cost",
++    # market_value
++    "market_value": "market_value",
++    "value": "market_value",
++    "市值": "market_value",
++    "持仓市值": "market_value",
++    # current_position_pct
++    "current_position_pct": "current_position_pct",
++    "position_pct": "current_position_pct",
++    "仓位": "current_position_pct",
++    "仓位占比": "current_position_pct",
++    "占比": "current_position_pct",
++}
++
++# Aliases accepted in JSON objects in addition to canonical field names.
++_JSON_FIELD_ALIASES: dict[str, str] = {
++    "shares": "current_position",
++    "position": "current_position",
++    "qty": "current_position",
++    "quantity": "current_position",
++    "cost": "average_cost",
++    "avg_cost": "average_cost",
++    "price": "average_cost",
++    "value": "market_value",
++    "pct": "current_position_pct",
++}
++
++
++def parse_positions_text(text: str) -> list[dict[str, Any]]:
++    """Parse JSON / CSV / TSV / whitespace holdings text into raw row dicts.
++
++    The returned rows have NOT been validated or normalised yet — they may
++    contain alias keys (e.g. ``shares``) and unparseable numbers. Use
++    :func:`validate_positions` next.
++
++    Accepted formats (auto-detected):
++      * JSON array of objects, single object, or ``{"positions": [...]}``.
++      * CSV / TSV with a header row (Chinese or English column names).
++      * Whitespace-separated lines: ``代码 [名称] [持仓数] [成本价] [市值]``.
++
++    Raises ``ValueError`` with a clear message on unparseable JSON.
++    """
++    if not isinstance(text, str):
++        raise ValueError("导入文本必须为字符串")
++    raw = text.lstrip("\ufeff").strip()
++    if not raw:
++        return []
++
++    # 1. JSON?
++    if raw[0] in "{[":
++        try:
++            data = json.loads(raw)
++        except json.JSONDecodeError as exc:
++            raise ValueError(f"JSON 解析失败：{exc.msg}") from exc
++        return _normalise_json_payload(data)
++
++    # 2. CSV / TSV / whitespace (line-based)
++    return _parse_tabular_text(raw)
++
++
++def _normalise_json_payload(data: Any) -> list[dict[str, Any]]:
++    if isinstance(data, list):
++        items: list[dict[str, Any]] = []
++        for raw in data:
++            if not isinstance(raw, dict):
++                continue
++            items.append(_map_json_aliases(raw))
++        return items
++    if isinstance(data, dict):
++        # envelope {"positions": [...]} / {"holdings": [...]}
++        for key in ("positions", "holdings", "data"):
++            inner = data.get(key)
++            if isinstance(inner, list):
++                return [
++                    _map_json_aliases(r) for r in inner if isinstance(r, dict)
++                ]
++        # single position object
++        if "symbol" in data or "code" in data or "代码" in data:
++            return [_map_json_aliases(data)]
++    return []
++
++
++def _map_json_aliases(row: dict[str, Any]) -> dict[str, Any]:
++    mapped: dict[str, Any] = {}
++    for k, v in row.items():
++        key = str(k).strip().lower()
++        canonical = _JSON_FIELD_ALIASES.get(key, key)
++        # Always store under canonical field name; keep both for back-compat
++        # so callers that look up by alias still find the value.
++        mapped[canonical] = v
++        if canonical != key and key not in mapped:
++            mapped[key] = v
++    return mapped
++
++
++def _parse_tabular_text(raw: str) -> list[dict[str, Any]]:
++    # Detect delimiter by looking at the first non-comment line.
++    first_line = ""
++    for line in raw.splitlines():
++        s = line.strip()
++        if not s or s.startswith("#"):
++            continue
++        first_line = s
++        break
++    if not first_line:
++        return []
++
++    if "\t" in first_line:
++        delimiter = "\t"
++    elif "," in first_line:
++        delimiter = ","
++    elif ";" in first_line:
++        delimiter = ";"
++    else:
++        delimiter = None  # whitespace
++
++    lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.strip().startswith("#")]
++    if not lines:
++        return []
++
++    if delimiter is None:
++        return _parse_whitespace_lines(lines)
++
++    reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter)
++    rows = [r for r in reader if any(cell.strip() for cell in r)]
++    if not rows:
++        return []
++
++    # Detect header: if any header cell maps to a known alias AND no header
++    # cell looks like a 6-digit code, treat as header.
++    header_cells = [c.strip() for c in rows[0]]
++    header_mapped = [
++        _HEADER_ALIASES.get(c.lower(), _HEADER_ALIASES.get(c, "")) for c in header_cells
++    ]
++    looks_like_header = any(h for h in header_mapped) and not _looks_like_code(header_cells[0])
++
++    if looks_like_header:
++        cols = header_mapped
++        data_rows = rows[1:]
++    else:
++        # Positional fallback for headerless CSV/TSV:
++        # col0=symbol col1=name col2=current_position col3=average_cost col4=market_value col5=current_position_pct
++        cols = [
++            "symbol",
++            "name",
++            "current_position",
++            "average_cost",
++            "market_value",
++            "current_position_pct",
++        ]
++        data_rows = rows
++
++    out: list[dict[str, Any]] = []
++    for r in data_rows:
++        if not any(cell.strip() for cell in r):
++            continue
++        item: dict[str, Any] = {}
++        for idx, cell in enumerate(r):
++            if idx >= len(cols):
++                break
++            col = cols[idx]
++            if not col:
++                continue
++            val = cell.strip()
++            if val == "":
++                continue
++            item[col] = val
++        if item:
++            out.append(item)
++    return out
++
++
++def _parse_whitespace_lines(lines: list[str]) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    for line in lines:
++        parts = line.split()
++        if not parts:
++            continue
++        item: dict[str, Any] = {"symbol": parts[0]}
++        rest = parts[1:]
++        # If second token is non-numeric → name, otherwise everything is numeric.
++        if rest and not _is_numeric_token(rest[0]):
++            item["name"] = rest[0]
++            rest = rest[1:]
++        numeric = [p for p in rest if _is_numeric_token(p)]
++        positional = ("current_position", "average_cost", "market_value", "current_position_pct")
++        for idx, val in enumerate(numeric):
++            if idx >= len(positional):
++                break
++            item[positional[idx]] = val
++        out.append(item)
++    return out
++
++
++def _is_numeric_token(tok: str) -> bool:
++    if not tok:
++        return False
++    try:
++        float(tok)
++        return True
++    except ValueError:
++        return False
++
++
++def _looks_like_code(token: str) -> bool:
++    t = (token or "").strip().upper()
++    return bool(re.match(r"^\d{6}(\.(SH|SZ|BJ))?$", t))
++
++
++def _scrub_strong_actions(value: str | None) -> str | None:
++    if not value:
++        return value
++    text = str(value)
++    for verb in _STRONG_ACTION_PATTERNS:
++        text = text.replace(verb, "")
++    cleaned = text.strip()
++    return cleaned or None
++
++
++def validate_positions(positions: Any) -> dict[str, Any]:
++    """Validate and normalise a list of raw position dicts.
++
++    Returns a dict with:
++      * ``valid``      — list of cleaned/normalised position dicts.
++      * ``invalid``    — list of ``{symbol?, reason, fields}`` dicts.
++      * ``warnings``   — list of ``{symbol, reason, field?}`` dicts.
++      * ``valid_count``/``invalid_count`` — integer counters.
++
++    Raises ``ValueError`` if *positions* is not a list.
++    """
++    if not isinstance(positions, list):
++        raise ValueError("positions 必须为列表")
++
++    valid: list[dict[str, Any]] = []
++    invalid: list[dict[str, Any]] = []
++    warnings: list[dict[str, Any]] = []
++    seen_symbols: set[str] = set()
++
++    for raw in positions:
++        if not isinstance(raw, dict):
++            invalid.append({"reason": "not_a_dict", "fields": [], "raw": raw})
++            continue
++
++        symbol = _normalize_code(raw.get("symbol") or raw.get("code"))
++        if symbol is None:
++            invalid.append({
++                "reason": "invalid_symbol",
++                "fields": ["symbol"],
++                "raw_symbol": str(raw.get("symbol", "")),
++            })
++            continue
++
++        if symbol in seen_symbols:
++            invalid.append({
++                "reason": "duplicate_symbol",
++                "fields": ["symbol"],
++                "symbol": symbol,
++            })
++            continue
++
++        item: dict[str, Any] = {"symbol": symbol}
++
++        # Name (optional but warned)
++        name_raw = raw.get("name")
++        name_val: str | None = None
++        if name_raw is not None:
++            name_val = _scrub_strong_actions(str(name_raw).strip()) or None
++        item["name"] = name_val
++        if name_val is None:
++            warnings.append({"symbol": symbol, "reason": "missing_name", "field": "name"})
++
++        # Numeric fields
++        negative_fields: list[str] = []
++        for field in _NUMERIC_FIELDS:
++            value = raw.get(field)
++            if value is None or value == "":
++                item[field] = None
++                continue
++            if isinstance(value, str) and not _is_numeric_token(value.strip()):
++                warnings.append({
++                    "symbol": symbol,
++                    "reason": f"unparseable_{field}",
++                    "field": field,
++                })
++                item[field] = None
++                continue
++            try:
++                num = float(value)
++            except (TypeError, ValueError):
++                warnings.append({
++                    "symbol": symbol,
++                    "reason": f"unparseable_{field}",
++                    "field": field,
++                })
++                item[field] = None
++                continue
++            if num < 0:
++                negative_fields.append(field)
++                item[field] = num
++            else:
++                item[field] = num
++
++        if negative_fields:
++            invalid.append({
++                "reason": "negative_field",
++                "fields": negative_fields,
++                "symbol": symbol,
++            })
++            continue
++
++        seen_symbols.add(symbol)
++        valid.append(item)
++
++    return {
++        "valid": valid,
++        "invalid": invalid,
++        "warnings": warnings,
++        "valid_count": len(valid),
++        "invalid_count": len(invalid),
++    }
++
++
++def _row_to_snapshot(row: ImportedPortfolioPositionDB) -> dict[str, Any]:
++    return {
++        "symbol": row.symbol,
++        "name": row.security_name,
++        "current_position": _to_float(row.current_position),
++        "available_position": _to_float(row.available_position),
++        "average_cost": _to_float(row.average_cost),
++        "market_value": _to_float(row.market_value),
++        "current_position_pct": _to_float(row.current_position_pct),
++    }
++
++
++def _diff_row(before: dict[str, Any], after: dict[str, Any]) -> dict[str, dict[str, Any]]:
++    delta: dict[str, dict[str, Any]] = {}
++    for field in _TRACKED_FIELDS:
++        b = before.get(field)
++        a = after.get(field)
++        # Normalise None vs missing so a wiped field shows up as a change.
++        b_norm = b if isinstance(b, (int, float)) or b is None else b
++        a_norm = a if isinstance(a, (int, float)) or a is None else a
++        if _values_differ(b_norm, a_norm):
++            delta[field] = {"before": b, "after": a}
++    return delta
++
++
++def _values_differ(a: Any, b: Any) -> bool:
++    if a is None and b is None:
++        return False
++    if a is None or b is None:
++        return True
++    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
++        return abs(float(a) - float(b)) > 1e-9
++    return str(a) != str(b)
++
++
++def dry_run_import(
++    db: Session,
++    user_id: str,
++    positions: list[dict[str, Any]],
++    source: str = "manual",
++) -> dict[str, Any]:
++    """Compute the diff of importing *positions* WITHOUT touching the DB.
++
++    The diff is computed against the current snapshot for the
++    ``(user_id, source)`` pair, mirroring the snapshot-replace semantics
++    of :func:`sync_positions`.
++    """
++    source = (source or "manual").strip()
++    validation = validate_positions(positions)
++    valid_rows = validation["valid"]
++
++    existing_rows = (
++        db.query(ImportedPortfolioPositionDB)
++        .filter(
++            ImportedPortfolioPositionDB.user_id == user_id,
++            ImportedPortfolioPositionDB.source == source,
++        )
++        .all()
++    )
++    existing_by_symbol: dict[str, dict[str, Any]] = {
++        r.symbol: _row_to_snapshot(r) for r in existing_rows
++    }
++
++    incoming_by_symbol: dict[str, dict[str, Any]] = {r["symbol"]: r for r in valid_rows}
++
++    added: list[dict[str, Any]] = []
++    updated: list[dict[str, Any]] = []
++    unchanged: list[dict[str, Any]] = []
++    removed: list[dict[str, Any]] = []
++
++    for symbol, row in incoming_by_symbol.items():
++        if symbol not in existing_by_symbol:
++            added.append({"symbol": symbol, "incoming": row})
++        else:
++            before = existing_by_symbol[symbol]
++            delta = _diff_row(before, row)
++            if delta:
++                updated.append({"symbol": symbol, "delta": delta, "before": before, "after": row})
++            else:
++                unchanged.append({"symbol": symbol, "incoming": row})
++
++    for symbol, before in existing_by_symbol.items():
++        if symbol not in incoming_by_symbol:
++            removed.append({"symbol": symbol, "before": before})
++
++    return {
++        "dry_run": True,
++        "source": source,
++        "write_semantics": "replace_snapshot",
++        "added": added,
++        "updated": updated,
++        "unchanged": unchanged,
++        "removed": removed,
++        "errors": validation["invalid"],
++        "warnings": validation["warnings"],
++        "added_count": len(added),
++        "updated_count": len(updated),
++        "unchanged_count": len(unchanged),
++        "removed_count": len(removed),
++        "error_count": len(validation["invalid"]),
++        "valid_count": validation["valid_count"],
++        "invalid_count": validation["invalid_count"],
++    }
++
++
++def import_positions_from_text(
++    db: Session,
++    user_id: str,
++    text: str,
++    source: str = "manual",
++    auto_apply_scheduled: bool = False,
++) -> dict[str, Any]:
++    """Parse → validate → dry-run → commit through :func:`sync_positions`.
++
++    Returns ``{"dry_run": <diff>, "state": <import state>}``.
++
++    Raises ``ValueError`` when:
++      * *text* is empty / whitespace.
++      * JSON parsing fails.
++      * After validation there are zero valid rows (so we never commit an
++        empty snapshot that would erase the user's holdings).
++    """
++    if not isinstance(text, str) or not text.strip():
++        raise ValueError("导入文本为空")
++    source = (source or "manual").strip()
++
++    raw_rows = parse_positions_text(text)
++    validation = validate_positions(raw_rows)
++    if validation["valid_count"] == 0:
++        raise ValueError("全部无效：未识别到任何合法持仓，已拒绝提交以保护现有数据")
++
++    # Build the dry-run preview from valid rows only.
++    diff = dry_run_import(db, user_id, validation["valid"], source=source)
++
++    # Commit through the canonical write path. sync_positions re-validates
++    # and normalises; passing the already-validated dicts keeps behaviour
++    # consistent with the dry-run preview.
++    state = sync_positions(
++        db=db,
++        user_id=user_id,
++        positions=validation["valid"],
++        source=source,
++        auto_apply_scheduled=auto_apply_scheduled,
++    )
++    return {"dry_run": diff, "state": state}
++
++
++OPENCLAW_HOLDINGS_CONTRACT: dict[str, Any] = {
++    "schema_version": "1.0",
++    "contract_for": "openclaw_to_ta_holdings",
++    "description": (
++        "OpenClaw / 任意外部持仓来源与 TA 跟踪看板之间的持仓快照契约。"
++        "通过 dry-run 预览差异，再走 /v1/portfolio/imports 提交。"
++    ),
++    "write_endpoints": [
++        {
++            "path": "/v1/portfolio/imports/dry-run",
++            "method": "POST",
++            "tier": "FAST_RADAR",
++            "purpose": "dry-run 预览新增/更新/移除/异常，不写库",
++            "accepts": "text(JSON/CSV/TSV/whitespace) 或 positions(list)",
++        },
++        {
++            "path": "/v1/portfolio/imports/import-text",
++            "method": "POST",
++            "tier": "FAST_RADAR",
++            "purpose": "从文本解析并提交，返回 dry-run 预览 + 提交后状态",
++            "accepts": "text(JSON/CSV/TSV/whitespace)",
++        },
++        {
++            "path": "/v1/portfolio/imports",
++            "method": "POST",
++            "tier": "FAST_RADAR",
++            "purpose": "结构化 positions 列表直接提交（兼容旧入口）",
++            "accepts": "positions(list) + source + auto_apply_scheduled",
++        },
++        {
++            "path": "/v1/portfolio/imports",
++            "method": "DELETE",
++            "tier": "FAST_RADAR",
++            "purpose": "清空当前用户的所有导入持仓",
++        },
++    ],
++    "read_endpoints": [
++        {
++            "path": "/v1/portfolio/imports",
++            "method": "GET",
++            "purpose": "读取当前导入状态与持仓列表",
++        },
++        {
++            "path": "/v1/dashboard/tracking-board/v2",
++            "method": "GET",
++            "purpose": "跟踪看板 v2 聚合视图（持仓/观察仓/今日指引/盘后复盘）",
++        },
++    ],
++    "field_semantics": {
++        "symbol": (
++            "A 股代码，6 位数字自动加 .SH/.SZ/.BJ 后缀；"
++            "已带后缀的 600519.SH / 000001.SZ / 688981.SH 等保持原样"
++        ),
++        "name": "可选；缺失时仅产生 warning 不阻断导入；不会从代码反查名称",
++        "current_position": "持仓数量（整数或浮点），别名 shares / position / qty 也接受",
++        "available_position": "可用数量，别名 available 也接受",
++        "average_cost": "成本价，别名 cost / avg_cost 也接受",
++        "market_value": "市值，别名 value 也接受",
++        "current_position_pct": (
++            "账户级仓位占比 %。禁止从单一可见行推断；"
++            "未显式提供时不会回填为 100%"
++        ),
++        "source": (
++            "持仓来源标签，例如 openclaw / manual / tracking_board_v2 / "
++            "broker_screenshot。同一 (user, source) 下的快照整体替换。"
++        ),
++    },
++    "write_semantics": (
++        "replace_snapshot —— 提交后该 (user_id, source) 下的旧记录会被本次"
++        "快照整体替换；不在快照中的 symbol 会被移除。重复提交相同内容幂等，"
++        "不会清空数据。"
++    ),
++    "invariants": [
++        "dry-run 接口绝不写库。",
++        "全部行无效时拒绝提交，已有数据保持不变。",
++        "ImportedPortfolioPositionDB 不存 notes 字段；watchlist 与 observation "
++        "warehouse 的 notes 不受此导入接口影响。",
++        "导入路径不调用 LLM，不读取 API key。",
++        "free-text 字段（name）会被剥除强动作词。",
++    ],
++    "text_formats": {
++        "json": "数组 / 单对象 / {\"positions\": [...]}",
++        "csv":  "首行表头，支持中文（代码,名称,持仓数,成本价,市值）或英文（symbol,name,shares,cost,value）",
++        "tsv":  "Tab 分隔，列含义同 CSV",
++        "whitespace": "代码 [名称] [持仓数] [成本价] [市值] —— 第二段非数字视为名称",
++    },
++}
+
+exec
+/bin/zsh -lc 'git diff -- frontend/src/components/TrackingBoardV2Panel.tsx frontend/src/services/api.ts frontend/src/types/index.ts' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/frontend/src/components/TrackingBoardV2Panel.tsx b/frontend/src/components/TrackingBoardV2Panel.tsx
+index 77720a1..9276bed 100644
+--- a/frontend/src/components/TrackingBoardV2Panel.tsx
++++ b/frontend/src/components/TrackingBoardV2Panel.tsx
+@@ -16,7 +16,7 @@ import {
+     Upload,
+     Download,
+ } from 'lucide-react'
+-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
++import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+ import { useNavigate } from 'react-router-dom'
+ 
+ import { api } from '@/services/api'
+@@ -28,6 +28,8 @@ import type {
+     ObservationItemV2,
+     PortfolioPositionInput,
+     TrackingBoardV2DataFreshness,
++    HoldingsImportContract,
++    HoldingsImportDiff,
+ } from '@/types'
+ 
+ // ─── helpers ───────────────────────────────────────────────
+@@ -128,6 +130,14 @@ export default function TrackingBoardV2Panel() {
+     const [importClearing, setImportClearing] = useState(false)
+     const [vlmParsing, setVlmParsing] = useState(false)
+     const [importFeedback, setImportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
++    // [TRACK-009] holdings_import_contract — dry-run preview + OpenClaw 契约
++    const [importSource, setImportSource] = useState<string>('openclaw')
++    const [dryRunDiff, setDryRunDiff] = useState<HoldingsImportDiff | null>(null)
++    const [dryRunLoading, setDryRunLoading] = useState(false)
++    const [confirmingImport, setConfirmingImport] = useState(false)
++    const [importContract, setImportContract] = useState<HoldingsImportContract | null>(null)
++    const [contractLoading, setContractLoading] = useState(false)
++    const [showContract, setShowContract] = useState(false)
+     const [showObservationCreate, setShowObservationCreate] = useState(false)
+     const [observationSaving, setObservationSaving] = useState(false)
+     const [observationFeedback, setObservationFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
+@@ -259,6 +269,91 @@ export default function TrackingBoardV2Panel() {
+         }
+     }, [])
+ 
++    // [TRACK-009] holdings_import_contract — dry-run 预览差异（不写库）
++    const handleDryRunPreview = useCallback(async () => {
++        const text = positionText.trim()
++        if (!text) {
++            setImportFeedback({ tone: 'error', message: '请先粘贴持仓文本（JSON / CSV / 文本）' })
++            return
++        }
++        setDryRunLoading(true)
++        setImportFeedback(null)
++        setDryRunDiff(null)
++        try {
++            const diff = await api.dryRunPortfolioImport({ text, source: importSource || 'openclaw' })
++            setDryRunDiff(diff)
++            if (diff.valid_count === 0) {
++                setImportFeedback({ tone: 'error', message: '未识别到任何合法持仓，请检查格式' })
++            } else {
++                const parts: string[] = []
++                if (diff.added_count) parts.push(`新增 ${diff.added_count}`)
++                if (diff.updated_count) parts.push(`更新 ${diff.updated_count}`)
++                if (diff.removed_count) parts.push(`移除 ${diff.removed_count}`)
++                if (diff.unchanged_count) parts.push(`未变 ${diff.unchanged_count}`)
++                if (diff.invalid_count) parts.push(`异常 ${diff.invalid_count}`)
++                setImportFeedback({
++                    tone: diff.invalid_count > 0 ? 'error' : 'success',
++                    message: `预览完成：${parts.join('、') || '无变化'}`,
++                })
++            }
++        } catch (e) {
++            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '预览失败' })
++        } finally {
++            setDryRunLoading(false)
++        }
++    }, [positionText, importSource])
++
++    // [TRACK-009] holdings_import_contract — 确认提交，走 /import-text 入口
++    const handleConfirmImport = useCallback(async () => {
++        const text = positionText.trim()
++        if (!text) {
++            setImportFeedback({ tone: 'error', message: '没有可提交的持仓文本' })
++            return
++        }
++        setConfirmingImport(true)
++        setImportFeedback(null)
++        try {
++            const result = await api.importPortfolioFromText({
++                text,
++                source: importSource || 'openclaw',
++            })
++            const diff = result.dry_run
++            const parts: string[] = []
++            if (diff.added_count) parts.push(`新增 ${diff.added_count}`)
++            if (diff.updated_count) parts.push(`更新 ${diff.updated_count}`)
++            if (diff.removed_count) parts.push(`移除 ${diff.removed_count}`)
++            if (diff.invalid_count) parts.push(`异常 ${diff.invalid_count}`)
++            setImportFeedback({
++                tone: diff.invalid_count > 0 ? 'error' : 'success',
++                message: `已提交 ${result.state.summary.positions} 只持仓：${parts.join('、') || '无变化'}`,
++            })
++            setDryRunDiff(null)
++            setPositionText('')
++            await refreshBoard()
++        } catch (e) {
++            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '提交失败' })
++        } finally {
++            setConfirmingImport(false)
++        }
++    }, [positionText, importSource, refreshBoard])
++
++    // [TRACK-009] holdings_import_contract — 加载 / 折叠 OpenClaw 契约
++    const handleToggleContract = useCallback(async () => {
++        if (!showContract && !importContract) {
++            setContractLoading(true)
++            try {
++                const c = await api.getPortfolioImportContract()
++                setImportContract(c)
++            } catch (e) {
++                setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '契约加载失败' })
++                setContractLoading(false)
++                return
++            }
++            setContractLoading(false)
++        }
++        setShowContract(v => !v)
++    }, [showContract, importContract])
++
+     const handleCreateObservation = useCallback(async () => {
+         const symbol = observationDraft.symbol.trim()
+         if (!symbol) {
+@@ -417,7 +512,7 @@ export default function TrackingBoardV2Panel() {
+                     open={showHoldingImport}
+                     onToggle={() => setShowHoldingImport(v => !v)}
+                     positionText={positionText}
+-                    onPositionTextChange={setPositionText}
++                    onPositionTextChange={(v) => { setPositionText(v); setDryRunDiff(null) }}
+                     onSave={handleSavePositions}
+                     onClear={handleClearPositions}
+                     onPickImage={() => fileInputRef.current?.click()}
+@@ -425,6 +520,18 @@ export default function TrackingBoardV2Panel() {
+                     clearing={importClearing}
+                     parsing={vlmParsing}
+                     feedback={importFeedback}
++                    // [TRACK-009] holdings_import_contract
++                    importSource={importSource}
++                    onImportSourceChange={setImportSource}
++                    dryRunDiff={dryRunDiff}
++                    dryRunLoading={dryRunLoading}
++                    onDryRun={handleDryRunPreview}
++                    onConfirmImport={handleConfirmImport}
++                    confirmingImport={confirmingImport}
++                    importContract={importContract}
++                    contractLoading={contractLoading}
++                    showContract={showContract}
++                    onToggleContract={handleToggleContract}
+                 />
+             )}
+ 
+@@ -549,6 +656,17 @@ function HoldingsImportPanel({
+     clearing,
+     parsing,
+     feedback,
++    importSource,
++    onImportSourceChange,
++    dryRunDiff,
++    dryRunLoading,
++    onDryRun,
++    onConfirmImport,
++    confirmingImport,
++    importContract,
++    contractLoading,
++    showContract,
++    onToggleContract,
+ }: {
+     open: boolean
+     onToggle: () => void
+@@ -561,7 +679,20 @@ function HoldingsImportPanel({
+     clearing: boolean
+     parsing: boolean
+     feedback: { tone: 'success' | 'error'; message: string } | null
++    // [TRACK-009] holdings_import_contract
++    importSource: string
++    onImportSourceChange: (v: string) => void
++    dryRunDiff: HoldingsImportDiff | null
++    dryRunLoading: boolean
++    onDryRun: () => void
++    onConfirmImport: () => void
++    confirmingImport: boolean
++    importContract: HoldingsImportContract | null
++    contractLoading: boolean
++    showContract: boolean
++    onToggleContract: () => void
+ }) {
++    const detectedFormat = useMemo(() => detectFormat(positionText), [positionText])
+     return (
+         <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+             <button
+@@ -570,35 +701,74 @@ function HoldingsImportPanel({
+                 className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+             >
+                 <Upload className="h-4 w-4" />
+-                导入 / 管理持仓
++                导入 / 同步持仓
+                 <span className="ml-auto text-xs text-slate-400">{open ? '收起' : '展开'}</span>
+             </button>
+             {open && (
+                 <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-800">
++                    {/* Format hint + source tag */}
++                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
++                        <span className="rounded-full bg-slate-100 px-2 py-0.5 dark:bg-slate-800">
++                            格式：{detectedFormat}
++                        </span>
++                        <label className="flex items-center gap-1">
++                            来源：
++                            <input
++                                value={importSource}
++                                onChange={e => onImportSourceChange(e.target.value)}
++                                placeholder="openclaw"
++                                className="w-28 rounded border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
++                            />
++                        </label>
++                    </div>
+                     <textarea
+                         value={positionText}
+                         onChange={e => onPositionTextChange(e.target.value)}
+-                        placeholder={'每行一只股票：代码 名称 持仓数 成本价 市值\n例如：600519 贵州茅台 100 1800 180000'}
+-                        className="min-h-[96px] w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
++                        placeholder={
++                            '支持 JSON / CSV / 文本（自动识别）：\n'
++                            + 'JSON: [{"symbol":"600519.SH","name":"贵州茅台","current_position":100,"average_cost":1700}]\n'
++                            + 'CSV:  代码,名称,持仓数,成本价,市值\n'
++                            + '      600519.SH,贵州茅台,100,1700,170000\n'
++                            + '文本: 600519 贵州茅台 100 1700 170000'
++                        }
++                        className="min-h-[120px] w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                     />
+                     <div className="flex flex-wrap gap-2">
++                        <button
++                            type="button"
++                            onClick={onDryRun}
++                            disabled={dryRunLoading || !positionText.trim()}
++                            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-40"
++                        >
++                            {dryRunLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
++                            预览差异 (dry-run)
++                        </button>
++                        <button
++                            type="button"
++                            onClick={onConfirmImport}
++                            disabled={confirmingImport || !positionText.trim()}
++                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
++                        >
++                            {confirmingImport ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
++                            预览并提交
++                        </button>
+                         <button
+                             type="button"
+                             onClick={onSave}
+                             disabled={saving || !positionText.trim()}
+-                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
++                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                         >
+                             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+-                            保存持仓
++                            快速保存
+                         </button>
+                         <button
+                             type="button"
+                             onClick={onPickImage}
+                             disabled={parsing}
+-                            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
++                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                         >
+                             {parsing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+-                            {parsing ? '识别中...' : '上传持仓截图'}
++                            {parsing ? '识别中...' : '上传截图'}
+                         </button>
+                         <button
+                             type="button"
+@@ -611,12 +781,221 @@ function HoldingsImportPanel({
+                         </button>
+                     </div>
+                     <FeedbackMessage feedback={feedback} />
++
++                    {/* Dry-run diff preview */}
++                    {dryRunDiff && <DryRunDiffView diff={dryRunDiff} />}
++
++                    {/* OpenClaw / API contract */}
++                    <div className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
++                        <button
++                            type="button"
++                            onClick={onToggleContract}
++                            className="flex w-full items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
++                        >
++                            <Info className="h-3.5 w-3.5" />
++                            OpenClaw / 外部持仓 API 契约
++                            {contractLoading && <Loader2 className="ml-1 h-3 w-3 animate-spin" />}
++                            <span className="ml-auto text-slate-400">{showContract ? '收起' : '展开'}</span>
++                        </button>
++                        {showContract && importContract && <ContractView contract={importContract} />}
++                    </div>
+                 </div>
+             )}
+         </div>
+     )
+ }
+ 
++// [TRACK-009] holdings_import_contract — format auto-detection
++function detectFormat(text: string): string {
++    const t = (text || '').trim()
++    if (!t) return '空'
++    if (t[0] === '{' || t[0] === '[') return 'JSON'
++    if (/[\t;]/.test(t)) return 'TSV/CSV'
++    if (t.split('\n')[0]?.includes(',')) return 'CSV'
++    return '文本（代码 名称 持仓数 成本价 市值）'
++}
++
++function fmtDeltaValue(v: unknown): string {
++    if (v == null || v === '') return '(空)'
++    return String(v)
++}
++
++function DryRunDiffView({ diff }: { diff: HoldingsImportDiff }) {
++    const hasAny = diff.added_count + diff.updated_count + diff.removed_count + diff.unchanged_count + diff.invalid_count > 0
++    if (!hasAny) {
++        return (
++            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
++                无变化
++            </div>
++        )
++    }
++    return (
++        <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3 text-xs dark:border-slate-700 dark:bg-slate-900">
++            <div className="flex flex-wrap gap-1.5">
++                {diff.added_count > 0 && <DiffBadge tone="emerald" label={`新增 ${diff.added_count}`} />}
++                {diff.updated_count > 0 && <DiffBadge tone="amber" label={`更新 ${diff.updated_count}`} />}
++                {diff.removed_count > 0 && <DiffBadge tone="rose" label={`移除 ${diff.removed_count}`} />}
++                {diff.unchanged_count > 0 && <DiffBadge tone="slate" label={`未变 ${diff.unchanged_count}`} />}
++                {diff.invalid_count > 0 && <DiffBadge tone="rose" label={`异常 ${diff.invalid_count}`} />}
++            </div>
++            <div className="text-[11px] text-slate-400">写入语义：{diff.write_semantics} · 来源：{diff.source}</div>
++
++            {diff.added.length > 0 && (
++                <DiffBlock title="新增">
++                    {diff.added.map(a => (
++                        <div key={a.symbol} className="flex items-center gap-2 py-0.5">
++                            <span className="font-mono text-slate-700 dark:text-slate-200">{a.symbol}</span>
++                            {typeof a.incoming?.name === 'string' && (
++                                <span className="text-slate-500 dark:text-slate-400">{a.incoming.name}</span>
++                            )}
++                            {typeof a.incoming?.current_position === 'number' && (
++                                <span className="text-slate-500 dark:text-slate-400">{a.incoming.current_position}股</span>
++                            )}
++                        </div>
++                    ))}
++                </DiffBlock>
++            )}
++
++            {diff.updated.length > 0 && (
++                <DiffBlock title="更新">
++                    {diff.updated.map(u => (
++                        <div key={u.symbol} className="py-1">
++                            <div className="font-mono text-slate-700 dark:text-slate-200">{u.symbol}</div>
++                            <div className="ml-3 grid gap-0.5 text-[11px]">
++                                {Object.entries(u.delta).map(([field, d]) => (
++                                    <div key={field} className="text-slate-500 dark:text-slate-400">
++                                        <span className="font-mono">{field}</span>：
++                                        <span className="text-rose-500 line-through">{fmtDeltaValue(d.before)}</span>
++                                        {' → '}
++                                        <span className="text-emerald-600 dark:text-emerald-400">{fmtDeltaValue(d.after)}</span>
++                                    </div>
++                                ))}
++                            </div>
++                        </div>
++                    ))}
++                </DiffBlock>
++            )}
++
++            {diff.removed.length > 0 && (
++                <DiffBlock title="移除（不在快照中的同来源旧记录会被删除）" tone="rose">
++                    {diff.removed.map(r => (
++                        <div key={r.symbol} className="font-mono text-slate-600 dark:text-slate-300">
++                            {r.symbol}
++                            {typeof r.before?.name === 'string' && r.before.name ? ` · ${r.before.name}` : ''}
++                        </div>
++                    ))}
++                </DiffBlock>
++            )}
++
++            {diff.errors.length > 0 && (
++                <DiffBlock title="字段异常（不会写入）" tone="rose">
++                    {diff.errors.map((e, idx) => (
++                        <div key={`${e.symbol ?? e.raw_symbol ?? idx}`} className="text-[11px] text-rose-600 dark:text-rose-400">
++                            <span className="font-mono">{e.symbol ?? e.raw_symbol ?? '(空)'}</span> — {reasonLabel(e.reason)}
++                            {Array.isArray(e.fields) && e.fields.length > 0 && (
++                                <span className="ml-1 text-slate-400">[{e.fields.join(', ')}]</span>
++                            )}
++                        </div>
++                    ))}
++                </DiffBlock>
++            )}
++
++            {diff.warnings.length > 0 && (
++                <DiffBlock title="提示">
++                    {diff.warnings.map((w, idx) => (
++                        <div key={`${w.symbol}-${idx}`} className="text-[11px] text-amber-600 dark:text-amber-400">
++                            <span className="font-mono">{w.symbol}</span> — {reasonLabel(w.reason)}
++                        </div>
++                    ))}
++                </DiffBlock>
++            )}
++        </div>
++    )
++}
++
++function reasonLabel(reason: string): string {
++    const m: Record<string, string> = {
++        invalid_symbol: '代码格式无效',
++        duplicate_symbol: '同一批次内重复',
++        negative_field: '字段为负数',
++        missing_name: '名称缺失',
++        not_a_dict: '不是对象',
++    }
++    if (m[reason]) return m[reason]
++    if (reason.startsWith('unparseable_')) return `${reason.slice('unparseable_'.length)} 无法解析`
++    return reason
++}
++
++function DiffBadge({ tone, label }: { tone: 'emerald' | 'amber' | 'rose' | 'slate'; label: string }) {
++    const cls = {
++        emerald: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
++        amber: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
++        rose: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300',
++        slate: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
++    }[tone]
++    return <span className={`inline-flex items-center rounded-full px-2 py-0.5 ${cls}`}>{label}</span>
++}
++
++function DiffBlock({ title, tone = 'slate', children }: { title: string; tone?: 'slate' | 'rose'; children: ReactNode }) {
++    const headCls = tone === 'rose'
++        ? 'text-rose-600 dark:text-rose-400'
++        : 'text-slate-600 dark:text-slate-300'
++    return (
++        <div>
++            <div className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${headCls}`}>{title}</div>
++            <div>{children}</div>
++        </div>
++    )
++}
++
++function ContractView({ contract }: { contract: HoldingsImportContract }) {
++    return (
++        <div className="mt-2 space-y-2 text-[11px] text-slate-600 dark:text-slate-400">
++            <div>契约版本：{contract.schema_version} · {contract.contract_for}</div>
++            {contract.description && <div>{contract.description}</div>}
++            <div className="font-semibold text-slate-700 dark:text-slate-200">写入端点</div>
++            <ul className="ml-3 list-disc space-y-0.5">
++                {contract.write_endpoints.map(ep => (
++                    <li key={`${ep.method}-${ep.path}`}>
++                        <span className="font-mono text-[10px] text-slate-500">{ep.method}</span>{' '}
++                        <span className="font-mono">{ep.path}</span>
++                        {ep.tier && <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] dark:bg-slate-800">{ep.tier}</span>}
++                        <div className="ml-3 text-slate-500 dark:text-slate-400">{ep.purpose}</div>
++                    </li>
++                ))}
++            </ul>
++            <div className="font-semibold text-slate-700 dark:text-slate-200">只读端点</div>
++            <ul className="ml-3 list-disc space-y-0.5">
++                {contract.read_endpoints.map(ep => (
++                    <li key={`${ep.method}-${ep.path}`}>
++                        <span className="font-mono text-[10px] text-slate-500">{ep.method}</span>{' '}
++                        <span className="font-mono">{ep.path}</span>
++                        <div className="ml-3 text-slate-500 dark:text-slate-400">{ep.purpose}</div>
++                    </li>
++                ))}
++            </ul>
++            <div className="font-semibold text-slate-700 dark:text-slate-200">字段语义</div>
++            <ul className="ml-3 list-disc space-y-0.5">
++                {Object.entries(contract.field_semantics).map(([k, v]) => (
++                    <li key={k}>
++                        <span className="font-mono text-slate-700 dark:text-slate-200">{k}</span>：{v}
++                    </li>
++                ))}
++            </ul>
++            <div className="font-semibold text-slate-700 dark:text-slate-200">写入语义</div>
++            <div className="ml-3">{contract.write_semantics}</div>
++            {Array.isArray(contract.invariants) && contract.invariants.length > 0 && (
++                <>
++                    <div className="font-semibold text-slate-700 dark:text-slate-200">不变式</div>
++                    <ul className="ml-3 list-disc space-y-0.5">
++                        {contract.invariants.map((inv, idx) => <li key={idx}>{inv}</li>)}
++                    </ul>
++                </>
++            )}
++        </div>
++    )
++}
++
+ function ObservationCreatePanel({
+     open,
+     onToggle,
+diff --git a/frontend/src/services/api.ts b/frontend/src/services/api.ts
+index e7267d6..cc64d48 100644
+--- a/frontend/src/services/api.ts
++++ b/frontend/src/services/api.ts
+@@ -1,4 +1,4 @@
+-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse } from '@/types'
++import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse, HoldingsImportContract, HoldingsImportDiff, HoldingsImportResult } from '@/types'
+ 
+ export function getBaseUrl(): string {
+     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
+@@ -278,6 +278,35 @@ class ApiService {
+         await this.request('/v1/portfolio/imports', { method: 'DELETE' })
+     }
+ 
++    // [TRACK-009] holdings_import_contract
++    async getPortfolioImportContract(): Promise<HoldingsImportContract> {
++        return this.request<HoldingsImportContract>('/v1/portfolio/imports/contract')
++    }
++
++    // [TRACK-009] holdings_import_contract — dry-run 预览，不写库
++    async dryRunPortfolioImport(data: {
++        text?: string
++        positions?: PortfolioPositionInput[]
++        source?: string
++    }): Promise<HoldingsImportDiff> {
++        return this.request<HoldingsImportDiff>('/v1/portfolio/imports/dry-run', {
++            method: 'POST',
++            body: JSON.stringify(data),
++        })
++    }
++
++    // [TRACK-009] holdings_import_contract — 从文本解析并提交
++    async importPortfolioFromText(data: {
++        text: string
++        source?: string
++        auto_apply_scheduled?: boolean
++    }): Promise<HoldingsImportResult> {
++        return this.request<HoldingsImportResult>('/v1/portfolio/imports/import-text', {
++            method: 'POST',
++            body: JSON.stringify(data),
++        })
++    }
++
+     async parsePositionImage(file: File, mode: 'position' | 'watchlist' = 'position'): Promise<{ positions: PortfolioPositionInput[] } | WatchlistTableParseResponse> {
+         const formData = new FormData()
+         formData.append('file', file)
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index c1057d5..ff5953e 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -617,6 +617,90 @@ export interface PortfolioImportState {
+     positions: ImportedPortfolioPosition[]
+ }
+ 
++// [TRACK-009] holdings_import_contract
++export interface HoldingsImportFieldDelta {
++    before: number | string | null
++    after: number | string | null
++}
++
++export interface HoldingsImportAddedItem {
++    symbol: string
++    incoming: Record<string, unknown>
++}
++
++export interface HoldingsImportUpdatedItem {
++    symbol: string
++    delta: Record<string, HoldingsImportFieldDelta>
++    before?: Record<string, unknown>
++    after?: Record<string, unknown>
++}
++
++export interface HoldingsImportRemovedItem {
++    symbol: string
++    before: Record<string, unknown>
++}
++
++export interface HoldingsImportInvalidItem {
++    symbol?: string
++    reason: string
++    fields: string[]
++    raw_symbol?: string
++    raw?: unknown
++}
++
++export interface HoldingsImportWarning {
++    symbol: string
++    reason: string
++    field?: string
++}
++
++// [TRACK-009] holdings_import_contract — dry-run 预览差异
++export interface HoldingsImportDiff {
++    dry_run: true
++    source: string
++    write_semantics: string
++    added: HoldingsImportAddedItem[]
++    updated: HoldingsImportUpdatedItem[]
++    unchanged: HoldingsImportAddedItem[]
++    removed: HoldingsImportRemovedItem[]
++    errors: HoldingsImportInvalidItem[]
++    warnings: HoldingsImportWarning[]
++    added_count: number
++    updated_count: number
++    unchanged_count: number
++    removed_count: number
++    error_count: number
++    valid_count: number
++    invalid_count: number
++}
++
++// [TRACK-009] holdings_import_contract — 提交后返回
++export interface HoldingsImportResult {
++    dry_run: HoldingsImportDiff
++    state: PortfolioImportState
++}
++
++export interface HoldingsImportEndpointInfo {
++    path: string
++    method: string
++    tier?: string
++    purpose: string
++    accepts?: string
++}
++
++// [TRACK-009] holdings_import_contract — OpenClaw 契约（只读）
++export interface HoldingsImportContract {
++    schema_version: string
++    contract_for: string
++    description?: string
++    write_endpoints: HoldingsImportEndpointInfo[]
++    read_endpoints: HoldingsImportEndpointInfo[]
++    field_semantics: Record<string, string>
++    write_semantics: string
++    invariants?: string[]
++    text_formats?: Record<string, string>
++}
++
+ export interface PortfolioPositionInput {
+     symbol: string
+     name?: string
+
+exec
+/bin/zsh -lc "sed -n '1,260p' api/services/portfolio_import_service.py && sed -n '1080,1125p' api/main.py && sed -n '4520,4625p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Generic portfolio position import service.
+
+Manages imported holdings from any source. Positions are stored as snapshots
+in ``ImportedPortfolioPositionDB`` with a configurable ``source`` tag.
+No dependency on any specific broker SDK.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from api.database import ImportedPortfolioPositionDB
+from api.services import scheduled_service
+from tradingagents.agents.utils.context_utils import normalize_user_context
+
+
+logger = logging.getLogger(__name__)
+
+_CODE_RE = re.compile(r"^(\d{6})\.(SH|SZ|BJ)$")
+
+# [TRACK-009] holdings_import_contract — strong action verbs must NEVER leak
+# into imported free-text fields (e.g. stock name). Mirror the controller
+# contract so the de-facto list stays in one place.
+_STRONG_ACTION_PATTERNS: tuple[str, ...] = (
+    "立即买入", "立即卖出", "满仓", "清仓", "全仓",
+)
+
+# [TRACK-009] holdings_import_contract — fields the import path tracks.
+# Order matters: this is the canonical field list used for diff/reporting.
+_TRACKED_FIELDS: tuple[str, ...] = (
+    "name",
+    "current_position",
+    "available_position",
+    "average_cost",
+    "market_value",
+    "current_position_pct",
+)
+
+_NUMERIC_FIELDS: frozenset[str] = frozenset(
+    f for f in _TRACKED_FIELDS if f != "name"
+)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def sync_positions(
+    db: Session,
+    user_id: str,
+    positions: list[dict[str, Any]],
+    source: str = "manual",
+    auto_apply_scheduled: bool = False,
+) -> dict[str, Any]:
+    """Replace the position snapshot for *source* with *positions*.
+
+    Each item in *positions* should contain at minimum ``symbol`` (e.g.
+    ``"600519.SH"``).  Optional fields: ``name``, ``current_position``,
+    ``available_position``, ``average_cost``, ``market_value``,
+    ``current_position_pct``.
+    """
+    if not isinstance(positions, list):
+        raise ValueError("positions 必须为列表")
+
+    source = (source or "manual").strip()
+    now = datetime.now(timezone.utc)
+
+    # Normalize & deduplicate
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in positions:
+        symbol = _normalize_code(raw.get("symbol"))
+        if symbol is None:
+            continue
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        cleaned.append({
+            "symbol": symbol,
+            "name": (raw.get("name") or "").strip() or None,
+            "current_position": _to_float(raw.get("current_position")),
+            "available_position": _to_float(raw.get("available_position")),
+            "average_cost": _to_float(raw.get("average_cost")),
+            "market_value": _to_float(raw.get("market_value")),
+            "current_position_pct": _to_float(raw.get("current_position_pct")),
+        })
+
+    # Do not infer account-level position_pct from imported rows.
+    # A screenshot may contain only one visible holding, and using that subset as
+    # the denominator would incorrectly turn it into "100% full position".
+    # Only persist current_position_pct when the user/import source explicitly
+    # provides an account-level percentage.
+
+    if not cleaned:
+        raise ValueError("没有有效的持仓记录，请检查输入格式")
+
+    # Replace snapshot for this source
+    db.query(ImportedPortfolioPositionDB).filter(
+        ImportedPortfolioPositionDB.user_id == user_id,
+        ImportedPortfolioPositionDB.source == source,
+    ).delete()
+
+    for p in cleaned:
+        db.add(ImportedPortfolioPositionDB(
+            id=uuid4().hex,
+            user_id=user_id,
+            source=source,
+            symbol=p["symbol"],
+            security_name=p["name"],
+            current_position=p["current_position"],
+            available_position=p["available_position"],
+            average_cost=p["average_cost"],
+            market_value=p["market_value"],
+            current_position_pct=p["current_position_pct"],
+            trade_points_json=[],
+            trade_points_count=0,
+            latest_trade_at=None,
+            latest_trade_action=None,
+            last_imported_at=now,
+        ))
+
+    scheduled_sync: dict[str, list] = {"created": [], "existing": [], "skipped_limit": []}
+    if auto_apply_scheduled:
+        ordered = [p["symbol"] for p in cleaned if (p["current_position"] or 0) > 0]
+        scheduled_sync = scheduled_service.ensure_scheduled_for_symbols(
+            db=db,
+            user_id=user_id,
+            symbols=ordered,
+        )
+
+    db.commit()
+    return get_import_state(db, user_id, scheduled_sync=scheduled_sync)
+
+
+def get_import_state(
+    db: Session,
+    user_id: str,
+    scheduled_sync: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    positions = list_imported_positions(db, user_id)
+    return {
+        "auto_apply_scheduled": False,
+        "last_synced_at": _latest_imported_at(positions),
+        "last_error": None,
+        "summary": {"positions": len(positions)},
+        "scheduled_sync": scheduled_sync or {"created": [], "existing": [], "skipped_limit": []},
+        "positions": positions,
+    }
+
+
+def list_imported_positions(db: Session, user_id: str) -> list[dict[str, Any]]:
+    """List all imported positions for a user, regardless of source."""
+    rows = (
+        db.query(ImportedPortfolioPositionDB)
+        .filter(ImportedPortfolioPositionDB.user_id == user_id)
+        .order_by(
+            ImportedPortfolioPositionDB.market_value.desc(),
+            ImportedPortfolioPositionDB.current_position.desc(),
+            ImportedPortfolioPositionDB.symbol,
+        )
+        .all()
+    )
+    return [
+        {
+            "symbol": row.symbol,
+            "name": row.security_name or row.symbol,
+            "source": row.source,
+            "current_position": row.current_position,
+            "available_position": row.available_position,
+            "average_cost": row.average_cost,
+            "market_value": row.market_value,
+            "current_position_pct": row.current_position_pct,
+            "trade_points_count": row.trade_points_count or 0,
+            "last_imported_at": row.last_imported_at.isoformat() if row.last_imported_at else None,
+        }
+        for row in rows
+    ]
+
+
+def build_scheduled_user_context(db: Session, user_id: str, symbol: str) -> dict[str, Any]:
+    """Build user context for a scheduled analysis from any imported source."""
+    row = (
+        db.query(ImportedPortfolioPositionDB)
+        .filter(
+            ImportedPortfolioPositionDB.user_id == user_id,
+            ImportedPortfolioPositionDB.symbol == (symbol or "").strip().upper(),
+        )
+        .first()
+    )
+    if not row:
+        return {}
+
+    payload: dict[str, Any] = {
+        "objective": "持有处理" if (row.current_position or 0) > 0 else "观察",
+        "current_position": row.current_position,
+        "current_position_pct": row.current_position_pct,
+        "average_cost": row.average_cost,
+        "user_notes": f"来源：持仓导入（{row.source}）",
+    }
+    if row.current_position_pct is None:
+        payload["user_notes"] += "；未提供现金、总资产或账户仓位占比，仅代表已导入的可见持仓，禁止据此推断满仓。"
+    return normalize_user_context(payload)
+
+
+def clear_imported_portfolio(db: Session, user_id: str) -> None:
+    """Clear all imported positions for a user, regardless of source."""
+    db.query(ImportedPortfolioPositionDB).filter(
+        ImportedPortfolioPositionDB.user_id == user_id,
+    ).delete()
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_code(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    if _CODE_RE.match(text):
+        return text
+    if re.match(r"^\d{6}$", text):
+        if text.startswith("6"):
+            return f"{text}.SH"
+        if text.startswith(("0", "3")):
+            return f"{text}.SZ"
+        if text.startswith(("4", "8")):
+            return f"{text}.BJ"
+    return None
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _latest_imported_at(positions: list[dict[str, Any]]) -> str | None:
+    dates = [p["last_imported_at"] for p in positions if p.get("last_imported_at")]
+    return max(dates) if dates else None
+
+
+# ===========================================================================
+# [TRACK-009] holdings_import_contract
+# Holdings import dry-run / validate / contract helpers.
+#
+# Design notes (per AGENTS.md adversarial-review mindset):
+#   * dry_run_import MUST NOT touch the DB. It only queries current rows
+
+
+class BarkWarmupRequest(BaseModel):
+    bark_url: Optional[str] = None
+    content: Optional[str] = None
+
+
+class BarkWarmupResponse(BaseModel):
+    sent: bool = True
+    message: str
+    bark_url_display: Optional[str] = None
+
+
+class PortfolioPositionItem(BaseModel):
+    symbol: str = Field(..., description="股票代码，如 600519.SH 或 600519")
+    name: Optional[str] = Field(None, description="股票名称")
+    current_position: Optional[float] = Field(None, description="持仓数量")
+    available_position: Optional[float] = Field(None, description="可用数量")
+    average_cost: Optional[float] = Field(None, description="成本价")
+    market_value: Optional[float] = Field(None, description="市值")
+    current_position_pct: Optional[float] = Field(None, description="仓位占比 %")
+
+
+class PortfolioImportSyncRequest(BaseModel):
+    positions: List[PortfolioPositionItem] = Field(..., description="持仓列表")
+    source: str = Field("manual", description="持仓来源标识")
+    auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
+
+
+# [TRACK-009] holdings_import_contract — dry-run / text-import request models
+class PortfolioImportDryRunRequest(BaseModel):
+    text: Optional[str] = Field(None, description="持仓文本，支持 JSON / CSV / TSV / whitespace；与 positions 二选一")
+    positions: Optional[List[PortfolioPositionItem]] = Field(None, description="结构化持仓列表；与 text 二选一")
+    source: str = Field("manual", description="持仓来源标识，用于 dry-run 差异对比")
+
+
+class PortfolioImportTextRequest(BaseModel):
+    text: str = Field(..., description="持仓文本，支持 JSON / CSV / TSV / whitespace")
+    source: str = Field("manual", description="持仓来源标识")
+    auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
+
+
+class UserTokenResponse(BaseModel):
+    id: str
+    name: str
+    token: str
+def _merge_imported_user_context(*contexts: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    note_parts: List[str] = []
+    for ctx in contexts:
+        if not ctx:
+            continue
+        for key, value in ctx.items():
+            if key == "user_notes":
+                if value:
+                    note_parts.append(str(value).strip())
+                continue
+            if value is not None:
+                merged[key] = value
+    if note_parts:
+        merged["user_notes"] = "\n\n".join(part for part in note_parts if part)
+    return normalize_user_context(merged)
+
+
+def _build_imported_user_context(db: Session, user_id: str, symbol: str) -> Dict[str, Any]:
+    context = portfolio_import_service.build_scheduled_user_context(db, user_id, symbol)
+    return _merge_imported_user_context(context)
+
+
+def _build_manual_imported_user_context(db: Session, user_id: str, symbol: str) -> Dict[str, Any]:
+    """Build imported position context for manual/ad-hoc analysis runs."""
+    return _build_imported_user_context(db, user_id, symbol)
+
+
+def _attach_stock_names(items: List[dict], code_to_name: Dict[str, str]) -> List[dict]:
+    for item in items:
+        symbol = str(item.get("symbol") or "").upper()
+        item["name"] = code_to_name.get(symbol, symbol or item.get("name") or "")
+    return items
+
+
+def _repair_portfolio_position_symbols(positions: List[dict]) -> List[dict]:
+    """Correct OCR/manual imports when stock name and code disagree."""
+    if not positions:
+        return positions
+
+    name_to_code = _load_cn_stock_map()
+    code_to_name = _get_reverse_stock_map()
+    repaired: List[dict] = []
+    for raw in positions:
+        item = dict(raw)
+        name = str(item.get("name") or "").strip()
+        symbol = _normalize_symbol(str(item.get("symbol") or "").strip())
+        resolved_by_name = name_to_code.get(name) if name else None
+
+        if resolved_by_name and symbol != resolved_by_name:
+            item["symbol"] = resolved_by_name
+            item["name"] = name or code_to_name.get(resolved_by_name, resolved_by_name)
+            item["symbol_correction"] = {
+                "from": symbol,
+                "to": resolved_by_name,
+                "reason": "name_code_mismatch",
+            }
+        else:
+            item["symbol"] = symbol
+            if not name and symbol in code_to_name:
+                item["name"] = code_to_name[symbol]
+        repaired.append(item)
+    return repaired
+
+
+@app.get("/v1/portfolio/imports")
+def get_portfolio_import_state(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    return portfolio_import_service.get_import_state(db, current_user.id)
+
+
+@app.post("/v1/portfolio/imports")
+def sync_portfolio_import(
+    body: PortfolioImportSyncRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        positions = _repair_portfolio_position_symbols([p.model_dump() for p in body.positions])
+        return portfolio_import_service.sync_positions(
+            db=db,
+            user_id=current_user.id,
+            positions=positions,
+            source=body.source,
+            auto_apply_scheduled=body.auto_apply_scheduled,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/v1/portfolio/imports", status_code=204)
+def clear_portfolio_import_state(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    portfolio_import_service.clear_imported_portfolio(db, current_user.id)
+
+
+# [TRACK-009] holdings_import_contract — OpenClaw/外部持仓契约（只读）
+@app.get("/v1/portfolio/imports/contract")
+def get_portfolio_import_contract(
+    current_user: UserDB = Depends(_require_api_user),
+):
+    return portfolio_import_service.OPENCLAW_HOLDINGS_CONTRACT
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_track009_holdings_import.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TRACK-009 — Holdings import dry-run / validate / contract tests.
+
+Covers the parse_positions_text → validate_positions → dry_run_import →
+import_positions_from_text pipeline plus the OpenClaw contract endpoint.
+
+Key invariants enforced (per AGENTS.md adversarial-review mindset):
+  - dry_run_import MUST NOT call db.commit / db.add / db.delete.
+  - import_positions_from_text MUST route through sync_positions
+    (no side-channel writes).
+  - Repeat import MUST NOT clear user data unless the incoming snapshot
+    explicitly omits the symbol (snapshot-replace semantics).
+  - ImportedPortfolioPositionDB has no `notes` column, so the
+    "重复导入不清空 notes" guarantee is structural; we still assert the
+    write path doesn't lose data on idempotent re-import.
+  - Strong-action verbs in any free-text field get scrubbed.
+  - All-invalid input MUST raise (never commit an empty snapshot that
+    would silently erase a user's holdings).
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from api.database import Base, ImportedPortfolioPositionDB, UserDB
+from api.runtime_tier import RuntimeTier, tradeflow_endpoint_tier
+from api.services import portfolio_import_service
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    yield session
+    session.close()
+
+
+def _auth_unique(client: TestClient) -> str:
+    from api.database import get_db_ctx, init_db
+    from api.services import auth_service
+
+    init_db()
+    email = auth_service.normalize_email(f"track009-{uuid4().hex[:8]}@test.com")
+    now = datetime.now(timezone.utc)
+    with get_db_ctx() as db:
+        user = auth_service.get_user_by_email(db, email)
+        if not user:
+            user = UserDB(
+                id=str(uuid4()),
+                email=email,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+                last_login_at=now,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+    return auth_service.create_access_token(user)
+
+
+# ---------------------------------------------------------------------------
+# parse_positions_text
+# ---------------------------------------------------------------------------
+
+class TestParseJson:
+    def test_parses_json_array(self):
+        text = json.dumps([
+            {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+            {"symbol": "000001", "name": "平安银行", "shares": 200, "cost": 12.5},
+        ])
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 2
+        assert rows[0]["symbol"] == "600519.SH"
+        assert rows[0]["name"] == "贵州茅台"
+        # alias mapping: shares → current_position, cost → average_cost
+        assert rows[1]["current_position"] in ("200", 200)
+        assert rows[1]["average_cost"] in ("12.5", 12.5)
+
+    def test_parses_positions_envelope(self):
+        text = json.dumps({"positions": [
+            {"symbol": "600519.SH", "name": "贵州茅台"},
+        ]})
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519.SH"
+
+    def test_parses_single_object(self):
+        text = json.dumps({"symbol": "600519.SH", "name": "贵州茅台"})
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519.SH"
+
+    def test_invalid_json_raises_value_error(self):
+        with pytest.raises(ValueError, match="JSON 解析失败"):
+            portfolio_import_service.parse_positions_text("[not valid json")
+
+    def test_empty_input_returns_empty_list(self):
+        assert portfolio_import_service.parse_positions_text("") == []
+        assert portfolio_import_service.parse_positions_text("   \n  ") == []
+
+    def test_bom_is_stripped(self):
+        text = "\ufeff" + json.dumps([{"symbol": "600519.SH"}])
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519.SH"
+
+
+class TestParseCsv:
+    def test_parses_chinese_header_csv(self):
+        text = "代码,名称,持仓数,成本价,市值\n600519.SH,贵州茅台,100,1700,170000\n300750.SZ,宁德时代,200,205.5,41100"
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 2
+        assert rows[0]["symbol"] == "600519.SH"
+        assert rows[0]["name"] == "贵州茅台"
+        assert rows[0]["current_position"] == "100"
+        assert rows[0]["average_cost"] == "1700"
+        assert rows[0]["market_value"] == "170000"
+
+    def test_parses_english_header_csv(self):
+        text = "symbol,name,shares,cost,value\n600519.SH,Moutai,100,1700,170000"
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519.SH"
+        assert rows[0]["current_position"] == "100"
+
+    def test_parses_tsv(self):
+        text = "代码\t名称\t持仓数\n600519.SH\t贵州茅台\t100"
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519.SH"
+        assert rows[0]["current_position"] == "100"
+
+    def test_comment_lines_skipped(self):
+        text = "# my holdings\nsymbol,shares\n600519.SH,100\n# end"
+        rows = portfolio_import_service.parse_positions_text(text)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519.SH"
+
+
+class TestParseWhitespace:
+    def test_code_name_shares_cost_value(self):
+        rows = portfolio_import_service.parse_positions_text("600519 贵州茅台 100 1700 170000")
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519"
+        assert rows[0]["name"] == "贵州茅台"
+        assert rows[0]["current_position"] == "100"
+        assert rows[0]["average_cost"] == "1700"
+        assert rows[0]["market_value"] == "170000"
+
+    def test_code_only(self):
+        rows = portfolio_import_service.parse_positions_text("600519")
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519"
+        assert "name" not in rows[0] or rows[0].get("name") is None
+
+    def test_code_and_shares_no_name(self):
+        rows = portfolio_import_service.parse_positions_text("600519 100 1700")
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "600519"
+        assert rows[0]["current_position"] == "100"
+        assert rows[0]["average_cost"] == "1700"
+
+
+# ---------------------------------------------------------------------------
+# validate_positions
+# ---------------------------------------------------------------------------
+
+class TestValidatePositions:
+    def test_valid_passes(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+        ])
+        assert result["valid_count"] == 1
+        assert result["invalid_count"] == 0
+        assert result["valid"][0]["symbol"] == "600519.SH"
+
+    def test_normalizes_bare_code(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519", "current_position": 100},
+        ])
+        assert result["valid_count"] == 1
+        assert result["valid"][0]["symbol"] == "600519.SH"
+
+    def test_invalid_symbol(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "ABC", "current_position": 100},
+            {"symbol": "", "current_position": 100},
+            {"symbol": "12345", "current_position": 100},  # 5 digits → invalid
+        ])
+        assert result["valid_count"] == 0
+        assert result["invalid_count"] == 3
+        reasons = [e["reason"] for e in result["invalid"]]
+        assert all(r == "invalid_symbol" for r in reasons)
+
+    def test_negative_shares_invalid(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "current_position": -100},
+        ])
+        assert result["valid_count"] == 0
+        assert result["invalid_count"] == 1
+        assert result["invalid"][0]["reason"] == "negative_field"
+        assert "current_position" in result["invalid"][0]["fields"]
+
+    def test_negative_cost_invalid(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "average_cost": -50.5},
+        ])
+        assert result["invalid_count"] == 1
+        assert "average_cost" in result["invalid"][0]["fields"]
+
+    def test_zero_shares_allowed(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "current_position": 0},
+        ])
+        assert result["valid_count"] == 1
+
+    def test_duplicate_symbol_within_blob(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "current_position": 100},
+            {"symbol": "600519", "current_position": 200},  # normalizes to same
+        ])
+        assert result["valid_count"] == 1
+        assert result["valid"][0]["current_position"] == 100
+        assert result["invalid_count"] == 1
+        assert result["invalid"][0]["reason"] == "duplicate_symbol"
+
+    def test_missing_name_warns(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "current_position": 100},
+        ])
+        reasons = [w["reason"] for w in result["warnings"]]
+        assert "missing_name" in reasons
+
+    def test_unparseable_number_warns(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "current_position": "N/A"},
+        ])
+        assert result["valid_count"] == 1
+        reasons = [w["reason"] for w in result["warnings"]]
+        assert "unparseable_current_position" in reasons
+
+    def test_scrubs_strong_action_verbs_in_name(self):
+        result = portfolio_import_service.validate_positions([
+            {"symbol": "600519.SH", "name": "贵州茅台 立即买入"},
+        ])
+        assert result["valid_count"] == 1
+        assert "立即买入" not in (result["valid"][0]["name"] or "")
+
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tests/test_track009_holdings_import.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+    def test_non_list_raises(self):
+        with pytest.raises(ValueError, match="positions 必须为列表"):
+            portfolio_import_service.validate_positions("not a list")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# dry_run_import — NO DB writes
+# ---------------------------------------------------------------------------
+
+class TestDryRunImport:
+    def test_dry_run_does_not_write_to_db(self, db):
+        before = db.query(ImportedPortfolioPositionDB).count()
+        result = portfolio_import_service.dry_run_import(
+            db=db,
+            user_id="user1",
+            positions=[
+                {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+            ],
+            source="openclaw",
+        )
+        after = db.query(ImportedPortfolioPositionDB).count()
+        assert after == before, "dry_run_import must not persist any rows"
+        assert result["dry_run"] is True
+        assert result["added_count"] == 1
+        assert result["updated_count"] == 0
+
+    def test_added_when_symbol_new(self, db):
+        result = portfolio_import_service.dry_run_import(
+            db=db,
+            user_id="user1",
+            positions=[{"symbol": "600519.SH", "current_position": 100}],
+            source="openclaw",
+        )
+        assert result["added_count"] == 1
+        assert result["updated_count"] == 0
+        assert result["removed_count"] == 0
+        assert result["unchanged_count"] == 0
+
+    def test_unchanged_when_identical(self, db):
+        portfolio_import_service.sync_positions(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700}],
+            source="openclaw",
+        )
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700}],
+            source="openclaw",
+        )
+        assert result["unchanged_count"] == 1
+        assert result["added_count"] == 0
+        assert result["updated_count"] == 0
+        assert result["removed_count"] == 0
+
+    def test_updated_when_field_changes(self, db):
+        portfolio_import_service.sync_positions(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "current_position": 100, "average_cost": 1700}],
+            source="openclaw",
+        )
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "current_position": 200, "average_cost": 1700}],
+            source="openclaw",
+        )
+        assert result["updated_count"] == 1
+        assert result["unchanged_count"] == 0
+        delta = result["updated"][0]["delta"]
+        assert "current_position" in delta
+        assert delta["current_position"]["before"] == 100
+        assert delta["current_position"]["after"] == 200
+
+    def test_removed_when_symbol_dropped(self, db):
+        portfolio_import_service.sync_positions(
+            db=db, user_id="user1",
+            positions=[
+                {"symbol": "600519.SH", "current_position": 100},
+                {"symbol": "300750.SZ", "current_position": 200},
+            ],
+            source="openclaw",
+        )
+        # New snapshot drops 600519.SH
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user1",
+            positions=[{"symbol": "300750.SZ", "current_position": 200}],
+            source="openclaw",
+        )
+        assert result["removed_count"] == 1
+        assert result["removed"][0]["symbol"] == "600519.SH"
+
+    def test_invalid_rows_go_to_errors(self, db):
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user1",
+            positions=[
+                {"symbol": "600519.SH", "current_position": 100},
+                {"symbol": "INVALID", "current_position": 50},
+                {"symbol": "600519", "current_position": -10},  # dup after norm + negative
+            ],
+            source="openclaw",
+        )
+        assert result["added_count"] == 1
+        assert result["error_count"] >= 1
+
+    def test_source_isolation(self, db):
+        portfolio_import_service.sync_positions(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "current_position": 100}],
+            source="manual",
+        )
+        # Same symbol under different source → still added (not unchanged)
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "current_position": 100}],
+            source="openclaw",
+        )
+        assert result["added_count"] == 1
+
+    def test_user_isolation(self, db):
+        portfolio_import_service.sync_positions(
+            db=db, user_id="user-a",
+            positions=[{"symbol": "600519.SH", "current_position": 100}],
+            source="openclaw",
+        )
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user-b",
+            positions=[{"symbol": "600519.SH", "current_position": 100}],
+            source="openclaw",
+        )
+        assert result["added_count"] == 1  # different user → brand new
+
+    def test_write_semantics_marker(self, db):
+        result = portfolio_import_service.dry_run_import(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH"}],
+            source="openclaw",
+        )
+        assert result["write_semantics"] == "replace_snapshot"
+
+
+# ---------------------------------------------------------------------------
+# import_positions_from_text — commit through sync_positions
+# ---------------------------------------------------------------------------
+
+class TestImportFromText:
+    def test_imports_json_then_state_visible(self, db):
+        text = json.dumps([
+            {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+        ])
+        result = portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text, source="openclaw",
+        )
+        assert result["dry_run"]["added_count"] == 1
+        assert result["state"]["summary"]["positions"] == 1
+        symbols = [p["symbol"] for p in result["state"]["positions"]]
+        assert "600519.SH" in symbols
+
+    def test_imports_csv(self, db):
+        text = "代码,名称,持仓数,成本价\n600519.SH,贵州茅台,100,1700"
+        result = portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text, source="openclaw",
+        )
+        assert result["state"]["summary"]["positions"] == 1
+
+    def test_imports_whitespace(self, db):
+        text = "600519 贵州茅台 100 1700 170000"
+        result = portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text, source="openclaw",
+        )
+        assert result["state"]["summary"]["positions"] == 1
+
+    def test_empty_text_raises(self, db):
+        with pytest.raises(ValueError, match="导入文本为空"):
+            portfolio_import_service.import_positions_from_text(
+                db=db, user_id="user1", text="", source="openclaw",
+            )
+
+    def test_all_invalid_raises_instead_of_erasing(self, db):
+        # Seed existing holdings
+        portfolio_import_service.sync_positions(
+            db=db, user_id="user1",
+            positions=[{"symbol": "600519.SH", "current_position": 100}],
+            source="openclaw",
+        )
+        # Now try to import garbage
+        with pytest.raises(ValueError, match="全部无效"):
+            portfolio_import_service.import_positions_from_text(
+                db=db, user_id="user1",
+                text="INVALID\nALSO_INVALID",
+                source="openclaw",
+            )
+        # Existing data MUST still be there.
+        existing = portfolio_import_service.list_imported_positions(db, "user1")
+        assert any(p["symbol"] == "600519.SH" for p in existing)
+
+    def test_repeat_import_preserves_data(self, db):
+        """TRACK-009 acceptance: 重复导入不清空 notes.
+
+        ImportedPortfolioPositionDB has no notes column, but we still verify
+        that re-importing the same snapshot is idempotent and doesn't lose
+        any tracked field.
+        """
+        text = json.dumps([
+            {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+        ])
+        portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text, source="openclaw",
+        )
+        # Import the exact same thing again
+        portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text, source="openclaw",
+        )
+        positions = portfolio_import_service.list_imported_positions(db, "user1")
+        assert len(positions) == 1
+        p = positions[0]
+        assert p["symbol"] == "600519.SH"
+        assert p["name"] == "贵州茅台"
+        assert p["current_position"] == 100
+        assert p["average_cost"] == 1700
+
+    def test_repeat_import_with_update_documents_snapshot_replace(self, db):
+        """Document snapshot-replace semantics: re-import without a field
+        and that field becomes None. The dry-run preview surfaces this so
+        users aren't surprised. This is the tradeoff of using the canonical
+        sync_positions write path (required by TRACK-009)."""
+        text1 = json.dumps([
+            {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700, "market_value": 170000},
+        ])
+        portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text1, source="openclaw",
+        )
+        # Re-import updating only shares; since sync_positions replaces the
+        # snapshot, market_value will be lost unless re-supplied.
+        text2 = json.dumps([
+            {"symbol": "600519.SH", "current_position": 200},
+        ])
+        result = portfolio_import_service.import_positions_from_text(
+            db=db, user_id="user1", text=text2, source="openclaw",
+        )
+        # Diff preview must show this clearly.
+        assert result["dry_run"]["updated_count"] == 1
+        delta = result["dry_run"]["updated"][0]["delta"]
+        assert "current_position" in delta
+        # market_value WILL be lost → it's part of the diff.
+        assert "market_value" in delta
+        p = portfolio_import_service.list_imported_positions(db, "user1")[0]
+        assert p["current_position"] == 200
+        assert p["market_value"] is None
+
+
+# ---------------------------------------------------------------------------
+# Contract
+# ---------------------------------------------------------------------------
+
+class TestContract:
+    def test_contract_has_required_fields(self):
+        c = portfolio_import_service.OPENCLAW_HOLDINGS_CONTRACT
+        assert c["schema_version"]
+        assert c["contract_for"] == "openclaw_to_ta_holdings"
+        assert len(c["write_endpoints"]) >= 3
+        assert len(c["read_endpoints"]) >= 1
+        assert "symbol" in c["field_semantics"]
+        assert "source" in c["field_semantics"]
+        assert any("dry-run" in ep["path"] for ep in c["write_endpoints"])
+
+    def test_contract_does_not_contain_strong_action_verbs(self):
+        from api.services.investment_controller_context import _STRONG_ACTION_PATTERNS
+        c = portfolio_import_service.OPENCLAW_HOLDINGS_CONTRACT
+        blob = json.dumps(c, ensure_ascii=False)
+        for verb in _STRONG_ACTION_PATTERNS:
+            assert verb not in blob, f"contract leaked strong action verb: {verb}"
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoints
+# ---------------------------------------------------------------------------
+
+class TestHoldingsImportApi:
+    def test_contract_endpoint_returns_stable_structure(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        resp = client.get(
+            "/v1/portfolio/imports/contract",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["schema_version"]
+        assert any(ep["path"] == "/v1/portfolio/imports/dry-run" for ep in body["write_endpoints"])
+
+    def test_dry_run_endpoint_with_text(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        resp = client.post(
+            "/v1/portfolio/imports/dry-run",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "text": json.dumps([
+                    {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+                ]),
+                "source": "openclaw",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["dry_run"] is True
+        assert body["added_count"] == 1
+        assert body["source"] == "openclaw"
+
+    def test_dry_run_endpoint_with_positions(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        resp = client.post(
+            "/v1/portfolio/imports/dry-run",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "positions": [
+                    {"symbol": "600519.SH", "current_position": 100},
+                ],
+                "source": "openclaw",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["added_count"] == 1
+
+    def test_dry_run_endpoint_rejects_empty_payload(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        resp = client.post(
+            "/v1/portfolio/imports/dry-run",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"source": "openclaw"},
+        )
+        assert resp.status_code == 400
+
+    def test_dry_run_endpoint_does_not_persist(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.post(
+            "/v1/portfolio/imports/dry-run",
+            headers=headers,
+            json={
+                "text": json.dumps([{"symbol": "600519.SH", "current_position": 100}]),
+                "source": "openclaw",
+            },
+        )
+        state = client.get("/v1/portfolio/imports", headers=headers).json()
+        assert state["summary"]["positions"] == 0, "dry-run endpoint must not write"
+
+    def test_import_text_endpoint_commits(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        headers = {"Authorization": f"Bearer {token}"}
+
+exec
+/bin/zsh -lc "sed -n '620,980p' tests/test_track009_holdings_import.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = client.post(
+            "/v1/portfolio/imports/import-text",
+            headers=headers,
+            json={
+                "text": json.dumps([
+                    {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+                ]),
+                "source": "openclaw",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["dry_run"]["added_count"] == 1
+        assert body["state"]["summary"]["positions"] == 1
+        # Verify via the canonical read endpoint.
+        state = client.get("/v1/portfolio/imports", headers=headers).json()
+        assert any(p["symbol"] == "600519.SH" for p in state["positions"])
+
+    def test_import_text_endpoint_rejects_invalid_json(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        resp = client.post(
+            "/v1/portfolio/imports/import-text",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "[not json", "source": "openclaw"},
+        )
+        assert resp.status_code == 400
+
+    def test_import_text_endpoint_rejects_all_invalid(self):
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        # Seed an existing holding
+        client.post(
+            "/v1/portfolio/imports",
+            headers=headers,
+            json={
+                "positions": [{"symbol": "600519.SH", "current_position": 100}],
+                "source": "openclaw",
+            },
+        )
+        # Try to import garbage
+        resp = client.post(
+            "/v1/portfolio/imports/import-text",
+            headers=headers,
+            json={"text": "INVALID_CODE", "source": "openclaw"},
+        )
+        assert resp.status_code == 400
+        # Existing data still there
+        state = client.get("/v1/portfolio/imports", headers=headers).json()
+        assert any(p["symbol"] == "600519.SH" for p in state["positions"])
+
+    def test_dry_run_then_import_roundtrip(self):
+        """End-to-end: dry-run preview → confirm → commit → re-dry-run shows unchanged."""
+        from api.main import app
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        text = json.dumps([
+            {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700},
+        ])
+        # 1. dry-run
+        dr = client.post("/v1/portfolio/imports/dry-run", headers=headers,
+                         json={"text": text, "source": "openclaw"}).json()
+        assert dr["added_count"] == 1
+        # 2. commit
+        imp = client.post("/v1/portfolio/imports/import-text", headers=headers,
+                          json={"text": text, "source": "openclaw"}).json()
+        assert imp["dry_run"]["added_count"] == 1
+        # 3. re-dry-run → unchanged
+        dr2 = client.post("/v1/portfolio/imports/dry-run", headers=headers,
+                          json={"text": text, "source": "openclaw"}).json()
+        assert dr2["unchanged_count"] == 1
+        assert dr2["added_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Runtime tier
+# ---------------------------------------------------------------------------
+
+class TestRuntimeTier:
+    def test_dry_run_endpoint_registered_as_fast(self):
+        assert (
+            tradeflow_endpoint_tier("portfolio_holdings_import_dry_run")
+            == RuntimeTier.FAST_RADAR
+        )
+
+    def test_text_import_endpoint_registered_as_fast(self):
+        assert (
+            tradeflow_endpoint_tier("portfolio_holdings_import_text")
+            == RuntimeTier.FAST_RADAR
+        )
+
+    def test_contract_endpoint_registered_as_fast(self):
+        assert (
+            tradeflow_endpoint_tier("portfolio_holdings_import_contract")
+            == RuntimeTier.FAST_RADAR
+        )
+
+exec
+/bin/zsh -lc "sed -n '1,140p' api/runtime_tier.py && rg \"tradeflow_endpoint_tier|route.name|endpoint_tier|runtime_tier\" -n api" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [PERF-001] runtime_tier_contract
+# [PERF-004] full_ta_cost_gate
+"""Runtime tier contract for TradeFlow, light TA, and full TA.
+
+Defines three tiers with latency budgets, LLM access, and confirmation gates.
+All API endpoints and UI actions must declare their tier.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class RuntimeTier(str, Enum):
+    FAST_RADAR = "FAST_RADAR"
+    LIGHT_RESEARCH = "LIGHT_RESEARCH"
+    FULL_TA = "FULL_TA"
+
+
+@dataclass
+class RuntimeTierSpec:
+    tier: RuntimeTier
+    label_cn: str
+    expected_latency: str
+    llm_allowed: bool
+    requires_confirmation: bool
+    cost_risk: str
+    description: str
+
+
+_TIER_SPECS: Dict[RuntimeTier, RuntimeTierSpec] = {
+    RuntimeTier.FAST_RADAR: RuntimeTierSpec(
+        tier=RuntimeTier.FAST_RADAR,
+        label_cn="快速筛选",
+        expected_latency="5-30s",
+        llm_allowed=False,
+        requires_confirmation=False,
+        cost_risk="none",
+        description="TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。",
+    ),
+    RuntimeTier.LIGHT_RESEARCH: RuntimeTierSpec(
+        tier=RuntimeTier.LIGHT_RESEARCH,
+        label_cn="轻量研究",
+        expected_latency="1-3min",
+        llm_allowed=True,
+        requires_confirmation=False,
+        cost_risk="low",
+        description="轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。",
+    ),
+    RuntimeTier.FULL_TA: RuntimeTierSpec(
+        tier=RuntimeTier.FULL_TA,
+        label_cn="完整 TA",
+        expected_latency="10-20min",
+        llm_allowed=True,
+        requires_confirmation=True,
+        cost_risk="high",
+        description="完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。",
+    ),
+}
+
+_TRADEFLOW_FAST_ENDPOINTS: set[str] = {
+    "tradeflow_daily_plan",
+    "tradeflow_candidates",
+    "tradeflow_candidate_detail",
+    "tradeflow_company_overview",  # [TF-UI-011] candidate_research_entry
+    "tradeflow_observe",
+    "tradeflow_ta_queue",
+    "tradeflow_review",
+    "tradeflow_data_health",
+    "tradeflow_filtered",
+    "tradeflow_discovery",
+    "tradeflow_observe_run",
+    "tradeflow_observe_scheduler",
+    "tradeflow_paper_ledger",  # [TF-PAPER-001] paper_trading_ledger
+    "tradeflow_paper_review",  # [TF-PAPER-001] paper_trading_ledger
+    "tradeflow_source_freshness",  # [DATA-018] source_freshness_report
+    "tradeflow_live_sampling",  # [DATA-020] live_sampling_health_ui
+    "tradeflow_topic_registry",  # [H-012] mandate_topic_registry
+    "tradeflow_topic_watchlist",  # [H-012] mandate_topic_registry
+    "tradeflow_topic_heatmap",  # [H-013] mandate_topic_heatmap
+    "tradeflow_observation_items",  # [TRACK-001] observation_warehouse
+    "tradeflow_observation_import",  # [TRACK-008] observation_bulk_import_export
+    "tradeflow_observation_export",  # [TRACK-008] observation_bulk_import_export
+    "investment_controller_context",  # [IC-TA-001] investment_controller_context
+    "notification_draft_dry_run",  # [TRACK-NOTIFY-001] notification_payload_dry_run
+    "controller_briefing_dry_run",  # [IC-TA-003] controller_briefing_dry_run
+    "portfolio_holdings_import_dry_run",  # [TRACK-009] holdings_import_contract
+    "portfolio_holdings_import_text",     # [TRACK-009] holdings_import_contract
+    "portfolio_holdings_import_contract", # [TRACK-009] holdings_import_contract
+}
+
+
+def get_tier_spec(tier: RuntimeTier) -> RuntimeTierSpec:
+    return _TIER_SPECS[tier]
+
+
+def tier_to_meta(tier: RuntimeTier) -> dict:
+    spec = get_tier_spec(tier)
+    return {
+        "runtime_tier": spec.tier.value,
+        "expected_latency": spec.expected_latency,
+        "llm_allowed": spec.llm_allowed,
+        "requires_confirmation": spec.requires_confirmation,
+        "cost_risk": spec.cost_risk,
+        "tier_label": spec.label_cn,
+        "tier_description": spec.description,
+    }
+
+
+def tradeflow_endpoint_tier(endpoint_name: str) -> RuntimeTier:
+    if endpoint_name in _TRADEFLOW_FAST_ENDPOINTS:
+        return RuntimeTier.FAST_RADAR
+    return RuntimeTier.LIGHT_RESEARCH
+
+
+def tradeflow_meta(endpoint_name: str) -> dict:
+    return tier_to_meta(tradeflow_endpoint_tier(endpoint_name))
+
+
+def is_full_ta_allowed_without_confirmation(runtime_tier: Optional[str]) -> bool:
+    if runtime_tier is None:
+        return False
+    try:
+        tier = RuntimeTier(runtime_tier)
+    except ValueError:
+        return False
+    if tier == RuntimeTier.FULL_TA:
+        return False
+    return True
+
+
+def scheduler_default_tier() -> RuntimeTier:
+    return RuntimeTier.LIGHT_RESEARCH
+
+
+def all_tier_specs() -> List[RuntimeTierSpec]:
+    return list(_TIER_SPECS.values())
+
+api/main.py:196:        runtime_tier="FULL_TA",  # [PERF-001] scheduler explicitly opts into FULL_TA
+api/main.py:739:    runtime_tier: Optional[str] = Field(default=None, description="运行层级 FAST_RADAR/LIGHT_RESEARCH/FULL_TA [PERF-001]")  # [PERF-001]
+api/main.py:748:    runtime_tier: str = "FULL_TA"  # [PERF-001]
+api/main.py:749:    runtime_tier_label: str = "完整 TA"  # [PERF-001]
+api/main.py:803:    runtime_tier: Optional[str] = Field(default=None, description="运行层级 [PERF-004]")  # [PERF-004]
+api/main.py:3020:    runtime_tier: str = "FULL_TA"
+api/main.py:3038:    from api.runtime_tier import get_full_ta_cost_preview as _preview
+api/main.py:3057:    from api.runtime_tier import (  # [PERF-001] runtime_tier_contract
+api/main.py:3072:    tier_value = request.runtime_tier or RuntimeTier.LIGHT_RESEARCH.value
+api/main.py:3087:                "runtime_tier": meta["runtime_tier"],
+api/main.py:3161:            runtime_tier=tier_meta["runtime_tier"],
+api/main.py:3162:            runtime_tier_label=tier_meta["tier_label"],
+api/main.py:3171:        runtime_tier=tier_meta["runtime_tier"],
+api/main.py:3172:        runtime_tier_label=tier_meta["tier_label"],
+api/main.py:3513:                    runtime_tier=request.runtime_tier,  # [PERF-004]
+api/main.py:3596:        runtime_tier=request.runtime_tier,  # [PERF-004]
+api/main.py:4505:    from api.runtime_tier import build_scheduled_cost_meta  # [PERF-004] full_ta_cost_gate
+api/main.py:4770:    去重。runtime_tier=FAST_RADAR（不触发 LLM）。
+api/services/controller_briefing_service.py:26:from api.runtime_tier import tradeflow_meta as _tradeflow_meta  # [PERF-001]
+api/services/controller_briefing_service.py:56:    briefing["runtime_tier_meta"] = _tradeflow_meta("controller_briefing_dry_run")
+api/services/controller_briefing_service.py:71:    briefing["runtime_tier_meta"] = _tradeflow_meta("controller_briefing_dry_run")
+api/services/controller_briefing_service.py:87:        report["runtime_tier_meta"] = _tradeflow_meta("controller_briefing_dry_run")
+api/services/controller_briefing_service.py:93:        briefing["runtime_tier_meta"] = _tradeflow_meta("controller_briefing_dry_run")
+api/services/controller_briefing_service.py:99:        briefing["runtime_tier_meta"] = _tradeflow_meta("controller_briefing_dry_run")
+api/services/notification_draft_service.py:31:from api.runtime_tier import tradeflow_meta as _tradeflow_meta  # [PERF-001]
+api/services/notification_draft_service.py:89:            runtime_tier_meta
+api/services/notification_draft_service.py:167:        "runtime_tier_meta": _tradeflow_meta("notification_draft_dry_run"),
+api/runtime_tier.py:1:# [PERF-001] runtime_tier_contract
+api/runtime_tier.py:102:        "runtime_tier": spec.tier.value,
+api/runtime_tier.py:112:def tradeflow_endpoint_tier(endpoint_name: str) -> RuntimeTier:
+api/runtime_tier.py:119:    return tier_to_meta(tradeflow_endpoint_tier(endpoint_name))
+api/runtime_tier.py:122:def is_full_ta_allowed_without_confirmation(runtime_tier: Optional[str]) -> bool:
+api/runtime_tier.py:123:    if runtime_tier is None:
+api/runtime_tier.py:126:        tier = RuntimeTier(runtime_tier)
+api/runtime_tier.py:150:    runtime_tier: str = "FULL_TA"
+api/runtime_tier.py:165:            "runtime_tier": self.runtime_tier,
+api/runtime_tier.py:191:        runtime_tier=spec.tier.value,
+api/runtime_tier.py:213:    runtime_tier: str = "FULL_TA"
+api/runtime_tier.py:222:            "runtime_tier": self.runtime_tier,
+api/runtime_tier.py:236:        runtime_tier=RuntimeTier.FULL_TA.value,
+api/tradeflow_schemas.py:2:# [PERF-001] runtime_tier_contract
+api/tradeflow_schemas.py:12:# [PERF-001] runtime_tier_contract
+api/tradeflow_schemas.py:14:    runtime_tier: str = "FAST_RADAR"
+api/tradeflow_schemas.py:164:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:179:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:186:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:219:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:259:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:310:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:336:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:354:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+api/tradeflow_schemas.py:374:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:418:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:458:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:469:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:523:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:569:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:595:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:628:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:677:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:743:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:826:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:858:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:895:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:980:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:992:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:1043:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:1070:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/tradeflow_schemas.py:1078:    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+api/services/investment_controller_context.py:50:from api.runtime_tier import tradeflow_meta as _tradeflow_meta  # [PERF-001]
+api/services/investment_controller_context.py:175:        "runtime_tier_meta": _tradeflow_meta("investment_controller_context"),
+api/services/tradeflow_service.py:2:# [PERF-001] runtime_tier_contract
+api/services/tradeflow_service.py:17:from api.runtime_tier import RuntimeTier, tradeflow_meta as _tradeflow_meta  # [PERF-001]
+api/services/tradeflow_service.py:389:        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+api/services/tradeflow_service.py:405:            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+api/services/tradeflow_service.py:490:            "runtime_tier_meta": _tradeflow_meta("tradeflow_daily_plan"),  # [PERF-001]
+api/services/tradeflow_service.py:516:        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+api/services/tradeflow_service.py:593:            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
+api/services/tradeflow_service.py:603:        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+api/services/tradeflow_service.py:620:            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+api/services/tradeflow_service.py:630:            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidate_detail"),  # [PERF-001]
+api/services/tradeflow_service.py:805:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:868:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:988:            "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+api/services/tradeflow_service.py:998:        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+api/services/tradeflow_service.py:1055:            "runtime_tier_meta": _tradeflow_meta("tradeflow_ta_queue"),  # [PERF-001]
+api/services/tradeflow_service.py:1491:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:1601:        "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
+api/services/tradeflow_service.py:1733:        "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
+api/services/tradeflow_service.py:1762:            "runtime_tier_meta": _tradeflow_meta("tradeflow_filtered"),  # [PERF-001]
+api/services/tradeflow_service.py:1818:        "runtime_tier_meta": _tradeflow_meta("tradeflow_discovery"),  # [PERF-001]
+api/services/tradeflow_service.py:1869:        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+api/services/tradeflow_service.py:1923:        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_scheduler"),
+api/services/tradeflow_service.py:1933:        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:1993:            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates_tiered"),
+api/services/tradeflow_service.py:2074:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:2131:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:2433:        "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:2532:        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:2606:            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),
+api/services/tradeflow_service.py:2754:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:2817:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3183:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3243:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3295:        "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3314:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3351:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3382:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3470:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3495:            latest["runtime_tier_meta"] = _fast_meta
+api/services/tradeflow_service.py:3502:    data["runtime_tier_meta"] = _fast_meta
+api/services/tradeflow_service.py:3536:        "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3583:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3599:        "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3835:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3858:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3892:        return {"status": "error", "message": "symbol 不能为空", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:3918:        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:3931:                "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:3966:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:4017:        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4025:            return {"status": "not_found", "message": f"item_id={item_id} 不存在", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4097:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:4139:        return {"status": "error", "message": "items 必须为列表", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4147:        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4273:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:4374:        return {"status": "error", "message": "candidate.symbol 不能为空", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4397:        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4495:        return {"status": "error", "message": "report.symbol 不能为空", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4527:        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+api/services/tradeflow_service.py:4844:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:4854:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:4868:            "runtime_tier_meta": _fast_meta,
+api/services/tradeflow_service.py:4880:    result["runtime_tier_meta"] = _fast_meta
+api/services/tradeflow_service.py:4939:        "runtime_tier_meta": _fast_meta,
+
+exec
+/bin/zsh -lc 'pytest -q tests/test_track009_holdings_import.py' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest -q tests/test_track009_holdings_import.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 16066ms:
+......................................................                   [100%]
+54 passed in 15.35s
+
+exec
+/bin/zsh -lc "sed -n '220,330p' frontend/src/components/TrackingBoardV2Panel.tsx && sed -n '330,430p' frontend/src/components/TrackingBoardV2Panel.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            setPositionText('')
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '保存失败' })
+        } finally {
+            setImportSaving(false)
+        }
+    }, [parsePositionLines, positionText, refreshBoard])
+
+    const handleClearPositions = useCallback(async () => {
+        if (!confirm('确定清空所有已导入的持仓吗？')) return
+        setImportClearing(true)
+        setImportFeedback(null)
+        try {
+            await api.clearPortfolioImport()
+            setImportFeedback({ tone: 'success', message: '已清空持仓' })
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '清空失败' })
+        } finally {
+            setImportClearing(false)
+        }
+    }, [refreshBoard])
+
+    const handlePositionImageUpload = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+        e.target.value = ''
+        setVlmParsing(true)
+        setImportFeedback(null)
+        try {
+            const result = await api.parsePositionImage(file, 'position')
+            if (!('positions' in result) || result.positions.length === 0) {
+                setImportFeedback({ tone: 'error', message: '未从截图中识别到持仓信息' })
+                return
+            }
+            const lines = result.positions.map(p => {
+                const parts = [p.symbol, p.name || '']
+                if (p.current_position != null) parts.push(String(p.current_position))
+                if (p.average_cost != null) parts.push(String(p.average_cost))
+                if (p.market_value != null) parts.push(String(p.market_value))
+                return parts.join(' ').trim()
+            })
+            setPositionText(lines.join('\n'))
+            setImportFeedback({ tone: 'success', message: `已识别 ${result.positions.length} 只持仓，请确认后保存` })
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '图片解析失败' })
+        } finally {
+            setVlmParsing(false)
+        }
+    }, [])
+
+    // [TRACK-009] holdings_import_contract — dry-run 预览差异（不写库）
+    const handleDryRunPreview = useCallback(async () => {
+        const text = positionText.trim()
+        if (!text) {
+            setImportFeedback({ tone: 'error', message: '请先粘贴持仓文本（JSON / CSV / 文本）' })
+            return
+        }
+        setDryRunLoading(true)
+        setImportFeedback(null)
+        setDryRunDiff(null)
+        try {
+            const diff = await api.dryRunPortfolioImport({ text, source: importSource || 'openclaw' })
+            setDryRunDiff(diff)
+            if (diff.valid_count === 0) {
+                setImportFeedback({ tone: 'error', message: '未识别到任何合法持仓，请检查格式' })
+            } else {
+                const parts: string[] = []
+                if (diff.added_count) parts.push(`新增 ${diff.added_count}`)
+                if (diff.updated_count) parts.push(`更新 ${diff.updated_count}`)
+                if (diff.removed_count) parts.push(`移除 ${diff.removed_count}`)
+                if (diff.unchanged_count) parts.push(`未变 ${diff.unchanged_count}`)
+                if (diff.invalid_count) parts.push(`异常 ${diff.invalid_count}`)
+                setImportFeedback({
+                    tone: diff.invalid_count > 0 ? 'error' : 'success',
+                    message: `预览完成：${parts.join('、') || '无变化'}`,
+                })
+            }
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '预览失败' })
+        } finally {
+            setDryRunLoading(false)
+        }
+    }, [positionText, importSource])
+
+    // [TRACK-009] holdings_import_contract — 确认提交，走 /import-text 入口
+    const handleConfirmImport = useCallback(async () => {
+        const text = positionText.trim()
+        if (!text) {
+            setImportFeedback({ tone: 'error', message: '没有可提交的持仓文本' })
+            return
+        }
+        setConfirmingImport(true)
+        setImportFeedback(null)
+        try {
+            const result = await api.importPortfolioFromText({
+                text,
+                source: importSource || 'openclaw',
+            })
+            const diff = result.dry_run
+            const parts: string[] = []
+            if (diff.added_count) parts.push(`新增 ${diff.added_count}`)
+            if (diff.updated_count) parts.push(`更新 ${diff.updated_count}`)
+            if (diff.removed_count) parts.push(`移除 ${diff.removed_count}`)
+            if (diff.invalid_count) parts.push(`异常 ${diff.invalid_count}`)
+            setImportFeedback({
+                tone: diff.invalid_count > 0 ? 'error' : 'success',
+                message: `已提交 ${result.state.summary.positions} 只持仓：${parts.join('、') || '无变化'}`,
+            })
+            setDryRunDiff(null)
+            setDryRunDiff(null)
+            setPositionText('')
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '提交失败' })
+        } finally {
+            setConfirmingImport(false)
+        }
+    }, [positionText, importSource, refreshBoard])
+
+    // [TRACK-009] holdings_import_contract — 加载 / 折叠 OpenClaw 契约
+    const handleToggleContract = useCallback(async () => {
+        if (!showContract && !importContract) {
+            setContractLoading(true)
+            try {
+                const c = await api.getPortfolioImportContract()
+                setImportContract(c)
+            } catch (e) {
+                setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '契约加载失败' })
+                setContractLoading(false)
+                return
+            }
+            setContractLoading(false)
+        }
+        setShowContract(v => !v)
+    }, [showContract, importContract])
+
+    const handleCreateObservation = useCallback(async () => {
+        const symbol = observationDraft.symbol.trim()
+        if (!symbol) {
+            setObservationFeedback({ tone: 'error', message: '请输入股票代码' })
+            return
+        }
+        setObservationSaving(true)
+        setObservationFeedback(null)
+        const toNumber = (v: string) => {
+            const n = Number(v)
+            return Number.isFinite(n) && n > 0 ? n : 0
+        }
+        try {
+            await api.createObservationItem({
+                symbol,
+                name: observationDraft.name.trim(),
+                status: 'watching',
+                entry_low: toNumber(observationDraft.entry_low),
+                entry_high: toNumber(observationDraft.entry_high),
+                trigger_price: toNumber(observationDraft.entry_high || observationDraft.entry_low),
+                invalid_price: toNumber(observationDraft.invalid_price),
+                horizon: 'mid',
+                source: 'tracking_board_v2',
+                reason: observationDraft.reason.trim(),
+                notes: observationDraft.notes.trim(),
+            })
+            setObservationFeedback({ tone: 'success', message: `${symbol} 已加入观察仓` })
+            setObservationDraft({ symbol: '', name: '', entry_low: '', entry_high: '', invalid_price: '', reason: '', notes: '' })
+            await refreshBoard()
+        } catch (e) {
+            setObservationFeedback({ tone: 'error', message: e instanceof Error ? e.message : '加入观察仓失败' })
+        } finally {
+            setObservationSaving(false)
+        }
+    }, [observationDraft, refreshBoard])
+
+    // [TRACK-008] observation_bulk_import_export
+    const handleImportObservation = useCallback(async () => {
+        const text = observationImportText.trim()
+        if (!text) {
+            setObservationImportFeedback({ tone: 'error', message: '请粘贴 CSV / 文本清单' })
+            return
+        }
+        setObservationImporting(true)
+        setObservationImportFeedback(null)
+        try {
+            const resp = await api.importObservationItems(text)
+            const parts: string[] = []
+            if (resp.created_count > 0) parts.push(`新增 ${resp.created_count} 条`)
+            if (resp.updated_count > 0) parts.push(`更新 ${resp.updated_count} 条`)
+            if (resp.errored_count > 0) parts.push(`失败 ${resp.errored_count} 条`)
+            const msg = parts.length ? parts.join('、') : '没有变化（已存在且无新字段）'
+            setObservationImportFeedback({
+                tone: resp.errored_count > 0 ? 'error' : 'success',
+                message: `导入完成：${msg}`,
+            })
+            if (resp.created_count > 0 || resp.updated_count > 0) {
+                setObservationImportText('')
+                await refreshBoard()
+            }
+        } catch (e) {
+            setObservationImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '导入失败' })
+        } finally {
+            setObservationImporting(false)
+        }
+    }, [observationImportText, refreshBoard])
+
+    // [TRACK-008] observation_bulk_import_export
+    const handleExportObservation = useCallback(async () => {
+        setObservationImportFeedback(null)
+        try {
+            const resp = await api.exportObservationItems(true)
+            // Strip a leading UTF-8 BOM before creating the Blob so the file
+            // opens cleanly in both Excel and plain editors.
+
+exec
+/bin/zsh -lc "sed -n '170,230p' frontend/src/components/TrackingBoardV2Panel.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            setLoading(false)
+            setRefreshing(false)
+        }
+    }, [])
+
+    useEffect(() => {
+        if (!user?.id) return
+        let cancelled = false
+        const load = async () => { if (!cancelled) await fetchData(false) }
+        void load()
+        const iv = setInterval(() => { if (!cancelled) void fetchData(true) }, (data?.refresh_interval_seconds ?? 20) * 1000)
+        return () => { cancelled = true; clearInterval(iv) }
+    }, [user?.id, fetchData, data?.refresh_interval_seconds])
+
+    const refreshBoard = useCallback(async () => {
+        await fetchData(true)
+    }, [fetchData])
+
+    const parsePositionLines = useCallback((text: string): PortfolioPositionInput[] => {
+        const positions: PortfolioPositionInput[] = []
+        for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (!line) continue
+            const parts = line.split(/[\s\t]+/)
+            const symbol = (parts[0] || '').replace(/\.(SZ|SH|BJ)$/i, '')
+            if (!/^\d{6}$/.test(symbol)) continue
+            const name = parts.length > 1 && !/^\d/.test(parts[1]) ? parts[1] : undefined
+            const numericParts = parts.slice(1).filter(p => /^[\d.]+$/.test(p))
+            positions.push({
+                symbol,
+                name,
+                current_position: numericParts[0] ? Number(numericParts[0]) : undefined,
+                average_cost: numericParts[1] ? Number(numericParts[1]) : undefined,
+                market_value: numericParts[2] ? Number(numericParts[2]) : undefined,
+            })
+        }
+        return positions
+    }, [])
+
+    const handleSavePositions = useCallback(async () => {
+        const positions = parsePositionLines(positionText)
+        if (positions.length === 0) {
+            setImportFeedback({ tone: 'error', message: '未解析到有效持仓，请按“代码 名称 持仓数 成本价 市值”格式输入' })
+            return
+        }
+        setImportSaving(true)
+        setImportFeedback(null)
+        try {
+            await api.syncPortfolioImport({ positions, source: 'tracking_board_v2', auto_apply_scheduled: false })
+            setImportFeedback({ tone: 'success', message: `已保存 ${positions.length} 只持仓` })
+            setPositionText('')
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '保存失败' })
+        } finally {
+            setImportSaving(false)
+        }
+    }, [parsePositionLines, positionText, refreshBoard])
+
+    const handleClearPositions = useCallback(async () => {
+        if (!confirm('确定清空所有已导入的持仓吗？')) return
+
+exec
+/bin/zsh -lc "nl -ba api/services/portfolio_import_service.py | sed -n '500,580p' && nl -ba api/services/portfolio_import_service.py | sed -n '650,715p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   500	        float(tok)
+   501	        return True
+   502	    except ValueError:
+   503	        return False
+   504	
+   505	
+   506	def _looks_like_code(token: str) -> bool:
+   507	    t = (token or "").strip().upper()
+   508	    return bool(re.match(r"^\d{6}(\.(SH|SZ|BJ))?$", t))
+   509	
+   510	
+   511	def _scrub_strong_actions(value: str | None) -> str | None:
+   512	    if not value:
+   513	        return value
+   514	    text = str(value)
+   515	    for verb in _STRONG_ACTION_PATTERNS:
+   516	        text = text.replace(verb, "")
+   517	    cleaned = text.strip()
+   518	    return cleaned or None
+   519	
+   520	
+   521	def validate_positions(positions: Any) -> dict[str, Any]:
+   522	    """Validate and normalise a list of raw position dicts.
+   523	
+   524	    Returns a dict with:
+   525	      * ``valid``      — list of cleaned/normalised position dicts.
+   526	      * ``invalid``    — list of ``{symbol?, reason, fields}`` dicts.
+   527	      * ``warnings``   — list of ``{symbol, reason, field?}`` dicts.
+   528	      * ``valid_count``/``invalid_count`` — integer counters.
+   529	
+   530	    Raises ``ValueError`` if *positions* is not a list.
+   531	    """
+   532	    if not isinstance(positions, list):
+   533	        raise ValueError("positions 必须为列表")
+   534	
+   535	    valid: list[dict[str, Any]] = []
+   536	    invalid: list[dict[str, Any]] = []
+   537	    warnings: list[dict[str, Any]] = []
+   538	    seen_symbols: set[str] = set()
+   539	
+   540	    for raw in positions:
+   541	        if not isinstance(raw, dict):
+   542	            invalid.append({"reason": "not_a_dict", "fields": [], "raw": raw})
+   543	            continue
+   544	
+   545	        symbol = _normalize_code(raw.get("symbol") or raw.get("code"))
+   546	        if symbol is None:
+   547	            invalid.append({
+   548	                "reason": "invalid_symbol",
+   549	                "fields": ["symbol"],
+   550	                "raw_symbol": str(raw.get("symbol", "")),
+   551	            })
+   552	            continue
+   553	
+   554	        if symbol in seen_symbols:
+   555	            invalid.append({
+   556	                "reason": "duplicate_symbol",
+   557	                "fields": ["symbol"],
+   558	                "symbol": symbol,
+   559	            })
+   560	            continue
+   561	
+   562	        item: dict[str, Any] = {"symbol": symbol}
+   563	
+   564	        # Name (optional but warned)
+   565	        name_raw = raw.get("name")
+   566	        name_val: str | None = None
+   567	        if name_raw is not None:
+   568	            name_val = _scrub_strong_actions(str(name_raw).strip()) or None
+   569	        item["name"] = name_val
+   570	        if name_val is None:
+   571	            warnings.append({"symbol": symbol, "reason": "missing_name", "field": "name"})
+   572	
+   573	        # Numeric fields
+   574	        negative_fields: list[str] = []
+   575	        for field in _NUMERIC_FIELDS:
+   576	            value = raw.get(field)
+   577	            if value is None or value == "":
+   578	                item[field] = None
+   579	                continue
+   580	            if isinstance(value, str) and not _is_numeric_token(value.strip()):
+   650	    if a is None and b is None:
+   651	        return False
+   652	    if a is None or b is None:
+   653	        return True
+   654	    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+   655	        return abs(float(a) - float(b)) > 1e-9
+   656	    return str(a) != str(b)
+   657	
+   658	
+   659	def dry_run_import(
+   660	    db: Session,
+   661	    user_id: str,
+   662	    positions: list[dict[str, Any]],
+   663	    source: str = "manual",
+   664	) -> dict[str, Any]:
+   665	    """Compute the diff of importing *positions* WITHOUT touching the DB.
+   666	
+   667	    The diff is computed against the current snapshot for the
+   668	    ``(user_id, source)`` pair, mirroring the snapshot-replace semantics
+   669	    of :func:`sync_positions`.
+   670	    """
+   671	    source = (source or "manual").strip()
+   672	    validation = validate_positions(positions)
+   673	    valid_rows = validation["valid"]
+   674	
+   675	    existing_rows = (
+   676	        db.query(ImportedPortfolioPositionDB)
+   677	        .filter(
+   678	            ImportedPortfolioPositionDB.user_id == user_id,
+   679	            ImportedPortfolioPositionDB.source == source,
+   680	        )
+   681	        .all()
+   682	    )
+   683	    existing_by_symbol: dict[str, dict[str, Any]] = {
+   684	        r.symbol: _row_to_snapshot(r) for r in existing_rows
+   685	    }
+   686	
+   687	    incoming_by_symbol: dict[str, dict[str, Any]] = {r["symbol"]: r for r in valid_rows}
+   688	
+   689	    added: list[dict[str, Any]] = []
+   690	    updated: list[dict[str, Any]] = []
+   691	    unchanged: list[dict[str, Any]] = []
+   692	    removed: list[dict[str, Any]] = []
+   693	
+   694	    for symbol, row in incoming_by_symbol.items():
+   695	        if symbol not in existing_by_symbol:
+   696	            added.append({"symbol": symbol, "incoming": row})
+   697	        else:
+   698	            before = existing_by_symbol[symbol]
+   699	            delta = _diff_row(before, row)
+   700	            if delta:
+   701	                updated.append({"symbol": symbol, "delta": delta, "before": before, "after": row})
+   702	            else:
+   703	                unchanged.append({"symbol": symbol, "incoming": row})
+   704	
+   705	    for symbol, before in existing_by_symbol.items():
+   706	        if symbol not in incoming_by_symbol:
+   707	            removed.append({"symbol": symbol, "before": before})
+   708	
+   709	    return {
+   710	        "dry_run": True,
+   711	        "source": source,
+   712	        "write_semantics": "replace_snapshot",
+   713	        "added": added,
+   714	        "updated": updated,
+   715	        "unchanged": unchanged,
+
+exec
+/bin/zsh -lc "nl -ba api/services/portfolio_import_service.py | sed -n '720,775p' && nl -ba api/services/portfolio_import_service.py | sed -n '775,850p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   720	        "updated_count": len(updated),
+   721	        "unchanged_count": len(unchanged),
+   722	        "removed_count": len(removed),
+   723	        "error_count": len(validation["invalid"]),
+   724	        "valid_count": validation["valid_count"],
+   725	        "invalid_count": validation["invalid_count"],
+   726	    }
+   727	
+   728	
+   729	def import_positions_from_text(
+   730	    db: Session,
+   731	    user_id: str,
+   732	    text: str,
+   733	    source: str = "manual",
+   734	    auto_apply_scheduled: bool = False,
+   735	) -> dict[str, Any]:
+   736	    """Parse → validate → dry-run → commit through :func:`sync_positions`.
+   737	
+   738	    Returns ``{"dry_run": <diff>, "state": <import state>}``.
+   739	
+   740	    Raises ``ValueError`` when:
+   741	      * *text* is empty / whitespace.
+   742	      * JSON parsing fails.
+   743	      * After validation there are zero valid rows (so we never commit an
+   744	        empty snapshot that would erase the user's holdings).
+   745	    """
+   746	    if not isinstance(text, str) or not text.strip():
+   747	        raise ValueError("导入文本为空")
+   748	    source = (source or "manual").strip()
+   749	
+   750	    raw_rows = parse_positions_text(text)
+   751	    validation = validate_positions(raw_rows)
+   752	    if validation["valid_count"] == 0:
+   753	        raise ValueError("全部无效：未识别到任何合法持仓，已拒绝提交以保护现有数据")
+   754	
+   755	    # Build the dry-run preview from valid rows only.
+   756	    diff = dry_run_import(db, user_id, validation["valid"], source=source)
+   757	
+   758	    # Commit through the canonical write path. sync_positions re-validates
+   759	    # and normalises; passing the already-validated dicts keeps behaviour
+   760	    # consistent with the dry-run preview.
+   761	    state = sync_positions(
+   762	        db=db,
+   763	        user_id=user_id,
+   764	        positions=validation["valid"],
+   765	        source=source,
+   766	        auto_apply_scheduled=auto_apply_scheduled,
+   767	    )
+   768	    return {"dry_run": diff, "state": state}
+   769	
+   770	
+   771	OPENCLAW_HOLDINGS_CONTRACT: dict[str, Any] = {
+   772	    "schema_version": "1.0",
+   773	    "contract_for": "openclaw_to_ta_holdings",
+   774	    "description": (
+   775	        "OpenClaw / 任意外部持仓来源与 TA 跟踪看板之间的持仓快照契约。"
+   775	        "OpenClaw / 任意外部持仓来源与 TA 跟踪看板之间的持仓快照契约。"
+   776	        "通过 dry-run 预览差异，再走 /v1/portfolio/imports 提交。"
+   777	    ),
+   778	    "write_endpoints": [
+   779	        {
+   780	            "path": "/v1/portfolio/imports/dry-run",
+   781	            "method": "POST",
+   782	            "tier": "FAST_RADAR",
+   783	            "purpose": "dry-run 预览新增/更新/移除/异常，不写库",
+   784	            "accepts": "text(JSON/CSV/TSV/whitespace) 或 positions(list)",
+   785	        },
+   786	        {
+   787	            "path": "/v1/portfolio/imports/import-text",
+   788	            "method": "POST",
+   789	            "tier": "FAST_RADAR",
+   790	            "purpose": "从文本解析并提交，返回 dry-run 预览 + 提交后状态",
+   791	            "accepts": "text(JSON/CSV/TSV/whitespace)",
+   792	        },
+   793	        {
+   794	            "path": "/v1/portfolio/imports",
+   795	            "method": "POST",
+   796	            "tier": "FAST_RADAR",
+   797	            "purpose": "结构化 positions 列表直接提交（兼容旧入口）",
+   798	            "accepts": "positions(list) + source + auto_apply_scheduled",
+   799	        },
+   800	        {
+   801	            "path": "/v1/portfolio/imports",
+   802	            "method": "DELETE",
+   803	            "tier": "FAST_RADAR",
+   804	            "purpose": "清空当前用户的所有导入持仓",
+   805	        },
+   806	    ],
+   807	    "read_endpoints": [
+   808	        {
+   809	            "path": "/v1/portfolio/imports",
+   810	            "method": "GET",
+   811	            "purpose": "读取当前导入状态与持仓列表",
+   812	        },
+   813	        {
+   814	            "path": "/v1/dashboard/tracking-board/v2",
+   815	            "method": "GET",
+   816	            "purpose": "跟踪看板 v2 聚合视图（持仓/观察仓/今日指引/盘后复盘）",
+   817	        },
+   818	    ],
+   819	    "field_semantics": {
+   820	        "symbol": (
+   821	            "A 股代码，6 位数字自动加 .SH/.SZ/.BJ 后缀；"
+   822	            "已带后缀的 600519.SH / 000001.SZ / 688981.SH 等保持原样"
+   823	        ),
+   824	        "name": "可选；缺失时仅产生 warning 不阻断导入；不会从代码反查名称",
+   825	        "current_position": "持仓数量（整数或浮点），别名 shares / position / qty 也接受",
+   826	        "available_position": "可用数量，别名 available 也接受",
+   827	        "average_cost": "成本价，别名 cost / avg_cost 也接受",
+   828	        "market_value": "市值，别名 value 也接受",
+   829	        "current_position_pct": (
+   830	            "账户级仓位占比 %。禁止从单一可见行推断；"
+   831	            "未显式提供时不会回填为 100%"
+   832	        ),
+   833	        "source": (
+   834	            "持仓来源标签，例如 openclaw / manual / tracking_board_v2 / "
+   835	            "broker_screenshot。同一 (user, source) 下的快照整体替换。"
+   836	        ),
+   837	    },
+   838	    "write_semantics": (
+   839	        "replace_snapshot —— 提交后该 (user_id, source) 下的旧记录会被本次"
+   840	        "快照整体替换；不在快照中的 symbol 会被移除。重复提交相同内容幂等，"
+   841	        "不会清空数据。"
+   842	    ),
+   843	    "invariants": [
+   844	        "dry-run 接口绝不写库。",
+   845	        "全部行无效时拒绝提交，已有数据保持不变。",
+   846	        "ImportedPortfolioPositionDB 不存 notes 字段；watchlist 与 observation "
+   847	        "warehouse 的 notes 不受此导入接口影响。",
+   848	        "导入路径不调用 LLM，不读取 API key。",
+   849	        "free-text 字段（name）会被剥除强动作词。",
+   850	    ],
+
+exec
+/bin/zsh -lc "nl -ba api/services/portfolio_import_service.py | sed -n '315,370p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   315	
+   316	# Aliases accepted in JSON objects in addition to canonical field names.
+   317	_JSON_FIELD_ALIASES: dict[str, str] = {
+   318	    "shares": "current_position",
+   319	    "position": "current_position",
+   320	    "qty": "current_position",
+   321	    "quantity": "current_position",
+   322	    "cost": "average_cost",
+   323	    "avg_cost": "average_cost",
+   324	    "price": "average_cost",
+   325	    "value": "market_value",
+   326	    "pct": "current_position_pct",
+   327	}
+   328	
+   329	
+   330	def parse_positions_text(text: str) -> list[dict[str, Any]]:
+   331	    """Parse JSON / CSV / TSV / whitespace holdings text into raw row dicts.
+   332	
+   333	    The returned rows have NOT been validated or normalised yet — they may
+   334	    contain alias keys (e.g. ``shares``) and unparseable numbers. Use
+   335	    :func:`validate_positions` next.
+   336	
+   337	    Accepted formats (auto-detected):
+   338	      * JSON array of objects, single object, or ``{"positions": [...]}``.
+   339	      * CSV / TSV with a header row (Chinese or English column names).
+   340	      * Whitespace-separated lines: ``代码 [名称] [持仓数] [成本价] [市值]``.
+   341	
+   342	    Raises ``ValueError`` with a clear message on unparseable JSON.
+   343	    """
+   344	    if not isinstance(text, str):
+   345	        raise ValueError("导入文本必须为字符串")
+   346	    raw = text.lstrip("\ufeff").strip()
+   347	    if not raw:
+   348	        return []
+   349	
+   350	    # 1. JSON?
+   351	    if raw[0] in "{[":
+   352	        try:
+   353	            data = json.loads(raw)
+   354	        except json.JSONDecodeError as exc:
+   355	            raise ValueError(f"JSON 解析失败：{exc.msg}") from exc
+   356	        return _normalise_json_payload(data)
+   357	
+   358	    # 2. CSV / TSV / whitespace (line-based)
+   359	    return _parse_tabular_text(raw)
+   360	
+   361	
+   362	def _normalise_json_payload(data: Any) -> list[dict[str, Any]]:
+   363	    if isinstance(data, list):
+   364	        items: list[dict[str, Any]] = []
+   365	        for raw in data:
+   366	            if not isinstance(raw, dict):
+   367	                continue
+   368	            items.append(_map_json_aliases(raw))
+   369	        return items
+   370	    if isinstance(data, dict):
+
+exec
+/bin/zsh -lc "nl -ba api/services/portfolio_import_service.py | sed -n '260,315p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   260	#   * dry_run_import MUST NOT touch the DB. It only queries current rows
+   261	#     for the (user_id, source) pair and computes a diff.
+   262	#   * import_positions_from_text MUST route the actual write through the
+   263	#     existing sync_positions() — no side-channel DB writes.
+   264	#   * If every parsed row is invalid, raise instead of committing an empty
+   265	#     snapshot that would silently erase the user's holdings.
+   266	#   * ImportedPortfolioPositionDB has no `notes` column, so watchlist /
+   267	#     observation warehouse notes are structurally isolated from this path.
+   268	# ===========================================================================
+   269	
+   270	
+   271	# Header alias map for CSV/TSV parsing. Keys are normalised lower-case.
+   272	_HEADER_ALIASES: dict[str, str] = {
+   273	    # symbol
+   274	    "symbol": "symbol",
+   275	    "code": "symbol",
+   276	    "代码": "symbol",
+   277	    "股票代码": "symbol",
+   278	    "证券代码": "symbol",
+   279	    # name
+   280	    "name": "name",
+   281	    "名称": "name",
+   282	    "股票名称": "name",
+   283	    "证券名称": "name",
+   284	    # current_position
+   285	    "current_position": "current_position",
+   286	    "shares": "current_position",
+   287	    "position": "current_position",
+   288	    "持仓": "current_position",
+   289	    "持仓数": "current_position",
+   290	    "持仓数量": "current_position",
+   291	    "数量": "current_position",
+   292	    # available_position
+   293	    "available_position": "available_position",
+   294	    "可用": "available_position",
+   295	    "可用数量": "available_position",
+   296	    # average_cost
+   297	    "average_cost": "average_cost",
+   298	    "avg_cost": "average_cost",
+   299	    "cost": "average_cost",
+   300	    "成本价": "average_cost",
+   301	    "成本": "average_cost",
+   302	    "买入均价": "average_cost",
+   303	    # market_value
+   304	    "market_value": "market_value",
+   305	    "value": "market_value",
+   306	    "市值": "market_value",
+   307	    "持仓市值": "market_value",
+   308	    # current_position_pct
+   309	    "current_position_pct": "current_position_pct",
+   310	    "position_pct": "current_position_pct",
+   311	    "仓位": "current_position_pct",
+   312	    "仓位占比": "current_position_pct",
+   313	    "占比": "current_position_pct",
+   314	}
+   315	
+

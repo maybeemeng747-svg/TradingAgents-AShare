@@ -4,6 +4,76 @@
 
 ---
 
+## 2026-06-29 | TRACK-009：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐
+
+- **执行者**：OpenCode（task run TRACK-009-20260629-182604）
+- **类型**：feature + test
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+用户当前持仓通过 OpenClaw 导入，但 TA 跟踪看板前端没有明显的导入入口，
+也没有说明 `/v1/portfolio/imports` 与跟踪看板持仓数据如何对齐。本任务补一个
+低成本、可验证的导入入口（dry-run 预览 + 差异展示 + OpenClaw 契约），
+并复用既有 `sync_positions` 写入路径，避免旁路 DB。
+
+### 修改文件
+
+后端：
+- `api/services/portfolio_import_service.py`：新增 `parse_positions_text` /
+  `validate_positions` / `dry_run_import` / `import_positions_from_text` /
+  `OPENCLAW_HOLDINGS_CONTRACT`。dry-run 只查不写；导入走既有
+  `sync_positions`；全部无效时拒绝提交以保护现有数据；强动作词从 free-text
+  字段被剥除。
+- `api/main.py`：新增 `PortfolioImportDryRunRequest` /
+  `PortfolioImportTextRequest` 模型；新增 `GET /v1/portfolio/imports/contract`、
+  `POST /v1/portfolio/imports/dry-run`、`POST /v1/portfolio/imports/import-text`
+  三个端点。
+- `api/runtime_tier.py`：注册 `portfolio_holdings_import_dry_run` /
+  `portfolio_holdings_import_text` / `portfolio_holdings_import_contract` 为
+  `FAST_RADAR` 层级（无 LLM、无写入）。
+
+前端：
+- `frontend/src/types/index.ts`：新增 `HoldingsImportDiff` /
+  `HoldingsImportResult` / `HoldingsImportContract` 等类型。
+- `frontend/src/services/api.ts`：新增 `getPortfolioImportContract` /
+  `dryRunPortfolioImport` / `importPortfolioFromText` API 客户端方法。
+- `frontend/src/components/TrackingBoardV2Panel.tsx`：持仓区「导入 / 同步持仓」
+  入口升级为支持 JSON/CSV/TSV/whitespace 自动识别；新增「预览差异 (dry-run)」
+  按钮和差异可视化（新增/更新/移除/异常/提示）；新增可折叠的 OpenClaw 契约
+  视图；原快速保存 + 截图上传 + 清空持仓保留向后兼容。
+
+测试：
+- `tests/test_track009_holdings_import.py`：54 个用例覆盖 parse/validate/
+  dry-run/import-from-text/HTTP 端点/runtime tier/contract；含「重复导入
+  不清空 notes」「全部无效拒绝提交」「dry-run 不写库」等对抗性回归。
+
+### 关键不变式
+
+- dry-run 接口绝不写库（`test_dry_run_does_not_write_to_db` 守卫）。
+- 导入路径必须走 `sync_positions`，无旁路写入。
+- `ImportedPortfolioPositionDB` 无 `notes` 字段，watchlist / observation
+  warehouse 的 notes 与此导入接口结构隔离。
+- 同一 (user, source) 下快照整体替换；重复提交相同内容幂等。
+- 导入路径不调用 LLM，不读取 API key。
+- free-text 字段（name）会被剥除「立即买入 / 立即卖出 / 满仓 / 清仓 / 全仓」。
+
+### 验证
+
+- `pytest tests/test_track009_holdings_import.py -q`：**54 passed**。
+- `pytest tests/ -q --ignore=tests/test_vlm_live.py`：**7181 passed, 17 skipped**。
+- `npm run build`（含 `tsc --noEmit`）：通过。
+- `npx eslint src/components/TrackingBoardV2Panel.tsx src/services/api.ts src/types/index.ts`：无错误。
+
+### 风险与边界
+
+- 写入语义为 `replace_snapshot`：用户重新导入时若漏填某字段（如 `market_value`），
+  该字段会被清空。dry-run 预览会显式标出这种「字段被擦除」的差异，避免意外。
+- 「source」标签用于隔离不同来源的快照；OpenClaw 默认建议用 `openclaw`，看板
+  手填默认 `tracking_board_v2`，二者互不影响。
+
+---
+
 ## 2026-06-29 | AUTO-003 补修：测试 fixture 化与顶部队列同步
 
 - **执行者**：OpenCode + Codex review
@@ -8302,3 +8372,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **效果**: dry-run 建议从 24 条降至 15 条，过滤 176 个已完成任务
 - **过滤层**: done status (167) + ✅ 已完成 title (8) + NEEDS_HUMAN followup (1)
 - **新增测试**: 7 个（TestAuto003Dedupe），总计 60 个测试通过
+
+## 2026-06-29 | AUTO-002 Auto Dev Loop
+
+- **Task**: TRACK-009 - 跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TRACK-009-20260629-round1.txt
+- **Run archive**: docs/task_runs/TRACK-009-20260629-182604/

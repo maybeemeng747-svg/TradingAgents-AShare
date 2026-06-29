@@ -16,7 +16,7 @@ import {
     Upload,
     Download,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/services/api'
@@ -28,6 +28,8 @@ import type {
     ObservationItemV2,
     PortfolioPositionInput,
     TrackingBoardV2DataFreshness,
+    HoldingsImportContract,
+    HoldingsImportDiff,
 } from '@/types'
 
 // ─── helpers ───────────────────────────────────────────────
@@ -128,6 +130,14 @@ export default function TrackingBoardV2Panel() {
     const [importClearing, setImportClearing] = useState(false)
     const [vlmParsing, setVlmParsing] = useState(false)
     const [importFeedback, setImportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
+    // [TRACK-009] holdings_import_contract — dry-run preview + OpenClaw 契约
+    const [importSource, setImportSource] = useState<string>('openclaw')
+    const [dryRunDiff, setDryRunDiff] = useState<HoldingsImportDiff | null>(null)
+    const [dryRunLoading, setDryRunLoading] = useState(false)
+    const [confirmingImport, setConfirmingImport] = useState(false)
+    const [importContract, setImportContract] = useState<HoldingsImportContract | null>(null)
+    const [contractLoading, setContractLoading] = useState(false)
+    const [showContract, setShowContract] = useState(false)
     const [showObservationCreate, setShowObservationCreate] = useState(false)
     const [observationSaving, setObservationSaving] = useState(false)
     const [observationFeedback, setObservationFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
@@ -258,6 +268,91 @@ export default function TrackingBoardV2Panel() {
             setVlmParsing(false)
         }
     }, [])
+
+    // [TRACK-009] holdings_import_contract — dry-run 预览差异（不写库）
+    const handleDryRunPreview = useCallback(async () => {
+        const text = positionText.trim()
+        if (!text) {
+            setImportFeedback({ tone: 'error', message: '请先粘贴持仓文本（JSON / CSV / 文本）' })
+            return
+        }
+        setDryRunLoading(true)
+        setImportFeedback(null)
+        setDryRunDiff(null)
+        try {
+            const diff = await api.dryRunPortfolioImport({ text, source: importSource || 'openclaw' })
+            setDryRunDiff(diff)
+            if (diff.valid_count === 0) {
+                setImportFeedback({ tone: 'error', message: '未识别到任何合法持仓，请检查格式' })
+            } else {
+                const parts: string[] = []
+                if (diff.added_count) parts.push(`新增 ${diff.added_count}`)
+                if (diff.updated_count) parts.push(`更新 ${diff.updated_count}`)
+                if (diff.removed_count) parts.push(`移除 ${diff.removed_count}`)
+                if (diff.unchanged_count) parts.push(`未变 ${diff.unchanged_count}`)
+                if (diff.invalid_count) parts.push(`异常 ${diff.invalid_count}`)
+                setImportFeedback({
+                    tone: diff.invalid_count > 0 ? 'error' : 'success',
+                    message: `预览完成：${parts.join('、') || '无变化'}`,
+                })
+            }
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '预览失败' })
+        } finally {
+            setDryRunLoading(false)
+        }
+    }, [positionText, importSource])
+
+    // [TRACK-009] holdings_import_contract — 确认提交，走 /import-text 入口
+    const handleConfirmImport = useCallback(async () => {
+        const text = positionText.trim()
+        if (!text) {
+            setImportFeedback({ tone: 'error', message: '没有可提交的持仓文本' })
+            return
+        }
+        setConfirmingImport(true)
+        setImportFeedback(null)
+        try {
+            const result = await api.importPortfolioFromText({
+                text,
+                source: importSource || 'openclaw',
+            })
+            const diff = result.dry_run
+            const parts: string[] = []
+            if (diff.added_count) parts.push(`新增 ${diff.added_count}`)
+            if (diff.updated_count) parts.push(`更新 ${diff.updated_count}`)
+            if (diff.removed_count) parts.push(`移除 ${diff.removed_count}`)
+            if (diff.invalid_count) parts.push(`异常 ${diff.invalid_count}`)
+            setImportFeedback({
+                tone: diff.invalid_count > 0 ? 'error' : 'success',
+                message: `已提交 ${result.state.summary.positions} 只持仓：${parts.join('、') || '无变化'}`,
+            })
+            setDryRunDiff(null)
+            setPositionText('')
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '提交失败' })
+        } finally {
+            setConfirmingImport(false)
+        }
+    }, [positionText, importSource, refreshBoard])
+
+    // [TRACK-009] holdings_import_contract — 加载 / 折叠 OpenClaw 契约
+    const handleToggleContract = useCallback(async () => {
+        if (!showContract && !importContract) {
+            setContractLoading(true)
+            try {
+                const c = await api.getPortfolioImportContract()
+                setImportContract(c)
+            } catch (e) {
+                setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '契约加载失败' })
+                setContractLoading(false)
+                return
+            }
+            setContractLoading(false)
+        }
+        setShowContract(v => !v)
+    }, [showContract, importContract])
 
     const handleCreateObservation = useCallback(async () => {
         const symbol = observationDraft.symbol.trim()
@@ -417,7 +512,7 @@ export default function TrackingBoardV2Panel() {
                     open={showHoldingImport}
                     onToggle={() => setShowHoldingImport(v => !v)}
                     positionText={positionText}
-                    onPositionTextChange={setPositionText}
+                    onPositionTextChange={(v) => { setPositionText(v); setDryRunDiff(null) }}
                     onSave={handleSavePositions}
                     onClear={handleClearPositions}
                     onPickImage={() => fileInputRef.current?.click()}
@@ -425,6 +520,18 @@ export default function TrackingBoardV2Panel() {
                     clearing={importClearing}
                     parsing={vlmParsing}
                     feedback={importFeedback}
+                    // [TRACK-009] holdings_import_contract
+                    importSource={importSource}
+                    onImportSourceChange={setImportSource}
+                    dryRunDiff={dryRunDiff}
+                    dryRunLoading={dryRunLoading}
+                    onDryRun={handleDryRunPreview}
+                    onConfirmImport={handleConfirmImport}
+                    confirmingImport={confirmingImport}
+                    importContract={importContract}
+                    contractLoading={contractLoading}
+                    showContract={showContract}
+                    onToggleContract={handleToggleContract}
                 />
             )}
 
@@ -549,6 +656,17 @@ function HoldingsImportPanel({
     clearing,
     parsing,
     feedback,
+    importSource,
+    onImportSourceChange,
+    dryRunDiff,
+    dryRunLoading,
+    onDryRun,
+    onConfirmImport,
+    confirmingImport,
+    importContract,
+    contractLoading,
+    showContract,
+    onToggleContract,
 }: {
     open: boolean
     onToggle: () => void
@@ -561,7 +679,20 @@ function HoldingsImportPanel({
     clearing: boolean
     parsing: boolean
     feedback: { tone: 'success' | 'error'; message: string } | null
+    // [TRACK-009] holdings_import_contract
+    importSource: string
+    onImportSourceChange: (v: string) => void
+    dryRunDiff: HoldingsImportDiff | null
+    dryRunLoading: boolean
+    onDryRun: () => void
+    onConfirmImport: () => void
+    confirmingImport: boolean
+    importContract: HoldingsImportContract | null
+    contractLoading: boolean
+    showContract: boolean
+    onToggleContract: () => void
 }) {
+    const detectedFormat = useMemo(() => detectFormat(positionText), [positionText])
     return (
         <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
             <button
@@ -570,35 +701,74 @@ function HoldingsImportPanel({
                 className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
             >
                 <Upload className="h-4 w-4" />
-                导入 / 管理持仓
+                导入 / 同步持仓
                 <span className="ml-auto text-xs text-slate-400">{open ? '收起' : '展开'}</span>
             </button>
             {open && (
                 <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-800">
+                    {/* Format hint + source tag */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 dark:bg-slate-800">
+                            格式：{detectedFormat}
+                        </span>
+                        <label className="flex items-center gap-1">
+                            来源：
+                            <input
+                                value={importSource}
+                                onChange={e => onImportSourceChange(e.target.value)}
+                                placeholder="openclaw"
+                                className="w-28 rounded border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                            />
+                        </label>
+                    </div>
                     <textarea
                         value={positionText}
                         onChange={e => onPositionTextChange(e.target.value)}
-                        placeholder={'每行一只股票：代码 名称 持仓数 成本价 市值\n例如：600519 贵州茅台 100 1800 180000'}
-                        className="min-h-[96px] w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                        placeholder={
+                            '支持 JSON / CSV / 文本（自动识别）：\n'
+                            + 'JSON: [{"symbol":"600519.SH","name":"贵州茅台","current_position":100,"average_cost":1700}]\n'
+                            + 'CSV:  代码,名称,持仓数,成本价,市值\n'
+                            + '      600519.SH,贵州茅台,100,1700,170000\n'
+                            + '文本: 600519 贵州茅台 100 1700 170000'
+                        }
+                        className="min-h-[120px] w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
                     />
                     <div className="flex flex-wrap gap-2">
                         <button
                             type="button"
-                            onClick={onSave}
-                            disabled={saving || !positionText.trim()}
+                            onClick={onDryRun}
+                            disabled={dryRunLoading || !positionText.trim()}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-40"
+                        >
+                            {dryRunLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                            预览差异 (dry-run)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onConfirmImport}
+                            disabled={confirmingImport || !positionText.trim()}
                             className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
                         >
+                            {confirmingImport ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                            预览并提交
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onSave}
+                            disabled={saving || !positionText.trim()}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                        >
                             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                            保存持仓
+                            快速保存
                         </button>
                         <button
                             type="button"
                             onClick={onPickImage}
                             disabled={parsing}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                         >
                             {parsing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
-                            {parsing ? '识别中...' : '上传持仓截图'}
+                            {parsing ? '识别中...' : '上传截图'}
                         </button>
                         <button
                             type="button"
@@ -611,7 +781,216 @@ function HoldingsImportPanel({
                         </button>
                     </div>
                     <FeedbackMessage feedback={feedback} />
+
+                    {/* Dry-run diff preview */}
+                    {dryRunDiff && <DryRunDiffView diff={dryRunDiff} />}
+
+                    {/* OpenClaw / API contract */}
+                    <div className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+                        <button
+                            type="button"
+                            onClick={onToggleContract}
+                            className="flex w-full items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+                        >
+                            <Info className="h-3.5 w-3.5" />
+                            OpenClaw / 外部持仓 API 契约
+                            {contractLoading && <Loader2 className="ml-1 h-3 w-3 animate-spin" />}
+                            <span className="ml-auto text-slate-400">{showContract ? '收起' : '展开'}</span>
+                        </button>
+                        {showContract && importContract && <ContractView contract={importContract} />}
+                    </div>
                 </div>
+            )}
+        </div>
+    )
+}
+
+// [TRACK-009] holdings_import_contract — format auto-detection
+function detectFormat(text: string): string {
+    const t = (text || '').trim()
+    if (!t) return '空'
+    if (t[0] === '{' || t[0] === '[') return 'JSON'
+    if (/[\t;]/.test(t)) return 'TSV/CSV'
+    if (t.split('\n')[0]?.includes(',')) return 'CSV'
+    return '文本（代码 名称 持仓数 成本价 市值）'
+}
+
+function fmtDeltaValue(v: unknown): string {
+    if (v == null || v === '') return '(空)'
+    return String(v)
+}
+
+function DryRunDiffView({ diff }: { diff: HoldingsImportDiff }) {
+    const hasAny = diff.added_count + diff.updated_count + diff.removed_count + diff.unchanged_count + diff.invalid_count > 0
+    if (!hasAny) {
+        return (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
+                无变化
+            </div>
+        )
+    }
+    return (
+        <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3 text-xs dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex flex-wrap gap-1.5">
+                {diff.added_count > 0 && <DiffBadge tone="emerald" label={`新增 ${diff.added_count}`} />}
+                {diff.updated_count > 0 && <DiffBadge tone="amber" label={`更新 ${diff.updated_count}`} />}
+                {diff.removed_count > 0 && <DiffBadge tone="rose" label={`移除 ${diff.removed_count}`} />}
+                {diff.unchanged_count > 0 && <DiffBadge tone="slate" label={`未变 ${diff.unchanged_count}`} />}
+                {diff.invalid_count > 0 && <DiffBadge tone="rose" label={`异常 ${diff.invalid_count}`} />}
+            </div>
+            <div className="text-[11px] text-slate-400">写入语义：{diff.write_semantics} · 来源：{diff.source}</div>
+
+            {diff.added.length > 0 && (
+                <DiffBlock title="新增">
+                    {diff.added.map(a => (
+                        <div key={a.symbol} className="flex items-center gap-2 py-0.5">
+                            <span className="font-mono text-slate-700 dark:text-slate-200">{a.symbol}</span>
+                            {typeof a.incoming?.name === 'string' && (
+                                <span className="text-slate-500 dark:text-slate-400">{a.incoming.name}</span>
+                            )}
+                            {typeof a.incoming?.current_position === 'number' && (
+                                <span className="text-slate-500 dark:text-slate-400">{a.incoming.current_position}股</span>
+                            )}
+                        </div>
+                    ))}
+                </DiffBlock>
+            )}
+
+            {diff.updated.length > 0 && (
+                <DiffBlock title="更新">
+                    {diff.updated.map(u => (
+                        <div key={u.symbol} className="py-1">
+                            <div className="font-mono text-slate-700 dark:text-slate-200">{u.symbol}</div>
+                            <div className="ml-3 grid gap-0.5 text-[11px]">
+                                {Object.entries(u.delta).map(([field, d]) => (
+                                    <div key={field} className="text-slate-500 dark:text-slate-400">
+                                        <span className="font-mono">{field}</span>：
+                                        <span className="text-rose-500 line-through">{fmtDeltaValue(d.before)}</span>
+                                        {' → '}
+                                        <span className="text-emerald-600 dark:text-emerald-400">{fmtDeltaValue(d.after)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </DiffBlock>
+            )}
+
+            {diff.removed.length > 0 && (
+                <DiffBlock title="移除（不在快照中的同来源旧记录会被删除）" tone="rose">
+                    {diff.removed.map(r => (
+                        <div key={r.symbol} className="font-mono text-slate-600 dark:text-slate-300">
+                            {r.symbol}
+                            {typeof r.before?.name === 'string' && r.before.name ? ` · ${r.before.name}` : ''}
+                        </div>
+                    ))}
+                </DiffBlock>
+            )}
+
+            {diff.errors.length > 0 && (
+                <DiffBlock title="字段异常（不会写入）" tone="rose">
+                    {diff.errors.map((e, idx) => (
+                        <div key={`${e.symbol ?? e.raw_symbol ?? idx}`} className="text-[11px] text-rose-600 dark:text-rose-400">
+                            <span className="font-mono">{e.symbol ?? e.raw_symbol ?? '(空)'}</span> — {reasonLabel(e.reason)}
+                            {Array.isArray(e.fields) && e.fields.length > 0 && (
+                                <span className="ml-1 text-slate-400">[{e.fields.join(', ')}]</span>
+                            )}
+                        </div>
+                    ))}
+                </DiffBlock>
+            )}
+
+            {diff.warnings.length > 0 && (
+                <DiffBlock title="提示">
+                    {diff.warnings.map((w, idx) => (
+                        <div key={`${w.symbol}-${idx}`} className="text-[11px] text-amber-600 dark:text-amber-400">
+                            <span className="font-mono">{w.symbol}</span> — {reasonLabel(w.reason)}
+                        </div>
+                    ))}
+                </DiffBlock>
+            )}
+        </div>
+    )
+}
+
+function reasonLabel(reason: string): string {
+    const m: Record<string, string> = {
+        invalid_symbol: '代码格式无效',
+        duplicate_symbol: '同一批次内重复',
+        negative_field: '字段为负数',
+        missing_name: '名称缺失',
+        not_a_dict: '不是对象',
+    }
+    if (m[reason]) return m[reason]
+    if (reason.startsWith('unparseable_')) return `${reason.slice('unparseable_'.length)} 无法解析`
+    return reason
+}
+
+function DiffBadge({ tone, label }: { tone: 'emerald' | 'amber' | 'rose' | 'slate'; label: string }) {
+    const cls = {
+        emerald: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
+        amber: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
+        rose: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300',
+        slate: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+    }[tone]
+    return <span className={`inline-flex items-center rounded-full px-2 py-0.5 ${cls}`}>{label}</span>
+}
+
+function DiffBlock({ title, tone = 'slate', children }: { title: string; tone?: 'slate' | 'rose'; children: ReactNode }) {
+    const headCls = tone === 'rose'
+        ? 'text-rose-600 dark:text-rose-400'
+        : 'text-slate-600 dark:text-slate-300'
+    return (
+        <div>
+            <div className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${headCls}`}>{title}</div>
+            <div>{children}</div>
+        </div>
+    )
+}
+
+function ContractView({ contract }: { contract: HoldingsImportContract }) {
+    return (
+        <div className="mt-2 space-y-2 text-[11px] text-slate-600 dark:text-slate-400">
+            <div>契约版本：{contract.schema_version} · {contract.contract_for}</div>
+            {contract.description && <div>{contract.description}</div>}
+            <div className="font-semibold text-slate-700 dark:text-slate-200">写入端点</div>
+            <ul className="ml-3 list-disc space-y-0.5">
+                {contract.write_endpoints.map(ep => (
+                    <li key={`${ep.method}-${ep.path}`}>
+                        <span className="font-mono text-[10px] text-slate-500">{ep.method}</span>{' '}
+                        <span className="font-mono">{ep.path}</span>
+                        {ep.tier && <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] dark:bg-slate-800">{ep.tier}</span>}
+                        <div className="ml-3 text-slate-500 dark:text-slate-400">{ep.purpose}</div>
+                    </li>
+                ))}
+            </ul>
+            <div className="font-semibold text-slate-700 dark:text-slate-200">只读端点</div>
+            <ul className="ml-3 list-disc space-y-0.5">
+                {contract.read_endpoints.map(ep => (
+                    <li key={`${ep.method}-${ep.path}`}>
+                        <span className="font-mono text-[10px] text-slate-500">{ep.method}</span>{' '}
+                        <span className="font-mono">{ep.path}</span>
+                        <div className="ml-3 text-slate-500 dark:text-slate-400">{ep.purpose}</div>
+                    </li>
+                ))}
+            </ul>
+            <div className="font-semibold text-slate-700 dark:text-slate-200">字段语义</div>
+            <ul className="ml-3 list-disc space-y-0.5">
+                {Object.entries(contract.field_semantics).map(([k, v]) => (
+                    <li key={k}>
+                        <span className="font-mono text-slate-700 dark:text-slate-200">{k}</span>：{v}
+                    </li>
+                ))}
+            </ul>
+            <div className="font-semibold text-slate-700 dark:text-slate-200">写入语义</div>
+            <div className="ml-3">{contract.write_semantics}</div>
+            {Array.isArray(contract.invariants) && contract.invariants.length > 0 && (
+                <>
+                    <div className="font-semibold text-slate-700 dark:text-slate-200">不变式</div>
+                    <ul className="ml-3 list-disc space-y-0.5">
+                        {contract.invariants.map((inv, idx) => <li key={idx}>{inv}</li>)}
+                    </ul>
+                </>
             )}
         </div>
     )

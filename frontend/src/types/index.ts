@@ -617,6 +617,90 @@ export interface PortfolioImportState {
     positions: ImportedPortfolioPosition[]
 }
 
+// [TRACK-009] holdings_import_contract
+export interface HoldingsImportFieldDelta {
+    before: number | string | null
+    after: number | string | null
+}
+
+export interface HoldingsImportAddedItem {
+    symbol: string
+    incoming: Record<string, unknown>
+}
+
+export interface HoldingsImportUpdatedItem {
+    symbol: string
+    delta: Record<string, HoldingsImportFieldDelta>
+    before?: Record<string, unknown>
+    after?: Record<string, unknown>
+}
+
+export interface HoldingsImportRemovedItem {
+    symbol: string
+    before: Record<string, unknown>
+}
+
+export interface HoldingsImportInvalidItem {
+    symbol?: string
+    reason: string
+    fields: string[]
+    raw_symbol?: string
+    raw?: unknown
+}
+
+export interface HoldingsImportWarning {
+    symbol: string
+    reason: string
+    field?: string
+}
+
+// [TRACK-009] holdings_import_contract — dry-run 预览差异
+export interface HoldingsImportDiff {
+    dry_run: true
+    source: string
+    write_semantics: string
+    added: HoldingsImportAddedItem[]
+    updated: HoldingsImportUpdatedItem[]
+    unchanged: HoldingsImportAddedItem[]
+    removed: HoldingsImportRemovedItem[]
+    errors: HoldingsImportInvalidItem[]
+    warnings: HoldingsImportWarning[]
+    added_count: number
+    updated_count: number
+    unchanged_count: number
+    removed_count: number
+    error_count: number
+    valid_count: number
+    invalid_count: number
+}
+
+// [TRACK-009] holdings_import_contract — 提交后返回
+export interface HoldingsImportResult {
+    dry_run: HoldingsImportDiff
+    state: PortfolioImportState
+}
+
+export interface HoldingsImportEndpointInfo {
+    path: string
+    method: string
+    tier?: string
+    purpose: string
+    accepts?: string
+}
+
+// [TRACK-009] holdings_import_contract — OpenClaw 契约（只读）
+export interface HoldingsImportContract {
+    schema_version: string
+    contract_for: string
+    description?: string
+    write_endpoints: HoldingsImportEndpointInfo[]
+    read_endpoints: HoldingsImportEndpointInfo[]
+    field_semantics: Record<string, string>
+    write_semantics: string
+    invariants?: string[]
+    text_formats?: Record<string, string>
+}
+
 export interface PortfolioPositionInput {
     symbol: string
     name?: string

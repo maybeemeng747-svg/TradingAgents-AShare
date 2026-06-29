@@ -1106,6 +1106,19 @@ class PortfolioImportSyncRequest(BaseModel):
     auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
 
 
+# [TRACK-009] holdings_import_contract — dry-run / text-import request models
+class PortfolioImportDryRunRequest(BaseModel):
+    text: Optional[str] = Field(None, description="持仓文本，支持 JSON / CSV / TSV / whitespace；与 positions 二选一")
+    positions: Optional[List[PortfolioPositionItem]] = Field(None, description="结构化持仓列表；与 text 二选一")
+    source: str = Field("manual", description="持仓来源标识，用于 dry-run 差异对比")
+
+
+class PortfolioImportTextRequest(BaseModel):
+    text: str = Field(..., description="持仓文本，支持 JSON / CSV / TSV / whitespace")
+    source: str = Field("manual", description="持仓来源标识")
+    auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
+
+
 class UserTokenResponse(BaseModel):
     id: str
     name: str
@@ -4602,6 +4615,66 @@ def clear_portfolio_import_state(
     db: Session = Depends(get_db),
 ):
     portfolio_import_service.clear_imported_portfolio(db, current_user.id)
+
+
+# [TRACK-009] holdings_import_contract — OpenClaw/外部持仓契约（只读）
+@app.get("/v1/portfolio/imports/contract")
+def get_portfolio_import_contract(
+    current_user: UserDB = Depends(_require_api_user),
+):
+    return portfolio_import_service.OPENCLAW_HOLDINGS_CONTRACT
+
+
+# [TRACK-009] holdings_import_contract — dry-run 预览（不写库）
+@app.post("/v1/portfolio/imports/dry-run")
+def portfolio_import_dry_run(
+    body: PortfolioImportDryRunRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    if (body.text is None or body.text.strip() == "") and not body.positions:
+        raise HTTPException(400, "text 或 positions 至少需要提供一项")
+    try:
+        if body.text is not None and body.text.strip() != "":
+            raw_rows = portfolio_import_service.parse_positions_text(body.text)
+        else:
+            raw_rows = [p.model_dump() for p in (body.positions or [])]
+        validated = portfolio_import_service.validate_positions(raw_rows)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    diff = portfolio_import_service.dry_run_import(
+        db=db,
+        user_id=current_user.id,
+        positions=validated["valid"],
+        source=body.source,
+    )
+    # Preserve invalid-row diagnostics even though they're excluded from the
+    # valid set used for the diff.
+    diff["errors"] = validated["invalid"]
+    diff["warnings"] = validated["warnings"]
+    diff["valid_count"] = validated["valid_count"]
+    diff["invalid_count"] = validated["invalid_count"]
+    return diff
+
+
+# [TRACK-009] holdings_import_contract — 从文本解析并提交
+@app.post("/v1/portfolio/imports/import-text")
+def portfolio_import_from_text(
+    body: PortfolioImportTextRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        result = portfolio_import_service.import_positions_from_text(
+            db=db,
+            user_id=current_user.id,
+            text=body.text,
+            source=body.source,
+            auto_apply_scheduled=body.auto_apply_scheduled,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return result
 
 
 @app.post("/v1/portfolio/parse-image")

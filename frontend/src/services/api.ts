@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse, HoldingsImportContract, HoldingsImportDiff, HoldingsImportResult } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -276,6 +276,35 @@ class ApiService {
 
     async clearPortfolioImport(): Promise<void> {
         await this.request('/v1/portfolio/imports', { method: 'DELETE' })
+    }
+
+    // [TRACK-009] holdings_import_contract
+    async getPortfolioImportContract(): Promise<HoldingsImportContract> {
+        return this.request<HoldingsImportContract>('/v1/portfolio/imports/contract')
+    }
+
+    // [TRACK-009] holdings_import_contract — dry-run 预览，不写库
+    async dryRunPortfolioImport(data: {
+        text?: string
+        positions?: PortfolioPositionInput[]
+        source?: string
+    }): Promise<HoldingsImportDiff> {
+        return this.request<HoldingsImportDiff>('/v1/portfolio/imports/dry-run', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        })
+    }
+
+    // [TRACK-009] holdings_import_contract — 从文本解析并提交
+    async importPortfolioFromText(data: {
+        text: string
+        source?: string
+        auto_apply_scheduled?: boolean
+    }): Promise<HoldingsImportResult> {
+        return this.request<HoldingsImportResult>('/v1/portfolio/imports/import-text', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        })
     }
 
     async parsePositionImage(file: File, mode: 'position' | 'watchlist' = 'position'): Promise<{ positions: PortfolioPositionInput[] } | WatchlistTableParseResponse> {
