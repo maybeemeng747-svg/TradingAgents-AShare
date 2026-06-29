@@ -4197,7 +4197,7 @@
 ### DATA-024: 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
 - **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
 - **优先级**：P1
-- **状态**：done — DATA-024-20260629-231953（68 tests passed，510 regression passed）
+- **状态**：done -- commit bfc6d3e
 - **前置条件**：DATA-022、DATA-023 完成。
 - **执行约束**：
   - 默认使用 fixture；live-smoke 必须显式开关。
