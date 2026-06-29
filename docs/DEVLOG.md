@@ -8699,3 +8699,93 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/H-017-20260629-round1.txt
 - **Run archive**: docs/task_runs/H-017-20260629-230021/
+
+---
+
+## 2026-06-29 | DATA-024：主力资金供应商 fallback live-smoke dry-run 与错误归因报告
+
+- **执行者**：OpenCode（task run DATA-024-20260629-231953）
+- **类型**：feature + probe + integration + test
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+主力资金仍是用户高频痛点：cn_akshare 限流、cn_astock 偶发字段变更、网络抖动、停牌标的的正常无数据，全部混在 `FAILED` / `数据获取失败` 字符串里，没有统一的错误归因报告。DATA-022 已经把 fixture 失败矩阵跑起来，DATA-023 把能力矩阵导出，但缺少一个**专门给 fund_flow 供应商做 dry-run / live-smoke 探测、并把失败明确归因到 5 类典型故障**的探针。DATA-024 补这一层。
+
+### 设计要点（第一性原理 + 剃刀定律）
+
+- **不换供应商、不改路由**。probe 只读取/调用已有的 `route_to_vendor` + `get_last_hit_vendor`，不新增 provider、不改 fallback 顺序，DATA-P0-FUND-ROUTE 的契约保持不变。
+- **fixture 优先，live-smoke 默认关闭**。fixture dry-run 覆盖任务要求的 5 类失败/无数据 + HAS_DATA 基线；live-smoke 必须同时满足 `--live-smoke` 显式开关 + `TA_LIVE_DATA_SMOKE=1` 环境变量双重门禁，否则所有标的标记 `SKIPPED`，不发任何网络请求（与 DATA-P1-ASTOCK-LIVE-SMOKE / PERF-004 成本门禁一致）。
+- **错误归因分类器复用 DATA-018 的探测模式**。`classify_fund_flow_error_type` 内部直接调 `source_freshness_report._detect_rate_limited / _detect_failed / _detect_normal_no_data`，优先级与 `classify_source_status` 对齐（限流 → 网络/接口失败 → 正常无数据 → 字段变更 → 单位不明 → OK → 兜底），不重新发明轮子。
+- **板块资金流严格分离**。probe 只覆盖 `DataType.FUND_FLOW`（`get_individual_fund_flow` / `push2his.eastmoney.com/fflow`），不会把 `BOARD_FUND_FLOW` 聚合数值落到个股 raw_evidence（任务执行约束 §3）。测试专门加 `TestBoardFundFlowSeparation` 守护。
+- **接入 DATA-023 能力矩阵 — 通过只读 overlay**。`build_capability_matrix_overlay(report)` 输出一个独立 overlay dict，调用方（API/UI）可附加到 matrix 的 `fund_flow` entry 显示；**不修改 `source_capability_matrix.py` 本身**，避免破坏已发布的 `docs/SOURCE_CAPABILITY_MATRIX.md` 和 DATA-023 的 31 个测试。
+- **安全**。`FundFlowProbeResult.error` 在 `to_dict()` 时截断到 200 字符；新增 `TestNoSecrets` 扫描 `api_key/apikey/secret/bearer /authorization:/sk-/cookie` 在 report/overlay/markdown 三个载体中都不出现。
+
+### 错误归因矩阵（5 类 + OK + UNKNOWN）
+
+| error_type | label_cn | 优先级 | 触发条件（摘要） | → SourceFreshnessStatus |
+|------------|----------|--------|------------------|--------------------------|
+| `rate_limited` | 限流 | 1 | error/raw 命中 429 / 请求过于频繁 / 限流 | RATE_LIMITED |
+| `network_error` | 网络失败 | 2 | 命中 ConnectionError/ProxyError/Max retries/TimeoutError 或 status=FAILED | FAILED |
+| `no_data` | 正常无数据 | 3 | status=NORMAL_NO_DATA/NOT_QUERIED/SKIPPED 或 raw 为空 | NORMAL_NO_DATA |
+| `field_change` | 接口字段变更 | 4 | 数据存在但单位与预期 `万元` 不符（如 `单位：元`） | UNIT_UNVERIFIED |
+| `unknown_unit` | 单位不明 | 5 | 数据存在但探测不到单位标记 + unit_verified=False | UNIT_UNVERIFIED |
+| `ok` | 正常 | 6 | 数据存在且单位校验通过 | HAS_DATA |
+| `unknown` | 未知 | 7 | 兜底（如 live 返回非字符串） | FAILED |
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `tradingagents/dataflows/fund_flow_source_probe.py` | **新增** — FundFlowErrorType / FundFlowProbeResult / FundFlowProbeReport / classify_fund_flow_error_type / PROBE_FIXTURES (6 条) / run_fund_flow_probe / _probe_live_symbol / render + save / build_capability_matrix_overlay / get_fund_flow_capability_matrix_item |
+| `scripts/run_fund_flow_source_probe.py` | **新增** — CLI（--symbols / --live-smoke / --dry-run / --output / --stdout-json），双重门禁校验，按 fixture/live 分支返回 exit code（fixture 全部归因正确=0，live 出现网络/限流/字段/单位/未知=1） |
+| `tests/test_data024_fund_flow_source_probe.py` | **新增** — 68 个测试，覆盖分类器优先级 / fixture dry-run / live-smoke 双重门禁 / live 模式 fake fetch_fn 走完整分类链路 / 渲染持久化 / DATA-023 overlay / 安全扫描 / 板块资金流分离 / CLI subprocess / 边界 |
+| `docs/data024_fund_flow_error_attribution.md` | **新增** — 错误归因矩阵文档（5 类语义、fixture 覆盖表、双重门禁、与 DATA-018/019/022/023/P0-FUND-ROUTE 桥接关系、退出码） |
+
+### 关键逻辑
+
+| 函数 | 职责 |
+|------|------|
+| `classify_fund_flow_error_type` | 把 raw/status/error/unit/unit_verified 归到 7 类 error_type 之一；优先级与 `classify_source_status` 对齐，复用 DATA-018 的探测函数 |
+| `run_fund_flow_probe` | 顶层入口：fixture 模式跑 6 条 fixture；live 模式双重门禁校验后逐 symbol 调 `route_to_vendor` |
+| `_probe_live_symbol` | live 模式单 symbol 探测：调用 fetch_fn（默认 route_to_vendor），按返回文本归类，并通过 `get_last_hit_vendor` 标记实际成功 vendor / 是否 fallback |
+| `build_capability_matrix_overlay` | 把 report 汇总成 overlay dict（by_error_type / required_classes_covered / fallback_chain_catalog），附加到 matrix 的 fund_flow entry，不污染 matrix 本身 |
+| `_compute_summary` | 汇总 by_error_type / by_status / required_classes_covered/missing / all_passed / has_failures |
+
+### 测试结果
+
+- `tests/test_data024_fund_flow_source_probe.py`：**68 passed / 0 failed**
+- 回归（数据源相关）：`test_data023 / test_data022 / test_data_source_catalog / test_data018_source_freshness / test_data017_fund_lhb_health / test_data_p0_fund_route / test_data019_live_source_sampling` 共 **510 passed / 0 failed**
+- 任务基线：`tests/test_api_smoke.py tests/test_runtime_tier_contract.py` 共 **119 passed / 0 failed**
+- 安全扫描：report / overlay / markdown 三个载体都不含 `api_key/apikey/secret/bearer /authorization:/sk-/cookie`
+
+### 后续衔接
+
+- probe overlay 可由 `GET /v1/config/source-capability-matrix`（api/main.py:4243）附加返回（本任务未改 API，保留为后续接入点）。
+- scheduler / 夜间日报（DATA-019）可在 fund_flow 健康段引用 probe 输出，把"故障"细分成"限流/网络/字段变更/单位不明"4 类，而不是笼统的 FAILED。
+- KB-002 / KB-003 接入本地知识时，可复用 probe 的 overlay 判断 fund_flow 是否可信。
+
+---
+
+# Auto Run Summary
+
+- **Task**: DATA-024 - 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: 68 passed (DATA-024); 510 passed (regression)
+- **Codex Review**: pending
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Run archive**: docs/task_runs/DATA-024-20260629-231953/
+
+## 2026-06-29 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-024 - 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/DATA-024-20260629-round1.txt
+- **Run archive**: docs/task_runs/DATA-024-20260629-231953/

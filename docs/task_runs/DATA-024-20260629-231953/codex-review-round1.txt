@@ -1,0 +1,2901 @@
+Task: DATA-024 - 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
+Date: 2026-06-29_23:38:51
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f1406-b9b5-7061-bee3-1252c86a5157
+--------
+user
+current changes
+2026-06-29T15:36:54.710800Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-29T15:36:54.736257Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-29T15:36:55.877286Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-29T15:36:56.114481Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc 'git status --short && git status --branch --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/data024_fund_flow_error_attribution.md
+?? docs/task_runs/DATA-024-20260629-231953/
+?? scripts/run_fund_flow_source_probe.py
+?? tests/test_data024_fund_flow_source_probe.py
+?? tradingagents/dataflows/fund_flow_source_probe.py
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 213]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/data024_fund_flow_error_attribution.md
+?? docs/task_runs/DATA-024-20260629-231953/
+?? scripts/run_fund_flow_source_probe.py
+?? tests/test_data024_fund_flow_source_probe.py
+?? tradingagents/dataflows/fund_flow_source_probe.py
+
+exec
+/bin/zsh -lc 'find docs/task_runs/DATA-024-20260629-231953 -maxdepth 2 -type f -print' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/DATA-024-20260629-231953/tests-round1.txt
+docs/task_runs/DATA-024-20260629-231953/codegraph-status.json
+docs/task_runs/DATA-024-20260629-231953/prompt-round1.md
+docs/task_runs/DATA-024-20260629-231953/codegraph-context.txt
+docs/task_runs/DATA-024-20260629-231953/opencode-round1.txt
+docs/task_runs/DATA-024-20260629-231953/task.md
+docs/task_runs/DATA-024-20260629-231953/codegraph-impact.txt
+
+exec
+/bin/zsh -lc 'git diff -- docs/DEVLOG.md docs/TASKS.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 6008a8d..8e26b50 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -8699,3 +8699,81 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
+ - **Timeout budget**: OpenCode 1800s / tests 900s
+ - **Review file**: docs/reviews/H-017-20260629-round1.txt
+ - **Run archive**: docs/task_runs/H-017-20260629-230021/
++
++---
++
++## 2026-06-29 | DATA-024：主力资金供应商 fallback live-smoke dry-run 与错误归因报告
++
++- **执行者**：OpenCode（task run DATA-024-20260629-231953）
++- **类型**：feature + probe + integration + test
++- **状态**：✅ 完成（待提交）
++
++### 背景
++
++主力资金仍是用户高频痛点：cn_akshare 限流、cn_astock 偶发字段变更、网络抖动、停牌标的的正常无数据，全部混在 `FAILED` / `数据获取失败` 字符串里，没有统一的错误归因报告。DATA-022 已经把 fixture 失败矩阵跑起来，DATA-023 把能力矩阵导出，但缺少一个**专门给 fund_flow 供应商做 dry-run / live-smoke 探测、并把失败明确归因到 5 类典型故障**的探针。DATA-024 补这一层。
++
++### 设计要点（第一性原理 + 剃刀定律）
++
++- **不换供应商、不改路由**。probe 只读取/调用已有的 `route_to_vendor` + `get_last_hit_vendor`，不新增 provider、不改 fallback 顺序，DATA-P0-FUND-ROUTE 的契约保持不变。
++- **fixture 优先，live-smoke 默认关闭**。fixture dry-run 覆盖任务要求的 5 类失败/无数据 + HAS_DATA 基线；live-smoke 必须同时满足 `--live-smoke` 显式开关 + `TA_LIVE_DATA_SMOKE=1` 环境变量双重门禁，否则所有标的标记 `SKIPPED`，不发任何网络请求（与 DATA-P1-ASTOCK-LIVE-SMOKE / PERF-004 成本门禁一致）。
++- **错误归因分类器复用 DATA-018 的探测模式**。`classify_fund_flow_error_type` 内部直接调 `source_freshness_report._detect_rate_limited / _detect_failed / _detect_normal_no_data`，优先级与 `classify_source_status` 对齐（限流 → 网络/接口失败 → 正常无数据 → 字段变更 → 单位不明 → OK → 兜底），不重新发明轮子。
++- **板块资金流严格分离**。probe 只覆盖 `DataType.FUND_FLOW`（`get_individual_fund_flow` / `push2his.eastmoney.com/fflow`），不会把 `BOARD_FUND_FLOW` 聚合数值落到个股 raw_evidence（任务执行约束 §3）。测试专门加 `TestBoardFundFlowSeparation` 守护。
++- **接入 DATA-023 能力矩阵 — 通过只读 overlay**。`build_capability_matrix_overlay(report)` 输出一个独立 overlay dict，调用方（API/UI）可附加到 matrix 的 `fund_flow` entry 显示；**不修改 `source_capability_matrix.py` 本身**，避免破坏已发布的 `docs/SOURCE_CAPABILITY_MATRIX.md` 和 DATA-023 的 31 个测试。
++- **安全**。`FundFlowProbeResult.error` 在 `to_dict()` 时截断到 200 字符；新增 `TestNoSecrets` 扫描 `api_key/apikey/secret/bearer /authorization:/sk-/cookie` 在 report/overlay/markdown 三个载体中都不出现。
++
++### 错误归因矩阵（5 类 + OK + UNKNOWN）
++
++| error_type | label_cn | 优先级 | 触发条件（摘要） | → SourceFreshnessStatus |
++|------------|----------|--------|------------------|--------------------------|
++| `rate_limited` | 限流 | 1 | error/raw 命中 429 / 请求过于频繁 / 限流 | RATE_LIMITED |
++| `network_error` | 网络失败 | 2 | 命中 ConnectionError/ProxyError/Max retries/TimeoutError 或 status=FAILED | FAILED |
++| `no_data` | 正常无数据 | 3 | status=NORMAL_NO_DATA/NOT_QUERIED/SKIPPED 或 raw 为空 | NORMAL_NO_DATA |
++| `field_change` | 接口字段变更 | 4 | 数据存在但单位与预期 `万元` 不符（如 `单位：元`） | UNIT_UNVERIFIED |
++| `unknown_unit` | 单位不明 | 5 | 数据存在但探测不到单位标记 + unit_verified=False | UNIT_UNVERIFIED |
++| `ok` | 正常 | 6 | 数据存在且单位校验通过 | HAS_DATA |
++| `unknown` | 未知 | 7 | 兜底（如 live 返回非字符串） | FAILED |
++
++### 修改文件
++
++| 文件 | 变更 |
++|------|------|
++| `tradingagents/dataflows/fund_flow_source_probe.py` | **新增** — FundFlowErrorType / FundFlowProbeResult / FundFlowProbeReport / classify_fund_flow_error_type / PROBE_FIXTURES (6 条) / run_fund_flow_probe / _probe_live_symbol / render + save / build_capability_matrix_overlay / get_fund_flow_capability_matrix_item |
++| `scripts/run_fund_flow_source_probe.py` | **新增** — CLI（--symbols / --live-smoke / --dry-run / --output / --stdout-json），双重门禁校验，按 fixture/live 分支返回 exit code（fixture 全部归因正确=0，live 出现网络/限流/字段/单位/未知=1） |
++| `tests/test_data024_fund_flow_source_probe.py` | **新增** — 68 个测试，覆盖分类器优先级 / fixture dry-run / live-smoke 双重门禁 / live 模式 fake fetch_fn 走完整分类链路 / 渲染持久化 / DATA-023 overlay / 安全扫描 / 板块资金流分离 / CLI subprocess / 边界 |
++| `docs/data024_fund_flow_error_attribution.md` | **新增** — 错误归因矩阵文档（5 类语义、fixture 覆盖表、双重门禁、与 DATA-018/019/022/023/P0-FUND-ROUTE 桥接关系、退出码） |
++
++### 关键逻辑
++
++| 函数 | 职责 |
++|------|------|
++| `classify_fund_flow_error_type` | 把 raw/status/error/unit/unit_verified 归到 7 类 error_type 之一；优先级与 `classify_source_status` 对齐，复用 DATA-018 的探测函数 |
++| `run_fund_flow_probe` | 顶层入口：fixture 模式跑 6 条 fixture；live 模式双重门禁校验后逐 symbol 调 `route_to_vendor` |
++| `_probe_live_symbol` | live 模式单 symbol 探测：调用 fetch_fn（默认 route_to_vendor），按返回文本归类，并通过 `get_last_hit_vendor` 标记实际成功 vendor / 是否 fallback |
++| `build_capability_matrix_overlay` | 把 report 汇总成 overlay dict（by_error_type / required_classes_covered / fallback_chain_catalog），附加到 matrix 的 fund_flow entry，不污染 matrix 本身 |
++| `_compute_summary` | 汇总 by_error_type / by_status / required_classes_covered/missing / all_passed / has_failures |
++
++### 测试结果
++
++- `tests/test_data024_fund_flow_source_probe.py`：**68 passed / 0 failed**
++- 回归（数据源相关）：`test_data023 / test_data022 / test_data_source_catalog / test_data018_source_freshness / test_data017_fund_lhb_health / test_data_p0_fund_route / test_data019_live_source_sampling` 共 **510 passed / 0 failed**
++- 任务基线：`tests/test_api_smoke.py tests/test_runtime_tier_contract.py` 共 **119 passed / 0 failed**
++- 安全扫描：report / overlay / markdown 三个载体都不含 `api_key/apikey/secret/bearer /authorization:/sk-/cookie`
++
++### 后续衔接
++
++- probe overlay 可由 `GET /v1/config/source-capability-matrix`（api/main.py:4243）附加返回（本任务未改 API，保留为后续接入点）。
++- scheduler / 夜间日报（DATA-019）可在 fund_flow 健康段引用 probe 输出，把"故障"细分成"限流/网络/字段变更/单位不明"4 类，而不是笼统的 FAILED。
++- KB-002 / KB-003 接入本地知识时，可复用 probe 的 overlay 判断 fund_flow 是否可信。
++
++---
++
++# Auto Run Summary
++
++- **Task**: DATA-024 - 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
++- **Priority**: P1
++- **Rounds**: 1
++- **Status**: OK PASS
++- **Tests**: 68 passed (DATA-024); 510 passed (regression)
++- **Codex Review**: pending
++- **Timeout budget**: OpenCode 1800s / tests 900s
++- **Run archive**: docs/task_runs/DATA-024-20260629-231953/
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 5c4c4e8..e30e5f8 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -148,7 +148,7 @@
+ 122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，done，依赖 TRACK-005/TRACK-007 ✓）。
+   123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，done — OpenCode 2026-06-29，7269 passed/0 failed，依赖 TF-QUALITY-004/H-014 ✓）。
+ 124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，done，依赖 H-015/H-016 ✓）。
+-125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，ready，依赖 DATA-022/DATA-023 ✓）。
++  125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，done — DATA-024-20260629-231953，依赖 DATA-022/DATA-023 ✓）。
+ 126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，ready，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
+ 127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，ready，依赖 TF-OBS-005/UI-013 ✓）。
+ 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
+@@ -4197,7 +4197,7 @@
+ ### DATA-024: 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
+ - **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — DATA-024-20260629-231953（68 tests passed，510 regression passed）
+ - **前置条件**：DATA-022、DATA-023 完成。
+ - **执行约束**：
+   - 默认使用 fixture；live-smoke 必须显式开关。
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/dataflows/fund_flow_source_probe.py && printf '\\n---script---\\n' && sed -n '1,240p' scripts/run_fund_flow_source_probe.py && printf '\\n---tests---\\n' && sed -n '1,260p' tests/test_data024_fund_flow_source_probe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-024] fund_flow_source_probe
+"""主力资金供应商 fallback live-smoke dry-run 与错误归因.
+
+为主力资金 (``fund_flow`` / ``get_individual_fund_flow``) 提供一个独立的探针:
+
+1. **fixture 回放** (默认): 用 5 类 + HAS_DATA 基线 fixture 跑错误归因分类器,
+   证明 network/field-change/no-data/rate-limit/unknown-unit 五类典型故障
+   能被正确识别, 不会被误判成 HAS_DATA.
+2. **live-smoke** (显式开关): 通过 ``TA_LIVE_DATA_SMOKE=1`` 与 ``live_smoke=True``
+   双重门禁后, 才会真正调用 ``route_to_vendor`` 走完整 fallback 链, 抽样验证
+   cn_akshare / cn_astock 实际可用性, 并归因到上述 5 类.
+3. **错误归因报告**: 渲染成 markdown 表格, 写到
+   ``docs/data_source_reports/fund-flow-probe-YYYY-MM-DD.md``.
+4. **接入 DATA-023 能力矩阵**: 通过 ``build_capability_matrix_overlay`` 输出
+   一个只读 overlay, 汇总最近一次 probe 的 5 类计数, 供 capability matrix
+   API / 文档附加显示, 不修改 matrix 本身.
+
+执行约束 (与任务一致):
+- 默认 fixture; live-smoke 必须显式开关 + 环境变量双重门禁.
+- 不打印密钥 / cookie / token / Authorization header.
+- 不把板块资金流 (board_fund_flow) 当个股资金流 (fund_flow).
+- 不写生产 tradingagents.db; 不调用 LLM; 不改 prompts.
+
+使用示例 (库):
+    from tradingagents.dataflows.fund_flow_source_probe import (
+        run_fund_flow_probe,
+        render_fund_flow_probe_report,
+        build_capability_matrix_overlay,
+        FundFlowErrorType,
+    )
+    report = run_fund_flow_probe()                      # fixture dry-run
+    print(render_fund_flow_probe_report(report))
+    overlay = build_capability_matrix_overlay(report)
+
+使用示例 (CLI):
+    python scripts/run_fund_flow_source_probe.py                 # fixture dry-run
+    TA_LIVE_DATA_SMOKE=1 python scripts/run_fund_flow_source_probe.py --live-smoke --symbols 600519.SH
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
+
+from .source_catalog import DataType, get_fallback_chain, get_primary_source
+from .source_freshness_report import (
+    _detect_failed,
+    _detect_normal_no_data,
+    _detect_rate_limited,
+)
+
+
+# ── 常量 ───────────────────────────────────────────────────────────────
+
+_LIVE_ENV = "TA_LIVE_DATA_SMOKE"
+_MAX_SYMBOLS = 3
+DEFAULT_PROBE_SYMBOLS: List[str] = ["600519.SH", "000001.SZ", "603629.SH"]
+
+# 个股资金流的预期单位 — 来自 source_catalog DataType.FUND_FLOW primary 源
+EXPECTED_UNIT = "万元"
+
+# route_to_vendor 上 fund_flow 的方法名
+FUND_FLOW_METHOD = "get_individual_fund_flow"
+
+
+# ── 错误归因枚举 ──────────────────────────────────────────────────────
+
+
+class FundFlowErrorType:
+    """主力资金 probe 错误归因类型.
+
+    与 ``SourceFreshnessStatus`` 的 6 态对应关系:
+      - NETWORK_ERROR  ↔ FAILED (网络/连接/超时)
+      - RATE_LIMITED   ↔ RATE_LIMITED
+      - FIELD_CHANGE   ↔ UNIT_UNVERIFIED (单位 / 字段契约变更)
+      - UNKNOWN_UNIT   ↔ UNIT_UNVERIFIED (数据存在但单位探测不到)
+      - NO_DATA        ↔ NORMAL_NO_DATA
+      - OK             ↔ HAS_DATA
+      - UNKNOWN        ↔ 兜底
+    """
+
+    OK = "ok"
+    NETWORK_ERROR = "network_error"
+    RATE_LIMITED = "rate_limited"
+    FIELD_CHANGE = "field_change"
+    UNKNOWN_UNIT = "unknown_unit"
+    NO_DATA = "no_data"
+    UNKNOWN = "unknown"
+
+    ALL = [
+        OK,
+        NETWORK_ERROR,
+        RATE_LIMITED,
+        FIELD_CHANGE,
+        UNKNOWN_UNIT,
+        NO_DATA,
+        UNKNOWN,
+    ]
+
+    # 5 类任务明确要求的归因 (不含 OK / UNKNOWN)
+    REQUIRED_ATTRIBUTION = [
+        NETWORK_ERROR,
+        FIELD_CHANGE,
+        NO_DATA,
+        RATE_LIMITED,
+        UNKNOWN_UNIT,
+    ]
+
+    LABEL_CN: Dict[str, str] = {
+        OK: "正常",
+        NETWORK_ERROR: "网络失败",
+        RATE_LIMITED: "限流",
+        FIELD_CHANGE: "接口字段变更",
+        UNKNOWN_UNIT: "单位不明",
+        NO_DATA: "正常无数据",
+        UNKNOWN: "未知",
+    }
+
+    # 对应 SourceFreshnessStatus (DATA-018) 的桥接映射, 用于和现有 freshness
+    # 报告对齐语义. UNKNOWN 默认落到 FAILED.
+    TO_FRESHNESS_STATUS: Dict[str, str] = {
+        OK: "HAS_DATA",
+        NETWORK_ERROR: "FAILED",
+        RATE_LIMITED: "RATE_LIMITED",
+        FIELD_CHANGE: "UNIT_UNVERIFIED",
+        UNKNOWN_UNIT: "UNIT_UNVERIFIED",
+        NO_DATA: "NORMAL_NO_DATA",
+        UNKNOWN: "FAILED",
+    }
+
+
+# ── 数据模型 ──────────────────────────────────────────────────────────
+
+
+@dataclass
+class FundFlowProbeResult:
+    """单次 fund_flow probe 结果.
+
+    ``error_type`` 是 5 类错误归因之一 (见 ``FundFlowErrorType``);
+    ``status`` 沿用 SourceFreshnessStatus 的 6 态语义, 方便和现有
+    data health 报告联动.
+    """
+
+    symbol: str = ""
+    vendor: str = ""
+    status: str = "NOT_RUN"  # SourceFreshnessStatus 6 态之一 / SKIPPED / NOT_RUN
+    error_type: str = FundFlowErrorType.UNKNOWN
+    unit: str = ""
+    unit_verified: bool = False
+    record_count: int = 0
+    latency_ms: float = 0.0
+    is_fallback: bool = False
+    fallback_from: str = ""
+    error: str = ""
+    diagnosis: str = ""
+    fixture_id: str = ""
+    probe_mode: str = "fixture"  # fixture / live / skipped
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "vendor": self.vendor,
+            "status": self.status,
+            "error_type": self.error_type,
+            "error_type_label_cn": FundFlowErrorType.LABEL_CN.get(
+                self.error_type, FundFlowErrorType.UNKNOWN
+            ),
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "record_count": self.record_count,
+            "latency_ms": round(self.latency_ms, 1),
+            "is_fallback": self.is_fallback,
+            "fallback_from": self.fallback_from,
+            "error": (self.error or "")[:200],
+            "diagnosis": self.diagnosis,
+            "fixture_id": self.fixture_id,
+            "probe_mode": self.probe_mode,
+        }
+
+
+@dataclass
+class FundFlowProbeReport:
+    """probe 顶层报告."""
+
+    run_at: str = ""
+    date: str = ""
+    mode: str = "fixture"  # fixture / live / skipped
+    env_gated: bool = True
+    symbols: List[str] = field(default_factory=list)
+    results: List[FundFlowProbeResult] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    fallback_chain: List[str] = field(default_factory=list)
+    expected_unit: str = EXPECTED_UNIT
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "date": self.date,
+            "mode": self.mode,
+            "env_gated": self.env_gated,
+            "symbols": self.symbols,
+            "results": [r.to_dict() for r in self.results],
+            "summary": self.summary,
+            "fallback_chain": self.fallback_chain,
+            "expected_unit": self.expected_unit,
+        }
+
+
+# ── fixture: 5 类失败/无数据 + HAS_DATA 基线 ─────────────────────────
+#
+# 每个 fixture 用与 DataCollector.build_raw_evidence / fixture_replay 一致
+# 的结构化 raw_evidence 形态 (status / raw / unit / unit_verified /
+# vendor / record_count / error), 这样分类器面对的是真实数据形态而不是
+# 测试专用 shortcut.
+#
+# 板块资金流 (board_fund_flow) 故意不在这里 — 任务执行约束 §3 明确禁止
+# 把板块资金流当个股资金流.
+
+PROBE_FIXTURES: Dict[str, Dict[str, Any]] = {
+    "HAS_DATA": {
+        "description": "cn_akshare 正常返回 20 日个股资金流",
+        "symbol": "600519.SH",
+        "vendor": "cn_akshare",
+        "raw": (
+            "600519.SH 近20日主力资金净流向：\n"
+            "日期  收盘价  主力净流入-净额  主力净流入-净占比\n"
+            "2026-06-10  1689.00  12345.00  12.34\n"
+            "2026-06-09  1675.50  9876.00   9.88\n"
+            "2026-06-08  1660.20  -5432.00  -5.43\n"
+            "单位：万元"
+        ),
+        "status": "HAS_DATA",
+        "unit": "万元",
+        "unit_verified": True,
+        "record_count": 20,
+        "error": "",
+
+---script---
+#!/usr/bin/env python3
+"""Fund flow source probe CLI — [DATA-024] fund_flow_source_probe.
+
+Runs the main-force capital (主力资金) provider probe. Defaults to a
+fixture dry-run (no network calls). Live smoke requires BOTH
+``--live-smoke`` and ``TA_LIVE_DATA_SMOKE=1``.
+
+Usage:
+    # fixture dry-run (default; always safe; no network)
+    python scripts/run_fund_flow_source_probe.py
+    python scripts/run_fund_flow_source_probe.py --dry-run
+
+    # live smoke (gated by env var)
+    TA_LIVE_DATA_SMOKE=1 python scripts/run_fund_flow_source_probe.py \\
+        --live-smoke --symbols 600519.SH,000001.SZ
+
+Output:
+    docs/data_source_reports/fund-flow-probe-YYYY-MM-DD.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.dataflows.fund_flow_source_probe import (
+    DEFAULT_PROBE_SYMBOLS,
+    build_capability_matrix_overlay,
+    is_live_probe_enabled,
+    render_fund_flow_probe_report,
+    run_fund_flow_probe,
+    save_fund_flow_probe_report,
+)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Main-force fund flow provider probe with error attribution "
+            "[DATA-024] fund_flow_source_probe"
+        ),
+    )
+    parser.add_argument(
+        "--symbols",
+        default=None,
+        help=(
+            f"Comma-separated sample symbols for live-smoke "
+            f"(default: {','.join(DEFAULT_PROBE_SYMBOLS[:3])}). "
+            f"Ignored in fixture dry-run mode."
+        ),
+    )
+    parser.add_argument(
+        "--live-smoke",
+        action="store_true",
+        help=(
+            "Run live network calls against route_to_vendor. "
+            "Still requires TA_LIVE_DATA_SMOKE=1 to actually hit the network; "
+            "otherwise SKIPPED rows are emitted."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output file path (default: docs/data_source_reports/fund-flow-probe-YYYY-MM-DD.md).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print report to stdout without writing a file.",
+    )
+    parser.add_argument(
+        "--stdout-json",
+        action="store_true",
+        help="Print the full report + overlay as JSON to stdout (human logs go to stderr).",
+    )
+    args = parser.parse_args()
+
+    symbols = None
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+
+    wants_live = bool(args.live_smoke)
+    if wants_live and not is_live_probe_enabled():
+        print(
+            "[DATA-024] --live-smoke requested but TA_LIVE_DATA_SMOKE!=1; "
+            "no network calls will be made (results will be SKIPPED).",
+            file=sys.stderr,
+        )
+    if not wants_live:
+        print(
+            "[DATA-024] fixture dry-run mode (default). "
+            "Pass --live-smoke + TA_LIVE_DATA_SMOKE=1 for real network sampling.",
+            file=sys.stderr,
+        )
+
+    report = run_fund_flow_probe(symbols=symbols, live_smoke=wants_live)
+    md = render_fund_flow_probe_report(report)
+    overlay = build_capability_matrix_overlay(report)
+
+    if args.stdout_json:
+        payload = {
+            "report": report.to_dict(),
+            "overlay": overlay,
+            "markdown": md,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        if args.dry_run:
+            print(md)
+        else:
+            if args.output:
+                os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(md)
+                print(f"[DATA-024] Report written to {args.output}", file=sys.stderr)
+            else:
+                path = save_fund_flow_probe_report(report)
+                print(f"[DATA-024] Report written to {path}", file=sys.stderr)
+
+    s = report.summary
+    missing = s.get("required_classes_missing", [])
+    if missing:
+        print(
+            f"[DATA-024] WARNING: required 5-class attribution missing: {missing}",
+            file=sys.stderr,
+        )
+
+    # 退出码约定:
+    #   - fixture dry-run: 任一 fixture 归因错误 (all_passed=False) → exit 1
+    #   - live mode 且 env 未 gate: 出现 NETWORK_ERROR/RATE_LIMITED/FIELD_CHANGE
+    #     /UNKNOWN_UNIT/UNKNOWN → exit 1
+    #   - live mode 且 env gated: 不算失败 (SKIPPED), exit 0
+    if report.mode == "fixture" and not s.get("all_passed"):
+        print(
+            "[DATA-024] WARNING: fixture dry-run did not match expected_error_type "
+            "for every fixture",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if report.mode == "live" and not report.env_gated and s.get("has_failures"):
+        print(
+            "[DATA-024] WARNING: live-smoke observed provider failures",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if report.mode == "live" and report.env_gated:
+        print(
+            f"[DATA-024] SKIPPED={s.get('by_status', {}).get('SKIPPED', 0)} "
+            "(set TA_LIVE_DATA_SMOKE=1 to run live)",
+            file=sys.stderr,
+        )
+    else:
+        by_et = s.get("by_error_type", {})
+        print(
+            "[DATA-024] mode={} total={} OK={} NETWORK_ERROR={} "
+            "RATE_LIMITED={} FIELD_CHANGE={} UNKNOWN_UNIT={} NO_DATA={}".format(
+                report.mode,
+                s.get("total", 0),
+                by_et.get("ok", 0),
+                by_et.get("network_error", 0),
+                by_et.get("rate_limited", 0),
+                by_et.get("field_change", 0),
+                by_et.get("unknown_unit", 0),
+                by_et.get("no_data", 0),
+            ),
+            file=sys.stderr,
+        )
+
+
+if __name__ == "__main__":
+    main()
+
+---tests---
+"""[DATA-024] 主力资金供应商 fallback live-smoke dry-run 与错误归因.
+
+覆盖 fund_flow_source_probe 模块:
+  1. 5 类错误归因分类器 (network/field-change/no-data/rate-limit/unknown-unit)
+     + HAS_DATA 基线 + UNKNOWN 兜底.
+  2. fixture dry-run 默认行为 + live-smoke 双重门禁 (env + flag).
+  3. live 模式通过注入 fetch_fn 走完整分类链路, 验证 route_to_vendor +
+     get_last_hit_vendor 集成.
+  4. CLI 安全 / 输出格式 / 退出码.
+  5. 接入 DATA-023 能力矩阵 overlay (不破坏现有 matrix).
+  6. 安全: 无密钥泄露.
+
+约束: 不调 live API / LLM / prompts / prod DB. 所有 live 路径通过注入 fake
+fetch_fn 模拟, 真实 route_to_vendor 不在测试中被触发.
+
+# [DATA-024] fund_flow_source_probe
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from typing import Any, List
+
+import pytest
+
+from tradingagents.dataflows.fund_flow_source_probe import (
+    DEFAULT_PROBE_SYMBOLS,
+    EXPECTED_UNIT,
+    FUND_FLOW_METHOD,
+    FundFlowErrorType,
+    FundFlowProbeReport,
+    FundFlowProbeResult,
+    PROBE_FIXTURES,
+    _compute_summary,
+    _count_data_lines,
+    _detect_unit,
+    build_capability_matrix_overlay,
+    classify_fund_flow_error_type,
+    get_fund_flow_capability_matrix_item,
+    is_live_probe_enabled,
+    render_fund_flow_probe_report,
+    run_fund_flow_probe,
+    save_fund_flow_probe_report,
+)
+from tradingagents.dataflows.source_catalog import DataType
+
+
+# ─── 1. 错误归因分类器 ────────────────────────────────────────────────
+
+
+class TestErrorTypeClassifier:
+    """[DATA-024] classify_fund_flow_error_type 必须把每类典型输入归到
+    正确的 error_type, 且优先级与 source_freshness_report 对齐."""
+
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            # 限流 — 最高优先级 (即使 raw 里也有"获取失败"字样)
+            (
+                {
+                    "raw_value": "HTTPError 429: Too Many Requests",
+                    "status": "FAILED",
+                    "error": "429 too many requests",
+                },
+                FundFlowErrorType.RATE_LIMITED,
+            ),
+            (
+                {
+                    "raw_value": "个股资金流向数据获取失败：请求过于频繁",
+                    "status": "FAILED",
+                    "error": "",
+                },
+                FundFlowErrorType.RATE_LIMITED,
+            ),
+            # 网络失败
+            (
+                {
+                    "raw_value": "个股资金流向数据获取失败：ConnectionError",
+                    "status": "FAILED",
+                    "error": "",
+                },
+                FundFlowErrorType.NETWORK_ERROR,
+            ),
+            (
+                {
+                    "raw_value": "",
+                    "status": "FAILED",
+                    "error": "ProxyError: cannot connect",
+                },
+                FundFlowErrorType.NETWORK_ERROR,
+            ),
+            (
+                {
+                    "raw_value": "Max retries exceeded with url",
+                    "status": "",
+                    "error": "",
+                },
+                FundFlowErrorType.NETWORK_ERROR,
+            ),
+            # 正常无数据
+            (
+                {"raw_value": "", "status": "NORMAL_NO_DATA", "error": ""},
+                FundFlowErrorType.NO_DATA,
+            ),
+            (
+                {"raw_value": "", "status": "NOT_QUERIED", "error": ""},
+                FundFlowErrorType.NO_DATA,
+            ),
+            (
+                {"raw_value": "", "status": "", "error": ""},
+                FundFlowErrorType.NO_DATA,
+            ),
+            # 字段变更: 单位与预期不符
+            (
+                {
+                    "raw_value": "2026-06-10  123450000.00\n单位：元",
+                    "status": "HAS_DATA",
+                    "unit": "元",
+                    "unit_verified": False,
+                },
+                FundFlowErrorType.FIELD_CHANGE,
+            ),
+            (
+                {
+                    "raw_value": "数据存在但无单位标记",
+                    "status": "HAS_DATA",
+                    "unit": "亿元",
+                    "unit_verified": False,
+                },
+                FundFlowErrorType.FIELD_CHANGE,
+            ),
+            # 单位不明: 数据存在但探测不到单位
+            (
+                {
+                    "raw_value": "2026-06-10  12345.00  -6789.00",
+                    "status": "HAS_DATA",
+                    "unit": "",
+                    "unit_verified": False,
+                },
+                FundFlowErrorType.UNKNOWN_UNIT,
+            ),
+            (
+                {
+                    "raw_value": "数据行,另一行数据",
+                    "status": "HAS_DATA",
+                    "unit_verified": None,
+                },
+                FundFlowErrorType.UNKNOWN_UNIT,
+            ),
+            # OK
+            (
+                {
+                    "raw_value": "600519.SH 近20日主力资金：\n...\n单位：万元",
+                    "status": "HAS_DATA",
+                    "unit": "万元",
+                    "unit_verified": True,
+                },
+                FundFlowErrorType.OK,
+            ),
+            (
+                {
+                    "raw_value": "2026-06-10  12345.00\n单位：万元",
+                    "status": "HAS_DATA",
+                    "unit": "",
+                    "unit_verified": False,
+                },
+                FundFlowErrorType.OK,
+            ),
+        ],
+    )
+    def test_classifier_matches_expected(self, kwargs, expected):
+        got = classify_fund_flow_error_type(**kwargs)
+        assert got == expected, (
+            f"classify_fund_flow_error_type({kwargs}) = {got}, expected {expected}"
+        )
+
+    def test_rate_limit_beats_network_error(self):
+        """同时命中限流与失败模式时, 必须优先返回 RATE_LIMITED."""
+        result = classify_fund_flow_error_type(
+            raw_value="个股资金流向数据获取失败：HTTPError 429",
+            status="FAILED",
+            error="HTTPError 429",
+        )
+        assert result == FundFlowErrorType.RATE_LIMITED
+
+    def test_long_failure_text_not_misjudged_as_ok(self):
+        """DATA-022 边界: 长 FAILED 文本不能被 HAS_DATA 路径误判."""
+        long_text = (
+            "个股资金流向数据获取失败：ConnectionError HTTPSConnectionPool"
+            "(host=push2his.eastmoney.com): Max retries exceeded with url"
+        )
+        assert (
+            classify_fund_flow_error_type(raw_value=long_text, status="FAILED")
+            == FundFlowErrorType.NETWORK_ERROR
+        )
+
+    def test_explicit_status_failed_without_pattern_is_network(self):
+        """status=FAILED 但 error/raw 都不含已知模式时, 默认归网络失败."""
+        result = classify_fund_flow_error_type(
+            raw_value="",
+            status="FAILED",
+            error="",
+        )
+        assert result == FundFlowErrorType.NETWORK_ERROR
+
+    def test_to_freshness_status_mapping_complete(self):
+        """每个 error_type 都必须有 freshness 桥接映射."""
+        for et in FundFlowErrorType.ALL:
+            assert et in FundFlowErrorType.TO_FRESHNESS_STATUS, (
+                f"error_type {et} 缺少 freshness 映射"
+            )
+
+
+# ─── 2. FundFlowErrorType 枚举完整性 ─────────────────────────────────
+
+
+class TestErrorTypeEnum:
+    def test_required_five_classes_present(self):
+        required = {
+            FundFlowErrorType.NETWORK_ERROR,
+            FundFlowErrorType.FIELD_CHANGE,
+            FundFlowErrorType.NO_DATA,
+            FundFlowErrorType.RATE_LIMITED,
+            FundFlowErrorType.UNKNOWN_UNIT,
+        }
+        assert required.issubset(set(FundFlowErrorType.REQUIRED_ATTRIBUTION))
+        assert set(FundFlowErrorType.REQUIRED_ATTRIBUTION) == required
+
+    def test_all_includes_ok_and_unknown(self):
+        assert FundFlowErrorType.OK in FundFlowErrorType.ALL
+        assert FundFlowErrorType.UNKNOWN in FundFlowErrorType.ALL
+
+    def test_label_cn_covers_all(self):
+        for et in FundFlowErrorType.ALL:
+            assert et in FundFlowErrorType.LABEL_CN, f"missing label_cn for {et}"
+
+
+# ─── 3. fixture dry-run ──────────────────────────────────────────────
+
+
+class TestFixtureDryRun:
+    """[DATA-024] 默认 mode=fixture, 不发任何网络请求."""
+
+    def test_default_run_is_fixture(self, monkeypatch):
+        # 即使环境变量被设置, 默认调用也不能走 live (因为没有 live_smoke=True)
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+        report = run_fund_flow_probe()
+        assert report.mode == "fixture"
+        assert report.env_gated is True
+        assert len(report.results) == len(PROBE_FIXTURES)
+        for r in report.results:
+            assert r.probe_mode == "fixture"
+
+    @pytest.mark.parametrize(
+        "fixture_id",
+        list(PROBE_FIXTURES.keys()),
+        ids=list(PROBE_FIXTURES.keys()),
+
+exec
+/bin/zsh -lc "sed -n '200,520p' tradingagents/dataflows/fund_flow_source_probe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        return {
+            "run_at": self.run_at,
+            "date": self.date,
+            "mode": self.mode,
+            "env_gated": self.env_gated,
+            "symbols": self.symbols,
+            "results": [r.to_dict() for r in self.results],
+            "summary": self.summary,
+            "fallback_chain": self.fallback_chain,
+            "expected_unit": self.expected_unit,
+        }
+
+
+# ── fixture: 5 类失败/无数据 + HAS_DATA 基线 ─────────────────────────
+#
+# 每个 fixture 用与 DataCollector.build_raw_evidence / fixture_replay 一致
+# 的结构化 raw_evidence 形态 (status / raw / unit / unit_verified /
+# vendor / record_count / error), 这样分类器面对的是真实数据形态而不是
+# 测试专用 shortcut.
+#
+# 板块资金流 (board_fund_flow) 故意不在这里 — 任务执行约束 §3 明确禁止
+# 把板块资金流当个股资金流.
+
+PROBE_FIXTURES: Dict[str, Dict[str, Any]] = {
+    "HAS_DATA": {
+        "description": "cn_akshare 正常返回 20 日个股资金流",
+        "symbol": "600519.SH",
+        "vendor": "cn_akshare",
+        "raw": (
+            "600519.SH 近20日主力资金净流向：\n"
+            "日期  收盘价  主力净流入-净额  主力净流入-净占比\n"
+            "2026-06-10  1689.00  12345.00  12.34\n"
+            "2026-06-09  1675.50  9876.00   9.88\n"
+            "2026-06-08  1660.20  -5432.00  -5.43\n"
+            "单位：万元"
+        ),
+        "status": "HAS_DATA",
+        "unit": "万元",
+        "unit_verified": True,
+        "record_count": 20,
+        "error": "",
+        "expected_error_type": FundFlowErrorType.OK,
+    },
+    "NETWORK_ERROR": {
+        "description": "AKShare ConnectionError — 需 fallback 到 cn_astock/Eastmoney",
+        "symbol": "000001.SZ",
+        "vendor": "cn_akshare",
+        "raw": "个股资金流向数据获取失败：ConnectionError: HTTPSConnectionPool(host=push2his.eastmoney.com, port=443): Max retries exceeded with url:",
+        "status": "FAILED",
+        "unit": "",
+        "unit_verified": False,
+        "record_count": 0,
+        "error": "ConnectionError: HTTPSConnectionPool Max retries exceeded",
+        "expected_error_type": FundFlowErrorType.NETWORK_ERROR,
+    },
+    "RATE_LIMITED": {
+        "description": "Eastmoney push2his 429 — 限流, 退避后重试或切 fallback",
+        "symbol": "603629.SH",
+        "vendor": "cn_astock",
+        "raw": "个股资金流向数据获取失败：HTTPError 429: Too Many Requests — 请求过于频繁，请稍后重试",
+        "status": "FAILED",
+        "unit": "",
+        "unit_verified": False,
+        "record_count": 0,
+        "error": "HTTPError 429: Too Many Requests — 请求过于频繁",
+        "expected_error_type": FundFlowErrorType.RATE_LIMITED,
+    },
+    "FIELD_CHANGE": {
+        "description": "字段契约变更: 单位从 万元 变成 元 — 数值不能直接展示",
+        "symbol": "600519.SH",
+        "vendor": "cn_akshare",
+        "raw": (
+            "600519.SH 近20日主力资金：\n"
+            "日期  主力净流入-元\n"
+            "2026-06-10  123450000.00\n"
+            "单位：元"
+        ),
+        "status": "HAS_DATA",
+        "unit": "元",
+        "unit_verified": False,
+        "record_count": 20,
+        "error": "",
+        "expected_error_type": FundFlowErrorType.FIELD_CHANGE,
+    },
+    "NORMAL_NO_DATA": {
+        "description": "接口正常但标的近期无资金流记录 (新股 / 停牌 / 退市)",
+        "symbol": "600519.SH",
+        "vendor": "cn_akshare",
+        "raw": "",
+        "status": "NORMAL_NO_DATA",
+        "unit": "",
+        "unit_verified": False,
+        "record_count": 0,
+        "error": "",
+        "expected_error_type": FundFlowErrorType.NO_DATA,
+    },
+    "UNKNOWN_UNIT": {
+        "description": "返回了表格数据但找不到单位标记 — 单位不明, 不能直接入账",
+        "symbol": "000001.SZ",
+        "vendor": "cn_astock",
+        "raw": (
+            "000001.SZ 近20日主力资金：\n"
+            "日期  主力净流入  小单净流入\n"
+            "2026-06-10  12345.00  -6789.00\n"
+            "2026-06-09  9876.00   -5432.00"
+        ),
+        "status": "HAS_DATA",
+        "unit": "",
+        "unit_verified": False,
+        "record_count": 2,
+        "error": "",
+        "expected_error_type": FundFlowErrorType.UNKNOWN_UNIT,
+    },
+}
+
+
+# ── 探测辅助 ──────────────────────────────────────────────────────────
+
+_WAN_YUAN_PATTERN = re.compile(r"单位[：:]\s*万元")
+_YUAN_PATTERN = re.compile(r"单位[：:]\s*元")
+
+
+def _detect_unit(text: str) -> str:
+    """从文本里探测显式单位标记; 探测不到返回空串."""
+    if not text:
+        return ""
+    if _WAN_YUAN_PATTERN.search(text):
+        return "万元"
+    if _YUAN_PATTERN.search(text):
+        return "元"
+    return ""
+
+
+def _count_data_lines(text: str) -> int:
+    """估算返回文本里的数据行数 (去掉标题 / 空行 / 单位说明)."""
+    if not text:
+        return 0
+    lines: List[str] = []
+    for ln in (text or "").strip().split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            continue
+        if s.startswith("单位"):
+            continue
+        if "近" in s and "主力资金" in s and "：" in s:
+            # 标题行: "600519.SH 近20日主力资金净流向："
+            continue
+        lines.append(s)
+    # 第一行通常是表头
+    return max(0, len(lines) - 1)
+
+
+def classify_fund_flow_error_type(
+    raw_value: Any = None,
+    status: str = "",
+    error: str = "",
+    unit: str = "",
+    unit_verified: Optional[bool] = None,
+    expected_unit: str = EXPECTED_UNIT,
+) -> str:
+    """把一条 fund_flow 探测结果归因到 ``FundFlowErrorType`` 之一.
+
+    优先级 (与 source_freshness_report.classify_source_status 对齐):
+      1. RATE_LIMITED — error / raw 命中限流模式
+      2. NETWORK_ERROR — error / raw 命中失败模式 (排除限流)
+      3. NO_DATA — status=NORMAL_NO_DATA 或 raw 空
+      4. FIELD_CHANGE — 数据存在但单位与 expected 不同 (非空)
+      5. UNKNOWN_UNIT — 数据存在但单位探测不到
+      6. OK — 数据存在且单位校验通过
+      7. UNKNOWN — 兜底
+
+    *expected_unit* 默认 ``万元`` (来自 source_catalog DataType.FUND_FLOW).
+    """
+    raw_str = raw_value if isinstance(raw_value, str) else (
+        "" if raw_value is None else str(raw_value)
+    )
+    err_str = error or ""
+
+    # 1. 限流优先 (最具体的失败类型)
+    if err_str and _detect_rate_limited(err_str):
+        return FundFlowErrorType.RATE_LIMITED
+    if raw_str and _detect_rate_limited(raw_str):
+        return FundFlowErrorType.RATE_LIMITED
+
+    # 2. 网络/接口失败模式
+    if err_str and _detect_failed(err_str):
+        return FundFlowErrorType.NETWORK_ERROR
+    if raw_str and _detect_failed(raw_str):
+        return FundFlowErrorType.NETWORK_ERROR
+    if status == "FAILED":
+        return FundFlowErrorType.NETWORK_ERROR
+
+    # 3. 正常无数据
+    if status == "NORMAL_NO_DATA":
+        return FundFlowErrorType.NO_DATA
+    if status in ("NOT_QUERIED", "SKIPPED"):
+        return FundFlowErrorType.NO_DATA
+    if not raw_str and not err_str:
+        return FundFlowErrorType.NO_DATA
+    if raw_str and _detect_normal_no_data(raw_str) and "近" not in raw_str[:20]:
+        # 文本里只有 NORMAL_NO_DATA marker / "暂无" / "未查询到"
+        return FundFlowErrorType.NO_DATA
+
+    # 4-6. 数据存在的细分
+    has_data = bool(raw_str) and (
+        status in ("HAS_DATA", "") or not status.startswith("FAILED")
+    )
+    if has_data:
+        # 4. 字段契约变更: 单位非空且与预期不同
+        if unit and expected_unit and unit != expected_unit:
+            return FundFlowErrorType.FIELD_CHANGE
+        # 单位探测: 优先用文本里显式标记, 否则 fallback 到入参 unit
+        detected = _detect_unit(raw_str) or unit
+        if detected and expected_unit and detected != expected_unit:
+            return FundFlowErrorType.FIELD_CHANGE
+        # 5. 单位不明: 没有任何单位信号 + unit_verified=False
+        if not detected and unit_verified is False:
+            return FundFlowErrorType.UNKNOWN_UNIT
+        if not detected and unit_verified is None:
+            return FundFlowErrorType.UNKNOWN_UNIT
+        # 6. OK
+        return FundFlowErrorType.OK
+
+    return FundFlowErrorType.UNKNOWN
+
+
+# ── 单条探测 ──────────────────────────────────────────────────────────
+
+
+def _probe_fixture(
+    fixture_id: str,
+    fixture: Dict[str, Any],
+    *,
+    expected_unit: str = EXPECTED_UNIT,
+) -> FundFlowProbeResult:
+    """对单个 fixture 跑分类器, 生成 probe result."""
+    raw = fixture.get("raw", "")
+    status = fixture.get("status", "")
+    error = fixture.get("error", "")
+    unit = fixture.get("unit", "")
+    unit_verified = fixture.get("unit_verified")
+
+    error_type = classify_fund_flow_error_type(
+        raw_value=raw,
+        status=status,
+        error=error,
+        unit=unit,
+        unit_verified=unit_verified,
+        expected_unit=expected_unit,
+    )
+
+    # 优先用 fixture 显式声明的 record_count, 否则从 raw 估算
+    record_count = fixture.get("record_count")
+    if record_count is None:
+        record_count = _count_data_lines(raw)
+
+    detected_unit = unit or _detect_unit(raw)
+
+    return FundFlowProbeResult(
+        symbol=fixture.get("symbol", ""),
+        vendor=fixture.get("vendor", ""),
+        status=FundFlowErrorType.TO_FRESHNESS_STATUS.get(
+            error_type, status or "FAILED"
+        ),
+        error_type=error_type,
+        unit=detected_unit,
+        unit_verified=(unit_verified is True),
+        record_count=int(record_count or 0),
+        latency_ms=0.0,
+        is_fallback=False,
+        fallback_from="",
+        error=error,
+        diagnosis=fixture.get("description", ""),
+        fixture_id=fixture_id,
+        probe_mode="fixture",
+    )
+
+
+def _probe_live_symbol(
+    symbol: str,
+    *,
+    fetch_fn: Optional[Callable[[str], Any]] = None,
+    expected_unit: str = EXPECTED_UNIT,
+    last_hit_vendor_fn: Optional[Callable[[], str]] = None,
+) -> FundFlowProbeResult:
+    """对一个 symbol 真实调用 route_to_vendor 拉个股资金流并归因.
+
+    *fetch_fn* / *last_hit_vendor_fn* 用于测试注入; 默认走
+    ``tradingagents.dataflows.interface.route_to_vendor`` 全链路 fallback.
+    """
+    from .interface import get_last_hit_vendor, route_to_vendor
+
+    if fetch_fn is None:
+        fetch_fn = lambda sym: route_to_vendor(FUND_FLOW_METHOD, sym)  # noqa: E731
+    if last_hit_vendor_fn is None:
+        last_hit_vendor_fn = lambda: get_last_hit_vendor(FUND_FLOW_METHOD)  # noqa: E731
+
+    result = FundFlowProbeResult(
+        symbol=symbol,
+        probe_mode="live",
+    )
+
+    t0 = time.monotonic()
+    try:
+        raw = fetch_fn(symbol)
+        result.latency_ms = (time.monotonic() - t0) * 1000
+        if isinstance(raw, str):
+            detected_unit = _detect_unit(raw)
+            record_count = _count_data_lines(raw)
+            # 调用方层 (cn_astock) 一般会带 "单位：万元" 标记;
+            # cn_akshare 不显式带但契约已知, 默认按 catalog unit 校验.
+            unit_for_classify = detected_unit or expected_unit
+            unit_verified = bool(detected_unit and detected_unit == expected_unit) or (
+                not detected_unit and record_count > 0
+            )
+            error_type = classify_fund_flow_error_type(
+                raw_value=raw,
+                status="",
+                error="",
+
+exec
+/bin/zsh -lc "sed -n '520,1040p' tradingagents/dataflows/fund_flow_source_probe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                error="",
+                unit=unit_for_classify,
+                unit_verified=unit_verified,
+                expected_unit=expected_unit,
+            )
+            result.error_type = error_type
+            result.status = FundFlowErrorType.TO_FRESHNESS_STATUS.get(
+                error_type, "HAS_DATA"
+            )
+            result.unit = detected_unit or (expected_unit if unit_verified else "")
+            result.unit_verified = unit_verified
+            result.record_count = record_count
+            result.vendor = last_hit_vendor_fn() or ""
+            result.is_fallback = bool(result.vendor) and "astock" in result.vendor
+            result.fallback_from = "cn_akshare" if result.is_fallback else ""
+            if error_type == FundFlowErrorType.OK:
+                result.diagnosis = f"live ok, vendor={result.vendor or 'unknown'}"
+            else:
+                result.diagnosis = (
+                    f"live classified as {error_type}; "
+                    f"unit={detected_unit or '(none)'} record_count={record_count}"
+                )
+        else:
+            result.error_type = FundFlowErrorType.UNKNOWN
+            result.status = "FAILED"
+            result.error = f"unexpected return type: {type(raw).__name__}"
+            result.diagnosis = "live returned non-string"
+    except Exception as exc:
+        result.latency_ms = (time.monotonic() - t0) * 1000
+        err_str = f"{type(exc).__name__}: {exc}"
+        result.error = err_str
+        result.error_type = classify_fund_flow_error_type(
+            raw_value="",
+            status="FAILED",
+            error=err_str,
+            unit="",
+            unit_verified=False,
+            expected_unit=expected_unit,
+        )
+        result.status = FundFlowErrorType.TO_FRESHNESS_STATUS.get(
+            result.error_type, "FAILED"
+        )
+        result.diagnosis = f"live exception: {err_str}"
+
+    return result
+
+
+# ── 顶层入口 ──────────────────────────────────────────────────────────
+
+
+def is_live_probe_enabled() -> bool:
+    """live-smoke 是否被环境变量放行."""
+    return os.getenv(_LIVE_ENV, "").strip() == "1"
+
+
+def _get_fallback_chain() -> List[str]:
+    try:
+        return list(get_fallback_chain(DataType.FUND_FLOW))
+    except Exception:
+        return []
+
+
+def _get_primary_vendor() -> str:
+    try:
+        primary = get_primary_source(DataType.FUND_FLOW)
+        return primary.vendor if primary else ""
+    except Exception:
+        return ""
+
+
+def run_fund_flow_probe(
+    symbols: Optional[List[str]] = None,
+    *,
+    live_smoke: bool = False,
+    fetch_fn: Optional[Callable[[str], Any]] = None,
+    last_hit_vendor_fn: Optional[Callable[[], str]] = None,
+    today: Optional[str] = None,
+    expected_unit: str = EXPECTED_UNIT,
+) -> FundFlowProbeReport:
+    """运行 fund_flow probe.
+
+    Args:
+        symbols: live-smoke 抽样标的, 默认 ``DEFAULT_PROBE_SYMBOLS``.
+        live_smoke: True 才允许走真实网络调用; 仍需 ``TA_LIVE_DATA_SMOKE=1``
+            双重门禁, 否则自动降级为 SKIPPED.
+        fetch_fn / last_hit_vendor_fn: 测试注入点; 默认走真实 route_to_vendor.
+        today: 测试用固定日期 (YYYY-MM-DD).
+
+    Returns:
+        ``FundFlowProbeReport`` — fixture 模式一定有 6 条 result;
+        live 模式按 symbols 数量产出; gated 模式产 SKIPPED 行.
+    """
+    now = datetime.now()
+    if today:
+        date_str = today[:10]
+    else:
+        date_str = now.strftime("%Y-%m-%d")
+
+    report = FundFlowProbeReport(
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S") if not today else f"{today} 00:00:00",
+        date=date_str,
+        fallback_chain=_get_fallback_chain(),
+        expected_unit=expected_unit,
+    )
+
+    live_env_ok = is_live_probe_enabled()
+    wants_live = bool(live_smoke)
+
+    if not wants_live:
+        # —— fixture dry-run: 跑 5 类 + HAS_DATA 基线 ——
+        report.mode = "fixture"
+        report.env_gated = True
+        report.symbols = list(symbols) if symbols else list(DEFAULT_PROBE_SYMBOLS)
+        for fid, fixture in PROBE_FIXTURES.items():
+            report.results.append(
+                _probe_fixture(fid, fixture, expected_unit=expected_unit)
+            )
+        report.summary = _compute_summary(report.results)
+        return report
+
+    # —— live-smoke 路径 ——
+    report.mode = "live"
+    report.env_gated = not live_env_ok
+    if symbols is None:
+        symbols = list(DEFAULT_PROBE_SYMBOLS)
+    report.symbols = list(symbols[:_MAX_SYMBOLS])
+
+    if not live_env_ok:
+        # 双重门禁未通过 → 输出 SKIPPED 行, 不发任何网络请求
+        for sym in report.symbols:
+            report.results.append(
+                FundFlowProbeResult(
+                    symbol=sym,
+                    status="SKIPPED",
+                    error_type=FundFlowErrorType.UNKNOWN,
+                    probe_mode="skipped",
+                    diagnosis=(
+                        "live-smoke requested but TA_LIVE_DATA_SMOKE!=1; "
+                        "no network call made"
+                    ),
+                )
+            )
+        report.summary = _compute_summary(report.results)
+        return report
+
+    for sym in report.symbols:
+        report.results.append(
+            _probe_live_symbol(
+                sym,
+                fetch_fn=fetch_fn,
+                last_hit_vendor_fn=last_hit_vendor_fn,
+                expected_unit=expected_unit,
+            )
+        )
+
+    report.summary = _compute_summary(report.results)
+    return report
+
+
+# ── 汇总 ──────────────────────────────────────────────────────────────
+
+
+def _compute_summary(results: List[FundFlowProbeResult]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "total": len(results),
+        "by_error_type": {},
+        "by_status": {},
+        "fixture_coverage": [],
+        "required_classes_covered": [],
+        "required_classes_missing": [],
+        "has_failures": False,
+        "all_passed": False,
+    }
+
+    for r in results:
+        et = r.error_type
+        summary["by_error_type"][et] = summary["by_error_type"].get(et, 0) + 1
+        st = r.status
+        summary["by_status"][st] = summary["by_status"].get(st, 0) + 1
+        if r.fixture_id:
+            summary["fixture_coverage"].append(r.fixture_id)
+
+    covered = set(summary["by_error_type"].keys())
+    required = set(FundFlowErrorType.REQUIRED_ATTRIBUTION)
+    summary["required_classes_covered"] = sorted(required & covered)
+    summary["required_classes_missing"] = sorted(required - covered)
+
+    runnable = [r for r in results if r.status != "SKIPPED"]
+    failure_types = {
+        FundFlowErrorType.NETWORK_ERROR,
+        FundFlowErrorType.RATE_LIMITED,
+        FundFlowErrorType.FIELD_CHANGE,
+        FundFlowErrorType.UNKNOWN_UNIT,
+        FundFlowErrorType.UNKNOWN,
+    }
+    summary["has_failures"] = any(
+        r.error_type in failure_types and r.probe_mode == "live" for r in runnable
+    )
+    # fixture 模式: 每条 fixture 必须命中 expected_error_type 才算通过
+    if runnable and all(r.probe_mode == "fixture" for r in runnable):
+        summary["all_passed"] = all(
+            r.error_type
+            == PROBE_FIXTURES.get(r.fixture_id, {}).get(
+                "expected_error_type", r.error_type
+            )
+            for r in runnable
+        )
+    else:
+        summary["all_passed"] = (
+            len(runnable) > 0
+            and not summary["has_failures"]
+            and all(r.error_type in (FundFlowErrorType.OK, FundFlowErrorType.NO_DATA) for r in runnable)
+        )
+
+    return summary
+
+
+# ── 渲染 ──────────────────────────────────────────────────────────────
+
+
+def render_fund_flow_probe_report(report: FundFlowProbeReport) -> str:
+    """渲染成 markdown 报告."""
+    lines: List[str] = []
+    lines.append("# 主力资金供应商 Probe 报告 — fund_flow_source_probe")
+    lines.append("")
+    lines.append("> [DATA-024] 主力资金 fallback live-smoke dry-run 与错误归因.")
+    lines.append(
+        "> 区分 5 类典型故障: 网络失败 / 接口字段变更 / 正常无数据 / 限流 / 单位不明."
+    )
+    lines.append("")
+    lines.append(f"- **Date**: {report.date}")
+    lines.append(f"- **Run at**: {report.run_at}")
+    lines.append(f"- **Mode**: `{report.mode}`")
+    gate_text = (
+        "Yes (TA_LIVE_DATA_SMOKE not set — no live network calls)"
+        if report.env_gated and report.mode == "live"
+        else ("No (live calls executed)" if report.mode == "live" else "n/a (fixture dry-run)")
+    )
+    lines.append(f"- **Env gated**: {gate_text}")
+    lines.append(f"- **Symbols**: {', '.join(report.symbols) or '-'}")
+    lines.append(f"- **Expected unit**: `{report.expected_unit}`")
+    chain = " → ".join(report.fallback_chain) if report.fallback_chain else "-"
+    lines.append(f"- **Fallback chain (catalog)**: {chain}")
+    lines.append("")
+
+    s = report.summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Total probes | {s.get('total', 0)} |")
+    lines.append(f"| Required 5-class covered | {', '.join(s.get('required_classes_covered', [])) or '-'} |")
+    missing = s.get("required_classes_missing", [])
+    lines.append(f"| Required 5-class missing | {', '.join(missing) if missing else 'none ✓'} |")
+    lines.append(f"| All runnable passed | {'Yes' if s.get('all_passed') else 'No'} |")
+    lines.append(f"| Has live failures | {'Yes' if s.get('has_failures') else 'No'} |")
+    lines.append("")
+
+    by_et = s.get("by_error_type", {})
+    if by_et:
+        lines.append("### By error_type")
+        lines.append("")
+        lines.append("| error_type | label_cn | count |")
+        lines.append("|------------|----------|-------|")
+        for et in FundFlowErrorType.ALL:
+            if et in by_et:
+                lines.append(
+                    f"| `{et}` | {FundFlowErrorType.LABEL_CN.get(et, et)} | {by_et[et]} |"
+                )
+        lines.append("")
+
+    lines.append("## Probe Details")
+    lines.append("")
+    lines.append(
+        "| Symbol | Vendor | Mode | Status | error_type | Unit | Verified |"
+        " Records | Latency (ms) | Fixture | Diagnosis |"
+    )
+    lines.append(
+        "|--------|--------|------|--------|------------|------|----------|"
+        "---------|-------------|---------|----------|"
+    )
+    for r in report.results:
+        diag = (r.diagnosis or "")[:60]
+        if len(r.diagnosis) > 60:
+            diag += "..."
+        lines.append(
+            f"| {r.symbol or '-'} | {r.vendor or '-'} | {r.probe_mode} "
+            f"| {r.status} | `{r.error_type}` | {r.unit or '-'} "
+            f"| {'Yes' if r.unit_verified else '-'} | {r.record_count} "
+            f"| {r.latency_ms:.0f} | {r.fixture_id or '-'} | {diag or '-'} |"
+        )
+    lines.append("")
+
+    if report.mode == "fixture":
+        lines.append("## Fixture Coverage")
+        lines.append("")
+        lines.append("5 类失败/无数据 + HAS_DATA 基线都已回放, 用于证明错误归因分类器对每类典型输入都能给出正确标签.")
+        lines.append("")
+        lines.append("| fixture_id | expected → actual | description |")
+        lines.append("|------------|-------------------|-------------|")
+        for r in report.results:
+            if not r.fixture_id:
+                continue
+            expected = PROBE_FIXTURES.get(r.fixture_id, {}).get(
+                "expected_error_type", "?"
+            )
+            ok_mark = "✓" if expected == r.error_type else "✗"
+            lines.append(
+                f"| `{r.fixture_id}` | `{expected}` → `{r.error_type}` {ok_mark} "
+                f"| {r.diagnosis} |"
+            )
+        lines.append("")
+
+    if report.mode == "live" and report.env_gated:
+        lines.append("## Live-Smoke Gate")
+        lines.append("")
+        lines.append(
+            "本报告为 live-smoke 模式但环境变量 `TA_LIVE_DATA_SMOKE` 未设置为 `1`, "
+            "因此未发起任何真实网络调用. 所有标的标记为 `SKIPPED`."
+        )
+        lines.append("")
+        lines.append(
+            "如需实盘抽样, 请显式设置环境变量后重跑:"
+        )
+        lines.append("")
+        lines.append("```bash")
+        lines.append(
+            "TA_LIVE_DATA_SMOKE=1 python scripts/run_fund_flow_source_probe.py "
+            "--live-smoke --symbols 600519.SH,000001.SZ"
+        )
+        lines.append("```")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by fund_flow_source_probe.py — `[DATA-024] fund_flow_source_probe`*")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def save_fund_flow_probe_report(
+    report: FundFlowProbeReport,
+    output_dir: str = "docs/data_source_reports",
+) -> str:
+    """把 markdown 报告写到 ``docs/data_source_reports/fund-flow-probe-YYYY-MM-DD.md``."""
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"fund-flow-probe-{report.date}.md")
+    md = render_fund_flow_probe_report(report)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    return path
+
+
+# ── DATA-023 能力矩阵 overlay (只读附加, 不改 matrix 本身) ────────────
+
+
+def build_capability_matrix_overlay(
+    report: FundFlowProbeReport,
+) -> Dict[str, Any]:
+    """从 probe 报告生成一个 overlay, 供 capability matrix API / 文档附加.
+
+    设计原则:
+    - **不修改** ``source_capability_matrix.get_source_capability_matrix()`` 的输出
+      (避免破坏 DATA-023 的 31 个测试与已发布 docs/SOURCE_CAPABILITY_MATRIX.md).
+    - overlay 只提供 *最近一次 probe 的统计快照*, 调用方 (API / UI) 可以把它
+      并到 matrix 的 ``fund_flow`` entry 里展示, 也可以独立显示.
+    - 不输出任何敏感字段.
+    """
+    by_et = dict(report.summary.get("by_error_type", {}))
+    return {
+        "data_type": DataType.FUND_FLOW.value,
+        "probe_source": "[DATA-024] fund_flow_source_probe",
+        "probe_run_at": report.run_at,
+        "probe_mode": report.mode,
+        "env_gated": report.env_gated,
+        "expected_unit": report.expected_unit,
+        "fallback_chain_catalog": report.fallback_chain,
+        "total_probes": report.summary.get("total", 0),
+        "by_error_type": by_et,
+        "required_classes_covered": list(
+            report.summary.get("required_classes_covered", [])
+        ),
+        "required_classes_missing": list(
+            report.summary.get("required_classes_missing", [])
+        ),
+        "all_passed": bool(report.summary.get("all_passed")),
+        "has_live_failures": bool(report.summary.get("has_failures")),
+        "notes": (
+            "fixture dry-run 覆盖 5 类失败/无数据 + HAS_DATA 基线; "
+            "live-smoke 默认关闭, 需 TA_LIVE_DATA_SMOKE=1 + live_smoke=True 双重门禁."
+        ),
+    }
+
+
+def get_fund_flow_capability_matrix_item(
+    *,
+    include_probe_overlay: bool = True,
+    probe_report: Optional[FundFlowProbeReport] = None,
+) -> Dict[str, Any]:
+    """获取 fund_flow 的能力矩阵 entry, 可选附加 probe overlay.
+
+    用于让 capability matrix API 在不修改 matrix 模块的前提下,
+    把 fund_flow probe 状态一起返回.
+    """
+    from .source_capability_matrix import get_matrix_item
+
+    item = get_matrix_item(DataType.FUND_FLOW.value)
+    if item is None:
+        return {}
+    if not include_probe_overlay:
+        return item
+    if probe_report is None:
+        probe_report = run_fund_flow_probe()
+    item = dict(item)
+    item["probe_overlay"] = build_capability_matrix_overlay(probe_report)
+    return item
+
+exec
+/bin/zsh -lc "grep -n \"unknown\\|unit\\|live\" -n tests/test_data024_fund_flow_source_probe.py | head -80 && sed -n '260,620p' tests/test_data024_fund_flow_source_probe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+1:"""[DATA-024] 主力资金供应商 fallback live-smoke dry-run 与错误归因.
+4:  1. 5 类错误归因分类器 (network/field-change/no-data/rate-limit/unknown-unit)
+6:  2. fixture dry-run 默认行为 + live-smoke 双重门禁 (env + flag).
+7:  3. live 模式通过注入 fetch_fn 走完整分类链路, 验证 route_to_vendor +
+13:约束: 不调 live API / LLM / prompts / prod DB. 所有 live 路径通过注入 fake
+39:    _detect_unit,
+43:    is_live_probe_enabled,
+121:                    "unit": "元",
+122:                    "unit_verified": False,
+130:                    "unit": "亿元",
+131:                    "unit_verified": False,
+140:                    "unit": "",
+141:                    "unit_verified": False,
+149:                    "unit_verified": None,
+158:                    "unit": "万元",
+159:                    "unit_verified": True,
+167:                    "unit": "",
+168:                    "unit_verified": False,
+232:    def test_all_includes_ok_and_unknown(self):
+248:        # 即使环境变量被设置, 默认调用也不能走 live (因为没有 live_smoke=True)
+285:        # fixture 模式下, 即使传了 symbols 也不应该有 live latency
+301:# ─── 4. live-smoke 双重门禁 ──────────────────────────────────────────
+305:    """[DATA-024] live-smoke 必须 (flag=True) AND (env=1) 才真正调用."""
+307:    def test_live_flag_without_env_returns_skipped(self, monkeypatch):
+309:        assert is_live_probe_enabled() is False
+312:            symbols=["600519.SH"], live_smoke=True
+314:        assert report.mode == "live"
+321:    def test_live_flag_with_env_but_no_flag_stays_fixture(self, monkeypatch):
+322:        """env=1 但没传 live_smoke=True → 仍走 fixture, 不发网络请求."""
+328:    def test_live_with_env_and_flag_uses_fetch_fn(self, monkeypatch):
+329:        """env=1 + live_smoke=True + 注入 fetch_fn → 真走 live 分类路径,
+347:            live_smoke=True,
+351:        assert report.mode == "live"
+359:        assert r.probe_mode == "live"
+362:    def test_live_with_env_and_flag_fallback_detected(self, monkeypatch):
+374:            live_smoke=True,
+383:    def test_live_network_error_attribution(self, monkeypatch):
+394:            live_smoke=True,
+403:    def test_live_rate_limit_attribution(self, monkeypatch):
+414:            live_smoke=True,
+420:    def test_live_exception_classified_as_network(self, monkeypatch):
+432:            live_smoke=True,
+440:    def test_live_symbols_capped_to_max(self, monkeypatch):
+441:        """[DATA-P1-ASTOCK-LIVE-SMOKE] 约定: live smoke 抽样标的 <= _MAX_SYMBOLS."""
+454:            live_smoke=True,
+466:    def test_detect_unit_wan_yuan(self):
+467:        assert _detect_unit("...数据...\n单位：万元") == "万元"
+469:    def test_detect_unit_yuan(self):
+470:        assert _detect_unit("单位：元") == "元"
+472:    def test_detect_unit_unknown(self):
+473:        assert _detect_unit("no unit marker here") == ""
+474:        assert _detect_unit("") == ""
+476:    def test_count_data_lines_strips_title_and_unit(self):
+506:    def test_render_live_gated_report(self, monkeypatch):
+508:        report = run_fund_flow_probe(symbols=["600519.SH"], live_smoke=True)
+541:        assert overlay["expected_unit"] == EXPECTED_UNIT
+708:    def test_cli_live_smoke_without_env_exits_zero(self, monkeypatch):
+709:        """live-smoke 但 env 未设置 → SKIPPED, exit 0 (不算失败)."""
+715:                "--live-smoke",
+766:    def test_empty_symbols_list_in_live_mode(self, monkeypatch):
+767:        """live 模式传空 symbols → 0 result, 不崩."""
+769:        report = run_fund_flow_probe(symbols=[], live_smoke=True)
+770:        assert report.mode == "live"
+773:    def test_custom_expected_unit(self):
+774:        """允许覆盖 expected_unit (例如未来切到元单位时)."""
+775:        report = run_fund_flow_probe(expected_unit="元")
+776:        # FIELD_CHANGE fixture 原本 unit=元 vs expected=万元 → field_change
+781:        # unit=元 与 expected_unit=元 一致, 不再是 field_change
+        ids=list(PROBE_FIXTURES.keys()),
+    )
+    def test_each_fixture_classified_as_expected(self, fixture_id):
+        report = run_fund_flow_probe()
+        matching = [r for r in report.results if r.fixture_id == fixture_id]
+        assert len(matching) == 1
+        r = matching[0]
+        expected = PROBE_FIXTURES[fixture_id]["expected_error_type"]
+        assert r.error_type == expected, (
+            f"fixture {fixture_id}: error_type={r.error_type}, expected={expected}"
+        )
+
+    def test_fixture_coverage_includes_required_five(self):
+        report = run_fund_flow_probe()
+        covered = set(report.summary["required_classes_covered"])
+        required = set(FundFlowErrorType.REQUIRED_ATTRIBUTION)
+        missing = required - covered
+        assert not missing, f"fixture 未覆盖必选 5 类: {missing}"
+
+    def test_fixture_summary_all_passed(self):
+        report = run_fund_flow_probe()
+        assert report.summary["all_passed"] is True
+        assert report.summary["required_classes_missing"] == []
+
+    def test_fixture_mode_does_not_consume_symbols_for_calls(self):
+        # fixture 模式下, 即使传了 symbols 也不应该有 live latency
+        report = run_fund_flow_probe(symbols=["600519.SH"])
+        for r in report.results:
+            assert r.probe_mode == "fixture"
+            assert r.latency_ms == 0.0
+
+    def test_failed_misjudged_boundary(self):
+        """长 FAILED 文本必须归到 network_error, 不被 HAS_DATA len>20 路径吃掉."""
+        report = run_fund_flow_probe()
+        failed_fixture = next(
+            r for r in report.results if r.fixture_id == "NETWORK_ERROR"
+        )
+        assert failed_fixture.error_type == FundFlowErrorType.NETWORK_ERROR
+        assert failed_fixture.status == "FAILED"
+
+
+# ─── 4. live-smoke 双重门禁 ──────────────────────────────────────────
+
+
+class TestLiveSmokeGating:
+    """[DATA-024] live-smoke 必须 (flag=True) AND (env=1) 才真正调用."""
+
+    def test_live_flag_without_env_returns_skipped(self, monkeypatch):
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        assert is_live_probe_enabled() is False
+
+        report = run_fund_flow_probe(
+            symbols=["600519.SH"], live_smoke=True
+        )
+        assert report.mode == "live"
+        assert report.env_gated is True
+        assert len(report.results) == 1
+        assert report.results[0].status == "SKIPPED"
+        assert report.results[0].probe_mode == "skipped"
+        assert "TA_LIVE_DATA_SMOKE" in report.results[0].diagnosis
+
+    def test_live_flag_with_env_but_no_flag_stays_fixture(self, monkeypatch):
+        """env=1 但没传 live_smoke=True → 仍走 fixture, 不发网络请求."""
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+        report = run_fund_flow_probe(symbols=["600519.SH"])
+        assert report.mode == "fixture"
+        assert report.env_gated is True  # fixture mode 下 env_gated 始终 True
+
+    def test_live_with_env_and_flag_uses_fetch_fn(self, monkeypatch):
+        """env=1 + live_smoke=True + 注入 fetch_fn → 真走 live 分类路径,
+        但因为 fetch_fn 是 fake, 没有真实网络调用."""
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+
+        calls: List[str] = []
+
+        def fake_fetch(symbol: str) -> str:
+            calls.append(symbol)
+            return (
+                f"{symbol} 近20日主力资金净流向：\n"
+                "日期  主力净流入\n2026-06-10  12345.00\n单位：万元"
+            )
+
+        def fake_last_hit() -> str:
+            return "cn_akshare"
+
+        report = run_fund_flow_probe(
+            symbols=["600519.SH"],
+            live_smoke=True,
+            fetch_fn=fake_fetch,
+            last_hit_vendor_fn=fake_last_hit,
+        )
+        assert report.mode == "live"
+        assert report.env_gated is False
+        assert calls == ["600519.SH"]
+        assert len(report.results) == 1
+        r = report.results[0]
+        assert r.error_type == FundFlowErrorType.OK
+        assert r.status == "HAS_DATA"
+        assert r.vendor == "cn_akshare"
+        assert r.probe_mode == "live"
+        assert r.latency_ms >= 0.0
+
+    def test_live_with_env_and_flag_fallback_detected(self, monkeypatch):
+        """当 last_hit_vendor 是 cn_astock 时, 应识别为 fallback."""
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+
+        def fake_fetch(symbol: str) -> str:
+            return f"{symbol} 资金流：\n2026-06-10  12345.00\n单位：万元"
+
+        def fake_last_hit() -> str:
+            return "cn_astock"
+
+        report = run_fund_flow_probe(
+            symbols=["000001.SZ"],
+            live_smoke=True,
+            fetch_fn=fake_fetch,
+            last_hit_vendor_fn=fake_last_hit,
+        )
+        r = report.results[0]
+        assert r.error_type == FundFlowErrorType.OK
+        assert r.is_fallback is True
+        assert r.fallback_from == "cn_akshare"
+
+    def test_live_network_error_attribution(self, monkeypatch):
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+
+        def fake_fetch(symbol: str) -> str:
+            return "个股资金流向数据获取失败：ConnectionError timeout"
+
+        def fake_last_hit() -> str:
+            return ""
+
+        report = run_fund_flow_probe(
+            symbols=["600519.SH"],
+            live_smoke=True,
+            fetch_fn=fake_fetch,
+            last_hit_vendor_fn=fake_last_hit,
+        )
+        r = report.results[0]
+        assert r.error_type == FundFlowErrorType.NETWORK_ERROR
+        assert r.status == "FAILED"
+        assert report.summary["has_failures"] is True
+
+    def test_live_rate_limit_attribution(self, monkeypatch):
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+
+        def fake_fetch(symbol: str) -> str:
+            return "HTTPError 429: 请求过于频繁"
+
+        def fake_last_hit() -> str:
+            return ""
+
+        report = run_fund_flow_probe(
+            symbols=["600519.SH"],
+            live_smoke=True,
+            fetch_fn=fake_fetch,
+            last_hit_vendor_fn=fake_last_hit,
+        )
+        assert report.results[0].error_type == FundFlowErrorType.RATE_LIMITED
+
+    def test_live_exception_classified_as_network(self, monkeypatch):
+        """fetch_fn 抛异常时, probe 必须捕获并归因, 而不是崩溃."""
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+
+        def fake_fetch(symbol: str) -> str:
+            raise ConnectionError("network down")
+
+        def fake_last_hit() -> str:
+            return ""
+
+        report = run_fund_flow_probe(
+            symbols=["600519.SH"],
+            live_smoke=True,
+            fetch_fn=fake_fetch,
+            last_hit_vendor_fn=fake_last_hit,
+        )
+        r = report.results[0]
+        assert r.error_type == FundFlowErrorType.NETWORK_ERROR
+        assert "ConnectionError" in r.error
+
+    def test_live_symbols_capped_to_max(self, monkeypatch):
+        """[DATA-P1-ASTOCK-LIVE-SMOKE] 约定: live smoke 抽样标的 <= _MAX_SYMBOLS."""
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+        from tradingagents.dataflows.fund_flow_source_probe import _MAX_SYMBOLS
+
+        def fake_fetch(symbol: str) -> str:
+            return f"{symbol} 数据\n单位：万元"
+
+        def fake_last_hit() -> str:
+            return "cn_akshare"
+
+        many = [f"{i:06d}.SH" for i in range(10)]
+        report = run_fund_flow_probe(
+            symbols=many,
+            live_smoke=True,
+            fetch_fn=fake_fetch,
+            last_hit_vendor_fn=fake_last_hit,
+        )
+        assert len(report.results) <= _MAX_SYMBOLS
+        assert len(report.symbols) <= _MAX_SYMBOLS
+
+
+# ─── 5. 辅助函数 ─────────────────────────────────────────────────────
+
+
+class TestHelpers:
+    def test_detect_unit_wan_yuan(self):
+        assert _detect_unit("...数据...\n单位：万元") == "万元"
+
+    def test_detect_unit_yuan(self):
+        assert _detect_unit("单位：元") == "元"
+
+    def test_detect_unit_unknown(self):
+        assert _detect_unit("no unit marker here") == ""
+        assert _detect_unit("") == ""
+
+    def test_count_data_lines_strips_title_and_unit(self):
+        text = (
+            "600519.SH 近20日主力资金净流向：\n"
+            "日期  主力净流入\n"
+            "2026-06-10  12345.00\n"
+            "2026-06-09  9876.00\n"
+            "单位：万元"
+        )
+        # 表头 + 2 数据行 → 2
+        assert _count_data_lines(text) == 2
+
+    def test_count_data_lines_empty(self):
+        assert _count_data_lines("") == 0
+        assert _count_data_lines(None) == 0
+
+
+# ─── 6. 渲染 + 持久化 ────────────────────────────────────────────────
+
+
+class TestRenderPersist:
+    def test_render_fixture_report_has_required_sections(self):
+        report = run_fund_flow_probe()
+        md = render_fund_flow_probe_report(report)
+        assert "[DATA-024]" in md
+        assert "## Summary" in md
+        assert "## Probe Details" in md
+        assert "## Fixture Coverage" in md
+        for fid in PROBE_FIXTURES:
+            assert fid in md
+
+    def test_render_live_gated_report(self, monkeypatch):
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        report = run_fund_flow_probe(symbols=["600519.SH"], live_smoke=True)
+        md = render_fund_flow_probe_report(report)
+        assert "## Live-Smoke Gate" in md
+        assert "TA_LIVE_DATA_SMOKE=1" in md
+
+    def test_save_report_writes_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        report = run_fund_flow_probe(today="2026-06-29")
+        # 重新设置 date 以写到 tmp_path
+        report.date = "2026-06-29"
+        path = save_fund_flow_probe_report(report, output_dir=str(tmp_path))
+        assert os.path.exists(path)
+        assert path.endswith("fund-flow-probe-2026-06-29.md")
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        assert "[DATA-024]" in content
+
+
+# ─── 7. DATA-023 能力矩阵 overlay ────────────────────────────────────
+
+
+class TestCapabilityMatrixOverlay:
+    """[DATA-024] 接入 DATA-023 能力矩阵 — 通过 overlay, 不改 matrix 本身."""
+
+    def test_overlay_has_required_keys(self):
+        report = run_fund_flow_probe()
+        overlay = build_capability_matrix_overlay(report)
+        assert overlay["data_type"] == DataType.FUND_FLOW.value
+        assert overlay["probe_source"] == "[DATA-024] fund_flow_source_probe"
+        assert overlay["probe_mode"] == "fixture"
+        assert "by_error_type" in overlay
+        assert "required_classes_covered" in overlay
+        assert "required_classes_missing" in overlay
+        assert overlay["expected_unit"] == EXPECTED_UNIT
+
+    def test_overlay_includes_required_five(self):
+        report = run_fund_flow_probe()
+        overlay = build_capability_matrix_overlay(report)
+        covered = set(overlay["required_classes_covered"])
+        required = set(FundFlowErrorType.REQUIRED_ATTRIBUTION)
+        assert required.issubset(covered)
+
+    def test_get_matrix_item_with_overlay(self):
+        item = get_fund_flow_capability_matrix_item()
+        assert item["data_type"] == DataType.FUND_FLOW.value
+        assert "probe_overlay" in item
+        assert item["probe_overlay"]["probe_source"].startswith("[DATA-024]")
+
+    def test_get_matrix_item_without_overlay(self):
+        item = get_fund_flow_capability_matrix_item(include_probe_overlay=False)
+        assert "probe_overlay" not in item
+        # 必须保留原始 matrix 字段
+        assert "primary_vendor" in item
+        assert "fallback_chain" in item
+
+    def test_overlay_does_not_break_source_capability_matrix(self):
+        """不能因为加了 overlay 就让 DATA-023 的 validate_matrix_coverage 出 issue."""
+        from tradingagents.dataflows.source_capability_matrix import (
+            get_source_capability_matrix,
+            validate_matrix_coverage,
+        )
+
+        matrix = get_source_capability_matrix()
+        issues = validate_matrix_coverage(matrix)
+        # fund_flow entry 仍然存在且合法
+        fund_flow_items = [
+            i for i in matrix["items"] if i["data_type"] == DataType.FUND_FLOW.value
+        ]
+        assert len(fund_flow_items) == 1
+        # overlay 不是 matrix 字段, 不应引入新的 issue
+        ff = fund_flow_items[0]
+        assert "probe_overlay" not in ff  # overlay 不污染原始 matrix
+
+    def test_overlay_references_catalog_fallback_chain(self):
+        """overlay 报告的 fallback_chain 必须和 source_catalog 一致."""
+        from tradingagents.dataflows.source_catalog import get_fallback_chain
+
+        report = run_fund_flow_probe()
+        overlay = build_capability_matrix_overlay(report)
+        catalog_chain = list(get_fallback_chain(DataType.FUND_FLOW))
+        assert overlay["fallback_chain_catalog"] == catalog_chain
+
+
+# ─── 8. 安全: 不含密钥 ───────────────────────────────────────────────
+
+
+class TestNoSecrets:
+    SECRET_PATTERNS = [
+        "api_key",
+        "apikey",
+        "secret",
+        "bearer ",
+        "authorization:",
+        "sk-",
+        "cookie",
+    ]
+
+    def test_no_secret_patterns_in_fixture_results(self):
+        report = run_fund_flow_probe()
+        blob = json.dumps(report.to_dict(), ensure_ascii=False)
+        lowered = blob.lower()
+        for pat in self.SECRET_PATTERNS:
+            assert pat.lower() not in lowered, (
+                f"probe 报告中出现疑似密钥字段: {pat}"
+            )
+
+    def test_no_secret_patterns_in_rendered_markdown(self):
+        report = run_fund_flow_probe()
+        md = render_fund_flow_probe_report(report)
+        lowered = md.lower()
+        for pat in self.SECRET_PATTERNS:
+            assert pat.lower() not in lowered, (
+                f"probe markdown 中出现疑似密钥字段: {pat}"
+
+exec
+/bin/zsh -lc "sed -n '620,860p' tests/test_data024_fund_flow_source_probe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                f"probe markdown 中出现疑似密钥字段: {pat}"
+            )
+
+    def test_no_secret_patterns_in_overlay(self):
+        report = run_fund_flow_probe()
+        overlay = build_capability_matrix_overlay(report)
+        blob = json.dumps(overlay, ensure_ascii=False)
+        lowered = blob.lower()
+        for pat in self.SECRET_PATTERNS:
+            assert pat.lower() not in lowered, (
+                f"overlay 中出现疑似密钥字段: {pat}"
+            )
+
+    def test_error_truncated_to_200_chars(self):
+        """即使 fetch_fn 抛出含敏感字段的长异常, to_dict 也要截断."""
+        long_error = "X" * 500 + " api_key=ABCDEF"
+        r = FundFlowProbeResult(
+            symbol="600519.SH",
+            error=long_error,
+        )
+        d = r.to_dict()
+        assert len(d["error"]) <= 200
+
+
+# ─── 9. 板块资金流严格分离 ──────────────────────────────────────────
+
+
+class TestBoardFundFlowSeparation:
+    """[DATA-024 执行约束 §3] 不能把板块资金流当个股资金流."""
+
+    def test_probe_only_targets_individual_fund_flow(self):
+        """fallback_chain 必须是 FUND_FLOW 的 chain, 不是 BOARD_FUND_FLOW."""
+        from tradingagents.dataflows.source_catalog import (
+            get_fallback_chain,
+            get_primary_source,
+        )
+
+        report = run_fund_flow_probe()
+        individual_chain = list(get_fallback_chain(DataType.FUND_FLOW))
+        board_chain = list(get_fallback_chain(DataType.BOARD_FUND_FLOW))
+        # 两条 chain 不能混在一起
+        assert report.fallback_chain == individual_chain
+        # primary 必须是 FUND_FLOW primary
+        primary = get_primary_source(DataType.FUND_FLOW)
+        assert primary is not None
+        assert FUND_FLOW_METHOD == "get_individual_fund_flow"
+
+    def test_fixtures_all_reference_individual_vendors(self):
+        """所有 fixture 的 vendor 必须是 FUND_FLOW 注册的 vendor."""
+        from tradingagents.dataflows.source_catalog import get_sources_for_type
+
+        individual_vendors = {
+            s.vendor for s in get_sources_for_type(DataType.FUND_FLOW)
+        }
+        for fid, fixture in PROBE_FIXTURES.items():
+            v = fixture.get("vendor", "")
+            if not v:
+                continue
+            assert v in individual_vendors, (
+                f"fixture {fid} vendor={v} 不在 FUND_FLOW vendor 集合 {individual_vendors}"
+            )
+
+
+# ─── 10. CLI ─────────────────────────────────────────────────────────
+
+
+class TestCli:
+    @property
+    def _script_path(self) -> str:
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts",
+            "run_fund_flow_source_probe.py",
+        )
+
+    def test_cli_fixture_dry_run_prints_report(self, monkeypatch):
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        proc = subprocess.run(
+            [sys.executable, self._script_path, "--dry-run"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "[DATA-024]" in proc.stdout
+        assert "## Summary" in proc.stdout
+        assert "Fixture Coverage" in proc.stdout
+
+    def test_cli_live_smoke_without_env_exits_zero(self, monkeypatch):
+        """live-smoke 但 env 未设置 → SKIPPED, exit 0 (不算失败)."""
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                self._script_path,
+                "--live-smoke",
+                "--symbols",
+                "600519.SH",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "SKIPPED" in proc.stdout
+        assert "TA_LIVE_DATA_SMOKE=1" in proc.stdout
+
+    def test_cli_stdout_json(self, monkeypatch):
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        proc = subprocess.run(
+            [sys.executable, self._script_path, "--stdout-json"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        payload = json.loads(proc.stdout)
+        assert "report" in payload
+        assert "overlay" in payload
+        assert payload["report"]["mode"] == "fixture"
+
+    def test_cli_writes_file_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TA_LIVE_DATA_SMOKE", raising=False)
+        out = tmp_path / "custom.md"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                self._script_path,
+                "--output",
+                str(out),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert out.exists()
+        content = out.read_text(encoding="utf-8")
+        assert "[DATA-024]" in content
+
+
+# ─── 11. 边界 ────────────────────────────────────────────────────────
+
+
+class TestEdgeCases:
+    def test_empty_symbols_list_in_live_mode(self, monkeypatch):
+        """live 模式传空 symbols → 0 result, 不崩."""
+        monkeypatch.setenv("TA_LIVE_DATA_SMOKE", "1")
+        report = run_fund_flow_probe(symbols=[], live_smoke=True)
+        assert report.mode == "live"
+        assert report.results == []
+
+    def test_custom_expected_unit(self):
+        """允许覆盖 expected_unit (例如未来切到元单位时)."""
+        report = run_fund_flow_probe(expected_unit="元")
+        # FIELD_CHANGE fixture 原本 unit=元 vs expected=万元 → field_change
+        # 现在切换 expected=元 后, 那条不再被归为 field_change
+        fc = next(
+            r for r in report.results if r.fixture_id == "FIELD_CHANGE"
+        )
+        # unit=元 与 expected_unit=元 一致, 不再是 field_change
+        assert fc.error_type != FundFlowErrorType.FIELD_CHANGE
+
+    def test_summary_handles_empty_results(self):
+        summary = _compute_summary([])
+        assert summary["total"] == 0
+        assert summary["all_passed"] is False  # 没 runnable 不算通过
+        assert summary["required_classes_missing"] == sorted(
+            FundFlowErrorType.REQUIRED_ATTRIBUTION
+        )
+
+    def test_today_pinning(self):
+        """today 参数能固定日期, 不依赖 wall clock."""
+        report = run_fund_flow_probe(today="2099-12-31")
+        assert report.date == "2099-12-31"
+
+exec
+/bin/zsh -lc "grep -R \"def route_to_vendor\\|def get_last_hit_vendor\" -n tradingagents/dataflows | head -20 && grep -R \"get_individual_fund_flow\" -n tradingagents/dataflows | head -20" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/interface.py:63:def get_last_hit_vendor(method: str) -> str:
+tradingagents/dataflows/interface.py:158:def route_to_vendor(method: str, *args, **kwargs):
+tradingagents/dataflows/live_smoke.py:140:            "method": "get_individual_fund_flow",
+tradingagents/dataflows/fund_flow_source_probe.py:4:为主力资金 (``fund_flow`` / ``get_individual_fund_flow``) 提供一个独立的探针:
+tradingagents/dataflows/fund_flow_source_probe.py:67:FUND_FLOW_METHOD = "get_individual_fund_flow"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1106:    def get_individual_fund_flow(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:760:    def get_individual_fund_flow(self, symbol: str) -> str:
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/dataflows/interface.py:42:            "get_individual_fund_flow",
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/live_source_sampling.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/live_smoke.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/fund_flow_source_probe.cpython-312.pyc matches
+tradingagents/dataflows/live_source_sampling.py:236:            "method": "get_individual_fund_flow",
+tradingagents/dataflows/health_check.py:139:            "method": "get_individual_fund_flow",
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/dataflows/interface.py && sed -n '1080,1145p' tradingagents/dataflows/providers/cn_akshare_provider.py && sed -n '735,800p' tradingagents/dataflows/providers/cn_astock_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "get_research_report",  # [DATA-011] research_report_raw_evidence
+            "get_ratings",  # [DATA-012] rating_raw_evidence
+            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+        except Exception as fb_exc:
+            pass
+
+        # Both failed
+        return f"板块资金流向数据获取失败（主接口和 fallback 均不可用）：{result}"
+
+    def _board_fund_flow_primary(self) -> str:
+        """Primary board fund flow via stock_board_industry_fund_flow_em."""
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_board_industry_fund_flow_em(symbol="今日")
+            if df is None or df.empty:
+                return "今日板块资金流向数据暂不可用。"
+            sort_col = "今日主力净流入-净额"
+            if sort_col in df.columns:
+                df_sorted = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            else:
+                df_sorted = df.reset_index(drop=True)
+            df_sorted.insert(0, "排名", range(1, len(df_sorted) + 1))
+            total = len(df_sorted)
+            result = df_sorted.head(10).to_string(index=False)
+            return f"板块资金流向排名（共{total}个板块，前10名）：\n{result}"
+        except Exception as exc:
+            return f"板块资金流向数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_individual_fund_flow(self, symbol: str) -> str:
+        """获取个股近期主力资金净流向。"""
+        try:
+            ak = self._ak()
+            code = self._normalize_symbol(symbol)
+            # 沪市：以 5、6、9 开头；其余为深市
+            market = "sh" if code[:1] in ("5", "6", "9") else "sz"
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_individual_fund_flow(stock=code, market=market)
+            if df is None or df.empty:
+                return f"{symbol} 近期主力资金流向数据暂不可用。"
+            df_recent = df.tail(20)
+            return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
+        except Exception as exc:
+            return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+        """获取龙虎榜数据。
+
+        Args:
+            symbol: 股票代码
+            date: 查询日期（YYYY-MM-DD）
+            force: 是否强制查询。默认 False 时返回提示信息以避免批量调用触发限流。
+        """
+        if not force:
+            return (
+                f"{symbol} [G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）。"
+                "龙虎榜为按需查询接口，仅当检测到资金异动时才应调用，以避免批量日期查询触发 API 限流。"
+            )
+        try:
+            ak = self._ak()
+            code = self._normalize_symbol(symbol)
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_lhb_detail_em(symbol=code, start_date=date, end_date=date)
+            if df is None or df.empty:
+                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+            return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+        except Exception as exc:
+            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+
+                rows.append({
+                    "date": str(row.get("CHANGE_DATE", ""))[:10],
+                    "holder": row.get("HOLDER_NAME", ""),
+                    "change_type": row.get("CHANGE_TYPE", ""),
+                    "shares": row.get("CHANGE_SHARES", 0),
+                    "avg_price": row.get("AVG_PRICE", 0),
+                    "after_shares": row.get("HOLD_SHARES_AFTER", 0),
+                })
+
+            lines = [f"## Insider Transactions for {symbol}\n"]
+            for r in rows:
+                lines.append(
+                    f"- {r['date']} | {r['holder']} | {r['change_type']} | "
+                    f"变动: {r['shares']}股 | 均价: {r['avg_price']} | "
+                    f"变动后: {r['after_shares']}股"
+                )
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"Insider transactions unavailable for {symbol}: {exc}"
+
+    # ── Real-time quotes ──
+
+    # ── [DATA-P0-603629] Fund flow via Eastmoney push2his ──
+
+    def get_individual_fund_flow(self, symbol: str) -> str:
+        """个股资金流 — 东财 push2his 直连 fallback.  # [DATA-P0-603629] astock_source_fallback
+
+        Returns last 20 trading days of main-capital net flow data.
+        Eastmoney push2his fflow/daykline returns values already in 万元.
+        """
+        code = _extract_code(symbol)
+        try:
+            _rate_limit("em_fund_flow_individual")
+            market_code = 1 if code.startswith(("5", "6", "9")) else 0
+            secid = f"{market_code}.{code}"
+            url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+            params = {
+                "secid": secid,
+                "fields1": "f1,f2,f3,f7",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
+                "lmt": "20",
+                "klt": "101",
+            }
+            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
+            r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+            d = r.json()
+            klines = d.get("data", {}).get("klines", [])
+            if not klines:
+                return f"{symbol} 近期主力资金流向数据暂不可用。"
+
+            header = f"{symbol} 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+            header += "日期 | 主力净流入 | 小单净流入 | 中单净流入 | 大单净流入 | 超大单净流入\n"
+            rows = []
+            for line in klines:
+                parts = line.split(",")
+                if len(parts) >= 6:
+                    try:
+                        v1 = float(parts[1]) / 10000
+                        v2 = float(parts[2]) / 10000
+                        v3 = float(parts[3]) / 10000
+                        v4 = float(parts[4]) / 10000
+                        v5 = float(parts[5]) / 10000
+                        rows.append(
+                            f"{parts[0]} | {v1:.2f} | {v2:.2f} | {v3:.2f} | {v4:.2f} | {v5:.2f}"
+                        )
+
+exec
+/bin/zsh -lc "sed -n '800,835p' tradingagents/dataflows/providers/cn_astock_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                        )
+                    except (ValueError, IndexError):
+                        rows.append(
+                            f"{parts[0]} | {parts[1]} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]}"
+                        )
+            return header + "\n".join(rows)
+
+        except Exception as exc:
+            return f"个股资金流向数据获取失败（Eastmoney push2his）：{type(exc).__name__}: {exc}"
+
+    def get_board_fund_flow(self) -> str:
+        """行业板块资金流 — 东财 push2 直连.  # [DATA-P0-603629] astock_source_fallback"""
+        try:
+            _rate_limit("em_fund_flow_board")
+            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            params = {
+                "pn": "1",
+                "pz": "15",
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f62",
+                "fs": "m:90+t:2",
+                "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f164,f174",
+            }
+            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
+            r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+            d = r.json()
+            items = d.get("data", {}).get("diff", [])
+            if not items:
+                return "板块资金流向数据暂不可用。"
+
+            lines = ["板块资金流向排名（Eastmoney push2）：", "排名 | 板块代码 | 板块名称 | 涨跌幅 | 主力净流入"]
+            for i, item in enumerate(items[:10], 1):
+                code = item.get("f12", "")
+
+exec
+/bin/zsh -lc "grep -R \"def _detect_normal_no_data\\|NORMAL_NO_DATA\" -n tradingagents/dataflows/source_freshness_report.py | head -50 && sed -n '1,170p' tradingagents/dataflows/source_freshness_report.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/source_freshness_report.py:11:  - NORMAL_NO_DATA    — queried successfully, stock has no data (normal)
+tradingagents/dataflows/source_freshness_report.py:51:    NORMAL_NO_DATA = "NORMAL_NO_DATA"
+tradingagents/dataflows/source_freshness_report.py:57:    ALL = [HAS_DATA, NORMAL_NO_DATA, STALE, FAILED, RATE_LIMITED, UNIT_UNVERIFIED]
+tradingagents/dataflows/source_freshness_report.py:62:        NORMAL_NO_DATA: "green",
+tradingagents/dataflows/source_freshness_report.py:72:        NORMAL_NO_DATA: "正常无数据",
+tradingagents/dataflows/source_freshness_report.py:94:_NORMAL_NO_DATA_PATTERNS = [
+tradingagents/dataflows/source_freshness_report.py:95:    "NORMAL_NO_DATA", "无数据", "空", "暂无", "未查询到",
+tradingagents/dataflows/source_freshness_report.py:275:def _detect_normal_no_data(value: str) -> bool:
+tradingagents/dataflows/source_freshness_report.py:279:    return any(p in value for p in _NORMAL_NO_DATA_PATTERNS)
+tradingagents/dataflows/source_freshness_report.py:298:      5. NORMAL_NO_DATA — queried successfully, no data
+tradingagents/dataflows/source_freshness_report.py:318:    # 3. NOT_QUERIED maps to NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:320:        return SourceFreshnessStatus.NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:322:    # 4. NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:323:    if status == "NORMAL_NO_DATA":
+tradingagents/dataflows/source_freshness_report.py:324:        return SourceFreshnessStatus.NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:326:        return SourceFreshnessStatus.NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:343:        return SourceFreshnessStatus.NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:378:        entry.status = SourceFreshnessStatus.NORMAL_NO_DATA
+tradingagents/dataflows/source_freshness_report.py:405:                status = "NORMAL_NO_DATA"
+tradingagents/dataflows/source_freshness_report.py:409:                status = "NORMAL_NO_DATA"
+tradingagents/dataflows/source_freshness_report.py:439:    elif status == SourceFreshnessStatus.NORMAL_NO_DATA:
+tradingagents/dataflows/source_freshness_report.py:534:        status=SourceFreshnessStatus.NORMAL_NO_DATA,
+tradingagents/dataflows/source_freshness_report.py:555:    green = status_counts.get(SourceFreshnessStatus.HAS_DATA, 0) + status_counts.get(SourceFreshnessStatus.NORMAL_NO_DATA, 0)
+tradingagents/dataflows/source_freshness_report.py:625:        if e.status not in (SourceFreshnessStatus.HAS_DATA, SourceFreshnessStatus.NORMAL_NO_DATA)
+tradingagents/dataflows/source_freshness_report.py:832:        "raw": "LHB_NORMAL_NO_DATA: 非异动日无龙虎榜数据",
+tradingagents/dataflows/source_freshness_report.py:833:        "status": "NORMAL_NO_DATA",
+tradingagents/dataflows/source_freshness_report.py:882:        "raw": "LHB_NORMAL_NO_DATA: 在今日无龙虎榜数据（非异动日属正常）",
+tradingagents/dataflows/source_freshness_report.py:883:        "status": "NORMAL_NO_DATA",
+tradingagents/dataflows/source_freshness_report.py:911:        "raw": "LHB_NORMAL_NO_DATA: 非异动日",
+tradingagents/dataflows/source_freshness_report.py:912:        "status": "NORMAL_NO_DATA",
+# [DATA-018] source_freshness_report
+"""A-share key data source freshness & fallback visualization daily report.
+
+Extends DATA-017 fund_flow/LHB health inspection to ALL key sources
+(quote, ohlcv, fund_flow, lhb, margin_trading, notice, report, rating,
+news, global_news, financials, insider, zt_pool, hot_stocks, buyback).
+
+Provides 6-state classification:
+
+  - HAS_DATA          — successful retrieval with verified data
+  - NORMAL_NO_DATA    — queried successfully, stock has no data (normal)
+  - STALE             — data older than threshold (e.g. > 7 days)
+  - FAILED            — API failure / parse error / timeout
+  - RATE_LIMITED      — 429 / rate-limit triggered
+  - UNIT_UNVERIFIED   — data present but unit not verified
+
+Usage (library):
+    from tradingagents.dataflows.source_freshness_report import (
+        SourceFreshnessStatus,
+        SourceFreshnessEntry,
+        run_source_freshness_report,
+        render_source_freshness_report,
+        save_source_freshness_report,
+    )
+    report = run_source_freshness_report(raw_evidence)
+    print(render_source_freshness_report(report))
+    save_source_freshness_report(report, "docs/data_source_reports")
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from .source_catalog import (
+    DataType,
+    Freshness,
+    get_all_data_types,
+    get_fallback_chain,
+    get_primary_source,
+    get_sources_for_type,
+)
+
+
+# ── 6-State Health Classification ─────────────────────────────────────
+
+class SourceFreshnessStatus:
+    HAS_DATA = "HAS_DATA"
+    NORMAL_NO_DATA = "NORMAL_NO_DATA"
+    STALE = "STALE"
+    FAILED = "FAILED"
+    RATE_LIMITED = "RATE_LIMITED"
+    UNIT_UNVERIFIED = "UNIT_UNVERIFIED"
+
+    ALL = [HAS_DATA, NORMAL_NO_DATA, STALE, FAILED, RATE_LIMITED, UNIT_UNVERIFIED]
+
+    # Traffic-light mapping for visualization
+    TRAFFIC_LIGHT = {
+        HAS_DATA: "green",
+        NORMAL_NO_DATA: "green",
+        STALE: "yellow",
+        FAILED: "red",
+        RATE_LIMITED: "red",
+        UNIT_UNVERIFIED: "yellow",
+    }
+
+    # Chinese labels for display
+    LABEL_CN = {
+        HAS_DATA: "正常",
+        NORMAL_NO_DATA: "正常无数据",
+        STALE: "过期",
+        FAILED: "故障",
+        RATE_LIMITED: "限流",
+        UNIT_UNVERIFIED: "单位未校验",
+    }
+
+
+# ── Rate-limit detection patterns ─────────────────────────────────────
+
+_RATE_LIMIT_PATTERNS = [
+    "429", "rate limit", "rate_limit", "too many requests",
+    "请求过于频繁", "限流", "频繁访问",
+]
+
+_FAILURE_PATTERNS = [
+    "获取失败", "ProxyError", "ConnectionError", "不可用",
+    "TimeoutError", "Max retries exceeded", "Unable to connect",
+    "SSLError", "Connection refused", "Read timed out",
+    "HTTPError", "JSONDecodeError",
+]
+
+_NORMAL_NO_DATA_PATTERNS = [
+    "NORMAL_NO_DATA", "无数据", "空", "暂无", "未查询到",
+    "NOT_QUERIED", "查询未触发",
+]
+
+_RATE_LIMIT_RISK_TO_NOTE = {
+    "low": "低风险",
+    "medium": "中风险",
+    "high": "高风险",
+}
+
+
+# ── Data Models ────────────────────────────────────────────────────────
+
+@dataclass
+class SourceFreshnessEntry:
+    """Per-data-type source freshness entry."""
+    data_type: str = ""
+    label: str = ""
+    status: str = SourceFreshnessStatus.FAILED
+    primary_vendor: str = ""
+    fallback_vendor: str = ""
+    fallback_chain: List[str] = field(default_factory=list)
+    actual_vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    latest_data_date: str = ""
+    unit: str = ""
+    unit_verified: bool = False
+    is_fallback: bool = False
+    record_count: int = 0
+    error: str = ""
+    rate_limit_risk: str = ""
+    diagnosis: str = ""
+    freshness_catalog: str = ""
+
+    @property
+    def traffic_light(self) -> str:
+        return SourceFreshnessStatus.TRAFFIC_LIGHT.get(self.status, "red")
+
+    @property
+    def label_cn(self) -> str:
+        return SourceFreshnessStatus.LABEL_CN.get(self.status, "未知")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "data_type": self.data_type,
+            "label": self.label,
+            "status": self.status,
+            "status_label_cn": self.label_cn,
+            "traffic_light": self.traffic_light,
+            "primary_vendor": self.primary_vendor,
+            "fallback_vendor": self.fallback_vendor,
+            "fallback_chain": self.fallback_chain,
+            "actual_vendor": self.actual_vendor,
+            "endpoint": self.endpoint,
+            "as_of": self.as_of,
+            "latest_data_date": self.latest_data_date,
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "is_fallback": self.is_fallback,
+            "record_count": self.record_count,
+            "error": self.error,
+            "rate_limit_risk": self.rate_limit_risk,
+            "diagnosis": self.diagnosis,
+            "freshness_catalog": self.freshness_catalog,
+        }
+
+
+@dataclass
+class SourceFreshnessReport:
+    """Top-level source freshness report."""
+    report_date: str = ""
+    generated_at: str = ""
+    symbol: str = ""
+    entries: List[SourceFreshnessEntry] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/fund_flow_source_probe.py | sed -n '485,535p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   485	    last_hit_vendor_fn: Optional[Callable[[], str]] = None,
+   486	) -> FundFlowProbeResult:
+   487	    """对一个 symbol 真实调用 route_to_vendor 拉个股资金流并归因.
+   488	
+   489	    *fetch_fn* / *last_hit_vendor_fn* 用于测试注入; 默认走
+   490	    ``tradingagents.dataflows.interface.route_to_vendor`` 全链路 fallback.
+   491	    """
+   492	    from .interface import get_last_hit_vendor, route_to_vendor
+   493	
+   494	    if fetch_fn is None:
+   495	        fetch_fn = lambda sym: route_to_vendor(FUND_FLOW_METHOD, sym)  # noqa: E731
+   496	    if last_hit_vendor_fn is None:
+   497	        last_hit_vendor_fn = lambda: get_last_hit_vendor(FUND_FLOW_METHOD)  # noqa: E731
+   498	
+   499	    result = FundFlowProbeResult(
+   500	        symbol=symbol,
+   501	        probe_mode="live",
+   502	    )
+   503	
+   504	    t0 = time.monotonic()
+   505	    try:
+   506	        raw = fetch_fn(symbol)
+   507	        result.latency_ms = (time.monotonic() - t0) * 1000
+   508	        if isinstance(raw, str):
+   509	            detected_unit = _detect_unit(raw)
+   510	            record_count = _count_data_lines(raw)
+   511	            # 调用方层 (cn_astock) 一般会带 "单位：万元" 标记;
+   512	            # cn_akshare 不显式带但契约已知, 默认按 catalog unit 校验.
+   513	            unit_for_classify = detected_unit or expected_unit
+   514	            unit_verified = bool(detected_unit and detected_unit == expected_unit) or (
+   515	                not detected_unit and record_count > 0
+   516	            )
+   517	            error_type = classify_fund_flow_error_type(
+   518	                raw_value=raw,
+   519	                status="",
+   520	                error="",
+   521	                unit=unit_for_classify,
+   522	                unit_verified=unit_verified,
+   523	                expected_unit=expected_unit,
+   524	            )
+   525	            result.error_type = error_type
+   526	            result.status = FundFlowErrorType.TO_FRESHNESS_STATUS.get(
+   527	                error_type, "HAS_DATA"
+   528	            )
+   529	            result.unit = detected_unit or (expected_unit if unit_verified else "")
+   530	            result.unit_verified = unit_verified
+   531	            result.record_count = record_count
+   532	            result.vendor = last_hit_vendor_fn() or ""
+   533	            result.is_fallback = bool(result.vendor) and "astock" in result.vendor
+   534	            result.fallback_from = "cn_akshare" if result.is_fallback else ""
+   535	            if error_type == FundFlowErrorType.OK:
+
+exec
+/bin/zsh -lc "python - <<'PY'
+from tradingagents.dataflows.source_catalog import DataType, get_primary_source, get_fallback_chain
+print(get_primary_source(DataType.FUND_FLOW))
+print(list(get_fallback_chain(DataType.FUND_FLOW)))
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc ".venv/bin/python - <<'PY'
+from tradingagents.dataflows.source_catalog import DataType, get_primary_source, get_fallback_chain
+print(get_primary_source(DataType.FUND_FLOW))
+print(list(get_fallback_chain(DataType.FUND_FLOW)))
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+SourceCapability(vendor='cn_akshare', endpoint='stock_individual_fund_flow', data_type=<DataType.FUND_FLOW: 'fund_flow'>, fields=['日期', '主力净流入', '小单净流入', '中单净流入', '大单净流入', '超大单净流入'], unit='万元', freshness=<Freshness.DAILY: 'daily'>, rate_limit_risk=<RateLimitRisk.HIGH: 'high'>, fallback_priority=1, known_gaps=['高限流风险', 'ConnectionError 常见'], is_primary=True, notes='AKShare/东财个股资金流，限流风险高，fallback 必须可切换')
+['cn_akshare', 'cn_astock']
+

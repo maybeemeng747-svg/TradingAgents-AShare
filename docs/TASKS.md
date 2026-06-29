@@ -148,7 +148,7 @@
 122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，done，依赖 TRACK-005/TRACK-007 ✓）。
   123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，done — OpenCode 2026-06-29，7269 passed/0 failed，依赖 TF-QUALITY-004/H-014 ✓）。
 124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，done，依赖 H-015/H-016 ✓）。
-125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，ready，依赖 DATA-022/DATA-023 ✓）。
+  125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，done — DATA-024-20260629-231953，依赖 DATA-022/DATA-023 ✓）。
 126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，ready，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
 127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，ready，依赖 TF-OBS-005/UI-013 ✓）。
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
@@ -4197,7 +4197,7 @@
 ### DATA-024: 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
 - **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — DATA-024-20260629-231953（68 tests passed，510 regression passed）
 - **前置条件**：DATA-022、DATA-023 完成。
 - **执行约束**：
   - 默认使用 fixture；live-smoke 必须显式开关。
