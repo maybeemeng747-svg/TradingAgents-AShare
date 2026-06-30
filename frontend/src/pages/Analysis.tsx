@@ -300,6 +300,8 @@ export default function Analysis() {
                             actionLabel={report?.action_label}
                             researchDirection={report?.research_direction}
                             executionAction={report?.execution_action}
+                            waitReasonCodes={(report?.wait_reason_codes ?? undefined) as string[] | undefined}
+                            waitReasonLabels={(report?.wait_reason_labels ?? undefined) as Record<string, string> | undefined}
                         />
                         <RiskRadar items={riskItems} />
                         <KeyMetrics items={keyMetrics} />

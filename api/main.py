@@ -846,6 +846,9 @@ class ReportResponse(BaseModel):
     scheduled_concurrency_limit: Optional[int] = None
     data_blockers: Optional[List[Dict[str, Any]]] = None
     data_blocker_summary: Optional[Dict[str, Any]] = None
+    # [REPORT-UX-003] wait_reason_codes — explainable codes for WAIT actions.
+    wait_reason_codes: Optional[List[str]] = None
+    wait_reason_labels: Optional[Dict[str, str]] = None
 
     model_config = {"from_attributes": True}
 
@@ -3668,10 +3671,29 @@ async def chat_completions(
 # Report API Endpoints
 def _attach_report_data_blockers_for_response(report: Any) -> Any:
     # [DATA-021] report_data_blockers
+    # [REPORT-UX-003] wait_reason_codes — also surfaced at top level so the
+    # frontend can render the WAIT reason chips without digging into result_data.
     result_data = getattr(report, "result_data", None)
     if isinstance(result_data, dict):
         setattr(report, "data_blockers", result_data.get("data_blockers"))
         setattr(report, "data_blocker_summary", result_data.get("data_blocker_summary"))
+        wait_codes = result_data.get("wait_reason_codes")
+        if wait_codes is None:
+            # Recompute on read for legacy rows that predate REPORT-UX-003 so
+            # the frontend still gets an explanation instead of a flat label.
+            try:
+                resolved = report_service.resolve_report_fields(result_data=result_data)
+                wait_codes = resolved.get("wait_reason_codes") or []
+            except Exception:
+                wait_codes = []
+        from tradingagents.graph.signal_processing import WAIT_REASON_LABELS
+        codes_list = list(wait_codes or [])
+        setattr(report, "wait_reason_codes", codes_list)
+        setattr(
+            report,
+            "wait_reason_labels",
+            {code: WAIT_REASON_LABELS.get(code, code) for code in codes_list},
+        )
     return report
 
 

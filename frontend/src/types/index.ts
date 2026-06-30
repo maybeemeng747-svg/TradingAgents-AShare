@@ -357,6 +357,19 @@ export interface AnalysisReport {
     action_label?: string
     data_blockers?: DataBlocker[]
     data_blocker_summary?: DataBlockerSummary
+    // [REPORT-UX-003] wait_reason_codes
+    wait_reason_codes?: string[]
+    wait_reason_labels?: Record<string, string>
+}
+
+// [REPORT-UX-003] wait_reason_codes — explainable codes for WAIT actions.
+export const WAIT_REASON_LABELS: Record<string, string> = {
+    DATA_MISSING: '关键数据缺口',
+    GATE_BLOCKED: '门禁未通过',
+    CONFLICT: '结论冲突',
+    NO_TRIGGER: '等待触发价',
+    RISK_FIRST: '风险优先',
+    NORMAL_NO_DATA: '数据正常·暂无触发',
 }
 
 // [DATA-021] report_data_blockers
@@ -454,6 +467,9 @@ export interface Report {
     scheduled_concurrency_limit?: number | null
     data_blockers?: DataBlocker[] | null
     data_blocker_summary?: DataBlockerSummary | null
+    // [REPORT-UX-003] wait_reason_codes
+    wait_reason_codes?: string[] | null
+    wait_reason_labels?: Record<string, string> | null
 }
 
 export interface ReportDetail extends Report {

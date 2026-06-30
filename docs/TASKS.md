@@ -149,7 +149,7 @@
   123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，done — OpenCode 2026-06-29，7269 passed/0 failed，依赖 TF-QUALITY-004/H-014 ✓）。
 124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，done，依赖 H-015/H-016 ✓）。
   125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，done — DATA-024-20260629-231953，依赖 DATA-022/DATA-023 ✓）。
-126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，ready，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
+126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，done — REPORT-UX-003-20260630-180010，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
 127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，ready，依赖 TF-OBS-005/UI-013 ✓）。
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
@@ -4217,7 +4217,7 @@
 ### REPORT-UX-003: 报告最终结论“数据不足观察”原因分解与前端显示（P1）
 - **描述**：用户反馈最近三篇报告最终都变成“数据不足观察”，过于笼统。本任务把观察原因拆成数据缺口、门禁降级、结论冲突、未触发入场、风险优先等可解释标签。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — REPORT-UX-003-20260630-180010（24 tests passed，依赖 REPORT-UX-001/REPORT-UX-002 ✓）
 - **前置条件**：REPORT-UX-001、REPORT-UX-002 完成。
 - **执行约束**：
   - 不放宽强动作门禁。

@@ -4,6 +4,84 @@
 
 ---
 
+## 2026-06-30 | REPORT-UX-003：报告最终结论"数据不足观察"原因分解与前端显示
+
+- **执行者**：OpenCode（task run REPORT-UX-003-20260630-180010）
+- **类型**：feature + UX + test
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+用户反馈最近三篇报告最终都变成笼统的"数据不足观察"，无法区分到底是关键数据
+缺口、强动作门禁未通过、短中线冲突、未触发入场、风险优先，还是数据正常但暂无
+触发信号。REPORT-UX-001 已经把字段级 `data_blockers` 落到 result_data，本任务在
+此基础上把 WAIT/观察 结论本身拆解为可解释的 `wait_reason_codes`。
+
+### 设计要点（第一性原理 + 剃刀定律）
+
+- 不放宽强动作门禁：`wait_reason_codes` 是**只读解释层**，不改写 `decision` /
+  `action_label` / `execution_action` 或 Buy/Risk Level 文本。
+- 不修改 prompts、不调用 LLM、不写生产 DB。
+- 复用既有信号链路：在 `signal_processing.compute_wait_reason_codes()` 内集中
+  决策，由 `report_service.resolve_report_fields()` 调用并存入 `result_data`，
+  对齐 DATA-021 `data_blockers` 的附加模式。
+- 历史报告 fallback：旧 result_data 没有 `wait_reason_codes` 时，API 响应附加
+  helper 在读出时补算，保证前端永不显示空标签。
+
+### `wait_reason_codes` 定义
+
+| code | 标签 | 触发条件 |
+|------|------|----------|
+| `DATA_MISSING` | 关键数据缺口 | ohlcv_5d / 主力资金 query_failed 或 field_missing，或决策正文出现数据不足指标 |
+| `GATE_BLOCKED` | 门禁未通过 | Strong Action Gate 未通过，强制 WAIT |
+| `CONFLICT` | 结论冲突 | 决策正文出现短中线/分析师结论冲突 |
+| `NO_TRIGGER` | 等待触发价 | 方向偏多/看多但未给出触发价 |
+| `RISK_FIRST` | 风险优先 | 方向偏空/看空且未持仓 → 回避路径 |
+| `NORMAL_NO_DATA` | 数据正常·暂无触发 | 数据源健康且无冲突，仅是无方向信号（兜底） |
+
+### 关键变更
+
+- `tradingagents/graph/signal_processing.py`
+  - 新增 `WAIT_REASON_*` 常量、`WAIT_REASON_LABELS`、`compute_wait_reason_codes()`。
+  - 新增 `_text_has_conflict()` 复用短中线/分析师冲突文本模式。
+  - `DecisionSemantics` 增加 `wait_reason_codes` 字段，`_extract_decision_semantics()`
+    接受 `data_blockers` 并填充该字段。
+- `api/services/report_service.py`
+  - `resolve_report_fields()` 计算 `wait_reason_codes` 并放入返回字典。
+  - 新增 `attach_report_wait_reason_codes()`（与 `attach_report_data_blockers` 对齐）。
+  - `create_report()` 在 attach blockers 后调用上述函数，把 codes/labels 写入 result_data。
+- `api/main.py`
+  - `ReportResponse` 增加 `wait_reason_codes` / `wait_reason_labels` 顶层字段。
+  - `_attach_report_data_blockers_for_response()` 同时把 codes 暴露到顶层，并在
+    旧 result_data 缺失时调 `resolve_report_fields()` 重算。
+- 前端
+  - `types/index.ts`：`AnalysisReport` / `Report` 增加 `wait_reason_codes` /
+    `wait_reason_labels`，导出 `WAIT_REASON_LABELS` 常量。
+  - `components/DecisionCard.tsx`：execution_action == WAIT 时显示"观察原因"chips，
+    每个 code 按严重度配色（DATA_MISSING rose / GATE_BLOCKED amber / RISK_FIRST green 等）。
+  - `pages/Reports.tsx` / `pages/Analysis.tsx`：把 codes/labels 透传给 DecisionCard。
+
+### 测试
+
+- 新增 `tests/test_report_ux003_wait_reason_codes.py`（24 tests）：
+  - 6 个 WAIT fixture（DATA_MISSING / NO_TRIGGER / RISK_FIRST / NORMAL_NO_DATA /
+    CONFLICT / GATE_BLOCKED）覆盖验收"3 类 WAIT fixture 输出不同 reason codes"。
+  - 显式断言"数据正常但未触发"不输出 DATA_MISSING（用户最初投诉点）。
+  - 非 WAIT 报告（ENTER）codes 为空，确保强动作门禁不变。
+  - `attach_report_wait_reason_codes` 纯加性测试 + 旧 result_data 读出时重算。
+- 回归：`test_report_ux001/002`、`test_data021`、controller_context / notify 系列
+  共 1042 tests 全部通过；`npm run build` / `tsc` 通过。
+
+### 风险点
+
+- `wait_reason_codes` 完全派生自既有信号字段（research_direction / execution_action
+  / data_blockers / 文本模式），不会改变交易门禁；如果上游 `_extract_decision_semantics`
+  的方向/触发价判断不准，codes 也会随之偏弱，但不会比原先"笼统数据不足观察"更差。
+- 列表接口走 `load_only(summary columns)`，list 视图顶层不带 codes（设计如此，前端
+  只在详情页 DecisionCard 渲染 chips）。
+
+---
+
 ## 2026-06-29 | H-017：昊天左侧候选证据包：政策-产业-公司三层链路
 
 - **执行者**：OpenCode（task run H-017-20260629-230021）
@@ -8789,3 +8867,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/DATA-024-20260629-round1.txt
 - **Run archive**: docs/task_runs/DATA-024-20260629-231953/
+
+## 2026-06-30 | AUTO-002 Auto Dev Loop
+
+- **Task**: REPORT-UX-003 - 报告最终结论“数据不足观察”原因分解与前端显示（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/REPORT-UX-003-20260630-round1.txt
+- **Run archive**: docs/task_runs/REPORT-UX-003-20260630-180010/

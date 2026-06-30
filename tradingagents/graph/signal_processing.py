@@ -10,12 +10,132 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 
 
+# [REPORT-UX-003] wait_reason_codes
+WAIT_REASON_DATA_MISSING = "DATA_MISSING"
+WAIT_REASON_GATE_BLOCKED = "GATE_BLOCKED"
+WAIT_REASON_CONFLICT = "CONFLICT"
+WAIT_REASON_NO_TRIGGER = "NO_TRIGGER"
+WAIT_REASON_RISK_FIRST = "RISK_FIRST"
+WAIT_REASON_NORMAL_NO_DATA = "NORMAL_NO_DATA"
+
+WAIT_REASON_LABELS: dict[str, str] = {
+    WAIT_REASON_DATA_MISSING: "关键数据缺口",
+    WAIT_REASON_GATE_BLOCKED: "门禁未通过",
+    WAIT_REASON_CONFLICT: "结论冲突",
+    WAIT_REASON_NO_TRIGGER: "等待触发价",
+    WAIT_REASON_RISK_FIRST: "风险优先",
+    WAIT_REASON_NORMAL_NO_DATA: "数据正常·暂无触发",
+}
+
+# Blocker keys whose failure genuinely blocks a directional verdict, vs. aux
+# sources that are normally no-data on most trading days.
+_CRITICAL_BLOCKER_KEYS = {"ohlcv_5d", "individual_fund_flow"}
+_SEVERE_BLOCKER_STATUSES = {"query_failed", "field_missing"}
+
+# Text patterns reused from readiness_score for conflict detection (kept local
+# to avoid a circular import; signal_processing must stay dependency-light).
+_CONFLICT_TEXT_PATTERNS = [
+    r"(?:冲突|矛盾|不一致)",
+    r"(?:多空|多空双方).*?(?:分歧|对立)",
+    r"(?:分析师|模块|上游).*?(?:分歧|冲突|矛盾)",
+    r"verdict.*?分歧",
+    r"(?:短中线|中线.*?短线).*?(?:冲突|矛盾|分歧)",
+]
+
+
+def _text_has_conflict(text: str) -> bool:
+    if not text:
+        return False
+    return any(re.search(p, text, re.IGNORECASE) for p in _CONFLICT_TEXT_PATTERNS)
+
+
+def compute_wait_reason_codes(
+    *,
+    execution_action: Optional[str],
+    research_direction: Optional[str],
+    action_label: Optional[str] = None,
+    has_position: Optional[bool] = None,
+    trigger_price: Optional[float] = None,
+    gate_blocked: bool = False,
+    data_insufficient: bool = False,
+    data_blockers: Optional[list] = None,
+    has_conflict: bool = False,
+) -> list[str]:
+    """[REPORT-UX-003] wait_reason_codes — decompose a WAIT/观察 verdict into
+    one or more explainable reason codes.
+
+    The user-facing complaint was that every recent report collapsed into the
+    single catch-all label "数据不足观察". This helper keeps the strong action
+    gate intact and instead explains *why* the action is WAIT:
+
+    - ``DATA_MISSING``: a critical field (行情/K线、主力资金) has a severe
+      blocker (``query_failed`` / ``field_missing``), or the decision text
+      itself declares the evidence insufficient.
+    - ``GATE_BLOCKED``: the Strong Action Gate failed, forcing WAIT even when
+      a direction was otherwise available.
+    - ``CONFLICT``: 中线/短线 or 分析师结论冲突 detected in the decision text.
+    - ``NO_TRIGGER``: 方向偏多 but no trigger_price / target price was produced
+      (waiting for an entry condition).
+    - ``RISK_FIRST``: 方向偏空/看空 and the user is not holding — risk avoidance
+      takes priority (maps to the "回避" label).
+    - ``NORMAL_NO_DATA``: data sources are healthy and no conflict exists, but
+      there is simply no actionable signal yet (neutral watch).
+
+    Returns an empty list for non-WAIT actions so the frontend can treat the
+    absence of codes as "no wait reason to explain".
+    """
+    if (execution_action or "").upper() != "WAIT":
+        return []
+
+    codes: list[str] = []
+
+    has_critical_blocker = False
+    if isinstance(data_blockers, list):
+        for blocker in data_blockers:
+            if not isinstance(blocker, dict):
+                continue
+            if (
+                blocker.get("key") in _CRITICAL_BLOCKER_KEYS
+                and blocker.get("status") in _SEVERE_BLOCKER_STATUSES
+            ):
+                has_critical_blocker = True
+                break
+
+    if has_critical_blocker or data_insufficient:
+        codes.append(WAIT_REASON_DATA_MISSING)
+
+    if gate_blocked:
+        codes.append(WAIT_REASON_GATE_BLOCKED)
+
+    if has_conflict:
+        codes.append(WAIT_REASON_CONFLICT)
+
+    # RISK_FIRST — 偏空/看空 + 未持仓 → "回避" 路径，风险优先于入场。
+    if research_direction in ("偏空", "看空") and (
+        has_position is False or has_position is None
+    ):
+        codes.append(WAIT_REASON_RISK_FIRST)
+
+    # NO_TRIGGER — 偏多/看多 but no trigger price supplied.
+    if research_direction in ("偏多", "看多") and not trigger_price:
+        codes.append(WAIT_REASON_NO_TRIGGER)
+
+    # Fallback: data is fine and there is no conflict/directional reason —
+    # the system simply has no actionable signal to act on this round.
+    if not codes:
+        codes.append(WAIT_REASON_NORMAL_NO_DATA)
+
+    return codes
+
+
 @dataclass
 class DecisionSemantics:
     research_direction: str
     execution_action: str
     action_label: str
     decision: str
+    # [REPORT-UX-003] wait_reason_codes — populated when execution_action == WAIT.
+    wait_reason_codes: Optional[list] = None
 
     def to_dict(self) -> dict:
         return {
@@ -23,6 +143,7 @@ class DecisionSemantics:
             "execution_action": self.execution_action,
             "action_label": self.action_label,
             "decision": self.decision,
+            "wait_reason_codes": self.wait_reason_codes or [],
         }
 
 
@@ -402,6 +523,7 @@ def _extract_decision_semantics(
     has_position: Optional[bool] = None,
     trigger_price: Optional[float] = None,
     invalid_price: Optional[float] = None,
+    data_blockers: Optional[list] = None,
 ) -> DecisionSemantics:
     """Extract 3-layer structured decision semantics from signal text.
 
@@ -410,10 +532,12 @@ def _extract_decision_semantics(
       - execution_action: WAIT/ENTER/HOLD/REDUCE/EXIT
       - action_label: human-readable action label
       - decision: BUY/SELL/HOLD (backward compat)
+      - wait_reason_codes: [REPORT-UX-003] explainable codes when WAIT
     """
     research_direction = _infer_research_direction(text)
     gate_blocked = _has_gate_failure(text)
     data_insufficient = _is_data_insufficient(text)
+    has_conflict = _text_has_conflict(text)
 
     execution_action = _resolve_execution_action(
         has_position=has_position,
@@ -439,9 +563,24 @@ def _extract_decision_semantics(
     if gate_blocked:
         decision = "HOLD"
 
+    # [REPORT-UX-003] wait_reason_codes — decompose the WAIT verdict so the UI
+    # can show *why* the action is 观察 / 数据不足观察 instead of a flat label.
+    wait_reason_codes = compute_wait_reason_codes(
+        execution_action=execution_action,
+        research_direction=research_direction,
+        action_label=action_label,
+        has_position=has_position,
+        trigger_price=trigger_price,
+        gate_blocked=gate_blocked,
+        data_insufficient=data_insufficient,
+        data_blockers=data_blockers,
+        has_conflict=has_conflict,
+    )
+
     return DecisionSemantics(
         research_direction=research_direction,
         execution_action=execution_action,
         action_label=action_label,
         decision=decision,
+        wait_reason_codes=wait_reason_codes,
     )

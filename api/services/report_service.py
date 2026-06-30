@@ -219,6 +219,33 @@ def attach_report_data_blockers(result_data: Optional[Dict[str, Any]]) -> Option
         return result_data
 
 
+def attach_report_wait_reason_codes(
+    result_data: Optional[Dict[str, Any]],
+    wait_reason_codes: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Attach [REPORT-UX-003] wait_reason_codes + labels to report result_data.
+
+    Read-only with respect to the strong action gate: only writes the
+    explanatory ``wait_reason_codes`` / ``wait_reason_labels`` keys so the UI
+    can show *why* the final action is WAIT instead of a flat "数据不足观察".
+    """
+    if not isinstance(result_data, dict):
+        return result_data
+    try:
+        from tradingagents.graph.signal_processing import WAIT_REASON_LABELS
+
+        enriched = dict(result_data)
+        codes = list(wait_reason_codes or enriched.get("wait_reason_codes") or [])
+        enriched["wait_reason_codes"] = codes
+        enriched["wait_reason_labels"] = {
+            code: WAIT_REASON_LABELS.get(code, code) for code in codes
+        }
+        return enriched
+    except Exception as exc:
+        logger.warning("REPORT-UX-003 wait_reason_codes attach failed: %s", exc)
+        return result_data
+
+
 def extract_structured_data(
     final_trade_decision: str,
     fundamentals_report: str = "",
@@ -443,6 +470,15 @@ def resolve_report_fields(
     execution_action = str(result_data.get("execution_action") or "") if result_data else ""
     action_label = str(result_data.get("action_label") or "") if result_data else ""
     has_resolved_semantics = bool(research_direction and execution_action and action_label)
+    # [REPORT-UX-003] wait_reason_codes — data_blockers may already be attached
+    # upstream (create_report calls attach_report_data_blockers first). When
+    # absent, we still try to compute codes from text-only signals.
+    data_blockers_for_reason = (
+        result_data.get("data_blockers") if isinstance(result_data, dict) else None
+    )
+    existing_wait_reason_codes = (
+        result_data.get("wait_reason_codes") if isinstance(result_data, dict) else None
+    )
     if final_trade_decision and not has_resolved_semantics:
         try:
             from tradingagents.graph.signal_processing import _extract_decision_semantics
@@ -451,15 +487,48 @@ def resolve_report_fields(
                 has_position=has_position,
                 trigger_price=target_price,
                 invalid_price=stop_loss_price,
+                data_blockers=data_blockers_for_reason,
             )
             research_direction = semantics.research_direction
             execution_action = semantics.execution_action
             action_label = semantics.action_label
+            if semantics.wait_reason_codes:
+                existing_wait_reason_codes = list(semantics.wait_reason_codes)
         except Exception:
             pass
     research_direction = research_direction or None
     execution_action = execution_action or None
     action_label = action_label or None
+
+    # [REPORT-UX-003] wait_reason_codes — recompute when semantics were already
+    # resolved but codes are missing (e.g. legacy rows read back from DB, or
+    # semantics supplied via result_data without codes). Keeps the strong action
+    # gate intact: only adds explanatory metadata.
+    wait_reason_codes = existing_wait_reason_codes
+    if wait_reason_codes is None and execution_action == "WAIT":
+        try:
+            from tradingagents.graph.signal_processing import (
+                compute_wait_reason_codes,
+                _has_gate_failure,
+                _is_data_insufficient,
+                _text_has_conflict,
+            )
+
+            wait_reason_codes = compute_wait_reason_codes(
+                execution_action=execution_action,
+                research_direction=research_direction or "中性",
+                action_label=action_label,
+                has_position=has_position,
+                trigger_price=target_price,
+                gate_blocked=bool(final_trade_decision and _has_gate_failure(final_trade_decision)),
+                data_insufficient=bool(final_trade_decision and _is_data_insufficient(final_trade_decision)),
+                data_blockers=data_blockers_for_reason,
+                has_conflict=bool(final_trade_decision and _text_has_conflict(final_trade_decision)),
+            )
+        except Exception:
+            wait_reason_codes = []
+    elif wait_reason_codes is None:
+        wait_reason_codes = []
 
     return {
         "market_report": market_report,
@@ -480,6 +549,8 @@ def resolve_report_fields(
         "research_direction": research_direction,
         "execution_action": execution_action,
         "action_label": action_label,
+        # [REPORT-UX-003] wait_reason_codes
+        "wait_reason_codes": list(wait_reason_codes or []),
     }
 
 
@@ -620,6 +691,11 @@ def create_report(
         confidence_override=confidence_override,
         target_price_override=target_price_override,
         stop_loss_override=stop_loss_override,
+    )
+    # [REPORT-UX-003] wait_reason_codes — store into result_data so the UI can
+    # show *why* the final action is WAIT without altering the strong gate.
+    result_data = attach_report_wait_reason_codes(
+        result_data, wait_reason_codes=resolved.get("wait_reason_codes")
     )
 
     now = datetime.now(timezone.utc)

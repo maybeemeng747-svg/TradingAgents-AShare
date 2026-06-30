@@ -3,6 +3,7 @@ import { TrendingUp, TrendingDown, Target, Shield, ChevronDown, ChevronUp, Info 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AnalysisReport } from '@/types'
+import { WAIT_REASON_LABELS } from '@/types'
 import { sanitizeReportMarkdown } from '@/utils/reportText'
 
 interface DecisionCardProps {
@@ -21,6 +22,9 @@ interface DecisionCardProps {
     actionLabel?: string
     researchDirection?: string
     executionAction?: string
+    // [REPORT-UX-003] wait_reason_codes — explain WHY the action is WAIT.
+    waitReasonCodes?: string[]
+    waitReasonLabels?: Record<string, string>
 }
 
 const decisionConfig: Record<string, { label: string; color: string; icon: typeof TrendingUp }> = {
@@ -48,12 +52,24 @@ export default function DecisionCard({
     actionLabel: propActionLabel,
     researchDirection: propResearchDirection,
     executionAction: propExecutionAction,
+    waitReasonCodes: propWaitReasonCodes,
+    waitReasonLabels: propWaitReasonLabels,
 }: DecisionCardProps) {
     const [expanded, setExpanded] = useState(false)
 
     const actionLabel = propActionLabel || report?.action_label
     const researchDirection = propResearchDirection || report?.research_direction
     const executionAction = propExecutionAction || report?.execution_action
+    // [REPORT-UX-003] wait_reason_codes — prefer explicit props, fall back to
+    // report.result_data, so both detail page and Analysis page can supply them.
+    const waitReasonCodes: string[] = (
+        propWaitReasonCodes
+        || report?.wait_reason_codes
+        || []
+    ).filter(Boolean)
+    const waitReasonLabels: Record<string, string> = propWaitReasonLabels
+        || report?.wait_reason_labels
+        || WAIT_REASON_LABELS
 
     const actionLabelColorMap: Record<string, string> = {
         '等待触发': 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/30',
@@ -80,6 +96,29 @@ export default function DecisionCard({
         'REDUCE': 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
         'EXIT': 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
     }
+
+    // [REPORT-UX-003] wait_reason_codes — per-code chip styling so users can
+    // tell a genuine data gap apart from "no trigger yet" or "gate blocked".
+    const waitReasonChipClass = (code: string): string => {
+        if (code === 'DATA_MISSING') {
+            return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/30'
+        }
+        if (code === 'GATE_BLOCKED') {
+            return 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30'
+        }
+        if (code === 'CONFLICT') {
+            return 'bg-orange-50 text-orange-700 ring-orange-200 dark:bg-orange-500/10 dark:text-orange-300 dark:ring-orange-500/30'
+        }
+        if (code === 'RISK_FIRST') {
+            return 'bg-green-50 text-green-700 ring-green-200 dark:bg-green-500/10 dark:text-green-300 dark:ring-green-500/30'
+        }
+        // NO_TRIGGER / NORMAL_NO_DATA — neutral info tone.
+        return 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-slate-700/40 dark:text-slate-300 dark:ring-slate-600'
+    }
+
+    // Only render reason chips for WAIT-family actions; ENTER/HOLD/etc have no
+    // wait reason to explain and showing empty chips would be noise.
+    const showWaitReasons = executionAction === 'WAIT' && waitReasonCodes.length > 0
 
     const parseDecision = (text?: string): 'buy' | 'sell' | 'hold' | 'add' | 'reduce' | 'watch' | undefined => {
         if (!text) return propDecision
@@ -147,6 +186,28 @@ export default function DecisionCard({
                     )}
                 </div>
             </div>
+
+            {/* [REPORT-UX-003] 观察原因 — decompose "数据不足观察" into explainable chips */}
+            {showWaitReasons && (
+                <div className="mb-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 ring-1 ring-slate-200 dark:ring-slate-700 p-3">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                            观察原因：
+                        </span>
+                        {waitReasonCodes.map(code => (
+                            <span
+                                key={code}
+                                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${waitReasonChipClass(code)}`}
+                            >
+                                {waitReasonLabels[code] || WAIT_REASON_LABELS[code] || code}
+                            </span>
+                        ))}
+                    </div>
+                    <p className="mt-1.5 text-[11px] leading-4 text-slate-400 dark:text-slate-500">
+                        系统未给出强动作，以上为本次观察的具体原因，可据此判断是否补数据或等待触发。
+                    </p>
+                </div>
+            )}
 
             {/* 置信度 */}
             {confidence != null && (

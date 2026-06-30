@@ -572,6 +572,14 @@ export default function Reports() {
                             actionLabel={selectedReport.result_data?.action_label}
                             researchDirection={selectedReport.result_data?.research_direction}
                             executionAction={selectedReport.result_data?.execution_action}
+                            waitReasonCodes={
+                                (selectedReport.wait_reason_codes
+                                    ?? selectedReport.result_data?.wait_reason_codes) as string[] | undefined
+                            }
+                            waitReasonLabels={
+                                (selectedReport.wait_reason_labels
+                                    ?? selectedReport.result_data?.wait_reason_labels) as Record<string, string> | undefined
+                            }
                         />
                     ) : selectedReport.status === 'failed' ? (
                         <div className="card h-full flex flex-col items-center justify-center p-8 text-center min-h-[320px]">
