@@ -1085,7 +1085,8 @@ fi
 # --- Count and decide whether to continue ---
 if [ "$RESULT_STATUS" = "DONE" ]; then
     COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
-    log "--- Task $TASK_ID done, continuing ---"
+    log "--- Task $TASK_ID done, stopping (one task per run) ---"
+    break
 elif [ "$RESULT_STATUS" = "QUOTA_EXHAUSTED" ]; then
     FAILED_TASKS=$((FAILED_TASKS + 1))
     err "--- Task $TASK_ID failed (quota exhausted), stopping batch ---"
