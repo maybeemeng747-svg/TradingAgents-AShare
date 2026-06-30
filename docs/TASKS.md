@@ -4339,7 +4339,7 @@
 ### KB-002: investment wiki 输出协议升级：TA 可消费字段 lint（P1）
 - **描述**：为 Tree Work 提出稳定的 investment wiki 输出协议，并在 TA 仓库实现 lint，避免后续消化研报后 TA 仍抓不到股票、主题、风险、来源和时效。
 - **优先级**：P1
-- **状态**：in_progress — claimed KB-002-20260630-192841
+- **状态**：done -- commit 5a93396
 - **最近一次自动运行**：KB-002-20260630-182708 因 review/收口阶段进入 NEEDS_HUMAN，未产生可提交实现；已归档 run/review 记录，允许下一轮重新领取。
 - **前置条件**：KB-001 完成。
 - **Tree Work 新要求草案**：
