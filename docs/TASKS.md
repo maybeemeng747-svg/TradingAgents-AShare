@@ -4317,7 +4317,7 @@
 ### KB-001: Tree Work 本地知识库只读索引与健康审计（P1）
 - **描述**：把 `~/Documents/knowledge/` 作为 TA 的本地投研知识源进行只读审计，确认 Tree Work 产物是否能被机器稳定检索和追溯。
 - **优先级**：P1
-- **状态**：in_progress — claimed KB-001-20260630-181814
+- **状态**：done -- commit 81c64b9
 - **前置条件**：无。
 - **背景**：用户的 Tree Work 基于 Karpathy LLM Wiki 模式，`wiki/investment/` 已有 76 篇投资知识、`raw/` 保存原始资料、`inbox/` 有待处理材料。TA 需要接入消化后的 wiki，而不是直接消化 raw 研报。
 - **执行约束**：
