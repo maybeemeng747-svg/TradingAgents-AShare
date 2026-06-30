@@ -154,7 +154,7 @@
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
 130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
-131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，ready）。
+131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — commit 81c64b9）。
 132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，ready，依赖 KB-001）。
 133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，ready，依赖 KB-001/KB-002）。
 134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，ready，依赖 KB-003/H-017）。
@@ -4340,6 +4340,7 @@
 - **描述**：为 Tree Work 提出稳定的 investment wiki 输出协议，并在 TA 仓库实现 lint，避免后续消化研报后 TA 仍抓不到股票、主题、风险、来源和时效。
 - **优先级**：P1
 - **状态**：ready
+- **最近一次自动运行**：KB-002-20260630-182708 因 review/收口阶段进入 NEEDS_HUMAN，未产生可提交实现；已归档 run/review 记录，允许下一轮重新领取。
 - **前置条件**：KB-001 完成。
 - **Tree Work 新要求草案**：
   1. 每篇 investment wiki 必须保留基础 frontmatter：`title/created/updated/sources/tags/related`。
