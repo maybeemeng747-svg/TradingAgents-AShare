@@ -41,7 +41,7 @@ import pandas as pd
 
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
-from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run
+from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -4866,6 +4866,33 @@ def post_notification_dry_run(
         db, current_user.id,
         tf_db_path=body.tf_db_path,
         force_refresh=body.force_refresh,
+    )
+
+
+# [IC-TA-004] controller_briefing_payload
+class BriefingPayloadRequest(BaseModel):
+    scene: str = "pre_market"  # pre_market / intraday / post_market
+    tf_db_path: str = ""
+
+
+@app.post("/v1/dashboard/investment-controller/briefing/dry-run")
+def post_briefing_payload_dry_run(
+    body: BriefingPayloadRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """生成 investment-controller 飞书 briefing payload（dry-run）.
+
+    三场景统一 payload：盘前（TA 调度 + 昊天主题）/ 盘中（观察 + 风险告警，不调度
+    新 TA）/ 盘后（今日表现 + 数据缺口 + 次日 TA 候选）。每条 ta_request /
+    watch_item / data_warning 带 notify_level（P0/P1 → intraday_push，P2/P3 →
+    daily_digest）。只做调度与摘要，不下最终交易结论。dry-run：不调用 LLM、
+    不发送飞书、不写数据库。runtime_tier=FAST_RADAR。
+    """
+    return controller_briefing_payload_service.build_briefing_payload_dry_run(
+        db, current_user.id,
+        scene=body.scene,
+        tf_db_path=body.tf_db_path,
     )
 
 

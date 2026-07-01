@@ -151,7 +151,7 @@
   125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，done — DATA-024-20260629-231953，依赖 DATA-022/DATA-023 ✓）。
 126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，done — REPORT-UX-003-20260630-180010，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
 127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，ready，依赖 TF-OBS-005/UI-013 ✓）。
-128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
+128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，done，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
 130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
 131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
@@ -4257,7 +4257,7 @@
 ### IC-TA-004: investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2）
 - **描述**：investment-controller 已转型为 TA 调度官/播报官。本任务固定它给飞书/总控的 briefing payload，验证盘前、盘中、盘后各自只做调度与摘要，不越权下最终交易结论。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — OpenCode 产出 `tradingagents/tradeflow/controller_briefing_payload.py` + `api/services/controller_briefing_payload_service.py` + `api/main.py` 路由 + `api/runtime_tier.py` 注册 + `tests/test_ic_ta004_controller_briefing_payload.py`（74 tests），回归 214+118 passed
 - **前置条件**：IC-TA-003、NOTIFY-003 完成。
 - **执行约束**：
   - dry-run，不真实发送。

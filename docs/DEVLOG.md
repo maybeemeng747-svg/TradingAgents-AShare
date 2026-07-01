@@ -4,6 +4,73 @@
 
 ---
 
+## 2026-07-01 | IC-TA-004 investment-controller 飞书 briefing payload 与 TA 调度闭环验收
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` IC-TA-004（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：IC-TA-003 ✓、NOTIFY-003 ✓
+
+### 背景
+
+IC-TA-003 已为盘前/盘后产出 `briefing_type` 形态的 briefing。IC-TA-004 把
+investment-controller 固化为 **TA 调度官/播报官**：给它一份覆盖盘前/盘中/盘后
+三场景的**统一 briefing payload**，每场景只做"调度 + 摘要"，**不越权下最终交易
+结论**，并接入 NOTIFY 去噪通道分类（P0/P1 → 盘中，P2/P3 → 日报）。
+
+### 修改文件
+
+- 新增 `tradingagents/tradeflow/controller_briefing_payload.py` — 纯引擎：
+  - 统一 payload schema：`scene` / `summary` / `ta_requests` / `watch_items` /
+    `data_warnings` / `notify_level` / `scene_extras` / `markdown_preview` /
+    `forbidden_word_scan`。
+  - 三场景：`build_pre_market_payload`（TA 调度 + 昊天主题）、
+    `build_intraday_payload`（观察 + 风险告警，**盘中不调度新 TA**）、
+    `build_post_market_payload`（今日表现 + 数据缺口 + 次日 TA 候选）。
+  - 复用 IC-TA-003 路由 helpers（`_route_ta_to_schedule` 等）+ NOTIFY
+    `classify_delivery_channel` 决定 `notify_level`；复用 TRACK-004
+    `evaluate_observation_state` 派生盘中观察状态。
+  - `dry_run_all_scene_fixtures` + 内置 `INTRADAY_FIXTURE_CONTEXT`（带 live_price
+    的观察仓 + 持仓风险数据）。
+  - `render_briefing_markdown` 输出飞书卡片 markdown 预览。
+- 新增 `api/services/controller_briefing_payload_service.py` — service 层：
+  `build_briefing_payload_dry_run`（按场景读真实 IC context）+
+  `run_briefing_scene_fixtures`（跑 fixture）；IC context 失败时降级不抛异常；
+  附加 `runtime_tier_meta` 与 `context_data_status`。
+- 改 `api/main.py` — 新增 `POST /v1/dashboard/investment-controller/briefing/dry-run`
+  （`BriefingPayloadRequest{scene, tf_db_path}`），并 import
+  `controller_briefing_payload_service`。
+- 改 `api/runtime_tier.py` — 注册 `controller_briefing_payload` 为 FAST_RADAR。
+- 新增 `tests/test_ic_ta004_controller_briefing_payload.py` — 74 tests。
+
+### 第一性原理 / 验收对照
+
+- **剃刀定律**：不重写 IC-TA-003 路由，只在它之上 reshape 成统一 schema + 补
+  `notify_level`；盘中场景复用 TRACK-004 状态引擎派生 watch_items。
+- **场景分工**：盘前/盘后调度 TA，盘中只 watch + warn（`ta_requests` 恒空，
+  notes 显式声明"盘中不调度新 TA"）。
+- **notify_level 接入 NOTIFY 去噪规则**：每条 ta_request/watch_item/data_warning
+  带 `notify_level`，P0/P1 → `intraday_push`，P2/P3/record_only → `daily_digest`；
+  briefing 只做通道分类，去噪本身由 notify dry-run 通道负责（`dedup_applied=False`）。
+- **不越权**：`read_only=True`、`dry_run=True`；禁用词扫描三场景全部通过；
+  payload 无 api_key/token/secret/webhook 等敏感字段。
+- **稳定空结构**：空 context / 缺 bucket 时不抛异常，返回空数组 + summary。
+
+### 测试结果
+
+- `tests/test_ic_ta004_controller_briefing_payload.py`：74 passed / 0 failed。
+- 回归：`test_ic_ta003_controller_briefing.py` + `test_notify003_noise_replay.py`
+  + `test_runtime_tier_contract.py` + `test_api_smoke.py` 共 214 passed。
+- 进一步回归：IC-TA-001/002 + TRACK-NOTIFY-001 + NOTIFY-002 共 118 passed。
+
+### 风险点
+
+- 无 live LLM / 无真实推送 / 无 DB 写入（READ-ONLY 已测试）。
+- 盘中 fixture 的观察仓 live_price 是构造值，仅供联调，不代表真实行情。
+
+---
+
 ## 2026-07-01 | TF-OBS-006 盘中观察自动执行入口与红涨绿跌视觉语义修正
 
 - **执行者**：OpenCode
@@ -9570,3 +9637,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/TF-OBS-006-20260701-round1.txt
 - **Run archive**: docs/task_runs/TF-OBS-006-20260701-193047/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: IC-TA-004 - investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/IC-TA-004-20260701-round1.txt
+- **Run archive**: docs/task_runs/IC-TA-004-20260701-194255/
