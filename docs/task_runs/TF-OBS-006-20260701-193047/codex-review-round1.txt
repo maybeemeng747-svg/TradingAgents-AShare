@@ -1,0 +1,3110 @@
+Task: TF-OBS-006 - 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+Date: 2026-07-01_19:42:54
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f1d7b-6cec-75c3-ab1c-f4eed70de012
+--------
+user
+current changes
+2026-07-01T11:40:57.261387Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-07-01T11:40:58.085477Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-07-01T11:41:02.085386Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-07-01T11:41:02.253420Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+exec
+/bin/zsh -lc 'git status --short && git branch --show-current && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/pages/TradeFlow.tsx
+?? docs/task_runs/TF-OBS-006-20260701-193047/
+?? frontend/src/utils/observeVisuals.test.ts
+?? frontend/src/utils/observeVisuals.ts
+local/tradingagents-custom
+ docs/DEVLOG.md                   | 48 ++++++++++++++++++++++
+ docs/TASKS.md                    |  2 +-
+ frontend/src/pages/TradeFlow.tsx | 88 ++++++++++++++++++++++++++++++----------
+ 3 files changed, 115 insertions(+), 23 deletions(-)
+
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG HEAD---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+ 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，done — commit 62f0d46，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，done — commit b0f4c9c，依赖 DATA-021 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，done — commit eecfe9f，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，done — commit cb8b2ec，依赖 H-015 ✓）。
+  114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，done — commit defb365，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，done — commit 6f585c3，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，done，依赖 NOTIFY-002 ✓）。
+  121. `TRACK-009`：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1，done，依赖 TRACK-003/TRACK-007 ✓）。
+122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，done，依赖 TRACK-005/TRACK-007 ✓）。
+  123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，done — OpenCode 2026-06-29，7269 passed/0 failed，依赖 TF-QUALITY-004/H-014 ✓）。
+124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，done，依赖 H-015/H-016 ✓）。
+  125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，done — DATA-024-20260629-231953，依赖 DATA-022/DATA-023 ✓）。
+126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，done — REPORT-UX-003-20260630-180010，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
+127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，ready，依赖 TF-OBS-005/UI-013 ✓）。
+128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
+129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
+130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
+131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
+132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ 真实知识库 lint 报告；99 tests passed（KB-001+KB-002））。
+133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_provider.py` + `scripts/query_local_knowledge.py` + `tests/test_kb003_local_knowledge_provider.py`（83 tests）+ 接入 `data_collector.build_raw_evidence` / `evidence_contract` / `report_service.attach_report_local_knowledge` / `api/main.py` 响应顶层；7586 tests passed，无回归）。
+134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，blocked — 前置 KB-003 未真实完成）。
+135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready — 前置 KB-001 已由 commit 97e997f 真实完成）。
+136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
+137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
+138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
+139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，ready，依赖 DATA-011/DATA-023）。
+140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready — 前置 KB-007 已完成）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+
+> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+
+### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+- **优先级**：P0
+- **状态**：done — commit 2ef6c37
+- **背景**：
+  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG HEAD---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-07-01 | TF-OBS-006 盘中观察自动执行入口与红涨绿跌视觉语义修正
+
+- **执行者**：OpenCode
+- **类型**：feature / UX
+- **任务**：`docs/TASKS.md` TF-OBS-006（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：TF-OBS-005 ✓、UI-013 ✓
+
+### 背景
+
+用户反馈盘中观察需要手动点执行、入口不清晰，且"距离触发价"的红绿含义
+反大 A 直觉（接近触发价=强势，应红色；远离/走弱=绿或灰）。本任务把视觉
+语义抽到纯函数、加图例、明确刷新入口和非交易时段提示。
+
+### 修改文件
+
+- 新增 `frontend/src/utils/observeVisuals.ts` — 纯函数：A 股红涨绿跌色调
+  计算（triggered/near_trigger=红，invalidated/near_invalidation=绿，
+  waiting=灰）、图例常量 `OBSERVE_LEGEND`、`formatLastRefreshTime`、
+  `shouldShowNonMarketBanner`。
+- 新增 `frontend/src/utils/observeVisuals.test.ts` — 23 个单测覆盖色调判定、
+  阈值边界、server hint、图例顺序、刷新时间格式、非交易时段 banner。
+- 改 `frontend/src/pages/TradeFlow.tsx`：
+  - `priceDistanceColor` 改为薄包装，委托给 `computeObserveVisual`，并接受
+    `nearTrigger`/`triggerDistancePct` 让"接近触发"显红、"接近失效"显绿。
+  - ObserveTable 顶栏：按钮文案 `手动刷新` → `一键刷新观察`；"最近刷新"
+    时间用 `formatLastRefreshTime` 高亮显示（无数据时显示"尚未刷新"）。
+  - 新增红涨绿跌图例行（5 色：已触发/接近触发/等待中/接近失效/已失效）。
+  - "接近触发"汇总数字与分组 accent 由 blue 系改为 red 系，与图例一致。
+  - 新增非交易日/非交易时段 banner（"可查看上次观察/等待交易时段"+时段说明）。
+  - 空状态提示文案同步为「一键刷新观察」。
+
+### 第一性原理 / 验收对照
+
+- 不开启后台高频轮询（沿用 TF-OBS-004 的 3/5 分钟 interval，未改算法）。
+- 不自动发送交易动作、不改触发算法、不改 prompts。
+- 红涨绿跌语义不再反直觉：接近触发=红、接近失效=绿、等待=灰，图例自解释。
+- 非交易时段有明确文案，不再让用户误以为系统在实时盯盘。
+
+### 测试
+
+- `npx vitest run`：4 文件 / 50 tests passed（含新增 23）。
+- `npm run build`：通过（chunk size 警告为既有，与本次改动无关）。
+- `npx tsc --noEmit`：通过。
+- 3 个 ESLint `set-state-in-effect` 报错为既有（未触碰行），新增文件无 lint 报错。
+
+---
+
+## 2026-07-01 | KB-008 TA/TradeFlow 接入研报关注度与主题交叉度展示
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` KB-008（P1）
+- **状态**：实现完成，待外层 commit
+- **前置**：KB-003 ✓（local_knowledge raw_evidence 接入）、KB-007 ✓（research_attention_score）
+
+### 背景
+
+KB-007 已能输出整库的"研报关注度"榜单，但 TA 报告 / TradeFlow 候选 / 观察仓
+都不能消费这个因子，导致"多份研报反复提到同一只票"这条信息无法落到用户看到的
+界面层。KB-008 把 KB-007 的关注度结果接入 TA/TradeFlow 的展示链路，作为研究
+优先级与解释信息（**不是买入信号**）。
+
+### 第一性原理拆解
+
+- 用户最小诉求：在 TA 报告 / 候选详情里直接看到"这只票被几篇研报反复提、主题
+  是否交叉/拥挤、是否有过期/低置信页面"，作为研究优先级的辅助判断。
+- 不能破坏的红线：不改变强动作门禁（DECISION-001）、不与公告/财务/行情/资金流
+  混用、不调用 LLM、只读知识库。
+- 最小实现：复用 KB-007 的 `compute_research_attention` 倒排索引，加一层
+  single-symbol 查询 + 扁平 summary，注入 KB-003 既有的
+  `attach_report_local_knowledge` 与 TradeFlow 候选读取链路。
+
+### 改动
+
+- **新增** `tradingagents/dataflows/research_attention.py`（`# [KB-008] research_attention_integration`）：
+  - `lookup_research_attention(knowledge_root, symbol)`：单 symbol 查询，复用
+    `compute_research_attention` 的全库倒排索引；symbol 等价性支持
+    `603296` / `603296.SH` / `603296.sh` / `603296.SS`。
+  - `attention_to_summary(sym)`：把 `SymbolAttention` 扁平化为前端可消费的 dict，
+    含 `research_attention_score / knowledge_theme_count / mention_count /
+    fresh_mention_count / high_quality_mention_count / stale_mention_count /
+    deprecated_mention_count / source_count / themes / sources / latest_updated /
+    matched_pages / score_explain / research_attention_summary / has_hit`。
+    `has_hit=False` 时返回空结构（NORMAL_NO_DATA 语义）。
+  - `render_research_attention_inline(sym)`：渲染嵌入"本地知识补充"末尾的
+    Markdown 段；`sym is None` 返回空串；含综合关注度/命中篇数/主题交叉/来源/
+    过期/低置信/命中页（前 5）/分数构成；刻意避免买卖建议词。
+  - `_symbols_equivalent` / `_render_attention_summary` 内部助手。
+
+- **改动** `api/services/report_service.py`（`attach_report_local_knowledge`）：
+  - 在 KB-003 既有的 `local_knowledge_block / local_knowledge_summary` 之上扩展
+    KB-008 字段：把 `attention_to_summary` 结果 `.update()` 进 summary，并把
+    `research_attention_score / knowledge_theme_count / research_attention_summary /
+    research_attention_block` 提到顶层。
+  - 把 `render_research_attention_inline` 输出拼到 `local_knowledge_block` 末尾，
+    让 TA 报告一次渲染就能展示完整本地知识 + 研报关注度。
+  - KB-008 块包在 try/except 中，依赖不可用时降级为空结构，绝不阻塞 KB-003。
+
+- **改动** `api/main.py`（`_attach_report_data_blockers_for_response`）：
+  - 顶层 setattr 同步 KB-008 字段（`research_attention_score /
+    knowledge_theme_count / research_attention_summary / research_attention_block`），
+    兼容 legacy 行的 recompute 路径与新写入 result_data 的 fast path。
+
+- **改动** `api/tradeflow_schemas.py`（`TradeFlowCandidateItem`）：
+  - 新增字段 `research_attention_score: float = 0.0`、
+    `knowledge_theme_count: int = 0`、`research_attention_summary: str = ""`、
+    `research_attention_detail: Dict[str, Any] = {}`（默认值即 NORMAL_NO_DATA）。
+
+- **改动** `api/services/tradeflow_service.py`：
+  - 新增 `_enrich_candidate_with_research_attention(item)`（单条）和
+    `_enrich_candidates_with_research_attention(items)`（批量，共享一次全库扫描）。
+    两条路径都通过 `default_knowledge_root()` 解析知识库根目录，知识库不可读时
+    逐项降级为空结构。
+  - 在 `get_candidates / get_candidate_detail / get_daily_plan /
+    get_candidates_tiered` 四个读取入口注入 KB-008 字段。注入只发生在 tier/action
+    计算**之后**，**不参与** pool_gate / action_tier / 强动作门禁。
+
+- **新增** `tests/test_kb008_research_attention_integration.py`（39 tests，8 个类）：
+  - `lookup_research_attention`：命中/无命中/symbol 等价/空入参/HK/空库/缺失库。
+  - `attention_to_summary`：命中结构/无命中结构/负面信息（stale+deprecated+
+    主题拥挤）/ 无买卖建议词 / 分数 2 位小数。
+  - `render_research_attention_inline`：非空渲染 / 空渲染 / 必要字段 / 命中页 /
+    STALE 标注 / 无买卖建议词。
+  - `attach_report_local_knowledge` KB-008：顶层字段 / summary 字段 / block 拼接 /
+    强动作门禁不变 / 无命中返回空结构 + NORMAL_NO_DATA。
+  - TradeFlow 单条 / 批量 enrichment：命中 / bare code / 无命中 / 空入参 /
+    低置信不提升 / 共享扫描 / 知识库缺失降级。
+  - 只读安全性：mtime + 内容哈希不变、无新文件创建。
+  - Pydantic schema：4 个新字段、默认值、可构造。
+
+### 验收对照
+
+- ✓ fixture 中同一股票多篇命中 → API / TA 报告展示关注度摘要（华勤 3 篇命中、
+  fresh=2、stale=1、theme_count≥5、score>0）。
+- ✓ 仅低置信命中不会推高候选层级（DELL.US 全部 deprecated → score=0.0）。
+- ✓ 无命中返回 NORMAL_NO_DATA，不影响 TA 主流程（score=0、summary=""）。
+- ✓ 强动作门禁不变（execution_action / action_label / target_price /
+  stop_loss_price 在 KB-008 注入前后保持一致）。
+
+### 风险点
+
+- **性能**：单 symbol lookup 与批量 enrichment 都会触发一次全库扫描（76 页）。
+  KB-003 已有同样行为（每次读报告都重扫），本轮保持一致以避免引入缓存层复杂度。
+  后续 PERF 任务可加 LRU 缓存，但本轮不做（第一性原理：先打通可观察链路）。
+- **误读风险**：`research_attention_score` 高不代表买入，文档/渲染/测试均反复
+  强调"不构成买卖建议"，并在 summary 中显式列出负面信息（过期/低置信/主题拥挤）。
+- **TradeFlow 字段是运行时注入**，不持久化到 tradeflow.db schema；旧库无需迁移，
+  前端读到的就是查询时刻最新的关注度，避免数据陈旧。
+
+### 测试
+
+- `pytest tests/test_kb008_research_attention_integration.py -q`：**39 passed**。
+- `pytest tests/test_kb001_local_knowledge_audit.py tests/test_kb002_local_knowledge_lint.py
+  tests/test_kb003_local_knowledge_provider.py tests/test_kb007_research_attention.py -q`：
+  **260 passed**（KB-001/002/003/007 无回归）。
+- `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_candidate_engine.py
+  tests/test_tf_obs_001_observe_runner.py tests/test_api_smoke.py -q`：**163 passed**
+  （TradeFlow/API 主链路无回归）。
+- 关键词全量回归（tradeflow/report_service/runtime_tier/local_knowledge/
+  research_attention/data_collector）：**809 passed**。
+
+### 非买入信号
+
+研报关注度仅表达"被多少篇研报/评分表/主题页反复提到"，**不构成买卖建议**。
+TA 报告渲染段、TradeFlow enrichment、`research_attention_summary` 一句话摘要
+都刻意回避 `买入/卖出/加仓/减仓/强烈推荐/BUY/SELL` 等强动作词，并显式列出过期/
+低置信/主题拥挤等负面信息。
+
+---
+
+## 2026-07-01 | KB-007 多研报重复提及因子 Research Attention Score
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待外层 commit）
+- **任务**：`docs/TASKS.md` KB-007（P1）
+
+### 背景
+
+- KB-001/KB-002/KB-003 已完成知识库只读**审计**、契约 **lint** 与单 symbol 查询接入。
+- KB-007 需要在**全量**消化页面上建立 `symbol -> matched_pages[]` 倒排索引，统计每只标的被
+  多少篇研报/评分表/主题页重复提及，合成中性的"研究关注度"分数，用于候选发现与中线研究优先级。
+- 该分数**不构成买卖信号**，仅作为研究优先级与解释因子；过期 / 低置信 / 待补充页面必须降权。
+
+### 变更
+
+- **新增** `tradingagents/dataflows/research_attention.py`（`# [KB-007] research_attention_score`）：
+  - 全量扫描 `wiki/investment/`，按 frontmatter `symbols` 字段建立倒排索引；
+    `symbols` 缺失的页面不进入索引（与 KB-003 命中口径一致）。
+  - **资产分类** `classify_asset_class`：A 股（.SH/.SZ/.BJ/.SS）/ 港股（.HK）/ 美股（.US）/
+    基金（ETF/LOF/基金关键词命中，覆盖 .SH 后缀的指数基金）/ 未上市主体 / 其它；
+    基金关键词优先于 A 股后缀，避免 510300 等 ETF 被混入 A 股。
+  - **字段聚合**：`mention_count` / `fresh_mention_count` / `theme_count` / `source_count` /
+    `high_quality_mention_count` / `stale_mention_count` / `deprecated_mention_count` /
+    `report_type_distribution` / `themes` / `sources` / `latest_updated`。
+  - **来源去重**：`[[target|alias]]` wiki-link 取 alias 作为去重 key，同一研报别名在多页
+    命中只计一次主权重；超出部分计入 `duplicate_source_penalty`。
+  - **分数合成** `_compose_score`：
+    `raw = (fresh×1.0 + max(0,theme-1)×0.5 + high_q×0.5) × freshness_ratio`
+    `- stale×0.3 - deprecated×0.5 - duplicate_source×0.1`，下限 0；
+    每个加减分项写入 `score_explain`，便于 KB-008 前端展示。
+  - **降权规则**：stale（`stale_risk=高` 或 `valid_until` 过期）/ deprecated（待补充 或
+    `evidence_level=C`）页面不进入 `fresh_mention_count`；freshness_ratio 把整体分数按比例
+    缩放，确保纯 stale / 纯 deprecated 标的分数为 0。
+  - `render_research_attention_report()` 输出 Markdown：扫描概览 / 资产类别分布 / Top 榜 /
+    重点明细（含 score_explain）/ 计分口径 / 免责声明；**刻意避免** `买入/卖出/加仓/减仓/
+    强烈推荐` 等强动作词。
+  - 复用 KB-001/KB-002 的 `_audit_single_page` / `_split_frontmatter` / stale 判断，
+    保持口径一致；不重复读盘逻辑。
+- **新增** `scripts/run_research_attention.py` CLI：
+  - `--knowledge-root / --output / --json-output / --json / --stdout / --top`。
+  - 与 KB-001/KB-002 CLI 风格一致：默认只打印 stdout，**不自动落盘**（避免测试/CI 误污染 docs）；
+    显式 `--output` / `--json-output` 才写文件；FAILED/空跑返回 1。
+
+exec
+/bin/zsh -lc "git diff -- frontend/src/pages/TradeFlow.tsx && printf '\\n---untracked observeVisuals.ts---\\n' && sed -n '1,240p' frontend/src/utils/observeVisuals.ts && printf '\\n---test---\\n' && sed -n '1,260p' frontend/src/utils/observeVisuals.test.ts" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index 358a701..0ea12c6 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -47,6 +47,13 @@ import {
+     pickWhyNotMain,
+     DEFAULT_MAIN_VIEW_CAP,
+ } from '@/utils/tradeflowFocus'
++// [TF-OBS-006] observe_refresh_visual_semantics — A-share red/green pure helpers
++import {
++    computeObserveVisual,
++    formatLastRefreshTime,
++    shouldShowNonMarketBanner,
++    OBSERVE_LEGEND,
++} from '@/utils/observeVisuals'
+ 
+ type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
+ 
+@@ -128,21 +135,18 @@ function actionTierBadge(tier: string): { text: string; cls: string } {
+     }
+ }
+ 
+-// [TF-UX-002] A-stock color: red=up/triggered, green=down/invalidated
+-function priceDistanceColor(currentPrice: number | null, triggerPrice: number | null, invalidPrice: number | null): { text: string; cls: string; label: string } {
+-    if (!triggerPrice || !currentPrice) {
+-        return { text: '-', cls: 'text-slate-400', label: '' }
+-    }
+-    const distPct = ((currentPrice - triggerPrice) / triggerPrice * 100)
+-    if (currentPrice >= triggerPrice) {
+-        return { text: `已触发 / +${distPct.toFixed(2)}%`, cls: 'text-red-600 dark:text-red-400 font-medium', label: '已触发' }
+-    }
+-    if (invalidPrice && currentPrice <= invalidPrice) {
+-        const belowPct = ((invalidPrice - currentPrice) / invalidPrice * 100)
+-        return { text: `已失效 / -${belowPct.toFixed(2)}%`, cls: 'text-emerald-600 dark:text-emerald-400', label: '已失效' }
+-    }
+-    const toTrigger = ((triggerPrice - currentPrice) / triggerPrice * 100)
+-    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-slate-500 dark:text-slate-400', label: '等待中' }
++// [TF-OBS-006] observe_refresh_visual_semantics
++// A-share colors are now sourced from @/utils/observeVisuals so the semantics
++// (red=near trigger/strong, green/gray=weak) are unit-tested and consistent
++// with the legend. This thin wrapper keeps the legacy call sites working.
++function priceDistanceColor(
++    currentPrice: number | null,
++    triggerPrice: number | null,
++    invalidPrice: number | null,
++    nearTrigger?: boolean,
++    triggerDistancePct?: number | null,
++): { text: string; cls: string; label: string } {
++    return computeObserveVisual({ currentPrice, triggerPrice, invalidPrice, nearTrigger, triggerDistancePct })
+ }
+ 
+ // [TF-P0-002] tradeflow_pool_split — pool tabs
+@@ -222,7 +226,7 @@ function CompletenessBar({ value }: { value: number }) {
+ // [TF-OBS-004] observe_refresh_alert_queue — grouping + countdown
+ function ObserveRow({ item }: { item: TradeFlowObserveItem }) {
+     const st = observeStateLabel(item.observe_state)
+-    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
++    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price, item.near_trigger, item.trigger_distance_pct)
+     const explain = item.trigger_explain
+     return (
+         <tr
+@@ -338,10 +342,16 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+         <div>
+             <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+-                {effectiveLastTime && (
++                {/* [TF-OBS-006] observe_refresh_visual_semantics — prominent last-refresh time */}
++                {effectiveLastTime ? (
++                    <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" title={effectiveLastTime}>
++                        <Clock className="h-3 w-3" />
++                        最近刷新: {formatLastRefreshTime(effectiveLastTime) || effectiveLastTime}
++                    </span>
++                ) : (
+                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                         <Clock className="h-3 w-3" />
+-                        最后检查: {effectiveLastTime}
++                        尚未刷新
+                     </span>
+                 )}
+                 {observeAutoRun && (
+@@ -364,21 +374,37 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+                         已暂停 · {!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}
+                     </span>
+                 )}
++                {/* [TF-OBS-006] observe_refresh_visual_semantics — one-click refresh entry */}
+                 <button
+                     onClick={() => { onRun(); setShowResult(true) }}
+                     disabled={running}
+                     className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
++                    title="立即拉取一次实时行情并检查触发状态（不自动下单）"
+                 >
+                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+-                    {running ? '执行中...' : '手动刷新'}
++                    {running ? '执行中...' : '一键刷新观察'}
+                 </button>
+             </div>
++            {/* [TF-OBS-006] observe_refresh_visual_semantics — A-share color legend
++                (red = approaching trigger / strong, green = approaching invalid / weak) */}
++            {items.length > 0 && (
++                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
++                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">红涨绿跌图例:</span>
++                    {OBSERVE_LEGEND.map(e => (
++                        <span key={e.tone} className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400" title={e.desc}>
++                            <span className={`inline-block h-2 w-2 rounded-full ${e.dotCls}`} />
++                            {e.label}
++                        </span>
++                    ))}
++                </div>
++            )}
+             {/* [TF-OBS-004] observe_refresh_alert_queue — grouped summary */}
++            {/* [TF-OBS-006] observe_refresh_visual_semantics — near-trigger uses red (strong) per A-share legend */}
+             {items.length > 0 && (
+                 <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
+                     <span className="text-xs text-slate-500">待确认: <span className="font-medium text-amber-600 dark:text-amber-400">{pendingCount}</span></span>
+                     <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{triggeredItems.length}</span></span>
+-                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-blue-600 dark:text-blue-400">{nearTriggerCount}</span></span>
++                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-red-500 dark:text-red-400">{nearTriggerCount}</span></span>
+                     <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
+                 </div>
+             )}
+@@ -397,6 +423,23 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+                     </div>
+                 </div>
+             )}
++            {/* [TF-OBS-006] observe_refresh_visual_semantics — non-market-hours banner.
++                Outside trading sessions users can still review the last observe snapshot;
++                no live trigger checks happen, so we surface that explicitly. */}
++            {shouldShowNonMarketBanner(isTradingDay, isMarketHours) && (
++                <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
++                    <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
++                    <div>
++                        <div>
++                            {!isTradingDay ? '当前为非交易日' : '当前为非交易时段'}
++                            {items.length > 0 ? '，可查看上次观察结果，等待交易时段自动刷新。' : '，等待交易时段开始后自动执行观察。'}
++                        </div>
++                        <div className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
++                            交易时段：周一至周五 09:30-11:30 / 13:00-15:00（法定节假日除外）
++                        </div>
++                    </div>
++                </div>
++            )}
+             {observeReason && items.length === 0 && !runResult && (
+                 <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                     {observeReason}
+@@ -439,7 +482,7 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+                         hints={[
+                             '先生成候选池，候选会自动进入当日观察',
+                             '或手动将标的加入观察仓（跟踪看板）',
+-                            '也可点击右上角「手动刷新」立即触发一次检查',
++                            '也可点击右上角「一键刷新观察」立即触发一次检查',
+                         ]}
+                         actions={[
+                             ...(onGoToCandidates ? [{ label: '前往生成候选池', onClick: onGoToCandidates, primary: true }] : []),
+@@ -450,8 +493,9 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+             ) : items.length === 0 && !runResult ? null : (
+             <div className="overflow-x-auto">
+                 {/* [TF-OBS-004] observe_refresh_alert_queue — grouped sections, pending-first */}
++                {/* [TF-OBS-006] observe_refresh_visual_semantics — near-trigger accent aligned to red (strong) */}
+                 <ObserveGroup title="已触发（待确认优先）" subtitle="已进入模拟账本待确认队列，需人工确认，不自动下单" items={triggeredItems} accent="bg-red-500" />
+-                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-blue-500" />
++                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-red-400" />
+                 <ObserveGroup title="已失效 / 等待中" items={otherItems} accent="bg-slate-400" />
+                 {items.length > 0 && triggeredItems.length === 0 && nearItems.length === 0 && otherItems.length === 0 && (
+                     <table className="w-full text-sm">
+
+---untracked observeVisuals.ts---
+// [TF-OBS-006] observe_refresh_visual_semantics
+// Pure helpers for the 盘中观察 (intraday observe) tab visual semantics.
+//
+// A-share color convention (RED = up / strong, GREEN = down / weak):
+//   - Triggered / near trigger (price rising toward trigger)  → RED family
+//   - Invalidated / near invalidation (price falling)          → GREEN family
+//   - Neutral waiting / no quote                               → GRAY
+//
+// Extracted from TradeFlow.tsx so the semantics can be unit-tested without
+// pulling in React/components, following the tradeflowFocus.ts pattern.
+
+export type ObserveVisualTone =
+    | 'triggered'
+    | 'near_trigger'
+    | 'waiting'
+    | 'near_invalidation'
+    | 'invalidated'
+    | 'unknown'
+
+export interface ObserveVisualResult {
+    tone: ObserveVisualTone
+    /** Distance / status text shown in the cell, e.g. "还差 1.20%" / "已触发 / +2.10%". */
+    text: string
+    /** Tailwind text-color classes (light + dark). */
+    cls: string
+    /** Short label used by the legend. */
+    label: string
+}
+
+export interface ComputeObserveVisualInput {
+    currentPrice: number | null
+    triggerPrice: number | null
+    invalidPrice: number | null
+    /** Server-side "near trigger" flag (TF-OBS-004). When true, force near_trigger tone. */
+    nearTrigger?: boolean
+    /** Signed pct distance to trigger from server (optional, used only as a hint). */
+    triggerDistancePct?: number | null
+}
+
+/**
+ * Distance to trigger (positive pct) below which we treat the candidate as
+ * "approaching trigger" (strong → red). Kept conservative so we do not over-promise.
+ */
+export const NEAR_TRIGGER_THRESHOLD_PCT = 2.0
+
+/**
+ * Distance to invalidation (positive pct above the invalid price) below which
+ * we treat the candidate as "approaching invalidation" (weak → green).
+ */
+export const NEAR_INVALIDATION_THRESHOLD_PCT = 2.0
+
+/**
+ * Compute the A-share-compliant visual tone for an observe row.
+ *
+ * Rules (RED = strong/approaching trigger, GREEN = weak/approaching invalid):
+ *   1. No trigger or current price  → unknown (gray, "无行情")
+ *   2. currentPrice >= triggerPrice → triggered (red)
+ *   3. currentPrice <= invalidPrice → invalidated (green)
+ *   4. near trigger (server flag OR within threshold) → near_trigger (red)
+ *   5. near invalidation (within threshold of invalid price) → near_invalidation (green)
+ *   6. otherwise → waiting (gray)
+ */
+export function computeObserveVisual(input: ComputeObserveVisualInput): ObserveVisualResult {
+    const { currentPrice, triggerPrice, invalidPrice, nearTrigger, triggerDistancePct } = input
+
+    if (!triggerPrice || !currentPrice) {
+        return { tone: 'unknown', text: '-', cls: 'text-slate-400', label: '无行情' }
+    }
+
+    const distPct = ((currentPrice - triggerPrice) / triggerPrice) * 100
+
+    // 2. Triggered — price already at/above trigger (upside break, strong)
+    if (currentPrice >= triggerPrice) {
+        return {
+            tone: 'triggered',
+            text: `已触发 / +${distPct.toFixed(2)}%`,
+            cls: 'text-red-600 dark:text-red-400 font-medium',
+            label: '已触发',
+        }
+    }
+
+    // 3. Invalidated — price at/below invalid (downside break, weak)
+    if (invalidPrice && currentPrice <= invalidPrice) {
+        const belowPct = ((invalidPrice - currentPrice) / invalidPrice) * 100
+        return {
+            tone: 'invalidated',
+            text: `已失效 / -${belowPct.toFixed(2)}%`,
+            cls: 'text-emerald-600 dark:text-emerald-400',
+            label: '已失效',
+        }
+    }
+
+    // In-between: differentiate "approaching trigger" (strong/red) vs
+    // "approaching invalidation" (weak/green) vs neutral waiting (gray).
+    const toTrigger = ((triggerPrice - currentPrice) / triggerPrice) * 100
+
+    // 4. Near trigger — server flag OR within threshold (and server hint agrees)
+    const serverHintsNear = triggerDistancePct != null
+        ? Math.abs(triggerDistancePct) <= NEAR_TRIGGER_THRESHOLD_PCT
+        : false
+    const isNearTrigger = Boolean(nearTrigger) || toTrigger <= NEAR_TRIGGER_THRESHOLD_PCT || serverHintsNear
+
+    // 5. Near invalidation — close to invalid price (price falling)
+    let toInvalidationPct: number | null = null
+    if (invalidPrice && invalidPrice > 0) {
+        toInvalidationPct = ((currentPrice - invalidPrice) / invalidPrice) * 100
+    }
+    const isNearInvalidation = toInvalidationPct != null && toInvalidationPct <= NEAR_INVALIDATION_THRESHOLD_PCT
+
+    if (isNearTrigger) {
+        return {
+            tone: 'near_trigger',
+            text: `还差 ${toTrigger.toFixed(2)}%`,
+            cls: 'text-red-600 dark:text-red-400 font-medium',
+            label: '接近触发',
+        }
+    }
+    if (isNearInvalidation) {
+        return {
+            tone: 'near_invalidation',
+            text: `距失效 ${toInvalidationPct!.toFixed(2)}%`,
+            cls: 'text-emerald-600 dark:text-emerald-400',
+            label: '接近失效',
+        }
+    }
+
+    // 6. Neutral waiting
+    return {
+        tone: 'waiting',
+        text: `还差 ${toTrigger.toFixed(2)}%`,
+        cls: 'text-slate-500 dark:text-slate-400',
+        label: '等待中',
+    }
+}
+
+export interface ObserveLegendEntry {
+    tone: ObserveVisualTone
+    label: string
+    /** Dot swatch class (bg-*) to render the legend marker. */
+    dotCls: string
+    desc: string
+}
+
+/**
+ * Legend entries explaining the A-share red/green semantics used in the observe tab.
+ * Order matters: reds first (strong), then neutral, then greens (weak), then unknown.
+ */
+export const OBSERVE_LEGEND: ObserveLegendEntry[] = [
+    { tone: 'triggered', label: '已触发', dotCls: 'bg-red-500', desc: '价格已达/过触发价（强势）' },
+    { tone: 'near_trigger', label: '接近触发', dotCls: 'bg-red-400', desc: '价格接近触发价，重点关注' },
+    { tone: 'waiting', label: '等待中', dotCls: 'bg-slate-400', desc: '价格在区间内，未接近任一端' },
+    { tone: 'near_invalidation', label: '接近失效', dotCls: 'bg-emerald-500', desc: '价格接近失效价，走弱' },
+    { tone: 'invalidated', label: '已失效', dotCls: 'bg-emerald-600', desc: '价格已跌破失效价' },
+]
+
+/**
+ * Format an ISO timestamp / arbitrary string into a short "最近刷新 HH:MM:SS" label.
+ * Returns '' when the input is empty so callers can render without extra guards.
+ *
+ * Accepts either an ISO string (from server `last_observed_at`) or an already-formatted
+ * string; when parsing fails the original value is returned unchanged.
+ */
+export function formatLastRefreshTime(raw: string | null | undefined): string {
+    if (!raw) return ''
+    const d = new Date(raw)
+    if (isNaN(d.getTime())) return raw
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/**
+ * Whether the non-market-hours banner should be shown.
+ * Centralized so the banner and the empty-state wording stay consistent.
+ *
+ * The decision depends only on the trading-session flags: the banner is shown
+ * on non-trading days and outside market hours. The caller chooses the wording
+ * (review-last-snapshot vs wait-for-session) based on whether items exist.
+ */
+export function shouldShowNonMarketBanner(
+    isTradingDay: boolean,
+    isMarketHours: boolean,
+): boolean {
+    return !isTradingDay || !isMarketHours
+}
+
+---test---
+// [TF-OBS-006] observe_refresh_visual_semantics
+import { describe, expect, it } from 'vitest'
+
+import {
+    computeObserveVisual,
+    formatLastRefreshTime,
+    shouldShowNonMarketBanner,
+    OBSERVE_LEGEND,
+    NEAR_TRIGGER_THRESHOLD_PCT,
+    NEAR_INVALIDATION_THRESHOLD_PCT,
+} from '@/utils/observeVisuals'
+
+describe('[TF-OBS-006] computeObserveVisual — A-share red/green semantics', () => {
+    it('returns unknown tone when prices are missing', () => {
+        expect(computeObserveVisual({ currentPrice: null, triggerPrice: 10, invalidPrice: 9 }).tone).toBe('unknown')
+        expect(computeObserveVisual({ currentPrice: 10, triggerPrice: null, invalidPrice: 9 }).tone).toBe('unknown')
+        expect(computeObserveVisual({ currentPrice: null, triggerPrice: null, invalidPrice: null }).label).toBe('无行情')
+    })
+
+    it('colors "triggered" (price >= trigger) red — strong/upside', () => {
+        const r = computeObserveVisual({ currentPrice: 10.5, triggerPrice: 10, invalidPrice: 9 })
+        expect(r.tone).toBe('triggered')
+        expect(r.cls).toMatch(/text-red/)
+        expect(r.label).toBe('已触发')
+        expect(r.text).toContain('+')
+    })
+
+    it('colors "invalidated" (price <= invalid) green — weak/downside', () => {
+        const r = computeObserveVisual({ currentPrice: 8.8, triggerPrice: 10, invalidPrice: 9 })
+        expect(r.tone).toBe('invalidated')
+        expect(r.cls).toMatch(/text-emerald/)
+        expect(r.label).toBe('已失效')
+    })
+
+    it('colors "near trigger" red when within threshold (strong, approaching)', () => {
+        // trigger=10, current=9.9 -> 1% away, within 2% threshold
+        const r = computeObserveVisual({ currentPrice: 9.9, triggerPrice: 10, invalidPrice: 8 })
+        expect(r.tone).toBe('near_trigger')
+        expect(r.cls).toMatch(/text-red/)
+        expect(r.label).toBe('接近触发')
+    })
+
+    it('respects server near_trigger=true flag even when distance is moderate', () => {
+        // trigger=10, current=9.7 -> 3% away, beyond threshold, but server says near
+        const r = computeObserveVisual({
+            currentPrice: 9.7,
+            triggerPrice: 10,
+            invalidPrice: 8,
+            nearTrigger: true,
+        })
+        expect(r.tone).toBe('near_trigger')
+        expect(r.cls).toMatch(/text-red/)
+    })
+
+    it('colors "near invalidation" green when close to invalid price (weak, falling)', () => {
+        // invalid=9, current=9.05 -> ~0.5% above invalid, within threshold
+        const r = computeObserveVisual({ currentPrice: 9.05, triggerPrice: 10, invalidPrice: 9 })
+        expect(r.tone).toBe('near_invalidation')
+        expect(r.cls).toMatch(/text-emerald/)
+        expect(r.label).toBe('接近失效')
+    })
+
+    it('colors neutral "waiting" gray when far from both ends', () => {
+        // trigger=10, invalid=8, current=9 -> 10% from trigger, 12.5% from invalid
+        const r = computeObserveVisual({ currentPrice: 9, triggerPrice: 10, invalidPrice: 8 })
+        expect(r.tone).toBe('waiting')
+        expect(r.cls).toMatch(/text-slate/)
+        expect(r.label).toBe('等待中')
+    })
+
+    it('prefers near_trigger over near_invalidation when both are true (trigger is the actionable side)', () => {
+        // Construct a narrow band where both thresholds overlap: trigger very close to invalid.
+        // trigger=10, invalid=9.9, current=9.95 -> within 2% of trigger AND within 2% of invalid.
+        const r = computeObserveVisual({ currentPrice: 9.95, triggerPrice: 10, invalidPrice: 9.9 })
+        expect(r.tone).toBe('near_trigger')
+    })
+
+    it('near_trigger threshold boundary is inclusive at exactly the threshold', () => {
+        // trigger=10, threshold=2%, current=9.8 -> exactly 2% away
+        const r = computeObserveVisual({
+            currentPrice: 10 - 10 * (NEAR_TRIGGER_THRESHOLD_PCT / 100),
+            triggerPrice: 10,
+            invalidPrice: 5,
+        })
+        expect(r.tone).toBe('near_trigger')
+    })
+
+    it('distance just beyond threshold falls back to neutral waiting', () => {
+        // trigger=10, current=9.79 -> ~2.1% away, beyond threshold
+        const r = computeObserveVisual({ currentPrice: 9.79, triggerPrice: 10, invalidPrice: 5 })
+        expect(r.tone).toBe('waiting')
+    })
+
+    it('never produces red for downside / invalidated scenarios (no anti-intuitive green-for-up)', () => {
+        // Strong cases (triggered + near trigger) must always be red.
+        const strong = [
+            computeObserveVisual({ currentPrice: 11, triggerPrice: 10, invalidPrice: 9 }),
+            computeObserveVisual({ currentPrice: 9.95, triggerPrice: 10, invalidPrice: 8 }),
+        ]
+        for (const r of strong) {
+            expect(r.cls).toMatch(/text-red/)
+            expect(r.cls).not.toMatch(/text-emerald/)
+        }
+        // Weak cases (invalidated + near invalidation) must always be green.
+        const weak = [
+            computeObserveVisual({ currentPrice: 8.5, triggerPrice: 10, invalidPrice: 9 }),
+            computeObserveVisual({ currentPrice: 9.02, triggerPrice: 10, invalidPrice: 9 }),
+        ]
+        for (const r of weak) {
+            expect(r.cls).toMatch(/text-emerald/)
+            expect(r.cls).not.toMatch(/text-red/)
+        }
+    })
+
+    it('triggerDistancePct server hint can promote to near_trigger', () => {
+        // current=9.7 (3% away, beyond local threshold) but server hint within 2%
+        const r = computeObserveVisual({
+            currentPrice: 9.7,
+            triggerPrice: 10,
+            invalidPrice: 5,
+            triggerDistancePct: -1.5,
+        })
+        expect(r.tone).toBe('near_trigger')
+    })
+})
+
+describe('[TF-OBS-006] OBSERVE_LEGEND', () => {
+    it('exposes all five user-facing tones with reds first and greens last', () => {
+        const tones = OBSERVE_LEGEND.map(e => e.tone)
+        expect(tones).toEqual(['triggered', 'near_trigger', 'waiting', 'near_invalidation', 'invalidated'])
+    })
+
+    it('red tones use red dot, green tones use emerald dot, waiting is slate', () => {
+        const map = Object.fromEntries(OBSERVE_LEGEND.map(e => [e.tone, e.dotCls]))
+        expect(map.triggered).toMatch(/bg-red/)
+        expect(map.near_trigger).toMatch(/bg-red/)
+        expect(map.waiting).toMatch(/bg-slate/)
+        expect(map.near_invalidation).toMatch(/bg-emerald/)
+        expect(map.invalidated).toMatch(/bg-emerald/)
+    })
+
+    it('every entry has a non-empty label and description (legend must be self-explanatory)', () => {
+        for (const e of OBSERVE_LEGEND) {
+            expect(e.label.length).toBeGreaterThan(0)
+            expect(e.desc.length).toBeGreaterThan(0)
+        }
+    })
+})
+
+describe('[TF-OBS-006] formatLastRefreshTime', () => {
+    it('returns empty string for null/undefined/empty', () => {
+        expect(formatLastRefreshTime(null)).toBe('')
+        expect(formatLastRefreshTime(undefined)).toBe('')
+        expect(formatLastRefreshTime('')).toBe('')
+    })
+
+    it('formats an ISO timestamp to HH:MM:SS', () => {
+        const out = formatLastRefreshTime('2026-07-01T10:30:45.123Z')
+        // exact hour depends on TZ, but format must be HH:MM:SS
+        expect(out).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    })
+
+    it('passes through unparseable strings unchanged (fallback)', () => {
+        expect(formatLastRefreshTime('not a date')).toBe('not a date')
+    })
+})
+
+describe('[TF-OBS-006] shouldShowNonMarketBanner', () => {
+    it('shows banner on non-trading days', () => {
+        expect(shouldShowNonMarketBanner(false, false)).toBe(true)
+    })
+
+    it('shows banner during off-market hours on a trading day', () => {
+        expect(shouldShowNonMarketBanner(true, false)).toBe(true)
+    })
+
+    it('hides banner during live market hours', () => {
+        expect(shouldShowNonMarketBanner(true, true)).toBe(false)
+    })
+})
+
+describe('[TF-OBS-006] threshold constants', () => {
+    it('keeps near-trigger threshold conservative (<= 3%)', () => {
+        expect(NEAR_TRIGGER_THRESHOLD_PCT).toBeLessThanOrEqual(3)
+        expect(NEAR_TRIGGER_THRESHOLD_PCT).toBeGreaterThan(0)
+    })
+
+    it('keeps near-invalidation threshold conservative (<= 3%)', () => {
+        expect(NEAR_INVALIDATION_THRESHOLD_PCT).toBeLessThanOrEqual(3)
+        expect(NEAR_INVALIDATION_THRESHOLD_PCT).toBeGreaterThan(0)
+    })
+})
+
+exec
+/bin/zsh -lc 'git diff -- docs/TASKS.md docs/DEVLOG.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 1dadede..eee9503 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,54 @@
+ 
+ ---
+ 
++## 2026-07-01 | TF-OBS-006 盘中观察自动执行入口与红涨绿跌视觉语义修正
++
++- **执行者**：OpenCode
++- **类型**：feature / UX
++- **任务**：`docs/TASKS.md` TF-OBS-006（P2）
++- **状态**：实现完成，待外层 commit
++- **前置**：TF-OBS-005 ✓、UI-013 ✓
++
++### 背景
++
++用户反馈盘中观察需要手动点执行、入口不清晰，且"距离触发价"的红绿含义
++反大 A 直觉（接近触发价=强势，应红色；远离/走弱=绿或灰）。本任务把视觉
++语义抽到纯函数、加图例、明确刷新入口和非交易时段提示。
++
++### 修改文件
++
++- 新增 `frontend/src/utils/observeVisuals.ts` — 纯函数：A 股红涨绿跌色调
++  计算（triggered/near_trigger=红，invalidated/near_invalidation=绿，
++  waiting=灰）、图例常量 `OBSERVE_LEGEND`、`formatLastRefreshTime`、
++  `shouldShowNonMarketBanner`。
++- 新增 `frontend/src/utils/observeVisuals.test.ts` — 23 个单测覆盖色调判定、
++  阈值边界、server hint、图例顺序、刷新时间格式、非交易时段 banner。
++- 改 `frontend/src/pages/TradeFlow.tsx`：
++  - `priceDistanceColor` 改为薄包装，委托给 `computeObserveVisual`，并接受
++    `nearTrigger`/`triggerDistancePct` 让"接近触发"显红、"接近失效"显绿。
++  - ObserveTable 顶栏：按钮文案 `手动刷新` → `一键刷新观察`；"最近刷新"
++    时间用 `formatLastRefreshTime` 高亮显示（无数据时显示"尚未刷新"）。
++  - 新增红涨绿跌图例行（5 色：已触发/接近触发/等待中/接近失效/已失效）。
++  - "接近触发"汇总数字与分组 accent 由 blue 系改为 red 系，与图例一致。
++  - 新增非交易日/非交易时段 banner（"可查看上次观察/等待交易时段"+时段说明）。
++  - 空状态提示文案同步为「一键刷新观察」。
++
++### 第一性原理 / 验收对照
++
++- 不开启后台高频轮询（沿用 TF-OBS-004 的 3/5 分钟 interval，未改算法）。
++- 不自动发送交易动作、不改触发算法、不改 prompts。
++- 红涨绿跌语义不再反直觉：接近触发=红、接近失效=绿、等待=灰，图例自解释。
++- 非交易时段有明确文案，不再让用户误以为系统在实时盯盘。
++
++### 测试
++
++- `npx vitest run`：4 文件 / 50 tests passed（含新增 23）。
++- `npm run build`：通过（chunk size 警告为既有，与本次改动无关）。
++- `npx tsc --noEmit`：通过。
++- 3 个 ESLint `set-state-in-effect` 报错为既有（未触碰行），新增文件无 lint 报错。
++
++---
++
+ ## 2026-07-01 | KB-008 TA/TradeFlow 接入研报关注度与主题交叉度展示
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index dde4968..131ba53 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -4237,7 +4237,7 @@
+ ### TF-OBS-006: 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+ - **描述**：用户认为盘中观察需要手动点执行，且距离触发价的红绿含义反大 A 直觉。本任务增加更清晰的刷新入口和视觉语义说明。
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：in_progress — claimed TF-OBS-006-20260701-193047
+ - **前置条件**：TF-OBS-005、UI-013 完成。
+ - **执行约束**：
+   - 不开启后台高频轮询。
+
+exec
+/bin/zsh -lc "find docs/task_runs/TF-OBS-006-20260701-193047 -maxdepth 2 -type f -print -exec sed -n '1,240p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/TF-OBS-006-20260701-193047/tests-round1.txt
+## pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+
+........................................................................ [ 60%]
+...............................................                          [100%]
+119 passed in 41.91s
+
+Exit code: 0
+docs/task_runs/TF-OBS-006-20260701-193047/codegraph-status.json
+{
+  "task_id": "TF-OBS-006",
+  "generated_at": "2026-07-01T19:30:47.418034",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-07-01T19:40:54.337206",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "frontend/src/pages/TradeFlow.tsx"
+  ]
+}docs/task_runs/TF-OBS-006-20260701-193047/prompt-round1.md
+# Task: TF-OBS-006: 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+
+Read task "TF-OBS-006" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TF-OBS-006-20260701-193047/codegraph-context.txt
+# CodeGraph Context for TF-OBS-006
+# Task: 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+# Generated: 2026-07-01T19:30:47.550636
+# Keywords: tf, obs, 盘中观察自动执行入口与红涨绿跌视觉语义修正（p2）
+
+## Code Context
+
+**Query:** tf obs 盘中观察自动执行入口与红涨绿跌视觉语义修正（p2）
+
+### Entry Points
+
+- **ObserveState** (class) - tradingagents/tradeflow/intraday_observe.py:29
+- **ObserveTracker** (class) - tradingagents/tradeflow/intraday_observe.py:56
+- **ObserveSnapshot** (class) - tradingagents/tradeflow/intraday_observe.py:37
+
+### Related Symbols
+
+- tradingagents/tradeflow/intraday_observe.py: __post_init__:67, __post_init__:50
+- tests/test_m005_intraday_observe.py: test_default_state:58, test_custom_trade_date:65, test_price_below_trigger_stays_waiting:71, test_price_breaks_trigger_becomes_triggered:78, test_price_exactly_at_trigger_is_triggered:89, test_price_drops_below_invalid_becomes_invalidated:95, test_price_exactly_at_invalid_is_invalidated:103, test_invalidation_checked_before_trigger:108
+
+docs/task_runs/TF-OBS-006-20260701-193047/opencode-round1.txt
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "TF-OBS-006"[90m in docs/TASKS.md · 4 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=80, offset=4237][0m
+Let me explore the codebase to understand the TradeFlow observe tab structure.
+[0m
+[0m$ [0mls frontend/src 2>/dev/null && echo "---" && git status
+App.tsx
+components
+hooks
+index.css
+main.js
+main.tsx
+pages
+services
+stores
+styles.css
+types
+utils
+vite-env.d.ts
+---
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 241 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/TF-OBS-006-20260701-193047/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+[0m
+[0m$ [0mls frontend/src/pages frontend/src/components 2>/dev/null | head -100
+frontend/src/components:
+AgentCollaboration.tsx
+ChatCopilotPanel.tsx
+DebateDrawer.tsx
+DebateTimeline.tsx
+DecisionCard.tsx
+Header.tsx
+KeyMetrics.tsx
+KlinePanel.tsx
+Layout.tsx
+MiniKline.tsx
+ReportViewer.tsx
+RiskRadar.tsx
+Sidebar.tsx
+TaskProgressBanner.tsx
+TrackingBoardPanel.tsx
+TrackingBoardV2Panel.tsx
+TradeFlowCandidateDrawer.tsx
+sidebarNav.test.ts
+sidebarNav.ts
+
+frontend/src/pages:
+Analysis.tsx
+Dashboard.tsx
+Feedback.tsx
+Login.tsx
+Portfolio.tsx
+Reports.tsx
+Settings.tsx
+Sponsor.tsx
+Thanks.tsx
+TrackingBoard.tsx
+TradeFlow.tsx
+[0m
+[0m$ [0mwc -l frontend/src/pages/TradeFlow.tsx
+3847 frontend/src/pages/TradeFlow.tsx
+[0m
+[0m✱ [0mGrep "observe|Observe|观察|刷新|refresh|TF-OBS-004|TF-OBS-005"[90m in frontend/src/pages/TradeFlow.tsx · 167 matches[0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=130, offset=60][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=240, offset=220][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=120, offset=460][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=110, offset=2240][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=200, offset=2350][0m
+[0m✱ [0mGrep "ObserveTable|handleRunObserve|isInMarketHours\("[90m in frontend/src/pages/TradeFlow.tsx · 5 matches[0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=120, offset=2580][0m
+Now let me look at where `ObserveTable` is rendered:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=90, offset=3300][0m
+[0m✱ [0mGlob "frontend/**/*.test.{ts,tsx}"[90m 3 matches[0m
+Now let me check the existing tests and imports:
+[0m
+[0m$ [0mcat frontend/package.json | head -60
+{
+  "name": "tradingagents-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@tailwindcss/postcss": "^4.2.4",
+    "@tanstack/react-virtual": "^3.13.24",
+    "@vercel/speed-insights": "^2.0.0",
+    "@xyflow/react": "^12.10.2",
+    "clsx": "^2.1.0",
+    "date-fns": "^4.1.0",
+    "lightweight-charts": "^5.2.0",
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.14.1",
+    "recharts": "^2.12.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.2",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@typescript-eslint/eslint-plugin": "^8.59.1",
+    "@typescript-eslint/parser": "^8.57.2",
+    "@vitejs/plugin-react": "^4.2.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "postcss": "^8.5.13",
+    "typescript": "^6.0.3",
+    "vite": "^6.4.2",
+    "vitest": "^4.1.5"
+  }
+}
+[0m
+[0m→ [0mRead frontend/src/utils/tradeflowFocus.test.ts
+[0m
+[0m$ [0mls frontend/src/utils frontend/src/types 2>/dev/null
+frontend/src/types:
+index.ts
+
+frontend/src/utils:
+portfolioSync.ts
+progressFeedback.test.ts
+progressFeedback.ts
+reportText.ts
+tradeflowFocus.test.ts
+tradeflowFocus.ts
+[0m
+[0m✱ [0mGrep "TradeFlowObserveItem|trigger_explain|near_trigger|trigger_distance_pct|observe_state"[90m in frontend/src/types/index.ts · 12 matches[0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [offset=1240, limit=90][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=50, offset=1][0m
+Let me check where `priceDistanceColor` is used:
+[0m✱ [0mGrep "priceDistanceColor"[90m in frontend/src/pages/TradeFlow.tsx · 2 matches[0m
+[0m
+[0m$ [0mcd frontend && cat vitest.config.* vite.config.* 2>/dev/null | head -40
+zsh:1: no matches found: vitest.config.*
+[0m
+[0m$ [0mls frontend/vite.config.* frontend/*.config.* 2>/dev/null
+frontend/eslint.config.js
+frontend/postcss.config.js
+frontend/tailwind.config.js
+frontend/vite.config.ts
+frontend/vite.config.ts
+[0m
+[0m→ [0mRead frontend/vite.config.ts
+[0m
+[0m$ [0mls -la docs/task_runs/TF-OBS-006-20260701-193047/ 2>/dev/null
+total 32
+drwx------    6 maybee  staff   192 Jul  1 19:30 .
+drwx------  153 maybee  staff  4896 Jul  1 19:30 ..
+-rw-------    1 maybee  staff  1090 Jul  1 19:30 codegraph-context.txt
+-rw-------    1 maybee  staff   367 Jul  1 19:30 codegraph-status.json
+-rw-------    1 maybee  staff   516 Jul  1 19:30 prompt-round1.md
+-rw-------    1 maybee  staff   609 Jul  1 19:30 task.md
+[0m
+[0m→ [0mRead docs/task_runs/TF-OBS-006-20260701-193047/task.md
+[0m→ [0mRead docs/task_runs/TF-OBS-006-20260701-193047/prompt-round1.md
+[0m
+[0m# [0mTodos
+[•] Create frontend/src/utils/observeVisuals.ts with A-share color semantics (red=near trigger/strong, green/gray=weak)
+[ ] Add unit tests frontend/src/utils/observeVisuals.test.ts
+[ ] Update TradeFlow.tsx ObserveTable: legend, one-click refresh wording, last refresh time, non-market-hours banner
+[ ] Run frontend build + tests, update DEVLOG
+[0m
+Now I have a complete understanding. Let me set up tasks and implement.
+Let me create the utility module with pure, testable color semantics:
+[0m← [0mWrite frontend/src/utils/observeVisuals.ts
+Wrote file successfully.
+[0m
+Now let me create the unit tests:
+[0m← [0mWrite frontend/src/utils/observeVisuals.test.ts
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Create frontend/src/utils/observeVisuals.ts with A-share color semantics (red=near trigger/strong, green/gray=weak)
+[✓] Add unit tests frontend/src/utils/observeVisuals.test.ts
+[•] Update TradeFlow.tsx ObserveTable: legend, one-click refresh wording, last refresh time, non-market-hours banner
+[ ] Run frontend build + tests, update DEVLOG
+[0m
+Now let me update TradeFlow.tsx. First, add the import:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -46,8 +46,15 @@
+     pickWhySelected,
+     pickWhyNotMain,
+     DEFAULT_MAIN_VIEW_CAP,
+ } from '@/utils/tradeflowFocus'
++// [TF-OBS-006] observe_refresh_visual_semantics — A-share red/green pure helpers
++import {
++    computeObserveVisual,
++    formatLastRefreshTime,
++    shouldShowNonMarketBanner,
++    OBSERVE_LEGEND,
++} from '@/utils/observeVisuals'
+ 
+ type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
+ 
+ function todayStr(): string {
+
+[0m
+Now let's replace the inline `priceDistanceColor` function with the imported helper. First, let me update the `priceDistanceColor` function to delegate to the new helper while preserving the same return shape (backward compat for any callers — there's only one):
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -134,23 +134,20 @@
+         default: return { text: tier || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+     }
+ }
+ 
+docs/task_runs/TF-OBS-006-20260701-193047/task.md
+# Auto Dev Task Run
+
+- Task: TF-OBS-006 - 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-07-01_19:30:47
+- Git HEAD: 310670b
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/TF-OBS-006-20260701-193047/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-07-01T19:40:54.337230
+# Changed files: 3
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: frontend/src/pages/TradeFlow.tsx
+[1m
+Impact of changing "frontend/src/pages/TradeFlow.tsx" — 1 affected symbols:
+[0m
+[36mfrontend/src/pages/TradeFlow.tsx[0m
+  [2mfile        [0mTradeFlow.tsx[2m:1[0m
+
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '1,520p' frontend/src/pages/TradeFlow.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+// [UI-005] tradeflow_review_page
+// [H-005] mandate_radar_ui
+// [TA-UI-001] analysis_console_horizon_intent
+// [TF-P0-002] tradeflow_pool_split
+// [TF-UX-001] tiered candidates
+// [TF-UX-002] auto refresh + A-stock colors
+// [TF-UX-003] post_market_review
+// [TF-UX-004] trade_priority_score
+// [UI-012] tradeflow_focus_workspace
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon, Flame } from 'lucide-react'
+import { api } from '@/services/api'
+import {
+    RUNTIME_TIER_LABELS,
+} from '@/types'
+import type {
+    TradeFlowCandidateItem,
+    TradeFlowSummary,
+    TradeFlowDataHealthResponse,
+    DataHealthSource,
+    DataHealthStatus,
+    TradeFlowObserveItem,
+    TradeFlowObserveResponse,
+    TradeFlowObserveRunResponse,
+    TradeFlowTAQueueItem,
+    TradeFlowTAQueueResponse,
+    TradeFlowReviewResponse,
+    TradeFlowFilteredResponse,
+    TradeFlowTieredCandidatesResponse,
+    PaperLedgerResponse,
+    SourceFreshnessResponse,
+    SourceFreshnessEntry,
+    LiveSamplingResponse,
+    LiveSamplingResult,
+    TopicHeatmapResponse,
+    TopicHeatmapEntry,
+    MandateDailyReportResponse,
+} from '@/types'
+import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
+// [TF-UX-001] small_cap_trial_workbench — focus workspace helpers (grouping, risk budget)
+import {
+    groupMainCandidates,
+    computeTrialBudgetView,
+    computeCandidateRiskView,
+    pickWhySelected,
+    pickWhyNotMain,
+    DEFAULT_MAIN_VIEW_CAP,
+} from '@/utils/tradeflowFocus'
+// [TF-OBS-006] observe_refresh_visual_semantics — A-share red/green pure helpers
+import {
+    computeObserveVisual,
+    formatLastRefreshTime,
+    shouldShowNonMarketBanner,
+    OBSERVE_LEGEND,
+} from '@/utils/observeVisuals'
+
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
+
+function todayStr(): string {
+    return new Date().toISOString().slice(0, 10)
+}
+
+function tierBadgeClass(tier: string): string {
+    switch (tier) {
+        case 'A': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+        case 'B': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+        case 'C': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+        default: return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+    }
+}
+
+function actionLabel(action: string): { text: string; cls: string } {
+    switch (action) {
+        case 'NEED_DEEP_TA': return { text: '需深度TA', cls: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' }
+        case 'WAIT_TRIGGER': return { text: '等触发', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        default: return { text: '观察', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+    }
+}
+
+// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated, gray=waiting
+function observeStateLabel(state: string): { text: string; cls: string } {
+    switch (state) {
+        case 'TRIGGERED': return { text: '已触发', cls: 'text-red-600 dark:text-red-400' }
+        case 'EXPIRED': return { text: '已过期', cls: 'text-amber-600 dark:text-amber-400' }
+        case 'INVALIDATED': return { text: '已失效', cls: 'text-emerald-600 dark:text-emerald-400' }
+        default: return { text: '等待中', cls: 'text-slate-500 dark:text-slate-400' }
+    }
+}
+
+// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated
+function observeStateBg(state: string): string {
+    switch (state) {
+        case 'TRIGGERED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+        case 'EXPIRED': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+        case 'INVALIDATED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+        default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
+    }
+}
+
+function taStatusLabel(status: string): { text: string; cls: string } {
+    switch (status) {
+        case 'running': return { text: '运行中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        case 'completed': return { text: '已完成', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+        case 'failed': return { text: '失败', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        case 'skipped': return { text: '已跳过', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+        default: return { text: '待处理', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+    }
+}
+
+function fmtPrice(v: number | null): string {
+    return v != null ? v.toFixed(2) : '-'
+}
+
+function candidateTypeLabel(ct: string): { text: string; cls: string } {  // [H-005] mandate_radar_ui
+    switch (ct) {
+        case 'POLICY_AMBUSH': return { text: '昊天左侧', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
+        case 'POLICY_CONFIRM': return { text: '政策确认', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        case 'TECH_TRADE': return { text: '技术交易', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+        case 'EVENT_WATCH': return { text: '事件观察', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+        case 'PSEUDO_POLICY': return { text: '伪政策', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
+        case 'OVERHEATED_AVOID': return { text: '过热规避', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        case 'UNCLASSIFIED_DATA_GAP': return { text: '证据缺口', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300' }  // [TF-P0-002]
+        default: return { text: ct || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
+}
+
+// [TF-UX-004] action tier badge
+function actionTierBadge(tier: string): { text: string; cls: string } {
+    switch (tier) {
+        case 'actionable': return { text: '今日可操作', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        case 'watch': return { text: '重点观察', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+        case 'scan': return { text: '扫描', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+        default: return { text: tier || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
+}
+
+// [TF-OBS-006] observe_refresh_visual_semantics
+// A-share colors are now sourced from @/utils/observeVisuals so the semantics
+// (red=near trigger/strong, green/gray=weak) are unit-tested and consistent
+// with the legend. This thin wrapper keeps the legacy call sites working.
+function priceDistanceColor(
+    currentPrice: number | null,
+    triggerPrice: number | null,
+    invalidPrice: number | null,
+    nearTrigger?: boolean,
+    triggerDistancePct?: number | null,
+): { text: string; cls: string; label: string } {
+    return computeObserveVisual({ currentPrice, triggerPrice, invalidPrice, nearTrigger, triggerDistancePct })
+}
+
+// [TF-P0-002] tradeflow_pool_split — pool tabs
+type PoolKey = 'all' | 'haotian' | 'policy' | 'tech' | 'event' | 'gap'
+
+const POOL_TABS: { key: PoolKey; label: string }[] = [
+    { key: 'all', label: '全部' },
+    { key: 'haotian', label: '昊天左侧' },
+    { key: 'policy', label: '政策确认' },
+    { key: 'tech', label: '短线技术' },
+    { key: 'event', label: '事件观察' },
+    { key: 'gap', label: '证据缺口' },
+]
+
+interface SummaryCardsProps {
+    summary: TradeFlowSummary
+    dataHealth: TradeFlowDataHealthResponse | null
+}
+
+function SummaryCards({ summary, dataHealth }: SummaryCardsProps) {
+    const cards = [
+        { label: '总候选', value: summary.total_candidates, color: 'text-slate-900 dark:text-slate-100' },
+        { label: 'A级', value: summary.tier_a_count, color: 'text-emerald-600 dark:text-emerald-400' },
+        { label: 'B级', value: summary.tier_b_count, color: 'text-amber-600 dark:text-amber-400' },
+        { label: 'C级', value: summary.tier_c_count, color: 'text-red-600 dark:text-red-400' },
+        { label: '需深度TA', value: summary.need_deep_ta_count, color: 'text-purple-600 dark:text-purple-400' },
+        { label: '平均完整度', value: `${(summary.avg_completeness * 100).toFixed(1)}%`, color: 'text-blue-600 dark:text-blue-400' },
+    ]
+
+    return (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {cards.map(c => (
+                <div key={c.label} className="card p-4">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">{c.label}</div>
+                    <div className={`mt-1 text-2xl font-semibold tabular-nums ${c.color}`}>{c.value}</div>
+                </div>
+            ))}
+            {dataHealth && (
+                <div className="card p-4 sm:col-span-3 lg:col-span-6">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">数据源状态</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                        {dataHealth.sources.map(s => {
+                            const derived = deriveHealthStatus(s)
+                            const badge = healthStatusBadge(derived)
+                            return (
+                                <span
+                                    key={s.name}
+                                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${badge.cls}`}
+                                >
+                                    <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                                    {s.name} ({s.record_count})
+                                </span>
+                            )
+                        })}
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
+
+function CompletenessBar({ value }: { value: number }) {
+    return (
+        <div className="flex items-center gap-1.5">
+            <div className="h-1.5 w-12 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                <div
+                    className="h-full rounded-full bg-blue-500"
+                    style={{ width: `${Math.min(100, value * 100)}%` }}
+                />
+            </div>
+            <span className="tabular-nums text-xs text-slate-500">{(value * 100).toFixed(0)}%</span>
+        </div>
+    )
+}
+
+// [TF-OBS-002] observe_auto_run
+// [TF-OBS-004] observe_refresh_alert_queue — grouping + countdown
+function ObserveRow({ item }: { item: TradeFlowObserveItem }) {
+    const st = observeStateLabel(item.observe_state)
+    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price, item.near_trigger, item.trigger_distance_pct)
+    const explain = item.trigger_explain
+    return (
+        <tr
+            key={item.symbol}
+            className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+        >
+            <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
+            <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
+            <td className="px-4 py-2.5">
+                <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
+                    {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+                    {st.text}
+                </span>
+            </td>
+            <td className="px-4 py-2.5">
+                {(() => {
+                    const ps = item.paper_status || ''
+                    if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
+                    if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
+                    if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
+                    if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
+                    if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
+                    if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
+                    return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                })()}
+            </td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
+                {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
+            </td>
+            <td className="px-4 py-2.5 tabular-nums">
+                <span className={distInfo.cls} title={explain?.why_triggered || explain?.why_not || ''}>{distInfo.text}</span>
+            </td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
+            <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
+            <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason || explain?.why_triggered || explain?.why_not || ''}>
+                {explain?.how_far_off || item.trigger_reason || '-'}
+            </td>
+        </tr>
+    )
+}
+
+function ObserveGroup({ title, subtitle, items, accent }: { title: string; subtitle?: string; items: TradeFlowObserveItem[]; accent: string }) {
+    if (items.length === 0) return null
+    return (
+        <div className="border-b border-slate-100 last:border-0 dark:border-slate-800">
+            <div className="flex items-center gap-2 bg-slate-50/60 px-4 py-2 dark:bg-slate-800/40">
+                <span className={`inline-block h-2 w-2 rounded-full ${accent}`} />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{title}</span>
+                <span className="text-xs text-slate-400">{items.length} 条</span>
+                {subtitle && <span className="text-[11px] text-slate-400">{subtitle}</span>}
+            </div>
+            <table className="w-full text-sm">
+                <tbody>
+                    {items.map(item => <ObserveRow key={item.symbol} item={item} />)}
+                </tbody>
+            </table>
+        </div>
+    )
+}
+
+function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt,
+    refreshIntervalSeconds, isMarketHours, isTradingDay, nearTriggerCount, pendingCount, nextRefreshIn, autoRefreshActive,
+    planDate, effectiveTradeDate, nonTradingDayPlan, nextTradingDayHint,
+    onGoToCandidates, onGoToObservationWarehouse }: {  // [UI-013] tradeflow_empty_state_cta
+    items: TradeFlowObserveItem[]
+    onRun: () => void
+    running: boolean
+    runResult: TradeFlowObserveRunResponse | null
+    lastCheckTime: string | null
+    observeReason: string
+    observeAutoRun: boolean
+    lastObservedAt: string
+    refreshIntervalSeconds: number  // [TF-OBS-004]
+    isMarketHours: boolean          // [TF-OBS-004]
+    isTradingDay: boolean           // [TF-OBS-004]
+    nearTriggerCount: number        // [TF-OBS-004]
+    pendingCount: number            // [TF-OBS-004]
+    nextRefreshIn: number | null    // [TF-OBS-004] seconds until next auto-refresh, null = paused
+    autoRefreshActive: boolean      // [TF-OBS-004]
+    planDate?: string                       // [TF-OBS-005] observe_date_semantics
+    effectiveTradeDate?: string             // [TF-OBS-005]
+    nonTradingDayPlan?: boolean             // [TF-OBS-005]
+    nextTradingDayHint?: string             // [TF-OBS-005]
+    onGoToCandidates?: () => void           // [UI-013] tradeflow_empty_state_cta
+    onGoToObservationWarehouse?: () => void // [UI-013] tradeflow_empty_state_cta
+}) {
+    const [showResult, setShowResult] = useState(false)
+    const effectiveLastTime = lastObservedAt || lastCheckTime
+
+    // [TF-OBS-004] observe_refresh_alert_queue — group items: triggered (pending-first) / near-trigger / invalidated+other
+    const triggeredItems = items.filter(it => it.observe_state === 'TRIGGERED' || it.trigger_explain?.category === 'triggered')
+        .sort((a, b) => {
+            // pending-confirmation first, then by distance desc
+            const ap = a.paper_status === 'pending' ? 0 : 1
+            const bp = b.paper_status === 'pending' ? 0 : 1
+            if (ap !== bp) return ap - bp
+            return (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999)
+        })
+    const nearItems = items.filter(it => it.near_trigger && !triggeredItems.includes(it))
+        .sort((a, b) => (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999))
+    const otherItems = items.filter(it => !triggeredItems.includes(it) && !nearItems.includes(it))
+
+    const countdownText = (() => {
+        if (!autoRefreshActive || nextRefreshIn == null) return null
+        const mm = Math.floor(nextRefreshIn / 60)
+        const ss = nextRefreshIn % 60
+        return mm > 0 ? `${mm}:${ss.toString().padStart(2, '0')}` : `${ss}s`
+    })()
+
+    return (
+        <div>
+            <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+                {/* [TF-OBS-006] observe_refresh_visual_semantics — prominent last-refresh time */}
+                {effectiveLastTime ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" title={effectiveLastTime}>
+                        <Clock className="h-3 w-3" />
+                        最近刷新: {formatLastRefreshTime(effectiveLastTime) || effectiveLastTime}
+                    </span>
+                ) : (
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                        <Clock className="h-3 w-3" />
+                        尚未刷新
+                    </span>
+                )}
+                {observeAutoRun && (
+                    <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                        自动执行
+                    </span>
+                )}
+                {/* [TF-OBS-004] observe_refresh_alert_queue — auto-refresh status + countdown */}
+                {autoRefreshActive && countdownText ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">
+                        <RefreshCw className="h-3 w-3" />
+                        自动刷新 · {Math.round(refreshIntervalSeconds / 60)}分钟 · 下次 {countdownText}
+                    </span>
+                ) : autoRefreshActive ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">
+                        自动刷新中
+                    </span>
+                ) : (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-300" title={!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}>
+                        已暂停 · {!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}
+                    </span>
+                )}
+                {/* [TF-OBS-006] observe_refresh_visual_semantics — one-click refresh entry */}
+                <button
+                    onClick={() => { onRun(); setShowResult(true) }}
+                    disabled={running}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                    title="立即拉取一次实时行情并检查触发状态（不自动下单）"
+                >
+                    {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {running ? '执行中...' : '一键刷新观察'}
+                </button>
+            </div>
+            {/* [TF-OBS-006] observe_refresh_visual_semantics — A-share color legend
+                (red = approaching trigger / strong, green = approaching invalid / weak) */}
+            {items.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">红涨绿跌图例:</span>
+                    {OBSERVE_LEGEND.map(e => (
+                        <span key={e.tone} className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400" title={e.desc}>
+                            <span className={`inline-block h-2 w-2 rounded-full ${e.dotCls}`} />
+                            {e.label}
+                        </span>
+                    ))}
+                </div>
+            )}
+            {/* [TF-OBS-004] observe_refresh_alert_queue — grouped summary */}
+            {/* [TF-OBS-006] observe_refresh_visual_semantics — near-trigger uses red (strong) per A-share legend */}
+            {items.length > 0 && (
+                <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
+                    <span className="text-xs text-slate-500">待确认: <span className="font-medium text-amber-600 dark:text-amber-400">{pendingCount}</span></span>
+                    <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{triggeredItems.length}</span></span>
+                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-red-500 dark:text-red-400">{nearTriggerCount}</span></span>
+                    <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
+                </div>
+            )}
+            {/* [TF-OBS-005] observe_date_semantics — non-trading-day plan → next trading day hint */}
+            {nonTradingDayPlan && nextTradingDayHint && (
+                <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                    <Calendar className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                        <div>{nextTradingDayHint}</div>
+                        {planDate && effectiveTradeDate && (
+                            <div className="mt-1 text-xs opacity-80">
+                                候选池日期 <span className="font-medium">{planDate}</span>
+                                {' → '}生效交易日 <span className="font-medium">{effectiveTradeDate}</span>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+            {/* [TF-OBS-006] observe_refresh_visual_semantics — non-market-hours banner.
+                Outside trading sessions users can still review the last observe snapshot;
+                no live trigger checks happen, so we surface that explicitly. */}
+            {shouldShowNonMarketBanner(isTradingDay, isMarketHours) && (
+                <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+                    <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                    <div>
+                        <div>
+                            {!isTradingDay ? '当前为非交易日' : '当前为非交易时段'}
+                            {items.length > 0 ? '，可查看上次观察结果，等待交易时段自动刷新。' : '，等待交易时段开始后自动执行观察。'}
+                        </div>
+                        <div className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                            交易时段：周一至周五 09:30-11:30 / 13:00-15:00（法定节假日除外）
+                        </div>
+                    </div>
+                </div>
+            )}
+            {observeReason && items.length === 0 && !runResult && (
+                <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    {observeReason}
+                </div>
+            )}
+            {showResult && runResult && (
+                <div className={`mx-4 mt-3 rounded-lg border px-4 py-3 text-sm ${
+                    runResult.status === 'skipped'
+                        ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300'
+                        : runResult.errors.length > 0
+                        ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300'
+                }`}>
+                    {runResult.status === 'skipped' ? (
+                        <span>跳过: {runResult.skipped_reason}</span>
+                    ) : (
+                        <div className="flex flex-wrap gap-4">
+                            <span>检查: {runResult.checked}</span>
+                            <span className="text-red-600 dark:text-red-400">触发: {runResult.triggered}</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">失效: {runResult.invalidated}</span>
+                            <span>等待: {runResult.waiting}</span>
+                            <span className="text-slate-500">无行情: {runResult.skipped}</span>
+                            <span>信号: {runResult.signals_written}</span>
+                        </div>
+                    )}
+                    {runResult.errors.length > 0 && (
+                        <div className="mt-2 text-xs">{runResult.errors.join('; ')}</div>
+                    )}
+                    <div className="mt-1 text-xs opacity-70">执行时间: {runResult.run_time}</div>
+                </div>
+            )}
+            {items.length === 0 && !runResult && !observeReason ? (
+                <div className="p-4">
+                    <EmptyStateCTA
+                        icon={Eye}
+                        title="暂无盘中观察数据"
+                        desc={isTradingDay
+                            ? '盘中观察对象来自当日生效候选池，开盘后将自动执行。'
+                            : '当前为非交易日，观察将在下一个交易日开盘后自动执行。'}
+                        hints={[
+                            '先生成候选池，候选会自动进入当日观察',
+                            '或手动将标的加入观察仓（跟踪看板）',
+                            '也可点击右上角「一键刷新观察」立即触发一次检查',
+                        ]}
+                        actions={[
+                            ...(onGoToCandidates ? [{ label: '前往生成候选池', onClick: onGoToCandidates, primary: true }] : []),
+                            ...(onGoToObservationWarehouse ? [{ label: '前往观察仓', onClick: onGoToObservationWarehouse }] : []),
+                        ]}
+                    />
+                </div>
+            ) : items.length === 0 && !runResult ? null : (
+            <div className="overflow-x-auto">
+                {/* [TF-OBS-004] observe_refresh_alert_queue — grouped sections, pending-first */}
+                {/* [TF-OBS-006] observe_refresh_visual_semantics — near-trigger accent aligned to red (strong) */}
+                <ObserveGroup title="已触发（待确认优先）" subtitle="已进入模拟账本待确认队列，需人工确认，不自动下单" items={triggeredItems} accent="bg-red-500" />
+                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-red-400" />
+                <ObserveGroup title="已失效 / 等待中" items={otherItems} accent="bg-slate-400" />
+                {items.length > 0 && triggeredItems.length === 0 && nearItems.length === 0 && otherItems.length === 0 && (
+                    <table className="w-full text-sm">
+                        <tbody>{items.map(item => <ObserveRow key={item.symbol} item={item} />)}</tbody>
+                    </table>
+                )}
+            </div>
+            )}
+        </div>
+    )
+}
+
+function TAQueueTable({ items, meta }: { items: TradeFlowTAQueueItem[]; meta: TradeFlowTAQueueResponse }) {
+    return (
+        <div>
+            <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2.5 dark:border-slate-700">
+                <span className="text-xs text-slate-500">队列: <span className="font-medium text-slate-700 dark:text-slate-300">{meta.total_in_queue}</span></span>
+                <span className="text-xs text-slate-500">已调度: <span className="font-medium text-blue-600 dark:text-blue-400">{meta.dispatched_count}</span></span>
+                <span className="text-xs text-slate-500">阻塞: <span className="font-medium text-red-600 dark:text-red-400">{meta.blocked_count}</span></span>
+                <span className="text-xs text-slate-500">待处理: <span className="font-medium text-slate-700 dark:text-slate-300">{meta.pending_count}</span></span>
+            </div>
+            {items.length === 0 ? (
+
+exec
+/bin/zsh -lc "sed -n '1,220p' frontend/vite.config.ts && printf '\\n---tsconfig---\\n' && cat frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json 2>/dev/null" in /Users/maybee/TradingAgents-AShare
+ exited 1 in 0ms:
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+import { execSync } from 'node:child_process'
+
+function runGit(cmd: string): string {
+  try {
+    return execSync(cmd, { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return ''
+  }
+}
+
+function getBuildMeta() {
+  const commit =
+    process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+    runGit('git rev-parse --short HEAD') ||
+    'unknown'
+
+  const date =
+    (process.env.VERCEL_GIT_COMMIT_TIMESTAMP
+      ? new Date(process.env.VERCEL_GIT_COMMIT_TIMESTAMP).toISOString().slice(0, 10)
+      : '') ||
+    runGit('git show -s --format=%cd --date=format:%Y-%m-%d HEAD') ||
+    new Date().toISOString().slice(0, 10)
+
+  return {
+    commit,
+    date,
+    version: `${date}+${commit}`,
+  }
+}
+
+const buildMeta = getBuildMeta()
+
+export default defineConfig({
+  define: {
+    __APP_BUILD_COMMIT__: JSON.stringify(buildMeta.commit),
+    __APP_BUILD_DATE__: JSON.stringify(buildMeta.date),
+    __APP_BUILD_VERSION__: JSON.stringify(buildMeta.version),
+  },
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      '/v1': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/healthz': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/openapi.json': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/docs': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
+  },
+})
+
+---tsconfig---
+{
+    "compilerOptions": {
+        "ignoreDeprecations": "6.0",
+        "target": "ES2020",
+        "useDefineForClassFields": true,
+        "lib": [
+            "ES2020",
+            "DOM",
+            "DOM.Iterable"
+        ],
+        "module": "ESNext",
+        "skipLibCheck": true,
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "noEmit": true,
+        "jsx": "react-jsx",
+        "strict": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noFallthroughCasesInSwitch": true,
+        "baseUrl": ".",
+        "paths": {
+            "@/*": [
+                "src/*"
+            ]
+        }
+    },
+    "include": [
+        "src"
+    ],
+    "exclude": [
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx"
+    ],
+    "references": [
+        {
+            "path": "./tsconfig.node.json"
+        }
+    ]
+}{
+    "compilerOptions": {
+        "composite": true,
+        "skipLibCheck": true,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "allowSyntheticDefaultImports": true
+    },
+    "include": [
+        "vite.config.ts"
+    ]
+}
+exec
+/bin/zsh -lc "sed -n '1240,1320p' frontend/src/types/index.ts && printf '\\n--- package scripts ---\\n' && jq '.scripts' frontend/package.json" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    candidate_count: number
+    filtered_count: number
+    candidates: TradeFlowCandidateItem[]
+    filtered: Array<{ symbol: string; name: string; source: string; reason: string }>
+    metadata: Record<string, unknown>
+}
+
+export interface TradeFlowCandidateDetailResponse {
+    status: string
+    trade_date: string
+    candidate: TradeFlowCandidateDetail | null
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+}
+
+export interface TriggerExplain {  // [TF-OBS-004] observe_refresh_alert_queue
+    category: string  // triggered / near_trigger / invalidated / waiting / no_data
+    why_triggered: string
+    why_not: string
+    how_far_off: string
+    breach_pct: number | null
+}
+
+export interface TradeFlowObserveItem {
+    symbol: string
+    name: string
+    observe_state: string
+    trigger_price: number | null
+    invalid_price: number | null
+    observe_trigger_count: number
+    observe_first_trigger_time: string
+    tier: string
+    composite_score: number
+    current_price: number | null
+    trigger_reason: string
+    strategy_tags: string[]
+    paper_status: string  // [TF-OBS-003] observe_paper_sync
+    trigger_distance_pct: number | null  // [TF-OBS-004]
+    near_trigger: boolean  // [TF-OBS-004]
+    trigger_explain: TriggerExplain  // [TF-OBS-004]
+}
+
+export interface TradeFlowObserveResponse {
+    status: string
+    trade_date: string
+    observe_items: TradeFlowObserveItem[]
+    triggered_count: number
+    invalidated_count: number
+    waiting_count: number
+    observe_auto_run: boolean   // [TF-OBS-002] observe_auto_run
+    last_observed_at: string    // [TF-OBS-002]
+    observe_reason: string      // [TF-OBS-002]
+    refresh_interval_seconds: number  // [TF-OBS-004]
+    is_market_hours: boolean    // [TF-OBS-004]
+    is_trading_day: boolean     // [TF-OBS-004]
+    near_trigger_count: number  // [TF-OBS-004]
+    pending_count: number       // [TF-OBS-004]
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+    // [TF-OBS-005] observe_date_semantics — explicit plan/effective/observe dates
+    plan_date?: string
+    effective_trade_date?: string
+    observe_date?: string
+    non_trading_day_plan?: boolean
+    next_trading_day_hint?: string
+    is_view_trading_day?: boolean
+}
+
+export interface TradeFlowTAQueueItem {
+    symbol: string
+    name: string
+    tier: string
+    ta_budget_priority: number
+    need_deep_ta: boolean
+    deep_ta_status: string
+    deep_ta_dispatch_reason: string
+    deep_ta_model: string
+    why_deep_ta: string
+    why_not_deep_ta: string
+    composite_score: number
+    tradeflow_data_completeness: number
+    evidence_gate_applied: boolean
+}
+
+--- package scripts ---
+{
+  "dev": "vite",
+  "build": "tsc && vite build",
+  "lint": "eslint .",
+  "preview": "vite preview"
+}
+
+exec
+/bin/zsh -lc 'rg "trigger_distance_pct|near_trigger|TriggerExplain|observe_state" -n tradingagents api tests frontend/src | head -200' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/utils/tradeflowFocus.test.ts:28:        buildFixtureCandidate({ symbol: '600001.SH', name: '已触发甲', observe_state: 'TRIGGERED', composite_score: 88, tier: 'A' }),
+frontend/src/utils/tradeflowFocus.test.ts:29:        buildFixtureCandidate({ symbol: '600002.SH', name: '已触发乙', observe_state: 'TRIGGERED', composite_score: 82, tier: 'A' }),
+frontend/src/utils/tradeflowFocus.test.ts:31:        buildFixtureCandidate({ symbol: '600003.SH', name: '近触发甲', observe_state: 'WAITING', observe_trigger_count: 1, composite_score: 78, tier: 'B' }),
+frontend/src/utils/tradeflowFocus.test.ts:32:        buildFixtureCandidate({ symbol: '600004.SH', name: '近触发乙', observe_state: 'WAITING', observe_trigger_count: 0, tier: 'A', trigger_price: 10.5, composite_score: 75 }),
+frontend/src/utils/tradeflowFocus.test.ts:34:        buildFixtureCandidate({ symbol: '600005.SH', name: '主候选甲', observe_state: 'WAITING', composite_score: 70, tier: 'B' }),
+frontend/src/utils/tradeflowFocus.test.ts:36:        buildFixtureCandidate({ symbol: '600006.SH', name: '已失效甲', observe_state: 'INVALIDATED', composite_score: 40 }),
+frontend/src/utils/tradeflowFocus.test.ts:37:        buildFixtureCandidate({ symbol: '600007.SH', name: '已失效乙', observe_state: 'INVALIDATED', composite_score: 39 }),
+frontend/src/utils/tradeflowFocus.test.ts:38:        buildFixtureCandidate({ symbol: '600008.SH', name: '已过期甲', observe_state: 'EXPIRED', composite_score: 38 }),
+frontend/src/utils/tradeflowFocus.test.ts:39:        buildFixtureCandidate({ symbol: '600009.SH', name: '已过期乙', observe_state: 'EXPIRED', composite_score: 37 }),
+frontend/src/utils/tradeflowFocus.test.ts:40:        buildFixtureCandidate({ symbol: '600010.SH', name: '已过期丙', observe_state: 'EXPIRED', composite_score: 36 }),
+frontend/src/utils/tradeflowFocus.test.ts:51:        expect(result.near_trigger).toHaveLength(2)
+frontend/src/utils/tradeflowFocus.test.ts:69:        all.push(buildFixtureCandidate({ symbol: '600011.SH', observe_state: 'TRIGGERED' }))
+frontend/src/utils/tradeflowFocus.test.ts:70:        all.push(buildFixtureCandidate({ symbol: '600012.SH', observe_state: 'TRIGGERED' }))
+frontend/src/utils/tradeflowFocus.test.ts:80:            buildFixtureCandidate({ symbol: 'A', observe_state: 'INVALIDATED' }),
+frontend/src/utils/tradeflowFocus.test.ts:81:            buildFixtureCandidate({ symbol: 'B', observe_state: 'EXPIRED' }),
+frontend/src/utils/tradeflowFocus.test.ts:82:            buildFixtureCandidate({ symbol: 'C', observe_state: 'WAITING' }),
+frontend/src/utils/tradeflowFocus.test.ts:97:        expect(result.groups.map(g => g.key)).toEqual(['pending_confirm', 'near_trigger', 'main'])
+frontend/src/utils/tradeflowFocus.test.ts:326:        expect(c.observe_state).toBeDefined()
+frontend/src/types/index.ts:1097:    observe_state: string
+frontend/src/types/index.ts:1254:export interface TriggerExplain {  // [TF-OBS-004] observe_refresh_alert_queue
+frontend/src/types/index.ts:1255:    category: string  // triggered / near_trigger / invalidated / waiting / no_data
+frontend/src/types/index.ts:1265:    observe_state: string
+frontend/src/types/index.ts:1276:    trigger_distance_pct: number | null  // [TF-OBS-004]
+frontend/src/types/index.ts:1277:    near_trigger: boolean  // [TF-OBS-004]
+frontend/src/types/index.ts:1278:    trigger_explain: TriggerExplain  // [TF-OBS-004]
+frontend/src/types/index.ts:1294:    near_trigger_count: number  // [TF-OBS-004]
+frontend/src/types/index.ts:1344:    observe_state: string
+frontend/src/types/index.ts:1662:        observe_state?: string
+frontend/src/types/index.ts:1843:    observe_state: string
+frontend/src/utils/observeVisuals.ts:14:    | 'near_trigger'
+frontend/src/utils/observeVisuals.ts:34:    /** Server-side "near trigger" flag (TF-OBS-004). When true, force near_trigger tone. */
+frontend/src/utils/observeVisuals.ts:59: *   4. near trigger (server flag OR within threshold) → near_trigger (red)
+frontend/src/utils/observeVisuals.ts:112:            tone: 'near_trigger',
+frontend/src/utils/observeVisuals.ts:150:    { tone: 'near_trigger', label: '接近触发', dotCls: 'bg-red-400', desc: '价格接近触发价，重点关注' },
+frontend/src/utils/observeVisuals.test.ts:38:        expect(r.tone).toBe('near_trigger')
+frontend/src/utils/observeVisuals.test.ts:43:    it('respects server near_trigger=true flag even when distance is moderate', () => {
+frontend/src/utils/observeVisuals.test.ts:51:        expect(r.tone).toBe('near_trigger')
+frontend/src/utils/observeVisuals.test.ts:71:    it('prefers near_trigger over near_invalidation when both are true (trigger is the actionable side)', () => {
+frontend/src/utils/observeVisuals.test.ts:75:        expect(r.tone).toBe('near_trigger')
+frontend/src/utils/observeVisuals.test.ts:78:    it('near_trigger threshold boundary is inclusive at exactly the threshold', () => {
+frontend/src/utils/observeVisuals.test.ts:85:        expect(r.tone).toBe('near_trigger')
+frontend/src/utils/observeVisuals.test.ts:115:    it('triggerDistancePct server hint can promote to near_trigger', () => {
+frontend/src/utils/observeVisuals.test.ts:123:        expect(r.tone).toBe('near_trigger')
+frontend/src/utils/observeVisuals.test.ts:130:        expect(tones).toEqual(['triggered', 'near_trigger', 'waiting', 'near_invalidation', 'invalidated'])
+frontend/src/utils/observeVisuals.test.ts:136:        expect(map.near_trigger).toMatch(/bg-red/)
+frontend/src/utils/tradeflowFocus.ts:20:export type FocusGroupKey = 'pending_confirm' | 'near_trigger' | 'main' | 'invalidated'
+frontend/src/utils/tradeflowFocus.ts:24:export type MainGroupKey = 'pending_confirm' | 'near_trigger' | 'main'
+frontend/src/utils/tradeflowFocus.ts:35:    near_trigger: TradeFlowCandidateItem[]
+frontend/src/utils/tradeflowFocus.ts:39:    /** Main view = pending_confirm + near_trigger + main (i.e. actionable candidates). */
+frontend/src/utils/tradeflowFocus.ts:53://  - pending_confirm: observe_state=TRIGGERED, waiting for the user to add to the
+frontend/src/utils/tradeflowFocus.ts:55://  - near_trigger: observe_state=WAITING but the candidate has already fired at
+frontend/src/utils/tradeflowFocus.ts:69:    const near_trigger: TradeFlowCandidateItem[] = []
+frontend/src/utils/tradeflowFocus.ts:74:        const state = (c.observe_state || '').toUpperCase()
+frontend/src/utils/tradeflowFocus.ts:80:            near_trigger.push(c)
+frontend/src/utils/tradeflowFocus.ts:82:            near_trigger.push(c)
+frontend/src/utils/tradeflowFocus.ts:96:    near_trigger.sort(byScoreDesc)
+frontend/src/utils/tradeflowFocus.ts:108:            key: 'near_trigger',
+frontend/src/utils/tradeflowFocus.ts:111:            items: near_trigger,
+frontend/src/utils/tradeflowFocus.ts:121:    const main_view_count = pending_confirm.length + near_trigger.length + main.length
+frontend/src/utils/tradeflowFocus.ts:126:        near_trigger,
+frontend/src/utils/tradeflowFocus.ts:364:    observe_state?: string
+frontend/src/utils/tradeflowFocus.ts:397:        observe_state: opts.observe_state ?? 'WAITING',
+api/services/tradeflow_service.py:116:        "observe_state": _rget(row, "observe_state", "WAITING"),
+api/services/tradeflow_service.py:535:                "observe_state": entry.get("observe_state", "WAITING"),
+api/services/tradeflow_service.py:754:def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
+api/services/tradeflow_service.py:841:def _build_trigger_explain(observe_state: str, current_price, trigger_price, invalid_price,
+api/services/tradeflow_service.py:846:    - category: triggered / near_trigger / invalidated / waiting / no_data
+api/services/tradeflow_service.py:859:    if observe_state == "INVALIDATED" or (invalid_price and current_price is not None and current_price <= invalid_price):
+api/services/tradeflow_service.py:886:        result["category"] = "near_trigger"
+api/services/tradeflow_service.py:915:            "near_trigger_count": 0,   # [TF-OBS-004]
+api/services/tradeflow_service.py:931:    _pre = _precheck_observe_state(tf_db, trade_date)
+api/services/tradeflow_service.py:978:            "near_trigger_count": 0,   # [TF-OBS-004]
+api/services/tradeflow_service.py:1005:        near_trigger_total = 0   # [TF-OBS-004] observe_refresh_alert_queue
+api/services/tradeflow_service.py:1007:        _near_band = DEFAULT_STRATEGY_CONFIG.observe_near_trigger_band_pct  # [TF-OBS-004]
+api/services/tradeflow_service.py:1023:            state = _rget(r, "observe_state", "WAITING")
+api/services/tradeflow_service.py:1050:            _near = _explain["category"] == "near_trigger"
+api/services/tradeflow_service.py:1057:                "observe_state": state,
+api/services/tradeflow_service.py:1068:                "trigger_distance_pct": _dist_pct,  # [TF-OBS-004]
+api/services/tradeflow_service.py:1069:                "near_trigger": _near,               # [TF-OBS-004]
+api/services/tradeflow_service.py:1080:                near_trigger_total += 1
+api/services/tradeflow_service.py:1098:            "near_trigger_count": near_trigger_total,     # [TF-OBS-004]
+api/services/tradeflow_service.py:1497:        sig_state = str(ev.get("observe_state", "") or "")
+api/services/tradeflow_service.py:1499:            # Derive from signal_type when evidence lacks observe_state
+api/services/tradeflow_service.py:1556:    observe_state = result.get("observe_state", "WAITING")
+api/services/tradeflow_service.py:1559:        observe_state=observe_state,
+api/services/tradeflow_service.py:1574:        observe_state=observe_state,
+api/services/tradeflow_service.py:1647:        _observe_state = entry.get("observe_state", "WAITING")
+api/services/tradeflow_service.py:1659:            observe_state=_observe_state,
+api/services/tradeflow_service.py:1681:            "observe_state": _observe_state,
+api/services/tradeflow_service.py:1995:    For each observe detail with a known state, call update_paper_observe_state
+api/services/tradeflow_service.py:2005:        state = d.get("observe_state") if isinstance(d, dict) else None
+api/services/tradeflow_service.py:2009:            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
+api/services/tradeflow_service.py:2143:            observe_state=it.get("observe_state", "WAITING"),
+api/services/tradeflow_service.py:2842:        "observe_state": _rget(row, "observe_state", "WAITING"),
+api/services/tradeflow_service.py:3108:            "planned_amount, status, note, observe_state, created_at, updated_at) "
+api/services/tradeflow_service.py:3240:def update_paper_observe_state(
+api/services/tradeflow_service.py:3242:    observe_state: str,
+api/services/tradeflow_service.py:3245:    """Sync observe_state from intraday observe to paper trades.
+api/services/tradeflow_service.py:3262:            new_status = "pending" if observe_state == "TRIGGERED" else "tracking"
+api/services/tradeflow_service.py:3264:                "UPDATE tradeflow_paper_trades SET observe_state=?, status=?, updated_at=? WHERE id=?",
+api/services/tradeflow_service.py:3265:                (observe_state, new_status, now, row["id"]),
+api/services/tradeflow_service.py:3268:        if observe_state == "INVALIDATED":
+api/services/tradeflow_service.py:3270:                "UPDATE tradeflow_paper_trades SET observe_state='INVALIDATED', status='invalidated', updated_at=? "
+frontend/src/pages/TradeFlow.tsx:228:    const st = observeStateLabel(item.observe_state)
+frontend/src/pages/TradeFlow.tsx:229:    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price, item.near_trigger, item.trigger_distance_pct)
+frontend/src/pages/TradeFlow.tsx:239:                <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
+frontend/src/pages/TradeFlow.tsx:240:                    {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+frontend/src/pages/TradeFlow.tsx:322:    const triggeredItems = items.filter(it => it.observe_state === 'TRIGGERED' || it.trigger_explain?.category === 'triggered')
+frontend/src/pages/TradeFlow.tsx:328:            return (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999)
+frontend/src/pages/TradeFlow.tsx:330:    const nearItems = items.filter(it => it.near_trigger && !triggeredItems.includes(it))
+frontend/src/pages/TradeFlow.tsx:331:        .sort((a, b) => (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999))
+frontend/src/pages/TradeFlow.tsx:408:                    <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
+frontend/src/pages/TradeFlow.tsx:631:    const hitCount = items.filter(i => i.observe_state === 'TRIGGERED').length
+frontend/src/pages/TradeFlow.tsx:632:    const invalidatedCount = items.filter(i => i.observe_state === 'INVALIDATED').length
+frontend/src/pages/TradeFlow.tsx:633:    const waitingCount = items.filter(i => i.observe_state === 'WAITING').length
+frontend/src/pages/TradeFlow.tsx:644:            if (item.observe_state === 'TRIGGERED') row.hit++
+frontend/src/pages/TradeFlow.tsx:645:            else if (item.observe_state === 'INVALIDATED') row.invalidated++
+frontend/src/pages/TradeFlow.tsx:661:                if (item.observe_state === 'TRIGGERED') row.hit++
+frontend/src/pages/TradeFlow.tsx:662:                else if (item.observe_state === 'INVALIDATED') row.invalidated++
+frontend/src/pages/TradeFlow.tsx:1171:function focusGroupDotClass(key: 'pending_confirm' | 'near_trigger' | 'main'): string {
+frontend/src/pages/TradeFlow.tsx:1174:        case 'near_trigger': return 'bg-amber-500'
+frontend/src/pages/TradeFlow.tsx:1179:function focusGroupTitleClass(key: 'pending_confirm' | 'near_trigger' | 'main'): string {
+frontend/src/pages/TradeFlow.tsx:1182:        case 'near_trigger': return 'text-amber-700 dark:text-amber-300'
+frontend/src/pages/TradeFlow.tsx:1268:                        const obs = observeStateLabel(c.observe_state)
+frontend/src/pages/TradeFlow.tsx:2351:                    items = items.filter(c => c.observe_state === observeFilter)
+frontend/src/pages/TradeFlow.tsx:2774:        const obs = observeStateLabel(c.observe_state)
+frontend/src/pages/TradeFlow.tsx:2864:                        {c.observe_state === 'WAITING' && <EyeIcon className="h-2.5 w-2.5" />}
+frontend/src/pages/TradeFlow.tsx:3085:            // [TF-UX-001] small_cap_trial_workbench — three groups (pending_confirm / near_trigger / main)
+frontend/src/pages/TradeFlow.tsx:3163:                        {/* Three actionable groups — pending_confirm / near_trigger / main */}
+frontend/src/pages/TradeFlow.tsx:3279:                                const obs = observeStateLabel(c.observe_state)
+frontend/src/pages/TradeFlow.tsx:3322:                                                {c.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+frontend/src/pages/TradeFlow.tsx:3367:                nearTriggerCount={observeData?.near_trigger_count ?? 0}
+api/tradeflow_schemas.py:49:    observe_state: str = "WAITING"
+api/tradeflow_schemas.py:196:    observe_state: str = "WAITING"
+api/tradeflow_schemas.py:208:    trigger_distance_pct: Optional[float] = None  # signed % distance from trigger price
+api/tradeflow_schemas.py:209:    near_trigger: bool = False  # within near-trigger band but not yet triggered
+api/tradeflow_schemas.py:228:    near_trigger_count: int = 0
+api/tradeflow_schemas.py:277:    observe_state: str = "WAITING"
+api/tradeflow_schemas.py:495:    observe_state: str = "WAITING"
+tests/test_v003_tradeflow_acceptance_replay.py:14:6. yesterday_observation — observe_state=TRIGGERED preserved
+tests/test_v003_tradeflow_acceptance_replay.py:396:    """Scenario 6: observe_state=TRIGGERED preserved in plan entry."""
+tests/test_v003_tradeflow_acceptance_replay.py:398:    def test_observe_state_triggered(self):
+tests/test_v003_tradeflow_acceptance_replay.py:402:        assert entry["observe_state"] == "TRIGGERED"
+tests/test_v003_tradeflow_acceptance_replay.py:832:            observe_state="TRIGGERED",
+tests/test_v003_tradeflow_acceptance_replay.py:850:            observe_state="WAITING",
+tests/test_v003_tradeflow_acceptance_replay.py:868:            observe_state="WAITING",
+tests/test_tf_obs_001_observe_runner.py:39:                     observe_state="WAITING", effective_trade_date=""):
+tests/test_tf_obs_001_observe_runner.py:48:        observe_state=observe_state,
+tests/test_tf_obs_001_observe_runner.py:198:            observe_state=ObserveState.TRIGGERED,
+tests/test_tf_obs_001_observe_runner.py:212:            observe_state=ObserveState.INVALIDATED,
+tests/test_tf_obs_001_observe_runner.py:224:            observe_state=ObserveState.WAITING,
+tests/test_tf_obs_001_observe_runner.py:235:            observe_state=ObserveState.EXPIRED,
+tests/test_tf_obs_001_observe_runner.py:260:        row = conn.execute("SELECT observe_state, observe_trigger_count FROM tradeflow_candidates WHERE symbol = '600519.SH'").fetchone()
+tests/test_tf_obs_001_observe_runner.py:261:        assert row["observe_state"] == "TRIGGERED"
+tests/test_tf_obs_001_observe_runner.py:288:        row = conn.execute("SELECT observe_state FROM tradeflow_candidates WHERE symbol = '600519.SH'").fetchone()
+tests/test_tf_obs_001_observe_runner.py:289:        assert row["observe_state"] == "INVALIDATED"
+tests/test_tf_obs_001_observe_runner.py:366:        c = _make_candidate("600519.SH", trigger_price=10.0, invalid_price=9.0, observe_state="WAITING")
+tests/test_tf_obs_001_observe_runner.py:386:        c = _make_candidate("600519.SH", trigger_price=10.0, invalid_price=9.0, observe_state="TRIGGERED")
+tests/test_tf_obs_001_observe_runner.py:394:        assert result.details[0]["observe_state"] == "TRIGGERED"
+tests/test_tf_obs_001_observe_runner.py:399:        row = conn.execute("SELECT observe_state FROM tradeflow_candidates WHERE symbol = '600519.SH'").fetchone()
+tests/test_tf_obs_001_observe_runner.py:400:        assert row["observe_state"] == "TRIGGERED"
+tests/test_tf_obs_001_observe_runner.py:404:        c = _make_candidate("600519.SH", trigger_price=10.0, invalid_price=9.0, observe_state="INVALIDATED")
+tests/test_tf_obs_001_observe_runner.py:412:        assert result.details[0]["observe_state"] == "INVALIDATED"
+tests/test_tf_obs_001_observe_runner.py:445:        assert "observe_state" in ev
+tests/test_tf_obs_001_observe_runner.py:507:        assert d["observe_state"] == "TRIGGERED"
+tests/test_tf_risk001_paper_risk_budget.py:31:    update_paper_observe_state,
+tests/test_tf_risk001_paper_risk_budget.py:213:        update_paper_observe_state("000001.SZ", "TRIGGERED", tf_db_path=tmp_db)
+tests/test_m006_gated_deep_ta.py:156:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:171:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:185:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:197:            observe_state="WAITING",
+tests/test_m006_gated_deep_ta.py:210:            observe_state="INVALIDATED",
+tests/test_m006_gated_deep_ta.py:222:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:235:            observe_state="WAITING",
+tests/test_m006_gated_deep_ta.py:246:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:259:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:271:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:284:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:296:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:311:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:323:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:337:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:350:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:365:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:378:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:398:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:413:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:425:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:439:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:516:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:787:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:822:            observe_state="WAITING",
+tests/test_m006_gated_deep_ta.py:835:                observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:851:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:865:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:884:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:903:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:917:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:931:            observe_state="TRIGGERED",
+tests/test_m006_gated_deep_ta.py:943:            observe_state="TRIGGERED",
+
+exec
+/bin/zsh -lc "sed -n '830,900p' api/services/tradeflow_service.py && sed -n '990,1085p' api/services/tradeflow_service.py && sed -n '190,215p' api/tradeflow_schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
+        today = now.strftime("%Y-%m-%d")
+        from tradingagents.tradeflow.intraday_observe_scheduler import _is_trading_day, _is_market_hours
+        return {
+            "is_trading_day": _is_trading_day(today),
+            "is_market_hours": _is_market_hours(DEFAULT_STRATEGY_CONFIG),
+        }
+    except Exception:
+        return {"is_trading_day": False, "is_market_hours": False}
+
+
+def _build_trigger_explain(observe_state: str, current_price, trigger_price, invalid_price,
+                           near_band_pct: float) -> dict:
+    """Build structured "why triggered / why not / how far off" explanation.  # [TF-OBS-004] observe_refresh_alert_queue
+
+    Returns dict with:
+    - category: triggered / near_trigger / invalidated / waiting / no_data
+    - why_triggered: reason string when triggered
+    - why_not: reason string when not triggered
+    - how_far_off: human-readable distance to trigger
+    - breach_pct: signed % distance from trigger price (positive = above trigger)
+    """
+    result = {
+        "category": "waiting",
+        "why_triggered": "",
+        "why_not": "",
+        "how_far_off": "",
+        "breach_pct": None,
+    }
+    if observe_state == "INVALIDATED" or (invalid_price and current_price is not None and current_price <= invalid_price):
+        result["category"] = "invalidated"
+        below = ""
+        if invalid_price and current_price is not None:
+            below_pct = (invalid_price - current_price) / invalid_price * 100
+            result["breach_pct"] = (current_price - trigger_price) / trigger_price * 100 if trigger_price else None
+            below = f"（跌破失效价 {invalid_price:.2f}，偏离 {below_pct:.2f}%）"
+        result["why_not"] = f"价格已跌破失效价{below}，观察失效"
+        return result
+    if trigger_price is None or current_price is None or trigger_price <= 0:
+        result["category"] = "no_data"
+        result["why_not"] = "缺少触发价或实时行情，无法判断"
+        return result
+
+    breach_pct = (current_price - trigger_price) / trigger_price * 100
+    result["breach_pct"] = breach_pct
+
+    if current_price >= trigger_price:
+        result["category"] = "triggered"
+        result["why_triggered"] = f"当前价 {current_price:.2f} 达到触发价 {trigger_price:.2f}（超出 {breach_pct:.2f}%）"
+        result["how_far_off"] = f"已超出触发价 {breach_pct:.2f}%"
+        return result
+
+    to_trigger_pct = (trigger_price - current_price) / trigger_price * 100
+    result["how_far_off"] = f"还差 {to_trigger_pct:.2f}% 触发"
+    # near-trigger band: within (1 - near_band_pct) * trigger_price and trigger_price (inclusive, with epsilon)
+    if to_trigger_pct <= near_band_pct * 100 + 1e-9:
+        result["category"] = "near_trigger"
+        result["why_not"] = f"当前价 {current_price:.2f} 接近触发价 {trigger_price:.2f}（还差 {to_trigger_pct:.2f}%）"
+    else:
+        result["category"] = "waiting"
+        result["why_not"] = f"当前价 {current_price:.2f} 距触发价 {trigger_price:.2f} 仍差 {to_trigger_pct:.2f}%"
+    return result
+
+
+def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+    # [TF-OBS-005] observe_date_semantics — cross-date plan hint
+    _sem = _resolve_observe_date_semantics(tf_db, trade_date)
+
+    if not os.path.exists(tf_db):
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = []
+        if "status" in columns:
+            extra_conditions.append("status = 'active'")
+        order_clause = " ORDER BY composite_score DESC" if "composite_score" in columns else " ORDER BY updated_at DESC, created_at DESC"
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            order_clause=order_clause,
+        )
+
+        items = []
+        triggered = 0
+        invalidated = 0
+        waiting = 0
+        near_trigger_total = 0   # [TF-OBS-004] observe_refresh_alert_queue
+        pending_total = 0        # [TF-OBS-004]
+        _near_band = DEFAULT_STRATEGY_CONFIG.observe_near_trigger_band_pct  # [TF-OBS-004]
+
+        # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
+        paper_status_map: dict[str, str] = {}
+        try:
+            pt_rows = conn.execute(
+                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
+            ).fetchall()
+            for pt in pt_rows:
+                _psym = normalize_tradeflow_symbol(pt["symbol"])
+                if _psym not in paper_status_map:
+                    paper_status_map[_psym] = pt["status"]
+        except Exception:
+            pass
+
+        for r in rows:
+            state = _rget(r, "observe_state", "WAITING")
+            sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+            raw_n = _rget(r, "name", "")
+
+            # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
+            current_price = None
+            trigger_reason = ""
+            try:
+                sig_rows = conn.execute(
+                    "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 20",
+                    (sym,),
+                ).fetchall()
+                for sig_row in sig_rows:
+                    ev = _parse_json(_rget(sig_row, "evidence_json", "{}"), {})
+                    if ev.get("trade_date") != trade_date:
+                        continue
+                    current_price = ev.get("current_price")
+                    trigger_reason = ev.get("trigger_reason", "")
+                    break
+            except Exception:
+                pass
+
+            _tp = _rget(r, "trigger_price")
+            _ip = _rget(r, "invalid_price")
+            # [TF-OBS-004] observe_refresh_alert_queue — structured trigger explanation
+            _explain = _build_trigger_explain(state, current_price, _tp, _ip, _near_band)
+            _dist_pct = _explain.get("breach_pct")
+            _near = _explain["category"] == "near_trigger"
+
+            _paper = paper_status_map.get(sym, "")  # [TF-OBS-003] observe_paper_sync
+
+            item = {
+                "symbol": sym,
+                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+                "observe_state": state,
+                "trigger_price": _tp,
+                "invalid_price": _ip,
+                "observe_trigger_count": _rget(r, "observe_trigger_count", 0) or 0,
+                "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
+                "tier": _rget(r, "tier", ""),
+                "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+                "current_price": current_price,
+                "trigger_reason": trigger_reason,
+                "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
+                "paper_status": _paper,  # [TF-OBS-003] observe_paper_sync
+                "trigger_distance_pct": _dist_pct,  # [TF-OBS-004]
+                "near_trigger": _near,               # [TF-OBS-004]
+                "trigger_explain": _explain,         # [TF-OBS-004]
+            }
+            items.append(item)
+            if state == "TRIGGERED":
+                triggered += 1
+            elif state == "INVALIDATED":
+                invalidated += 1
+            else:
+                waiting += 1
+            if _near:
+                near_trigger_total += 1
+            if _paper == "pending":
+                pending_total += 1
+
+        _mkt = _observe_market_status()  # [TF-OBS-004]
+        return {
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+
+
+class TradeFlowObserveItem(BaseModel):
+    symbol: str
+    name: str = ""
+    observe_state: str = "WAITING"
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    observe_trigger_count: int = 0
+    observe_first_trigger_time: str = ""
+    tier: str = ""
+    composite_score: float = 0.0
+    current_price: Optional[float] = None
+    trigger_reason: str = ""
+    strategy_tags: List[str] = Field(default_factory=list)
+    paper_status: str = ""  # [TF-OBS-003] observe_paper_sync
+    # [TF-OBS-004] observe_refresh_alert_queue — structured trigger explanation
+    trigger_distance_pct: Optional[float] = None  # signed % distance from trigger price
+    near_trigger: bool = False  # within near-trigger band but not yet triggered
+    trigger_explain: Dict[str, Any] = Field(default_factory=dict)  # why triggered / why not / how far off
+
+
+class TradeFlowObserveResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+
+exec
+/bin/zsh -lc "sed -n '2550,2720p' frontend/src/pages/TradeFlow.tsx && sed -n '3320,3405p' frontend/src/pages/TradeFlow.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    const refreshPaperLedgerForFocus = useCallback(async () => {
+        try {
+            const res = await api.getPaperLedger()
+            setPaperLedger(res)
+        } catch {
+            // non-fatal — focus workspace still renders without budget data
+        }
+    }, [])
+
+    // [TF-PAPER-001] paper_trading_ledger
+    const handlePaperAction = useCallback(async (tradeId: number, actionType: string, price: number, note?: string) => {
+        setPaperActionLoading(true)
+        try {
+            await api.confirmPaperAction(tradeId, actionType, price, note)
+            await fetchPaperLedger()
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '操作失败')
+        } finally {
+            setPaperActionLoading(false)
+        }
+    }, [fetchPaperLedger])
+
+    // [TF-PAPER-001] paper_trading_ledger
+    const handlePaperRemove = useCallback(async (tradeId: number) => {
+        setPaperActionLoading(true)
+        try {
+            await api.removePaperCandidate(tradeId)
+            await fetchPaperLedger()
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '移除失败')
+        } finally {
+            setPaperActionLoading(false)
+        }
+    }, [fetchPaperLedger])
+
+    const fetchData = useCallback(async (date: string) => {
+        if (activeTab === 'candidates') {
+            await fetchCandidates(date)
+        } else if (activeTab === 'compare') {
+            await fetchCompare(date)
+        } else if (activeTab === 'observe') {
+            await fetchObserve(date)
+        } else if (activeTab === 'ta-queue') {
+            await fetchTaQueue(date)
+        } else if (activeTab === 'review') {
+            await fetchReview(date)
+        } else if (activeTab === 'filtered') {
+            await fetchFiltered(date)
+        } else if (activeTab === 'data-health') {
+            await fetchDataHealth()
+            await fetchSourceFreshness()  // [DATA-018]
+            await fetchLiveSampling()  // [DATA-020] live_sampling_health_ui
+        } else if (activeTab === 'topic-heatmap') {  // [H-013] mandate_topic_heatmap
+            await fetchTopicHeatmap()
+            await fetchMandateDailyReport()
+        } else if (activeTab === 'paper-ledger') {
+            await fetchPaperLedger()
+        }
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchLiveSampling, fetchTopicHeatmap, fetchMandateDailyReport, fetchFiltered, fetchPaperLedger])
+
+    useEffect(() => {
+        void fetchData(tradeDate)
+    }, [tradeDate, fetchData])
+
+    // [TF-UX-001] small_cap_trial_workbench — preload the paper ledger so the
+    // "5000 元试跑" prompt area in the focus workspace has risk budget data
+    // without requiring users to navigate to the 模拟账本 tab first.
+    useEffect(() => {
+        if (activeTab === 'candidates') {
+            void refreshPaperLedgerForFocus()
+        }
+    }, [activeTab, refreshPaperLedgerForFocus])
+
+    // [TF-UX-002] auto-refresh for observe tab
+    // [TF-OBS-004] observe_refresh_alert_queue — server-driven interval + 1s countdown ticker
+    useEffect(() => {
+        if (autoRefreshRef.current) {
+            clearInterval(autoRefreshRef.current)
+            autoRefreshRef.current = null
+        }
+        if (countdownRef.current) {
+            clearInterval(countdownRef.current)
+            countdownRef.current = null
+        }
+        // Respect speed budget: keep conservative intervals, do NOT add high-frequency polling.
+        const inMarket = isInMarketHours()
+        // Prefer server-authoritative interval when available; cap to existing budget (3min in-market / 5min off).
+        const serverIntervalMs = (observeData?.refresh_interval_seconds ?? 0) * 1000
+        const interval = inMarket
+            ? Math.min(serverIntervalMs > 0 ? serverIntervalMs : 3 * 60 * 1000, 3 * 60 * 1000)
+            : 5 * 60 * 1000
+        const active = inMarket && activeTab === 'observe'
+        setEffectiveObserveRefreshSeconds(Math.round(interval / 1000))
+        setAutoRefreshActive(active)
+        if (active) {
+            setNextRefreshIn(Math.round(interval / 1000))
+            autoRefreshRef.current = setInterval(() => {
+                void fetchObserve(tradeDate)
+                setNextRefreshIn(Math.round(interval / 1000))
+            }, interval)
+            countdownRef.current = setInterval(() => {
+                setNextRefreshIn(prev => (prev == null ? null : Math.max(0, prev - 1)))
+            }, 1000)
+        } else {
+            setNextRefreshIn(null)
+        }
+        return () => {
+            if (autoRefreshRef.current) {
+                clearInterval(autoRefreshRef.current)
+            }
+            if (countdownRef.current) {
+                clearInterval(countdownRef.current)
+            }
+        }
+    }, [activeTab, tradeDate, fetchObserve, isInMarketHours, observeData?.refresh_interval_seconds])
+
+    // [H-013A] mandate_topic_heatmap_fix — scroll the carried symbol into view
+    // (and clear it) once the candidates list has rendered it.
+    useEffect(() => {
+        if (!highlightSymbol) return
+        if (activeTab !== 'candidates') return
+        const el = document.querySelector(`[data-highlight-symbol="${highlightSymbol}"]`) as HTMLElement | null
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+    }, [highlightSymbol, activeTab, candidates, tieredData])
+
+    const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setTradeDate(e.target.value)
+    }
+
+    const handleRowClick = (c: TradeFlowCandidateItem) => {
+        setSelectedCandidate(c)
+        setDrawerOpen(true)
+    }
+
+    // [H-013A] mandate_topic_heatmap_fix — interlink: topic → candidates tab,
+    // carrying the clicked symbol so the candidates list can highlight/expand it.
+    const handleTopicSymbolClick = useCallback((symbol: string) => {
+        setHighlightSymbol(symbol || null)
+        setActiveTab('candidates')
+    }, [])
+
+    // [UI-013] tradeflow_empty_state_cta — soft next-step CTAs shared across empty states.
+    // Wording stays neutral (no 买/卖/加仓/减仓). These only navigate, never trigger scans.
+    const goToCandidatesTab = useCallback(() => {
+        setActiveTab('candidates')
+    }, [])
+    const goToDataHealthTab = useCallback(() => {
+        setActiveTab('data-health')
+    }, [])
+    const goToObservationWarehouse = useCallback(() => {
+        navigate('/tracking-board')
+    }, [navigate])
+    const goToScanPanel = useCallback(() => {
+        setActiveTab('candidates')
+        // The scan panel is rendered above the tab content on the candidates tab.
+        // Defer the scroll so the panel is mounted before we look it up.
+        window.setTimeout(() => {
+            const el = document.getElementById('tradeflow-scan-panel')
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }
+        }, 60)
+    }, [])
+
+    const parseSymbolInput = (value: string) => (
+        value
+            .split(/[\s,，;；]+/)
+            .map(s => s.trim().toUpperCase())
+            .filter(Boolean)
+                                        <td className="px-4 py-2.5">
+                                            <span className={`flex items-center gap-1 text-xs font-medium ${obs.cls}`}>
+                                                {c.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+                                                {obs.text}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-2.5">
+                                            <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${act.cls}`}>{act.text}</span>
+                                        </td>
+                                    </tr>
+                                )
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            )
+        }
+
+        if (activeTab === 'compare') {
+            return (
+                <CompareTab
+                    candidates={compareData}
+                    sortBy={compareSortBy}
+                    onSortChange={(key) => {
+                        setCompareSortBy(key)
+                        api.getTradeFlowCandidatesCompare(tradeDate, key, 'desc', 'haotian').then(res => {
+                            if (res.status === 'ok') setCompareData(res.candidates)
+                        }).catch(() => {})
+                    }}
+                    onRowClick={handleRowClick}
+                />
+            )
+        }
+
+        if (activeTab === 'observe') {
+            return <ObserveTable
+                items={observeData?.observe_items ?? []}
+                onRun={handleRunObserve}
+                running={observeRunLoading}
+                runResult={observeRunResult}
+                lastCheckTime={lastObserveCheckTime}
+                observeReason={observeData?.observe_reason ?? ''}
+                observeAutoRun={observeData?.observe_auto_run ?? false}
+                lastObservedAt={observeData?.last_observed_at ?? ''}
+                refreshIntervalSeconds={effectiveObserveRefreshSeconds}
+                isMarketHours={observeData?.is_market_hours ?? false}
+                isTradingDay={observeData?.is_trading_day ?? false}
+                nearTriggerCount={observeData?.near_trigger_count ?? 0}
+                pendingCount={observeData?.pending_count ?? 0}
+                nextRefreshIn={nextRefreshIn}
+                autoRefreshActive={autoRefreshActive}
+                planDate={observeData?.plan_date}                                   // [TF-OBS-005]
+                effectiveTradeDate={observeData?.effective_trade_date}             // [TF-OBS-005]
+                nonTradingDayPlan={observeData?.non_trading_day_plan}             // [TF-OBS-005]
+                nextTradingDayHint={observeData?.next_trading_day_hint}           // [TF-OBS-005]
+                onGoToCandidates={goToCandidatesTab}                                // [UI-013] tradeflow_empty_state_cta
+                onGoToObservationWarehouse={goToObservationWarehouse}              // [UI-013] tradeflow_empty_state_cta
+            />
+        }
+
+        if (activeTab === 'ta-queue') {
+            if (!taQueueData) {
+                return <div className="py-20 text-center text-sm text-slate-400">暂无 TA 队列数据</div>
+            }
+            return <TAQueueTable items={taQueueData.queue} meta={taQueueData} />
+        }
+
+        if (activeTab === 'review') {
+            if (!reviewData || reviewData.status === 'no_data') {
+                // [TF-REVIEW-004] review_empty_diagnostics — show specific reason + cross-date mapping
+                // [UI-013] tradeflow_empty_state_cta — unified CTA + non-trading-day mapping wording
+                const emptyReason = reviewData?.empty_reason ?? ''
+                const emptyMsg = reviewData?.empty_reason_message ?? '尚未生成盘后复盘'
+                const suggested = reviewData?.suggested_action ?? ''
+                const hasPlanDates = (reviewData?.available_plan_dates?.length ?? 0) > 0
+                const showMapping = !!(reviewData?.plan_date && reviewData.plan_date !== reviewData.trade_date)
+                const reviewHints: string[] = []
+                if (!hasPlanDates) {
+                    reviewHints.push('盘后 Review 依赖候选池，请先在「候选池」生成今日候选')
+                }
+                if (showMapping) {
+                    reviewHints.push('非交易日（周末/节假日）生成的候选池会在下一个交易日复盘')
+                }
+                reviewHints.push('若当日为非交易日，可切换日期或等待下一交易日自动汇总')
+                return (
+                    <div className="space-y-4 p-4">
+
+exec
+/bin/zsh -lc 'npm run build' in /Users/maybee/TradingAgents-AShare/frontend
+exec
+/bin/zsh -lc 'npx vitest run frontend/src/utils/observeVisuals.test.ts --runInBand' in /Users/maybee/TradingAgents-AShare
+ succeeded in 3863ms:
+vite v6.4.2 building for production...
+(node:95129) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1941 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-BGUUOH40.css    170.10 kB │ gzip:  23.33 kB
+dist/assets/index-OYSs7sqx.js   1,229.91 kB │ gzip: 352.52 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.44s
+
+ exited 1 in 6461ms:
+npm warn exec The following package was not found and will be installed: vitest@4.1.9
+file:///Users/maybee/.npm/_npx/69c381f8ad94b576/node_modules/vitest/dist/chunks/cac.D3xHeqeL.js:406
+          throw new CACError(`Unknown option \`${name.length > 1 ? `--${name}` : `-${name}`}\``);
+                ^
+
+CACError: Unknown option `--runInBand`
+    at Command.checkUnknownOptions (file:///Users/maybee/.npm/_npx/69c381f8ad94b576/node_modules/vitest/dist/chunks/cac.D3xHeqeL.js:406:17)
+    at CAC.runMatchedCommand (file:///Users/maybee/.npm/_npx/69c381f8ad94b576/node_modules/vitest/dist/chunks/cac.D3xHeqeL.js:606:13)
+    at CAC.parse (file:///Users/maybee/.npm/_npx/69c381f8ad94b576/node_modules/vitest/dist/chunks/cac.D3xHeqeL.js:547:12)
+    at file:///Users/maybee/.npm/_npx/69c381f8ad94b576/node_modules/vitest/dist/cli.js:11:13
+    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v26.0.0
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/pages/TradeFlow.tsx
+?? docs/task_runs/TF-OBS-006-20260701-193047/
+?? frontend/src/utils/observeVisuals.test.ts
+?? frontend/src/utils/observeVisuals.ts
+
+exec
+/bin/zsh -lc 'npx vitest run src/utils/observeVisuals.test.ts' in /Users/maybee/TradingAgents-AShare/frontend
+ succeeded in 530ms:
+(node:95220) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+
+ RUN  v4.1.5 /Users/maybee/TradingAgents-AShare/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  23 passed (23)
+   Start at  19:42:17
+   Duration  111ms (transform 18ms, setup 0ms, import 23ms, tests 3ms, environment 0ms)
+
+
+exec
+/bin/zsh -lc 'git diff --check && git diff --cached --check' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:

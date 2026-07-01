@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-07-01 | TF-OBS-006 盘中观察自动执行入口与红涨绿跌视觉语义修正
+
+- **执行者**：OpenCode
+- **类型**：feature / UX
+- **任务**：`docs/TASKS.md` TF-OBS-006（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：TF-OBS-005 ✓、UI-013 ✓
+
+### 背景
+
+用户反馈盘中观察需要手动点执行、入口不清晰，且"距离触发价"的红绿含义
+反大 A 直觉（接近触发价=强势，应红色；远离/走弱=绿或灰）。本任务把视觉
+语义抽到纯函数、加图例、明确刷新入口和非交易时段提示。
+
+### 修改文件
+
+- 新增 `frontend/src/utils/observeVisuals.ts` — 纯函数：A 股红涨绿跌色调
+  计算（triggered/near_trigger=红，invalidated/near_invalidation=绿，
+  waiting=灰）、图例常量 `OBSERVE_LEGEND`、`formatLastRefreshTime`、
+  `shouldShowNonMarketBanner`。
+- 新增 `frontend/src/utils/observeVisuals.test.ts` — 23 个单测覆盖色调判定、
+  阈值边界、server hint、图例顺序、刷新时间格式、非交易时段 banner。
+- 改 `frontend/src/pages/TradeFlow.tsx`：
+  - `priceDistanceColor` 改为薄包装，委托给 `computeObserveVisual`，并接受
+    `nearTrigger`/`triggerDistancePct` 让"接近触发"显红、"接近失效"显绿。
+  - ObserveTable 顶栏：按钮文案 `手动刷新` → `一键刷新观察`；"最近刷新"
+    时间用 `formatLastRefreshTime` 高亮显示（无数据时显示"尚未刷新"）。
+  - 新增红涨绿跌图例行（5 色：已触发/接近触发/等待中/接近失效/已失效）。
+  - "接近触发"汇总数字与分组 accent 由 blue 系改为 red 系，与图例一致。
+  - 新增非交易日/非交易时段 banner（"可查看上次观察/等待交易时段"+时段说明）。
+  - 空状态提示文案同步为「一键刷新观察」。
+
+### 第一性原理 / 验收对照
+
+- 不开启后台高频轮询（沿用 TF-OBS-004 的 3/5 分钟 interval，未改算法）。
+- 不自动发送交易动作、不改触发算法、不改 prompts。
+- 红涨绿跌语义不再反直觉：接近触发=红、接近失效=绿、等待=灰，图例自解释。
+- 非交易时段有明确文案，不再让用户误以为系统在实时盯盘。
+
+### 测试
+
+- `npx vitest run`：4 文件 / 50 tests passed（含新增 23）。
+- `npm run build`：通过（chunk size 警告为既有，与本次改动无关）。
+- `npx tsc --noEmit`：通过。
+- 3 个 ESLint `set-state-in-effect` 报错为既有（未触碰行），新增文件无 lint 报错。
+
+---
+
 ## 2026-07-01 | KB-008 TA/TradeFlow 接入研报关注度与主题交叉度展示
 
 - **执行者**：OpenCode
@@ -9510,3 +9558,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-008-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-008-20260701-191248/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-OBS-006 - 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/TF-OBS-006-20260701-round1.txt
+- **Run archive**: docs/task_runs/TF-OBS-006-20260701-193047/

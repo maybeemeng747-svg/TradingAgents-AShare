@@ -47,6 +47,13 @@ import {
     pickWhyNotMain,
     DEFAULT_MAIN_VIEW_CAP,
 } from '@/utils/tradeflowFocus'
+// [TF-OBS-006] observe_refresh_visual_semantics — A-share red/green pure helpers
+import {
+    computeObserveVisual,
+    formatLastRefreshTime,
+    shouldShowNonMarketBanner,
+    OBSERVE_LEGEND,
+} from '@/utils/observeVisuals'
 
 type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
 
@@ -128,21 +135,18 @@ function actionTierBadge(tier: string): { text: string; cls: string } {
     }
 }
 
-// [TF-UX-002] A-stock color: red=up/triggered, green=down/invalidated
-function priceDistanceColor(currentPrice: number | null, triggerPrice: number | null, invalidPrice: number | null): { text: string; cls: string; label: string } {
-    if (!triggerPrice || !currentPrice) {
-        return { text: '-', cls: 'text-slate-400', label: '' }
-    }
-    const distPct = ((currentPrice - triggerPrice) / triggerPrice * 100)
-    if (currentPrice >= triggerPrice) {
-        return { text: `已触发 / +${distPct.toFixed(2)}%`, cls: 'text-red-600 dark:text-red-400 font-medium', label: '已触发' }
-    }
-    if (invalidPrice && currentPrice <= invalidPrice) {
-        const belowPct = ((invalidPrice - currentPrice) / invalidPrice * 100)
-        return { text: `已失效 / -${belowPct.toFixed(2)}%`, cls: 'text-emerald-600 dark:text-emerald-400', label: '已失效' }
-    }
-    const toTrigger = ((triggerPrice - currentPrice) / triggerPrice * 100)
-    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-slate-500 dark:text-slate-400', label: '等待中' }
+// [TF-OBS-006] observe_refresh_visual_semantics
+// A-share colors are now sourced from @/utils/observeVisuals so the semantics
+// (red=near trigger/strong, green/gray=weak) are unit-tested and consistent
+// with the legend. This thin wrapper keeps the legacy call sites working.
+function priceDistanceColor(
+    currentPrice: number | null,
+    triggerPrice: number | null,
+    invalidPrice: number | null,
+    nearTrigger?: boolean,
+    triggerDistancePct?: number | null,
+): { text: string; cls: string; label: string } {
+    return computeObserveVisual({ currentPrice, triggerPrice, invalidPrice, nearTrigger, triggerDistancePct })
 }
 
 // [TF-P0-002] tradeflow_pool_split — pool tabs
@@ -222,7 +226,7 @@ function CompletenessBar({ value }: { value: number }) {
 // [TF-OBS-004] observe_refresh_alert_queue — grouping + countdown
 function ObserveRow({ item }: { item: TradeFlowObserveItem }) {
     const st = observeStateLabel(item.observe_state)
-    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
+    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price, item.near_trigger, item.trigger_distance_pct)
     const explain = item.trigger_explain
     return (
         <tr
@@ -338,10 +342,16 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
         <div>
             <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
-                {effectiveLastTime && (
+                {/* [TF-OBS-006] observe_refresh_visual_semantics — prominent last-refresh time */}
+                {effectiveLastTime ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" title={effectiveLastTime}>
+                        <Clock className="h-3 w-3" />
+                        最近刷新: {formatLastRefreshTime(effectiveLastTime) || effectiveLastTime}
+                    </span>
+                ) : (
                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
                         <Clock className="h-3 w-3" />
-                        最后检查: {effectiveLastTime}
+                        尚未刷新
                     </span>
                 )}
                 {observeAutoRun && (
@@ -364,21 +374,37 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                         已暂停 · {!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}
                     </span>
                 )}
+                {/* [TF-OBS-006] observe_refresh_visual_semantics — one-click refresh entry */}
                 <button
                     onClick={() => { onRun(); setShowResult(true) }}
                     disabled={running}
                     className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                    title="立即拉取一次实时行情并检查触发状态（不自动下单）"
                 >
                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                    {running ? '执行中...' : '手动刷新'}
+                    {running ? '执行中...' : '一键刷新观察'}
                 </button>
             </div>
+            {/* [TF-OBS-006] observe_refresh_visual_semantics — A-share color legend
+                (red = approaching trigger / strong, green = approaching invalid / weak) */}
+            {items.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">红涨绿跌图例:</span>
+                    {OBSERVE_LEGEND.map(e => (
+                        <span key={e.tone} className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400" title={e.desc}>
+                            <span className={`inline-block h-2 w-2 rounded-full ${e.dotCls}`} />
+                            {e.label}
+                        </span>
+                    ))}
+                </div>
+            )}
             {/* [TF-OBS-004] observe_refresh_alert_queue — grouped summary */}
+            {/* [TF-OBS-006] observe_refresh_visual_semantics — near-trigger uses red (strong) per A-share legend */}
             {items.length > 0 && (
                 <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
                     <span className="text-xs text-slate-500">待确认: <span className="font-medium text-amber-600 dark:text-amber-400">{pendingCount}</span></span>
                     <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{triggeredItems.length}</span></span>
-                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-blue-600 dark:text-blue-400">{nearTriggerCount}</span></span>
+                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-red-500 dark:text-red-400">{nearTriggerCount}</span></span>
                     <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
                 </div>
             )}
@@ -394,6 +420,23 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                                 {' → '}生效交易日 <span className="font-medium">{effectiveTradeDate}</span>
                             </div>
                         )}
+                    </div>
+                </div>
+            )}
+            {/* [TF-OBS-006] observe_refresh_visual_semantics — non-market-hours banner.
+                Outside trading sessions users can still review the last observe snapshot;
+                no live trigger checks happen, so we surface that explicitly. */}
+            {shouldShowNonMarketBanner(isTradingDay, isMarketHours) && (
+                <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+                    <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                    <div>
+                        <div>
+                            {!isTradingDay ? '当前为非交易日' : '当前为非交易时段'}
+                            {items.length > 0 ? '，可查看上次观察结果，等待交易时段自动刷新。' : '，等待交易时段开始后自动执行观察。'}
+                        </div>
+                        <div className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                            交易时段：周一至周五 09:30-11:30 / 13:00-15:00（法定节假日除外）
+                        </div>
                     </div>
                 </div>
             )}
@@ -439,7 +482,7 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                         hints={[
                             '先生成候选池，候选会自动进入当日观察',
                             '或手动将标的加入观察仓（跟踪看板）',
-                            '也可点击右上角「手动刷新」立即触发一次检查',
+                            '也可点击右上角「一键刷新观察」立即触发一次检查',
                         ]}
                         actions={[
                             ...(onGoToCandidates ? [{ label: '前往生成候选池', onClick: onGoToCandidates, primary: true }] : []),
@@ -450,8 +493,9 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
             ) : items.length === 0 && !runResult ? null : (
             <div className="overflow-x-auto">
                 {/* [TF-OBS-004] observe_refresh_alert_queue — grouped sections, pending-first */}
+                {/* [TF-OBS-006] observe_refresh_visual_semantics — near-trigger accent aligned to red (strong) */}
                 <ObserveGroup title="已触发（待确认优先）" subtitle="已进入模拟账本待确认队列，需人工确认，不自动下单" items={triggeredItems} accent="bg-red-500" />
-                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-blue-500" />
+                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-red-400" />
                 <ObserveGroup title="已失效 / 等待中" items={otherItems} accent="bg-slate-400" />
                 {items.length > 0 && triggeredItems.length === 0 && nearItems.length === 0 && otherItems.length === 0 && (
                     <table className="w-full text-sm">
