@@ -4344,7 +4344,7 @@
 ### KB-002: investment wiki 输出协议升级：TA 可消费字段 lint（P1）
 - **描述**：为 Tree Work 提出稳定的 investment wiki 输出协议，并在 TA 仓库实现 lint，避免后续消化研报后 TA 仍抓不到股票、主题、风险、来源和时效。
 - **优先级**：P1
-- **状态**：done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ `docs/knowledge_reports/local_knowledge_lint-2026-07-01.md`，99 tests passed（KB-001+KB-002）。真实知识库 lint 跑通（76 页，默认非阻塞退出 0）。
+- **状态**：done -- commit f5bbb9d
 - **产出**：
   - `tradingagents/dataflows/local_knowledge_lint.py`（lint 引擎：12 条规则、findings、machine_readiness、修复建议）
   - `scripts/lint_local_knowledge.py`（CLI：`--fail-on-error` CI 门禁，默认非阻塞）
