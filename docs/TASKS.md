@@ -4537,7 +4537,7 @@
 ### KB-009: 研报来源去重、时效衰减与过热惩罚规则（P2）
 - **描述**：防止 Research Attention Score 被同源重复、过期周报或热门题材过度放大，加入去重、时效衰减和过热惩罚。
 - **优先级**：P2
-- **状态**：done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），7983 passed/0 failed
+- **状态**：done -- commit 029d625
 - **前置条件**：KB-007 完成。
 - **执行约束**：
   - 不压制真实多来源共识，只惩罚重复和过期。
