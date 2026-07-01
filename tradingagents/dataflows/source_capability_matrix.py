@@ -193,7 +193,10 @@ def _build_matrix_entry(data_type: DataType) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_source_capability_matrix() -> Dict[str, Any]:
+def get_source_capability_matrix(
+    *,
+    include_research_report_free_sources: bool = True,
+) -> Dict[str, Any]:
     """导出统一的数据源能力矩阵。
 
     返回结构：
@@ -202,9 +205,12 @@ def get_source_capability_matrix() -> Dict[str, Any]:
             "items": [ ... matrix entry ... ],
             "freshness_legend": {freshness_value: 说明},
             "rate_limit_legend": {risk_value: 说明},
+            "research_report_free_sources": [ ... DATA-025 free sources ... ],
         }
 
     返回深拷贝，调用方修改不会影响模块内部状态。
+    ``research_report_free_sources`` ([DATA-025]) 默认附加, 提供免费研报来源目录,
+    不修改 items (避免破坏已发布的 docs/SOURCE_CAPABILITY_MATRIX.md).
     """
     items: List[Dict[str, Any]] = []
     for data_type in DataType:
@@ -212,12 +218,21 @@ def get_source_capability_matrix() -> Dict[str, Any]:
         if entry is not None:
             items.append(entry)
 
-    return {
+    matrix: Dict[str, Any] = {
         "version": SOURCE_CAPABILITY_MATRIX_VERSION,
         "items": items,
         "freshness_legend": dict(FRESHNESS_STATUS_SEMANTICS),
         "rate_limit_legend": dict(RATE_LIMIT_RISK_LABEL),
     }
+    if include_research_report_free_sources:
+        # 延迟导入避免循环依赖; supplement 是只读附加, 不改 items.
+        try:
+            from .research_report_sources import build_capability_matrix_supplement
+            matrix["research_report_free_sources"] = build_capability_matrix_supplement()
+        except Exception:
+            # supplement 失败不应影响主矩阵输出
+            pass
+    return matrix
 
 
 def get_matrix_item(data_type: str) -> Optional[Dict[str, Any]]:

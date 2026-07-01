@@ -1064,6 +1064,8 @@ class SourceCapabilityMatrixResponse(BaseModel):
     items: List[SourceCapabilityMatrixItem]
     freshness_legend: Dict[str, str] = {}
     rate_limit_legend: Dict[str, str] = {}
+    # [DATA-025] free_research_report_sources — 只读 supplement, 默认空 dict
+    research_report_free_sources: Dict[str, Any] = {}
 
 
 class UserRuntimeWarmupResponse(BaseModel):

@@ -162,7 +162,7 @@
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
 137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
 138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
-139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，ready，依赖 DATA-011/DATA-023）。
+139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，done — DATA-025-20260701-202937，依赖 DATA-011/DATA-023 ✓）。
 140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready — 前置 KB-007 已完成）。
 
 ### 数据源治理候选队列
@@ -4511,7 +4511,7 @@
 ### DATA-025: 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2）
 - **描述**：梳理免费可用研报来源，优先验证东方财富研报中心/AKShare `stock_research_report_em`，作为外部研报元数据补充源；其它免费页面先列入目录，不做重抓。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — DATA-025-20260701-202937
 - **前置条件**：DATA-011、DATA-023 完成。
 - **免费来源初版**：
   1. 东方财富研报中心/个股研报：可通过 AKShare `stock_research_report_em(symbol)` 获取个股研报元数据、机构、评级、盈利预测、日期、PDF链接。

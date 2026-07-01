@@ -4,6 +4,70 @@
 
 ---
 
+## 2026-07-01 | DATA-025 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` DATA-025（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：DATA-011 ✓ / DATA-023 ✓
+
+### 背景
+DATA-011 已把研报接入 `research_report` raw_evidence，使用的是 AKShare `stock_institute_recommend`（券商评级/推荐接口，字段精简）。本任务梳理免费可用的券商研报元数据来源目录，并优先验证东方财富研报中心 / AKShare `stock_research_report_em`（全量研报元数据 + PDF 链接 + 盈利预测 + 东财评级），作为**外部研报元数据补充源**。
+
+核心边界（与 TASKS.md 执行约束一致）：
+- 第一版只做目录 + 小样本 smoke，不批量下载 PDF、不提交版权正文。
+- 免费研报仅作**观点 / 关注度 / 预期源**，不能替代公告或财报事实源。
+- 默认 fixture dry-run；live-smoke 必须显式开关 + 环境变量双重门禁。
+- 不改 `tradingagents/prompts/`；不写生产 `tradingagents.db`；不调用 LLM；不改强动作门禁。
+
+### 修改文件
+- `tradingagents/dataflows/research_report_sources.py`（新增，`# [DATA-025] free_research_report_sources`）
+  - `RESEARCH_REPORT_FREE_SOURCES` 目录：4 个免费来源（东财研报中心默认 smoke / 新浪评级补充索引 / 巨潮公告事实源 / 券商官网 IR 人工补充）。
+  - 每条来源区分 `content_role`（opinion 观点源 vs fact 事实源）与 `access_type`（default_smoke / supplemental_index / fact_cross_check / manual_only）。
+  - `SMOKE_FIXTURES`：3 类 fixture（HAS_DATA / NORMAL_NO_DATA / FAILED），覆盖验收要求的 3 种场景。
+  - `parse_research_report_rows`：解析 AKShare DataFrame（中文名优先 + 英文 fallback + NaN 跳过），只保留 PDF 链接，不存正文。
+  - `run_research_report_smoke`：fixture dry-run / live-smoke（`TA_LIVE_DATA_SMOKE=1` 双重门禁，最多 5 标的）。
+  - `render_research_report_smoke_report` / `save_research_report_smoke_report`：渲染并写入 `docs/data_source_reports/research_report_sources-YYYY-MM-DD.md`。
+  - `build_capability_matrix_supplement`：只读 supplement，不修改 matrix items。
+- `tradingagents/dataflows/source_capability_matrix.py`（修改）
+  - `get_source_capability_matrix` 新增 `include_research_report_free_sources` 参数（默认 True），把 supplement 作为顶层 `research_report_free_sources` 字段附加；不修改 items，避免破坏 DATA-023 已发布文档。
+- `api/main.py`（修改）
+  - `SourceCapabilityMatrixResponse` 新增可选字段 `research_report_free_sources: Dict[str, Any] = {}`，让 API 透传 supplement。
+- `scripts/run_research_report_smoke.py`（新增 CLI，对齐 `run_fund_flow_source_probe.py` 风格）
+  - 支持 `--symbols` / `--live-smoke` / `--output` / `--dry-run` / `--stdout-json`。
+  - 退出码：fixture 模式 fixture 不匹配 → 1；live 模式 env 未 gate 的 FAILED → 1；env gated SKIPPED → 0。
+- `tests/test_data025_research_report_sources.py`（新增，82 tests）
+  - 目录完整性 / 观点 vs 事实源分离 / DataFrame 解析（中文/英文/NaN/非 dict）/ fixture dry-run 三场景 / live env gating / mocked live fetch / 状态语义对齐 DATA-011 / 报告渲染 / 文件输出 / 能力矩阵 supplement / DATA-011 集成边界 / CLI 冒烟 / 验收测试。
+- `docs/data_source_reports/research_report_sources-2026-07-01.md`（新增，fixture dry-run 报告）
+
+### 第一性原理 / 验收对照
+- **目录**（任务 §实现要点 1）：`RESEARCH_REPORT_FREE_SOURCES` 4 条，覆盖东财/新浪/巨潮/券商官网。
+- **smoke 3-5 样本**（任务 §实现要点 2）：fixture 覆盖 HAS_DATA / NORMAL_NO_DATA / FAILED 三类；live-smoke 默认 3 标的，最多 5。
+- **报告输出**（任务 §实现要点 3）：`docs/data_source_reports/research_report_sources-2026-07-01.md` 已生成。
+- **DATA-011 桥接**（任务 §实现要点 4）：复用 HAS_DATA / NORMAL_NO_DATA / FAILED 状态语义；不改 readiness_score / EvidenceContract / 强动作门禁（DECISION-001）。
+- **验收 1** AKShare fixture 字段完整：HAS_DATA fixture 解析出日期/标题/机构/评级/PDF 链接。
+- **验收 2** 无研报 NORMAL_NO_DATA / 接口失败 FAILED：fixture 与 live 路径均能区分。
+- **验收 3** 观点源 vs 事实源：报告显式区分；`cninfo_announcement` 标为 fact，东财研报标为 opinion。
+- **执行约束** 不下载 PDF 正文、不批量抓取、不提交版权内容：record 只保留链接字段，无 content/body/text 属性。
+
+### 安全约束
+- 不读取 / 打印 / 持久化任何 API Key / cookie / token / Authorization header。
+- live-smoke 默认关闭，需 `TA_LIVE_DATA_SMOKE=1` + `--live-smoke` 双重门禁。
+- 不写生产 `tradingagents.db`；不调用 LLM；不改 `tradingagents/prompts/`。
+
+### 测试结果
+- `pytest tests/test_data025_research_report_sources.py -q` → 82 passed。
+- 回归：`tests/test_data011_research_report.py` + `tests/test_data023_source_capability_matrix.py` → 94 passed。
+- 回归：`tests/test_data_source_catalog.py` + `tests/test_data018_source_freshness.py` + `tests/test_data024_fund_flow_source_probe.py` → 263 passed。
+- 回归：`tests/test_api_smoke.py` → 49 passed。
+
+### 风险点
+- AKShare `stock_research_report_em` 字段覆盖依赖东财上书机构，部分研报缺盈利预测/目标价 → 解析器已做中英文列名 fallback，缺失字段返回空串而非报错。
+- live-smoke 默认关闭，fixture 路径与真实接口字段可能漂移 → 需要时手动 `--live-smoke` 抽样验证。
+
+---
+
 ## 2026-07-01 | KB-005 Tree Work inbox/raw/wiki 对齐与未消化研报清单
 
 - **执行者**：OpenCode
@@ -9782,3 +9846,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-005-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-005-20260701-201918/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-025 - 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/DATA-025-20260701-round1.txt
+- **Run archive**: docs/task_runs/DATA-025-20260701-202937/
