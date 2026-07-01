@@ -4511,7 +4511,7 @@
 ### DATA-025: 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2）
 - **描述**：梳理免费可用研报来源，优先验证东方财富研报中心/AKShare `stock_research_report_em`，作为外部研报元数据补充源；其它免费页面先列入目录，不做重抓。
 - **优先级**：P2
-- **状态**：done — DATA-025-20260701-202937
+- **状态**：done -- commit a50e45c
 - **前置条件**：DATA-011、DATA-023 完成。
 - **免费来源初版**：
   1. 东方财富研报中心/个股研报：可通过 AKShare `stock_research_report_em(symbol)` 获取个股研报元数据、机构、评级、盈利预测、日期、PDF链接。
