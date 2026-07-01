@@ -161,7 +161,7 @@
 135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready — 前置 KB-001 已由 commit 97e997f 真实完成）。
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
 137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
-138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，ready — 前置 KB-003/KB-007 均已完成）。
+138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
 139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，ready，依赖 DATA-011/DATA-023）。
 140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready — 前置 KB-007 已完成）。
 
@@ -4484,7 +4484,7 @@
 ### KB-008: TA/TradeFlow 接入研报关注度与主题交叉度展示（P1）
 - **描述**：将 KB-007 的研报关注度接入 TA 报告、TradeFlow 候选池和观察仓，使“多份研报反复提到同一股票”成为研究优先级和解释信息。
 - **优先级**：P1
-- **状态**：ready — 前置 KB-003/KB-007 均已完成。
+- **状态**：done — 实现完成，待外层 commit
 - **前置条件**：KB-003、KB-007 完成。
 - **执行约束**：
   - 仅作为候选排序/研究优先级因子，不直接改变交易动作。
@@ -4500,6 +4500,13 @@
   - 仅低置信命中不会推高候选层级。
   - 无命中时返回 NORMAL_NO_DATA，不影响 TA 主流程。
 - **代码标注要求**：`# [KB-008] research_attention_integration` / `// [KB-008] research_attention_integration`
+- **交付物**：
+  - `tradingagents/dataflows/research_attention.py` 扩展（`lookup_research_attention` + `attention_to_summary` + `render_research_attention_inline`）
+  - `api/services/report_service.py`（`attach_report_local_knowledge` 注入 KB-008 顶层字段 + block 拼接）
+  - `api/main.py`（`_attach_report_data_blockers_for_response` 同步 KB-008 字段）
+  - `api/tradeflow_schemas.py`（`TradeFlowCandidateItem` 新增 4 个字段）
+  - `api/services/tradeflow_service.py`（`_enrich_candidate_with_research_attention` + `_enrich_candidates_with_research_attention` + 4 个读取入口注入）
+  - `tests/test_kb008_research_attention_integration.py`（39 tests）
 
 ### DATA-025: 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2）
 - **描述**：梳理免费可用研报来源，优先验证东方财富研报中心/AKShare `stock_research_report_em`，作为外部研报元数据补充源；其它免费页面先列入目录，不做重抓。

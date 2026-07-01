@@ -224,6 +224,112 @@ def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
     return item
 
 
+# [KB-008] research_attention_integration
+def _enrich_candidate_with_research_attention(item: dict) -> dict:
+    """把单 symbol 研报关注度（多研报重复提及因子）注入候选 item。
+
+    只读、不调用 LLM、不写 DB；只作为研究优先级/解释信息，**不改变**强动作门禁
+    与候选 tier。无命中时填充空结构（``research_attention_score=0``、
+    ``research_attention_summary=""``），不影响 TA 主流程（NORMAL_NO_DATA 语义）。
+
+    负面信息（stale / deprecated / 主题拥挤）通过 ``research_attention_detail``
+    与 ``research_attention_summary`` 一并透出，前端必须能同时看到。
+    """
+    symbol = item.get("symbol") or ""
+    if not symbol:
+        item.setdefault("research_attention_score", 0.0)
+        item.setdefault("knowledge_theme_count", 0)
+        item.setdefault("research_attention_summary", "")
+        item.setdefault("research_attention_detail", {})
+        return item
+
+    try:
+        from tradingagents.dataflows.local_knowledge_audit import (
+            default_knowledge_root as _lk_default_root,
+        )
+        from tradingagents.dataflows.research_attention import (
+            attention_to_summary as _kb008_to_summary,
+            lookup_research_attention as _kb008_lookup,
+        )
+    except Exception:
+        # 依赖不可用时退化为空结构，绝不阻塞候选读取主链路。
+        item.setdefault("research_attention_score", 0.0)
+        item.setdefault("knowledge_theme_count", 0)
+        item.setdefault("research_attention_summary", "")
+        item.setdefault("research_attention_detail", {})
+        return item
+
+    try:
+        sym_attention = _kb008_lookup(_lk_default_root(), symbol)
+    except Exception:
+        sym_attention = None
+    summary = _kb008_to_summary(sym_attention)
+    item["research_attention_score"] = summary["research_attention_score"]
+    item["knowledge_theme_count"] = summary["knowledge_theme_count"]
+    item["research_attention_summary"] = summary["research_attention_summary"]
+    item["research_attention_detail"] = summary
+    return item
+
+
+def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+    """批量注入研究关注度（[KB-008]）。
+
+    共享一次全库倒排索引扫描结果，避免每个候选都重新扫一遍 wiki。当知识库
+    不可读或 symbol 解析失败时，逐项降级为空结构。
+    """
+    if not items:
+        return items
+    try:
+        from tradingagents.dataflows.local_knowledge_audit import (
+            default_knowledge_root as _lk_default_root,
+        )
+        from tradingagents.dataflows.research_attention import (
+            attention_to_summary as _kb008_to_summary,
+            compute_research_attention as _kb008_compute,
+            _symbols_equivalent as _kb008_equiv,
+        )
+    except Exception:
+        for it in items:
+            it.setdefault("research_attention_score", 0.0)
+            it.setdefault("knowledge_theme_count", 0)
+            it.setdefault("research_attention_summary", "")
+            it.setdefault("research_attention_detail", {})
+        return items
+
+    # 共享一次扫描结果；按 symbol_key 建索引加速候选批量查询。
+    by_key: Dict[str, Any] = {}
+    try:
+        result = _kb008_compute(_lk_default_root())
+        for sym in result.symbols:
+            by_key[sym.symbol_key.upper()] = sym
+            if sym.bare_code:
+                by_key.setdefault(sym.bare_code.upper(), sym)
+    except Exception:
+        pass
+
+    for it in items:
+        symbol = (it.get("symbol") or "").strip().upper()
+        if not symbol:
+            it.setdefault("research_attention_score", 0.0)
+            it.setdefault("knowledge_theme_count", 0)
+            it.setdefault("research_attention_summary", "")
+            it.setdefault("research_attention_detail", {})
+            continue
+        # 优先精确匹配 symbol_key；找不到再做等价比较。
+        sym_attention = by_key.get(symbol)
+        if sym_attention is None:
+            for key, sym in by_key.items():
+                if _kb008_equiv(symbol, key, sym.bare_code):
+                    sym_attention = sym
+                    break
+        summary = _kb008_to_summary(sym_attention)
+        it["research_attention_score"] = summary["research_attention_score"]
+        it["knowledge_theme_count"] = summary["knowledge_theme_count"]
+        it["research_attention_summary"] = summary["research_attention_summary"]
+        it["research_attention_detail"] = summary
+    return items
+
+
 def _compute_action(item: dict) -> str:
     if item.get("need_deep_ta"):
         return "NEED_DEEP_TA"
@@ -475,6 +581,10 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
             }
             candidate_items.append(item)
 
+        # [KB-008] research_attention_integration — 注入研报关注度字段。
+        # 只读、不调用 LLM、共享一次全库扫描；不改变 tier / action 门禁。
+        candidate_items = _enrich_candidates_with_research_attention(candidate_items)
+
         return {
             "status": "ok",
             "trade_date": _rget(plan_row, "trade_date", trade_date),
@@ -562,6 +672,10 @@ def get_candidates(
 
         _recompute_action_tiers(conn, items, trade_date)
 
+        # [KB-008] research_attention_integration — 注入研报关注度字段。
+        # 只读、不调用 LLM、共享一次全库扫描；不改变 tier / action 门禁。
+        items = _enrich_candidates_with_research_attention(items)
+
         # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
         # while exposing the strict main/observation/filtered split separately.
         from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
@@ -622,6 +736,10 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         detail = _row_to_candidate_detail(row)
         detail["action"] = _compute_action(detail)
         detail["reason"] = detail.get("why_deep_ta") or detail.get("why_not_deep_ta") or "候选观察"
+
+        # [KB-008] research_attention_integration — 注入研报关注度字段。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；无命中返回空结构。
+        detail = _enrich_candidate_with_research_attention(detail)
 
         return {
             "status": "ok",
@@ -1959,6 +2077,10 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
 
         # Compute action_tier for items that don't have it yet or need update
         _recompute_action_tiers(conn, all_items, trade_date)
+
+        # [KB-008] research_attention_integration — 注入研报关注度字段。
+        # 只读、不调用 LLM、共享一次全库扫描；不改变 tier / action 门禁。
+        all_items = _enrich_candidates_with_research_attention(all_items)
 
         # [TF-QUALITY-001A] pool_gate_contract — tiered view intentionally
         # groups main candidates but keeps the other pools visible.

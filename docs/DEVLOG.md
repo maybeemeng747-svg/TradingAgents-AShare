@@ -4,6 +4,129 @@
 
 ---
 
+## 2026-07-01 | KB-008 TA/TradeFlow 接入研报关注度与主题交叉度展示
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` KB-008（P1）
+- **状态**：实现完成，待外层 commit
+- **前置**：KB-003 ✓（local_knowledge raw_evidence 接入）、KB-007 ✓（research_attention_score）
+
+### 背景
+
+KB-007 已能输出整库的"研报关注度"榜单，但 TA 报告 / TradeFlow 候选 / 观察仓
+都不能消费这个因子，导致"多份研报反复提到同一只票"这条信息无法落到用户看到的
+界面层。KB-008 把 KB-007 的关注度结果接入 TA/TradeFlow 的展示链路，作为研究
+优先级与解释信息（**不是买入信号**）。
+
+### 第一性原理拆解
+
+- 用户最小诉求：在 TA 报告 / 候选详情里直接看到"这只票被几篇研报反复提、主题
+  是否交叉/拥挤、是否有过期/低置信页面"，作为研究优先级的辅助判断。
+- 不能破坏的红线：不改变强动作门禁（DECISION-001）、不与公告/财务/行情/资金流
+  混用、不调用 LLM、只读知识库。
+- 最小实现：复用 KB-007 的 `compute_research_attention` 倒排索引，加一层
+  single-symbol 查询 + 扁平 summary，注入 KB-003 既有的
+  `attach_report_local_knowledge` 与 TradeFlow 候选读取链路。
+
+### 改动
+
+- **新增** `tradingagents/dataflows/research_attention.py`（`# [KB-008] research_attention_integration`）：
+  - `lookup_research_attention(knowledge_root, symbol)`：单 symbol 查询，复用
+    `compute_research_attention` 的全库倒排索引；symbol 等价性支持
+    `603296` / `603296.SH` / `603296.sh` / `603296.SS`。
+  - `attention_to_summary(sym)`：把 `SymbolAttention` 扁平化为前端可消费的 dict，
+    含 `research_attention_score / knowledge_theme_count / mention_count /
+    fresh_mention_count / high_quality_mention_count / stale_mention_count /
+    deprecated_mention_count / source_count / themes / sources / latest_updated /
+    matched_pages / score_explain / research_attention_summary / has_hit`。
+    `has_hit=False` 时返回空结构（NORMAL_NO_DATA 语义）。
+  - `render_research_attention_inline(sym)`：渲染嵌入"本地知识补充"末尾的
+    Markdown 段；`sym is None` 返回空串；含综合关注度/命中篇数/主题交叉/来源/
+    过期/低置信/命中页（前 5）/分数构成；刻意避免买卖建议词。
+  - `_symbols_equivalent` / `_render_attention_summary` 内部助手。
+
+- **改动** `api/services/report_service.py`（`attach_report_local_knowledge`）：
+  - 在 KB-003 既有的 `local_knowledge_block / local_knowledge_summary` 之上扩展
+    KB-008 字段：把 `attention_to_summary` 结果 `.update()` 进 summary，并把
+    `research_attention_score / knowledge_theme_count / research_attention_summary /
+    research_attention_block` 提到顶层。
+  - 把 `render_research_attention_inline` 输出拼到 `local_knowledge_block` 末尾，
+    让 TA 报告一次渲染就能展示完整本地知识 + 研报关注度。
+  - KB-008 块包在 try/except 中，依赖不可用时降级为空结构，绝不阻塞 KB-003。
+
+- **改动** `api/main.py`（`_attach_report_data_blockers_for_response`）：
+  - 顶层 setattr 同步 KB-008 字段（`research_attention_score /
+    knowledge_theme_count / research_attention_summary / research_attention_block`），
+    兼容 legacy 行的 recompute 路径与新写入 result_data 的 fast path。
+
+- **改动** `api/tradeflow_schemas.py`（`TradeFlowCandidateItem`）：
+  - 新增字段 `research_attention_score: float = 0.0`、
+    `knowledge_theme_count: int = 0`、`research_attention_summary: str = ""`、
+    `research_attention_detail: Dict[str, Any] = {}`（默认值即 NORMAL_NO_DATA）。
+
+- **改动** `api/services/tradeflow_service.py`：
+  - 新增 `_enrich_candidate_with_research_attention(item)`（单条）和
+    `_enrich_candidates_with_research_attention(items)`（批量，共享一次全库扫描）。
+    两条路径都通过 `default_knowledge_root()` 解析知识库根目录，知识库不可读时
+    逐项降级为空结构。
+  - 在 `get_candidates / get_candidate_detail / get_daily_plan /
+    get_candidates_tiered` 四个读取入口注入 KB-008 字段。注入只发生在 tier/action
+    计算**之后**，**不参与** pool_gate / action_tier / 强动作门禁。
+
+- **新增** `tests/test_kb008_research_attention_integration.py`（39 tests，8 个类）：
+  - `lookup_research_attention`：命中/无命中/symbol 等价/空入参/HK/空库/缺失库。
+  - `attention_to_summary`：命中结构/无命中结构/负面信息（stale+deprecated+
+    主题拥挤）/ 无买卖建议词 / 分数 2 位小数。
+  - `render_research_attention_inline`：非空渲染 / 空渲染 / 必要字段 / 命中页 /
+    STALE 标注 / 无买卖建议词。
+  - `attach_report_local_knowledge` KB-008：顶层字段 / summary 字段 / block 拼接 /
+    强动作门禁不变 / 无命中返回空结构 + NORMAL_NO_DATA。
+  - TradeFlow 单条 / 批量 enrichment：命中 / bare code / 无命中 / 空入参 /
+    低置信不提升 / 共享扫描 / 知识库缺失降级。
+  - 只读安全性：mtime + 内容哈希不变、无新文件创建。
+  - Pydantic schema：4 个新字段、默认值、可构造。
+
+### 验收对照
+
+- ✓ fixture 中同一股票多篇命中 → API / TA 报告展示关注度摘要（华勤 3 篇命中、
+  fresh=2、stale=1、theme_count≥5、score>0）。
+- ✓ 仅低置信命中不会推高候选层级（DELL.US 全部 deprecated → score=0.0）。
+- ✓ 无命中返回 NORMAL_NO_DATA，不影响 TA 主流程（score=0、summary=""）。
+- ✓ 强动作门禁不变（execution_action / action_label / target_price /
+  stop_loss_price 在 KB-008 注入前后保持一致）。
+
+### 风险点
+
+- **性能**：单 symbol lookup 与批量 enrichment 都会触发一次全库扫描（76 页）。
+  KB-003 已有同样行为（每次读报告都重扫），本轮保持一致以避免引入缓存层复杂度。
+  后续 PERF 任务可加 LRU 缓存，但本轮不做（第一性原理：先打通可观察链路）。
+- **误读风险**：`research_attention_score` 高不代表买入，文档/渲染/测试均反复
+  强调"不构成买卖建议"，并在 summary 中显式列出负面信息（过期/低置信/主题拥挤）。
+- **TradeFlow 字段是运行时注入**，不持久化到 tradeflow.db schema；旧库无需迁移，
+  前端读到的就是查询时刻最新的关注度，避免数据陈旧。
+
+### 测试
+
+- `pytest tests/test_kb008_research_attention_integration.py -q`：**39 passed**。
+- `pytest tests/test_kb001_local_knowledge_audit.py tests/test_kb002_local_knowledge_lint.py
+  tests/test_kb003_local_knowledge_provider.py tests/test_kb007_research_attention.py -q`：
+  **260 passed**（KB-001/002/003/007 无回归）。
+- `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_candidate_engine.py
+  tests/test_tf_obs_001_observe_runner.py tests/test_api_smoke.py -q`：**163 passed**
+  （TradeFlow/API 主链路无回归）。
+- 关键词全量回归（tradeflow/report_service/runtime_tier/local_knowledge/
+  research_attention/data_collector）：**809 passed**。
+
+### 非买入信号
+
+研报关注度仅表达"被多少篇研报/评分表/主题页反复提到"，**不构成买卖建议**。
+TA 报告渲染段、TradeFlow enrichment、`research_attention_summary` 一句话摘要
+都刻意回避 `买入/卖出/加仓/减仓/强烈推荐/BUY/SELL` 等强动作词，并显式列出过期/
+低置信/主题拥挤等负面信息。
+
+---
+
 ## 2026-07-01 | KB-007 多研报重复提及因子 Research Attention Score
 
 - **执行者**：OpenCode
@@ -9375,3 +9498,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-007-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-007-20260701-184315/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-008 - TA/TradeFlow 接入研报关注度与主题交叉度展示（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-008-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-008-20260701-191248/

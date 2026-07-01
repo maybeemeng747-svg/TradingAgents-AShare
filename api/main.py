@@ -3709,6 +3709,9 @@ def _attach_report_data_blockers_for_response(report: Any) -> Any:
         # [KB-003] local_knowledge_raw_evidence — recompute on read for legacy
         # rows that predate KB-003 so the frontend still gets the section. Only
         # runs when symbol is available; never alters decisions or gates.
+        # [KB-008] research_attention_integration — surfaced at top level so
+        # the frontend can render 研报关注度 / 主题交叉度 without digging into
+        # result_data; recompute on read for legacy rows.
         if (
             getattr(report, "local_knowledge_block", None) is None
             and getattr(report, "symbol", None)
@@ -3729,8 +3732,39 @@ def _attach_report_data_blockers_for_response(report: Any) -> Any:
                         "local_knowledge_summary",
                         enriched.get("local_knowledge_summary"),
                     )
+                    setattr(
+                        report,
+                        "research_attention_score",
+                        enriched.get("research_attention_score"),
+                    )
+                    setattr(
+                        report,
+                        "knowledge_theme_count",
+                        enriched.get("knowledge_theme_count"),
+                    )
+                    setattr(
+                        report,
+                        "research_attention_summary",
+                        enriched.get("research_attention_summary"),
+                    )
+                    setattr(
+                        report,
+                        "research_attention_block",
+                        enriched.get("research_attention_block"),
+                    )
             except Exception:
                 pass
+        else:
+            # 即使 local_knowledge_block 已经在 result_data 里（新写入的报告），
+            # 也把 KB-008 顶层字段同步出来，方便前端直接读。
+            for fld in (
+                "research_attention_score",
+                "knowledge_theme_count",
+                "research_attention_summary",
+                "research_attention_block",
+            ):
+                if getattr(report, fld, None) is None:
+                    setattr(report, fld, result_data.get(fld))
     return report
 
 

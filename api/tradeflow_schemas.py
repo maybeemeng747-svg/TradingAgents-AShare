@@ -117,6 +117,10 @@ class TradeFlowCandidateItem(BaseModel):
     contradiction_items: List[dict] = Field(default_factory=list)  # [H-011]
     blocking_evidence_gaps: List[str] = Field(default_factory=list)  # [H-011]
     next_verification_steps: List[str] = Field(default_factory=list)  # [H-011]
+    research_attention_score: float = 0.0  # [KB-008] research_attention_integration
+    knowledge_theme_count: int = 0  # [KB-008] research_attention_integration
+    research_attention_summary: str = ""  # [KB-008] research_attention_integration
+    research_attention_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-008]
     created_at: str = ""
     updated_at: str = ""
 

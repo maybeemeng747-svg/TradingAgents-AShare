@@ -826,6 +826,223 @@ def render_research_attention_report(
     return "\n".join(lines)
 
 
+# ── 单 symbol 查询（KB-008 接入 TA 报告 / TradeFlow 候选）──────────────
+
+
+# 与 KB-003 local_knowledge_provider 命中口径一致：去后缀比较 bare code。
+_SUFFIX_RE_KB008 = re.compile(r"\.(SH|SZ|BJ|HK|US|SS)$", re.IGNORECASE)
+
+
+def _symbols_equivalent(query_symbol: str, sym_key: str, bare_code: str) -> bool:
+    """判断查询 symbol 与倒排索引 symbol_key 是否指同一标的。
+
+    - ``603296`` 命中 ``603296.SH``（bare code 相等）。
+    - ``603296.SH`` 命中 ``603296.SH``（去后缀比较 + 全字符串比较）。
+    - 大小写不敏感。
+    """
+    if not query_symbol or not sym_key:
+        return False
+    q = query_symbol.strip().upper()
+    s = sym_key.strip().upper()
+    if q == s:
+        return True
+    q_bare = _SUFFIX_RE_KB008.sub("", q).strip()
+    s_bare = _SUFFIX_RE_KB008.sub("", s).strip()
+    if q_bare and s_bare and q_bare == s_bare:
+        return True
+    # bare_code 字段兜底（sym_key 可能是 name 形态）。
+    if bare_code and q_bare and q_bare == bare_code.upper():
+        return True
+    return False
+
+
+def lookup_research_attention(
+    knowledge_root: str,
+    symbol: Optional[str],
+) -> Optional[SymbolAttention]:
+    """[KB-008] 单 symbol 查询研究关注度。
+
+    复用 :func:`compute_research_attention` 的全库倒排索引，按 symbol 命中
+    返回对应的 :class:`SymbolAttention`。无命中返回 ``None``。
+
+    设计约束（与 KB-007 一致）：
+      - **只读**：绝不向知识库写文件。
+      - **不调用 LLM / 不访问外网**。
+      - **非买卖信号**：返回值只表达"被多少研报反复提到"，调用方（TA 报告 /
+        TradeFlow）必须把它当作**研究优先级/解释信息**，不得直接改变交易动作。
+
+    参数:
+        knowledge_root: 知识库根目录绝对路径。
+        symbol: A 股代码或代码+后缀（如 ``603296`` / ``603296.SH``）。
+
+    返回:
+        :class:`SymbolAttention` 或 ``None``。永远不会因单页解析失败而抛异常：
+        异常向上层传播由调用方决定是否容错。
+    """
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return None
+    result = compute_research_attention(knowledge_root)
+    for sym in result.symbols:
+        if _symbols_equivalent(symbol, sym.symbol_key, sym.bare_code):
+            return sym
+    return None
+
+
+def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
+    """[KB-008] 把单 symbol 关注度聚合为前端/UI 可直接展示的扁平字典。
+
+    无命中（``sym is None``）时返回空命中结构，调用方据此渲染 NORMAL_NO_DATA。
+
+    返回字段（与任务要求对齐）：
+      - ``research_attention_score``：综合关注度（保留 2 位小数）。
+      - ``knowledge_theme_count``：去重主题数。
+      - ``mention_count``：命中篇数（含 stale/deprecated）。
+      - ``fresh_mention_count``：非 stale/deprecated 的命中篇数。
+      - ``high_quality_mention_count``：``source_quality=高`` 且 ``evidence_level=A``
+        的命中篇数。
+      - ``stale_mention_count``：``stale_risk=高`` 或 ``valid_until`` 已过期的页数。
+      - ``deprecated_mention_count``：待补充 / 低置信页数。
+      - ``source_count``：去重 alias 后的来源数。
+      - ``themes``：主题列表（前 10 个）。
+      - ``sources``：来源列表（前 8 个）。
+      - ``latest_updated``：最近更新时间。
+      - ``matched_pages``：命中页相对路径与标题列表（前 5 条，便于观察仓展示）。
+      - ``score_explain``：分数构成可读解释（前 6 条）。
+      - ``research_attention_summary``：一句话可读摘要，含负面信息（过期 / 低置信）。
+      - ``has_hit``：是否命中（False 时其余字段为空结构）。
+    """
+    if sym is None:
+        return {
+            "has_hit": False,
+            "research_attention_score": 0.0,
+            "knowledge_theme_count": 0,
+            "mention_count": 0,
+            "fresh_mention_count": 0,
+            "high_quality_mention_count": 0,
+            "stale_mention_count": 0,
+            "deprecated_mention_count": 0,
+            "source_count": 0,
+            "themes": [],
+            "sources": [],
+            "latest_updated": None,
+            "matched_pages": [],
+            "score_explain": [],
+            "research_attention_summary": "",
+        }
+
+    matched_pages = [
+        {"rel_path": p.rel_path, "title": p.title}
+        for p in sym.matched_pages[:5]
+    ]
+    summary = _render_attention_summary(sym)
+    return {
+        "has_hit": True,
+        "research_attention_score": round(sym.research_attention_score, 2),
+        "knowledge_theme_count": sym.theme_count,
+        "mention_count": sym.mention_count,
+        "fresh_mention_count": sym.fresh_mention_count,
+        "high_quality_mention_count": sym.high_quality_mention_count,
+        "stale_mention_count": sym.stale_mention_count,
+        "deprecated_mention_count": sym.deprecated_mention_count,
+        "source_count": sym.source_count,
+        "themes": list(sym.themes[:10]),
+        "sources": list(sym.sources[:8]),
+        "latest_updated": sym.latest_updated,
+        "matched_pages": matched_pages,
+        "score_explain": list(sym.score_explain[:6]),
+        "research_attention_summary": summary,
+    }
+
+
+def _render_attention_summary(sym: SymbolAttention) -> str:
+    """渲染一句话摘要：综合关注度 + 命中篇数 + 主题交叉 + 负面信息。
+
+    刻意同时展示 stale / deprecated 数量，满足任务约束"前端展示必须同时显示
+    负面信息：过期数、低置信数、主题是否拥挤"。**不输出买卖建议或强动作词**。
+    """
+    parts: List[str] = []
+    parts.append(f"综合关注度 {sym.research_attention_score:.2f}")
+    parts.append(
+        f"命中 {sym.mention_count} 篇（fresh {sym.fresh_mention_count}"
+        f" / 高质量 {sym.high_quality_mention_count}）"
+    )
+    if sym.theme_count:
+        parts.append(f"主题交叉 {sym.theme_count}")
+    if sym.source_count:
+        parts.append(f"来源 {sym.source_count}")
+    # 负面信息（必须显示，不能省略）。
+    negatives: List[str] = []
+    if sym.stale_mention_count:
+        negatives.append(f"过期 {sym.stale_mention_count}")
+    if sym.deprecated_mention_count:
+        negatives.append(f"低置信/待补充 {sym.deprecated_mention_count}")
+    if sym.theme_count >= 6:
+        negatives.append("主题较拥挤")
+    if negatives:
+        parts.append("负面：" + "、".join(negatives))
+    return "；".join(parts) + "。"
+
+
+def render_research_attention_inline(sym: Optional[SymbolAttention]) -> str:
+    """[KB-008] 渲染嵌入"本地知识补充"区块的研究关注度段。
+
+    - ``sym is None``：返回空串，上层可选择隐藏段落。
+    - 有命中：渲染一段 Markdown，含综合关注度、命中篇数、主题交叉、来源质量、
+      过期/低置信数、命中页相对路径（前 5 条）。**不输出买卖建议或强动作词**。
+
+    与 :func:`render_research_attention_report`（整库 Markdown 报告）不同，
+    本函数只渲染单 symbol 的简短摘要，便于嵌入 TA 报告 / TradeFlow 候选详情。
+    """
+    if sym is None:
+        return ""
+
+    lines: List[str] = []
+    lines.append("**研报关注度（多研报重复提及因子）**")
+    lines.append("")
+    lines.append(
+        '> 仅表征「被多少篇研报/评分表/主题页重复提及」，'
+        '**不构成买卖建议**；过期 / 低置信页面已降权为弱证据。'
+    )
+    lines.append("")
+    lines.append(
+        f"- 综合关注度：**{sym.research_attention_score:.2f}** ｜ "
+        f"asset_class: {sym.asset_class}"
+    )
+    lines.append(
+        f"- 命中篇数：{sym.mention_count}（fresh {sym.fresh_mention_count} / "
+        f"高质量 {sym.high_quality_mention_count} / "
+        f"过期 {sym.stale_mention_count} / "
+        f"低置信/待补充 {sym.deprecated_mention_count}）"
+    )
+    if sym.theme_count:
+        lines.append(f"- 主题交叉（{sym.theme_count}）：{', '.join(sym.themes[:6])}")
+    if sym.source_count:
+        lines.append(f"- 来源（{sym.source_count}）：{', '.join(sym.sources[:6])}")
+    if sym.latest_updated:
+        lines.append(f"- 最近更新：`{sym.latest_updated}`")
+    if sym.matched_pages:
+        lines.append(f"- 命中页（前 5 / 共 {len(sym.matched_pages)}）：")
+        for p in sym.matched_pages[:5]:
+            flags: List[str] = []
+            if p.is_stale:
+                flags.append("STALE")
+            if p.is_deprecated:
+                flags.append("DEPRECATED")
+            if p.is_low_confidence:
+                flags.append("LOW_CONFIDENCE")
+            if p.is_to_be_supplemented:
+                flags.append("TODO")
+            flag_text = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(f"  - `{p.rel_path}`{flag_text}")
+    if sym.score_explain:
+        lines.append("- 分数构成：")
+        for line in sym.score_explain[:6]:
+            lines.append(f"  - {line}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ── CLI 便利 ──────────────────────────────────────────────────────────
 
 
@@ -853,6 +1070,8 @@ __all__ = [
     "ResearchAttentionResult",
     "classify_asset_class",
     "compute_research_attention",
+    "lookup_research_attention",
+    "attention_to_summary",
     "render_research_attention_report",
     "suggest_report_output_path",
 ]

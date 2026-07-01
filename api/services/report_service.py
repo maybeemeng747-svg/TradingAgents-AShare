@@ -312,6 +312,46 @@ def attach_report_local_knowledge(
             "symbols": list(result_obj.symbols)[:10],
             "updated_at": result_obj.updated_at,
         }
+
+        # [KB-008] research_attention_integration — 在 local_knowledge_summary
+        # 之上扩展研究关注度（多研报重复提及因子）。只作为研究优先级/解释信息，
+        # 不改变强动作门禁；负面信息（stale / deprecated / 主题拥挤）必须同时透出。
+        try:
+            from tradingagents.dataflows.research_attention import (
+                attention_to_summary as _kb008_to_summary,
+                lookup_research_attention as _kb008_lookup,
+                render_research_attention_inline as _kb008_render_inline,
+            )
+
+            sym_attention = None
+            if symbol:
+                sym_attention = _kb008_lookup(
+                    default_knowledge_root(), str(symbol).strip()
+                )
+            attention_summary = _kb008_to_summary(sym_attention)
+            # 把扁平字段提到 summary 顶层，便于前端无需深挖即可渲染。
+            enriched["local_knowledge_summary"].update(attention_summary)
+            enriched["research_attention_score"] = attention_summary[
+                "research_attention_score"
+            ]
+            enriched["knowledge_theme_count"] = attention_summary[
+                "knowledge_theme_count"
+            ]
+            enriched["research_attention_summary"] = attention_summary[
+                "research_attention_summary"
+            ]
+            attention_md = _kb008_render_inline(sym_attention)
+            enriched["research_attention_block"] = attention_md
+            # 把研究关注度段拼到"本地知识补充" markdown 末尾，使 TA 报告渲染
+            # 时一段就能展示完整本地知识 + 研报关注度。
+            if attention_md:
+                base_block = enriched.get("local_knowledge_block") or ""
+                enriched["local_knowledge_block"] = (
+                    base_block + "\n" + attention_md
+                ).strip()
+        except Exception as exc:
+            logger.warning("KB-008 research attention attach failed: %s", exc)
+
         return enriched
     except Exception as exc:
         logger.warning("KB-003 local knowledge attachment failed: %s", exc)
