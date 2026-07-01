@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-01 | 修复 OpenCode 读取 Tree Work 知识库权限
+
+- **背景**：`KB-001/002/003` 自动开发 false pass 的根因是 OpenCode 读取 `/Users/maybee/Documents/knowledge` 时触发 `external_directory` 权限请求并被自动拒绝。
+- **修复**：
+  - 在本机忽略文件 `.opencode/opencode.json` 中设置 `permission.external_directory=allow`，只放开 OpenCode 对项目外目录的权限，不使用全局 `--dangerously-skip-permissions`。
+  - `scripts/auto_dev_loop.sh` 新增 KB 任务本地知识库 preflight：检查 `AUTO_DEV_KNOWLEDGE_ROOT`（默认 `~/Documents/knowledge`）、`wiki/investment` 可读、investment markdown 数量大于 0、OpenCode resolved config 中 `external_directory=allow`。
+  - preflight 失败时直接标记 `NEEDS_HUMAN` 并写入 `docs/task_runs/<run>/knowledge-preflight.txt`，不再启动 OpenCode，防止再次产生 false pass。
+  - 任务池仅重新释放 `KB-001` 为 ready；`KB-002~KB-009` 仍保持 blocked，等待 KB-001 真正产出审计脚本和报告后再解锁。
+- **安全边界**：知识库仍只读；TA 侧代码不得修改 `/Users/maybee/Documents/knowledge`。
+
 ## 2026-07-01 | 6 月 30 日自动开发进度审计
 
 - **审计范围**：`REPORT-UX-003`、`KB-001`、`KB-002`、`KB-003`、`AUTO-004` 超时策略相关提交，以及 2026-06-30 的 task run 档案。

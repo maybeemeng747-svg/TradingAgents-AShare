@@ -477,6 +477,82 @@ except: pass
     return 0
 }
 
+check_local_knowledge_access() {
+    # [KB-001] local_knowledge_audit — fail fast before OpenCode if the local
+    # Tree Work knowledge base cannot be read by this project.
+    local run_dir="$1"
+    local knowledge_root="${AUTO_DEV_KNOWLEDGE_ROOT:-$HOME/Documents/knowledge}"
+    local investment_dir="$knowledge_root/wiki/investment"
+    local preflight_log="$run_dir/knowledge-preflight.txt"
+
+    {
+        echo "# Local Knowledge Preflight"
+        echo ""
+        echo "- Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "- knowledge_root: $knowledge_root"
+        echo "- investment_dir: $investment_dir"
+        echo ""
+    } > "$preflight_log"
+
+    if [ ! -d "$knowledge_root" ]; then
+        echo "FAIL: knowledge root does not exist" >> "$preflight_log"
+        return 1
+    fi
+    if [ ! -r "$knowledge_root" ] || [ ! -x "$knowledge_root" ]; then
+        echo "FAIL: knowledge root is not readable/searchable" >> "$preflight_log"
+        return 1
+    fi
+    if [ ! -d "$investment_dir" ]; then
+        echo "FAIL: investment wiki directory does not exist" >> "$preflight_log"
+        return 1
+    fi
+    if [ ! -r "$investment_dir" ] || [ ! -x "$investment_dir" ]; then
+        echo "FAIL: investment wiki directory is not readable/searchable" >> "$preflight_log"
+        return 1
+    fi
+
+    local page_count
+    page_count=$(find "$investment_dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    echo "- investment_md_pages: $page_count" >> "$preflight_log"
+    if [ "${page_count:-0}" -eq 0 ]; then
+        echo "FAIL: no investment markdown pages found" >> "$preflight_log"
+        return 1
+    fi
+
+    local permission_state
+    permission_state=$(
+        opencode debug config 2>/dev/null | python3 -c '
+import json, sys
+try:
+    cfg = json.load(sys.stdin)
+except Exception:
+    print("unknown")
+    raise SystemExit
+perm = cfg.get("permission", {})
+if isinstance(perm, str):
+    print(perm)
+else:
+    val = perm.get("external_directory", "ask")
+    if isinstance(val, dict):
+        print(val.get("*", "ask"))
+    else:
+        print(val)
+' 2>/dev/null || echo "unknown"
+    )
+    echo "- opencode_external_directory_permission: $permission_state" >> "$preflight_log"
+    if [ "$permission_state" != "allow" ]; then
+        {
+            echo "FAIL: OpenCode external_directory permission is not allow"
+            echo "Hint: create .opencode/opencode.json with:"
+            echo '{ "permission": { "external_directory": "allow" } }'
+        } >> "$preflight_log"
+        return 1
+    fi
+
+    echo "PASS: local knowledge is readable and OpenCode external_directory is allowed" >> "$preflight_log"
+    return 0
+}
+
 while true; do
 
 TASK_LINE=$(parse_ready_tasks)
@@ -533,7 +609,6 @@ fi
 RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
 mkdir -p "$RUN_DIR"
-update_task_status "in_progress — claimed $RUN_ID"
 
 cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 # Auto Dev Task Run
@@ -558,6 +633,38 @@ cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 - Final summary: summary.md
 TASK_META_EOF
 log "Task run archive: $RUN_DIR"
+
+if [[ "$TASK_ID" == KB-* ]]; then
+    log "[KB] Running local knowledge preflight..."
+    if ! check_local_knowledge_access "$RUN_DIR"; then
+        err "[KB] Local knowledge preflight failed; not starting OpenCode"
+        update_task_status "blocked — NEEDS_HUMAN, local knowledge preflight failed, see docs/task_runs/$RUN_ID"
+        cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
+# Auto Dev Summary
+
+- Task: $TASK_ID - $TASK_TITLE
+- Priority: $TASK_PRIO
+- Final status: NEEDS_HUMAN
+- Reason: local knowledge preflight failed
+- Run directory: docs/task_runs/$RUN_ID
+- Details: docs/task_runs/$RUN_ID/knowledge-preflight.txt
+SUMMARY_EOF
+        cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
+
+## $(date +%Y-%m-%d) | AUTO-002 Local Knowledge Preflight
+
+- **Task**: $TASK_ID - $TASK_TITLE
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: local knowledge preflight failed before OpenCode
+- **Run archive**: docs/task_runs/$RUN_ID/
+DEVLOG_EOF
+        FAILED_TASKS=$((FAILED_TASKS + 1))
+        break
+    fi
+    log "[KB] Local knowledge preflight passed"
+fi
+
+update_task_status "in_progress — claimed $RUN_ID"
 
     # --- 2a. [M-013] CodeGraph preflight: generate context before development ---
     CG_PREFLIGHT_SCRIPT="$SCRIPT_DIR/codegraph_preflight.py"
