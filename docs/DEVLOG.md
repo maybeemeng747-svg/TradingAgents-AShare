@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-07-01 | OpenClaw 自动开发 cron 超时预算修复
+
+- **执行者**：Codex
+- **类型**：ops + automation
+- **状态**：✅ 完成
+
+### 背景
+
+- `scripts/auto_dev_loop.sh` 内部单任务预算为 OpenCode 1800 秒、测试 900 秒。
+- OpenClaw cron `自动开发循环（18:00）` 原本 `payload.timeoutSeconds=1500`，且 prompt 中 exec `timeout=1200`，导致单个 KB-001 任务耗时约 21 分钟后几乎没有余量继续执行下一项。
+
+### 变更
+
+- 通过 `openclaw cron edit 6eec8f0f-2645-4a2a-9fb5-cbe08ddbd93b` 更新：
+  - `payload.timeoutSeconds`: 1500 → 14400
+  - prompt 内 exec timeout: 1200 → 14400
+- 保持脚本内部单任务超时不变：OpenCode 1800 秒、测试 900 秒。
+
+### 预期效果
+
+- 晚间 cron 可在 4 小时窗口内连续跑多个 ready 任务。
+- 单任务仍由脚本内部预算约束，避免某个任务无限占用整晚窗口。
+
+---
+
 ## 2026-07-01 | KB-001 审核收口与任务池解锁
 
 - **执行者**：Codex
