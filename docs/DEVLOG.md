@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-01 | KB-001 审核收口与任务池解锁
+
+- **执行者**：Codex
+- **类型**：review + task hygiene
+- **状态**：✅ 完成
+
+### 审核结论
+
+- 复验 `pytest tests/test_kb001_local_knowledge_audit.py -q` → 47 passed。
+- `scripts/audit_local_knowledge.py --json` 可正常只读扫描 `/Users/maybee/Documents/knowledge`。
+- KB-001 不是历史 false pass：本轮 commit `97e997f` 已真实产出审计模块、CLI、测试和知识库审计报告。
+
+### 收口修复
+
+- 将 KB-002 解锁为 ready；KB-003/KB-007 的阻塞原因改为仅依赖 KB-002；KB-005 解锁为 ready。
+- 还原 KB-001 提交中无关刷新的 `tradeflow_trial_acceptance*.md` 生成时间戳，避免验收文档噪声。
+
+---
+
 ## 2026-07-01 | KB-001：Tree Work 本地知识库只读索引与健康审计
 
 - **执行者**：OpenCode（task run KB-001-20260701-120814）
