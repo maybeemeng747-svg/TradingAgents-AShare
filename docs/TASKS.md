@@ -156,7 +156,7 @@
 130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
 131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
 132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ 真实知识库 lint 报告；99 tests passed（KB-001+KB-002））。
-133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，ready — 前置 KB-001/KB-002 均已完成）。
+133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_provider.py` + `scripts/query_local_knowledge.py` + `tests/test_kb003_local_knowledge_provider.py`（83 tests）+ 接入 `data_collector.build_raw_evidence` / `evidence_contract` / `report_service.attach_report_local_knowledge` / `api/main.py` 响应顶层；7586 tests passed，无回归）。
 134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，blocked — 前置 KB-003 未真实完成）。
 135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready — 前置 KB-001 已由 commit 97e997f 真实完成）。
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
@@ -4376,7 +4376,7 @@
 ### KB-003: TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1）
 - **描述**：TA 分析股票时，从 Tree Work 已消化的 `wiki/investment/` 中只读查询相关公司/主题，写入 `metadata.raw_evidence.local_knowledge`，并在报告中展示“本地知识补充”。
 - **优先级**：P1
-- **状态**：ready — 前置 KB-001、KB-002 均已完成。
+- **状态**：done — KB-003-20260701-181738
 - **前置条件**：KB-001、KB-002 完成。
 - **执行约束**：
   - TA 只接入消化后的 wiki，不直接读 raw PDF 做结论。

@@ -143,6 +143,7 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "research_report": "report",  # [DATA-011] research_report_raw_evidence
     "ratings": "rating",  # [DATA-012] rating_raw_evidence
     "buybacks": "buyback",  # [DATA-013] buyback_raw_evidence
+    "local_knowledge": "local_knowledge",  # [KB-003] local_knowledge_raw_evidence
 }
 
 
@@ -197,6 +198,9 @@ _OPTIONAL_FIELDS_FOR_COMPLETENESS = {
     "research_report",
     "ratings",
     "buybacks",
+    # [KB-003] local_knowledge_raw_evidence — 本地知识是背景/观点源，不参与
+    # 完成度评分，避免在 Tree Work 不可用的环境（CI / 测试）拖低覆盖率。
+    "local_knowledge",
 }
 
 

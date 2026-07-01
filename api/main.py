@@ -3673,10 +3673,22 @@ def _attach_report_data_blockers_for_response(report: Any) -> Any:
     # [DATA-021] report_data_blockers
     # [REPORT-UX-003] wait_reason_codes — also surfaced at top level so the
     # frontend can render the WAIT reason chips without digging into result_data.
+    # [KB-003] local_knowledge_summary — surfaced at top level so the frontend
+    # can render the "本地知识补充" section without digging into result_data.
     result_data = getattr(report, "result_data", None)
     if isinstance(result_data, dict):
         setattr(report, "data_blockers", result_data.get("data_blockers"))
         setattr(report, "data_blocker_summary", result_data.get("data_blocker_summary"))
+        setattr(
+            report,
+            "local_knowledge_block",
+            result_data.get("local_knowledge_block"),
+        )
+        setattr(
+            report,
+            "local_knowledge_summary",
+            result_data.get("local_knowledge_summary"),
+        )
         wait_codes = result_data.get("wait_reason_codes")
         if wait_codes is None:
             # Recompute on read for legacy rows that predate REPORT-UX-003 so
@@ -3694,6 +3706,31 @@ def _attach_report_data_blockers_for_response(report: Any) -> Any:
             "wait_reason_labels",
             {code: WAIT_REASON_LABELS.get(code, code) for code in codes_list},
         )
+        # [KB-003] local_knowledge_raw_evidence — recompute on read for legacy
+        # rows that predate KB-003 so the frontend still gets the section. Only
+        # runs when symbol is available; never alters decisions or gates.
+        if (
+            getattr(report, "local_knowledge_block", None) is None
+            and getattr(report, "symbol", None)
+        ):
+            try:
+                enriched = report_service.attach_report_local_knowledge(
+                    result_data=dict(result_data),
+                    symbol=getattr(report, "symbol", None),
+                )
+                if isinstance(enriched, dict):
+                    setattr(
+                        report,
+                        "local_knowledge_block",
+                        enriched.get("local_knowledge_block"),
+                    )
+                    setattr(
+                        report,
+                        "local_knowledge_summary",
+                        enriched.get("local_knowledge_summary"),
+                    )
+            except Exception:
+                pass
     return report
 
 

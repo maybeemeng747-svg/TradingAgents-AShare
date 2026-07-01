@@ -246,6 +246,92 @@ def attach_report_wait_reason_codes(
         return result_data
 
 
+def attach_report_local_knowledge(
+    result_data: Optional[Dict[str, Any]],
+    symbol: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Attach [KB-003] local knowledge block to report result_data.
+
+    Read-only with respect to the strong action gate: only writes the
+    explanatory ``local_knowledge_block`` (Markdown) and
+    ``local_knowledge_summary`` keys so the UI can show a "本地知识补充"
+    section without altering decisions, targets or gates.
+
+    Priority:
+      1. Reuse existing ``metadata.raw_evidence.local_knowledge`` payload when
+         the data collector already produced one (avoids re-parsing the wiki
+         for every report read).
+      2. Otherwise re-query by ``symbol`` (for legacy rows that predate KB-003
+         or runs without data_collector).
+      3. Skip silently when no symbol and no cached entry are available.
+    """
+    if not isinstance(result_data, dict):
+        return result_data
+    try:
+        from tradingagents.dataflows.local_knowledge_provider import (
+            LocalKnowledgeQueryResult,
+            default_knowledge_root,
+            query_local_knowledge,
+            render_local_knowledge_block,
+        )
+
+        # 1. Reuse cached raw_evidence entry.
+        cached_entry = _cached_local_knowledge_entry(result_data)
+        result_obj: Optional[LocalKnowledgeQueryResult] = None
+        if isinstance(cached_entry, dict):
+            payload = cached_entry.get("raw")
+            if isinstance(payload, dict):
+                result_obj = LocalKnowledgeQueryResult.from_dict(payload)
+
+        # 2. Re-query for legacy rows when no usable cache.
+        if result_obj is None and symbol:
+            resolved_symbol = str(symbol).strip()
+            if resolved_symbol:
+                try:
+                    result_obj = query_local_knowledge(
+                        default_knowledge_root(), symbol=resolved_symbol
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "KB-003 local knowledge re-query failed for %s: %s",
+                        resolved_symbol,
+                        exc,
+                    )
+                    result_obj = None
+
+        if result_obj is None:
+            return result_data
+
+        enriched = dict(result_data)
+        enriched["local_knowledge_block"] = render_local_knowledge_block(result_obj)
+        enriched["local_knowledge_summary"] = {
+            "status": result_obj.status,
+            "matched_count": len(result_obj.matched_pages),
+            "confidence": result_obj.confidence,
+            "themes": list(result_obj.themes)[:10],
+            "symbols": list(result_obj.symbols)[:10],
+            "updated_at": result_obj.updated_at,
+        }
+        return enriched
+    except Exception as exc:
+        logger.warning("KB-003 local knowledge attachment failed: %s", exc)
+        return result_data
+
+
+def _cached_local_knowledge_entry(
+    result_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return ``metadata.raw_evidence.local_knowledge`` if present."""
+    metadata = result_data.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    raw_ev = metadata.get("raw_evidence")
+    if not isinstance(raw_ev, dict):
+        return None
+    entry = raw_ev.get("local_knowledge")
+    return entry if isinstance(entry, dict) else None
+
+
 def extract_structured_data(
     final_trade_decision: str,
     fundamentals_report: str = "",
@@ -697,6 +783,10 @@ def create_report(
     result_data = attach_report_wait_reason_codes(
         result_data, wait_reason_codes=resolved.get("wait_reason_codes")
     )
+    # [KB-003] local_knowledge_raw_evidence — render "本地知识补充" block.
+    # Reuses metadata.raw_evidence.local_knowledge when present; otherwise
+    # re-queries by symbol. Read-only with respect to the strong action gate.
+    result_data = attach_report_local_knowledge(result_data, symbol=symbol)
 
     now = datetime.now(timezone.utc)
     

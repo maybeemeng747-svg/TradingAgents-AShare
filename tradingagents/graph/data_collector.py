@@ -798,4 +798,26 @@ class DataCollector:
                 "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
             }
 
+        # [KB-003] local_knowledge_raw_evidence — wiki 不依赖 data collector pool，
+        # 单独注入；失败不阻塞主链路。
+        try:
+            from tradingagents.dataflows.local_knowledge_provider import (
+                build_raw_evidence_entry as _lk_build_entry,
+                query_failed_entry as _lk_failed_entry,
+                query_local_knowledge as _lk_query,
+            )
+            from tradingagents.dataflows.local_knowledge_audit import (
+                default_knowledge_root as _lk_default_root,
+            )
+
+            kb_root = _lk_default_root()
+            lk_result = _lk_query(kb_root, symbol=ticker)
+            raw_evidence["local_knowledge"] = _lk_build_entry(
+                lk_result, trade_date, now_iso
+            )
+        except Exception as exc:  # pragma: no cover - 容错：KB 不可用不阻塞主链路
+            raw_evidence["local_knowledge"] = _lk_failed_entry(
+                trade_date, now_iso, f"{type(exc).__name__}: {exc}"
+            )
+
         return raw_evidence

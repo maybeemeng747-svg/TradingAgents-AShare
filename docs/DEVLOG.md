@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-07-01 | KB-003 TA 本地知识源 raw_evidence 接入与报告"本地知识补充"区块
+
+- **执行者**：OpenCode
+- **类型**：feature + integration
+- **状态**：✅ 完成
+- **任务**：`docs/TASKS.md` KB-003（P1）
+
+### 背景
+
+- KB-001（commit 97e997f）完成 Tree Work 本地知识库只读**审计**；KB-002（commit f5bbb9d）
+  定义 investment wiki 输出**契约**与 lint。
+- KB-003 需要**接入**：TA 分析股票时只读查询 `wiki/investment/`，写入
+  `metadata.raw_evidence.local_knowledge`，并在报告中渲染"本地知识补充"区块。
+- 前置 KB-001/KB-002 均已完成，本轮把审计/lint 升级到真实 raw_evidence 通路。
+
+### 变更
+
+- **新增** `tradingagents/dataflows/local_knowledge_provider.py`（`# [KB-003] local_knowledge_raw_evidence`）：
+  - 按 `symbol/name/themes/tags` 四个维度查询 investment wiki；支持组合查询与 `matched_by`溯源。
+  - 状态机：`HAS_DATA`（fresh 命中）/ `NORMAL_NO_DATA`（无命中）/ `FAILED`（KB 不可读）/
+    `STALE`（仅命中 stale_risk=高 或 valid_until 过期页）/ `LOW_CONFIDENCE`（仅命中
+    待补充/低置信页）。
+  - 返回结构与任务契约对齐：`status / vendor=tree_work_wiki / matched_pages /
+    symbols / themes / summary / risks / sources / updated_at / confidence`。
+  - 单页摘要最多 200 字、风险每条 ≤120 字、来源经 `[[...|alias]]` wiki-link 清洗；
+    `render_local_knowledge_block()` 渲染最多 3 条摘要 + 风险 + 原页面路径。
+  - 复用 KB-001/KB-002 的 `_audit_single_page` / `classify_page_type` / stale 判断，
+    保持口径一致；不重复读盘逻辑。
+  - `build_raw_evidence_entry()` / `query_failed_entry()` 把查询结果转成
+    `EvidenceContract` 兼容的 raw_evidence 条目，供 DataCollector 直接注入。
+- **新增** `scripts/query_local_knowledge.py` CLI：
+  - `--symbol / --name / --theme / --tag / --max-pages / --json / --output`。
+  - 与 KB-001/KB-002 CLI 风格一致（默认非阻塞；FAILED 返回 1）。
+- **改动** `tradingagents/graph/data_collector.py`：在 `build_raw_evidence()` 末尾注入
+  `local_knowledge` 条目（独立于 data_source_keys loop，因为 wiki 不依赖 data collector pool）。
+  KB 不可用时写 FAILED 条目，不阻塞主链路。
+- **改动** `tradingagents/dataflows/evidence_contract.py`：
+  - `_EVIDENCE_KEY_TO_DATA_TYPE` 注册 `local_knowledge`。
+  - `_OPTIONAL_FIELDS_FOR_COMPLETENESS` 加入 `local_knowledge`；
+    **不进** `_REQUIRED_FIELDS_FOR_COMPLETENESS`，确保现有覆盖率分数不受影响。
+- **改动** `api/services/report_service.py`：新增 `attach_report_local_knowledge()`，
+  在 `create_report()` 末尾调用：
+  - 优先复用 `metadata.raw_evidence.local_knowledge` 缓存，避免重复解析 76 页 wiki。
+  - 缓存缺失时按 `symbol` 回查（支持 KB-003 之前的 legacy 报告）。
+  - **只读于强动作门禁**：只写 `local_knowledge_block` / `local_knowledge_summary`，
+    不改 `execution_action / action_label / target_price / stop_loss_price`。
+- **改动** `api/main.py` `_attach_report_data_blockers_for_response()`：在 API 响应顶层
+  surface `local_knowledge_block` / `local_knowledge_summary`；legacy 行若无缓存则按
+  `report.symbol` 现场回查，前端可直接消费。
+- **新增** `tests/test_kb003_local_knowledge_provider.py`（83 tests）：覆盖匹配函数、
+  状态机、字段聚合、段落抽取、区块渲染、raw_evidence 接入、evidence_contract 注册、
+  report_service attach 流程（cache/re-query/strong-gate 不变）、CLI 子进程冒烟、
+  只读安全性、data_collector→report_service 端到端。
+
+### 验收
+
+- ✅ `query_local_knowledge("/Users/maybee/Documents/knowledge", symbol="603296")`
+  命中华勤技术页（company, HAS_DATA, confidence=high）。
+- ✅ `themes=["AI算力基础设施"]` 命中 `AI算力基础设施-公司评分表`（score_table）。
+- ✅ 无命中返回 `NORMAL_NO_DATA`，不影响主结论；KB 不存在返回 `FAILED`。
+- ✅ 全量测试：`pytest tests/ -q` 7586 passed / 17 skipped，无回归。
+- ✅ 任务级 smoke：`pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q` 119 passed。
+
+### 风险点与边界
+
+- **测试隔离**：`build_raw_evidence` 在 dev 机会访问真实 KB；KB-003 测试通过
+  `monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", fixture)` 隔离。生产/CI 无 KB 时
+  返回 FAILED 条目，不阻塞。
+- **段落长度**：摘要/风险/来源均有字符上限，不会输出整段原文。
+- **强动作门禁**：`attach_report_local_knowledge` 不修改任何 action/price 字段，
+  仅添加解释性 `local_knowledge_block` / `local_knowledge_summary`。
+- **覆盖率回归**：`local_knowledge` 不进 `_REQUIRED_FIELDS_FOR_COMPLETENESS`，
+  `compute_contract_completeness()` 对已有/新增报告结果一致。
+
+### 文件清单
+
+- 新增：
+  - `tradingagents/dataflows/local_knowledge_provider.py`
+  - `scripts/query_local_knowledge.py`
+  - `tests/test_kb003_local_knowledge_provider.py`
+- 修改：
+  - `tradingagents/graph/data_collector.py`
+  - `tradingagents/dataflows/evidence_contract.py`
+  - `api/services/report_service.py`
+  - `api/main.py`
+  - `docs/TASKS.md`（状态：ready → done）
+  - `docs/DEVLOG.md`
+
+---
+
 ## 2026-07-01 | KB-002 investment wiki 输出协议升级：TA 可消费字段 lint
 
 - **执行者**：OpenCode
@@ -9182,3 +9272,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-002-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-002-20260701-180014/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-003 - TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-003-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-003-20260701-181738/
