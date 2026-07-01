@@ -158,7 +158,7 @@
 132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ 真实知识库 lint 报告；99 tests passed（KB-001+KB-002））。
 133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_provider.py` + `scripts/query_local_knowledge.py` + `tests/test_kb003_local_knowledge_provider.py`（83 tests）+ 接入 `data_collector.build_raw_evidence` / `evidence_contract` / `report_service.attach_report_local_knowledge` / `api/main.py` 响应顶层；7586 tests passed，无回归）。
 134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，blocked — 前置 KB-003 未真实完成）。
-135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready — 前置 KB-001 已由 commit 97e997f 真实完成）。
+135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，done — OpenCode 产出 `tradingagents/dataflows/tree_work_backlog.py` + `scripts/tree_work_backlog.py` + `tests/test_kb005_tree_work_backlog.py`（39 tests）+ `docs/knowledge_reports/tree_work_ingest_backlog-2026-07-01.md`，KB 系列 338 tests passed）。
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
 137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
 138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
@@ -4417,7 +4417,7 @@
 ### KB-005: Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2）
 - **描述**：建立本地知识库清理清单，找出 inbox 积压、raw 已存但 wiki 未消化、wiki 有占位但未补充的内容，方便 Tree Work 后续处理。
 - **优先级**：P2
-- **状态**：ready — 前置 KB-001 已由 commit 97e997f 真实完成。
+- **状态**：done — OpenCode 产出 `tradingagents/dataflows/tree_work_backlog.py` + `scripts/tree_work_backlog.py` + `tests/test_kb005_tree_work_backlog.py`（39 tests）+ `docs/knowledge_reports/tree_work_ingest_backlog-2026-07-01.md`
 - **前置条件**：KB-001 完成。
 - **执行约束**：
   - 只生成清单，不移动/删除 knowledge 文件。

@@ -4,6 +4,62 @@
 
 ---
 
+## 2026-07-01 | KB-005 Tree Work inbox/raw/wiki 对齐与未消化研报清单
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` KB-005（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：KB-001 ✓
+
+### 背景
+KB-001 只读审计给出的是「统计 + 结构缺口」；Tree Work 需要的是一份**可直接复制执行**
+的待消化清单（inbox 积压、raw 已存但 wiki 未引用、wiki 占位/废弃、index 未同步）。
+KB-005 在 KB-001 审计结果之上做二次只读扫描，把缺口转成带「分类 + 建议动作 + 优先级」
+的 backlog，输出 Markdown 报告供 Tree Work 逐项处理。
+
+### 修改文件
+- `tradingagents/dataflows/tree_work_backlog.py`（新增，`# [KB-005] tree_work_backlog`）
+  - 复用 KB-001 的 `audit_local_knowledge` + frontmatter 解析助手，做二次只读分析。
+  - 6 类 backlog：`inbox_unprocessed` / `raw_undigested` / `wiki_to_be_supplemented` /
+    `wiki_deprecated` / `wiki_field_gap` / `index_not_synced`。
+  - 9 个建议动作：`ingest` / `fill_fields` / `fill_summary` / `fill_risks` /
+    `fill_source_links` / `archive` / `add_index_link` / `remove_orphan_link` / `review`。
+  - `extract_raw_references`：从 wiki sources 字段 + 正文 wikilink 提取被引用的 raw 文件名，
+    据此识别「raw 未消化」（未被任何 wiki sources 引用）。
+  - inbox 按扩展名分类（笔记/截图/prompt/PDF/未知）；raw 同理（md high / pdf medium / 图片 low）。
+  - 废弃页（frontmatter `deprecated` 或正文「已废弃」）建议归档，且不重复进入待补充清单。
+- `scripts/tree_work_backlog.py`（新增 CLI，对齐 `scripts/audit_local_knowledge.py` 风格）
+  - 支持 `--knowledge-root` / `--output` / `--json` / `--stdout`。
+- `tests/test_kb005_tree_work_backlog.py`（新增，39 tests）
+  - inbox 分类 / raw 引用提取 / raw 未消化 / wiki 待补充/废弃/字段缺口 /
+    index 未同步 / 整库构建 / 报告渲染 / CLI 冒烟 / 只读安全性。
+- `docs/knowledge_reports/tree_work_ingest_backlog-2026-07-01.md`（新增，真实知识库清单）
+  - 8 inbox、130 raw 未消化、11 wiki 待补充、1 废弃页、21 字段缺口、0 index 问题。
+
+### 第一性原理 / 验收对照
+- **最小实现**：复用 KB-001 审计助手，不重复造 frontmatter 解析；只做「缺口→动作」映射，
+  不解析研报正文、不调用 LLM、不写 knowledge 目录。
+- **只读安全**：两次扫描前后知识库文件 size / 文件集 snapshot 完全一致（单测守护）。
+- **不批量读 PDF 正文**：raw PDF 仅按扩展名分类建议 `ingest`，不读取内容。
+- **可执行**：每条 backlog 项均带 `suggested_action` + `detail` + `priority`，
+  Tree Work 可直接复制清单逐项执行。
+- **验收**：inbox 5-8 项全部列出（实际 8）；待补充页全部识别（实际 11）；不修改 knowledge 目录。
+
+### 测试
+- `pytest tests/test_kb005_tree_work_backlog.py -q` → **39 passed**。
+- KB 系列回归：`pytest tests/test_kb001_local_knowledge_audit.py
+  tests/test_kb002_local_knowledge_lint.py tests/test_kb003_local_knowledge_provider.py
+  tests/test_kb005_tree_work_backlog.py tests/test_kb007_research_attention.py
+  tests/test_kb008_research_attention_integration.py -q` → **338 passed**，无回归。
+
+### 风险点
+- `raw/assets/` 下大量 UUID 命名的 PDF/图片附件与已消化的 `.md` 同名但未直接被 wiki
+  sources 引用，会被计为「raw 未消化」造成清单偏长。这是预期行为（Tree Work 人工 triage
+  时可跳过），不阻塞主链路；后续若需要可在 KB-009 增加同名 `.md` 已引用的去噪规则。
+
+---
+
 ## 2026-07-01 | V-012 5000 元小资金试跑 5 日回放验收与人工操作手册 v3
 
 - **执行者**：OpenCode
@@ -9714,3 +9770,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/V-012-20260701-round1.txt
 - **Run archive**: docs/task_runs/V-012-20260701-200011/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-005 - Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-005-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-005-20260701-201918/
