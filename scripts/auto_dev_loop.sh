@@ -3,8 +3,9 @@
 # Usage: ./scripts/auto_dev_loop.sh [--dry-run]
 #
 # Constraints:
-#   - Single pass only
-#   - Only the highest-priority ready task from docs/TASKS.md
+#   - Batch mode: keep claiming highest-priority ready tasks until none remain,
+#     a task fails, or AUTO_DEV_MAX_TASKS is reached
+#   - Only one task is active at a time
 #   - Exit if working tree is dirty
 #   - No push / PR / merge
 #   - Max 2 fix rounds per task
@@ -37,6 +38,7 @@ TEST_TIMEOUT_SECONDS="${AUTO_DEV_TEST_TIMEOUT_SECONDS:-900}"
 DEFAULT_TEST_CMD="${AUTO_DEV_DEFAULT_TEST_CMD:-pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short}"
 FULL_TEST_CMD="${AUTO_DEV_FULL_TEST_CMD:-pytest tests/ -q --tb=short}"
 AUTO_DEV_FULL_TESTS="${AUTO_DEV_FULL_TESTS:-0}"
+AUTO_DEV_MAX_TASKS="${AUTO_DEV_MAX_TASKS:-0}"  # 0 = no explicit cap; cron timeout remains the outer cap.
 
 # Zhipu API Key (for quota check)
 ZAI_API_KEY="${ZAI_API_KEY:-}"
@@ -601,6 +603,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  OpenCode timeout: ${OPENCODE_TIMEOUT_SECONDS}s"
     echo "  Test timeout:     ${TEST_TIMEOUT_SECONDS}s"
     echo "  Full tests:       ${AUTO_DEV_FULL_TESTS}"
+    echo "  Max tasks:        ${AUTO_DEV_MAX_TASKS} (0 means until no ready tasks)"
     echo "========================================"
     break
 fi
@@ -1192,8 +1195,12 @@ fi
 # --- Count and decide whether to continue ---
 if [ "$RESULT_STATUS" = "DONE" ]; then
     COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
-    log "--- Task $TASK_ID done, stopping (one task per run) ---"
-    break
+    if [ "$AUTO_DEV_MAX_TASKS" != "0" ] && [ "$COMPLETED_TASKS" -ge "$AUTO_DEV_MAX_TASKS" ]; then
+        log "--- Task $TASK_ID done, reached AUTO_DEV_MAX_TASKS=${AUTO_DEV_MAX_TASKS}, stopping ---"
+        break
+    fi
+    log "--- Task $TASK_ID done, continuing to next ready task ---"
+    continue
 elif [ "$RESULT_STATUS" = "QUOTA_EXHAUSTED" ]; then
     FAILED_TASKS=$((FAILED_TASKS + 1))
     err "--- Task $TASK_ID failed (quota exhausted), stopping batch ---"

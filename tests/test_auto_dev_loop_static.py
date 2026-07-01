@@ -83,6 +83,15 @@ def test_runner_contains_claim_lock_and_safe_exit_expansion():
     assert "exit=$OPENCODE_EXIT）" not in script_text
 
 
+def test_runner_continues_after_success_for_cron_batch_window():
+    script_text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'AUTO_DEV_MAX_TASKS="${AUTO_DEV_MAX_TASKS:-0}"' in script_text
+    assert "0 = no explicit cap" in script_text
+    assert "continuing to next ready task" in script_text
+    assert "stopping (one task per run)" not in script_text
+
+
 def test_stale_lock_recovery_pid_alive(tmp_path):
     """Lock held by a live process must NOT be cleaned."""
     import os, signal, time

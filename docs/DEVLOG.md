@@ -21,6 +21,7 @@
   - `payload.timeoutSeconds`: 1500 → 14400
   - prompt 内 exec timeout: 1200 → 14400
 - 保持脚本内部单任务超时不变：OpenCode 1800 秒、测试 900 秒。
+- 修复 `scripts/auto_dev_loop.sh` DONE 后仍强制单任务退出的问题：现在成功完成一个任务后会继续领取下一个 ready 任务；可用 `AUTO_DEV_MAX_TASKS` 设置额外任务数上限，默认 0 表示由 cron 总超时控制。
 
 ### 预期效果
 
