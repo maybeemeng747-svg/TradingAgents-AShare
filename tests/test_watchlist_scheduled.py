@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from api.database import Base
+from api.database import Base, UserDB
 from api.services import watchlist_service, scheduled_service
 from api.services.watchlist_service import MAX_WATCHLIST_ITEMS
 
@@ -281,6 +281,18 @@ class TestScheduled:
         # At 22:00, both should be pending
         tasks2 = scheduled_service.get_pending_tasks(db, "2026-03-21", "22:00")
         assert len(tasks2) == 2
+
+    def test_get_pending_tasks_excludes_test_users(self, db):
+        db.add(UserDB(id="test-user", email="apitest@test.com", is_active=True))
+        db.add(UserDB(id="real-user", email="meng@example.com", is_active=True))
+        db.commit()
+
+        scheduled_service.create_scheduled(db, "test-user", "300750.SZ", "short", "20:00")
+        scheduled_service.create_scheduled(db, "real-user", "600519.SH", "short", "20:00")
+
+        tasks = scheduled_service.get_pending_tasks(db, "2026-03-21", "23:59")
+
+        assert [(task.user_id, task.symbol) for task in tasks] == [("real-user", "600519.SH")]
 
     def test_get_pending_skips_already_run(self, db):
         scheduled_service.create_scheduled(db, "user1", "300750.SZ")

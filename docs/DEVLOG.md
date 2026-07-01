@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-07-01 | 生产库测试数据污染治理工具
+
+- **执行者**：Codex
+- **类型**：ops + db hygiene
+- **状态**：✅ 完成
+
+### 背景
+
+- `tradingagents.db` 中发现大量 `@test.com` 测试用户及其关联数据：
+  - `users`: 7449
+  - `scheduled_analyses`: 1703（全部 active，但 scheduler 已按 `@test.com` 排除，不会触发真实 TA）
+  - 还包含 reports、watchlist、imported portfolio、LLM config/provider key 等测试残留。
+- 前端当前用户没有定时任务是正确的；后台“很多定时任务”来自测试污染。
+
+### 变更
+
+- 新增 `scripts/cleanup_test_db_pollution.py`：
+  - 默认 dry-run，只统计不删除。
+  - `--execute` 时先备份 SQLite 到 `var/db_backups/`，再清理匹配 `@test.com` 的用户及关联数据。
+  - 默认拒绝非 `@test.com` pattern，避免误删真实用户。
+- 新增 `tests/conftest.py`，pytest 启动时默认把 `DATABASE_URL` 指到临时 SQLite，避免 API smoke / 持仓导入类测试继续写入项目根目录 `tradingagents.db`。
+- 新增 `tests/test_cleanup_test_db_pollution.py`，覆盖 dry-run、真实执行、备份保留、真实用户不被删除、旧 schema 兼容。
+- 新增 `tests/test_database_isolation_guard.py`，确认 pytest 期间不会使用生产 SQLite。
+- 补充 scheduler 回归：`get_pending_tasks` 必须继续排除 `@test.com` 用户，作为数据库治理之外的运行时保险。
+
+### 验证
+
+- `pytest tests/test_cleanup_test_db_pollution.py -q` 通过。
+- 已对本地 `tradingagents.db` 执行清理，备份位于 `var/db_backups/tradingagents.pre-test-cleanup-20260701-125948.db`。
+- 清理后：`users=1`、`test_users=0`、`scheduled_analyses=0`。
+
+---
+
 ## 2026-07-01 | OpenClaw 自动开发 cron 超时预算修复
 
 - **执行者**：Codex
