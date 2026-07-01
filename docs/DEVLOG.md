@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-07-01 | V-012 5000 元小资金试跑 5 日回放验收与人工操作手册 v3
+
+- **执行者**：OpenCode
+- **类型**：feature / acceptance
+- **任务**：`docs/TASKS.md` V-012（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：V-010 ✓、V-011 ✓
+
+### 背景
+用户准备拿约 ¥5000 试跑。V-008/V-010 只覆盖单日验收；V-012 需要把「候选收敛 → 盘中观察
+→ 模拟账本确认 → 失败退出 → 盘后归因 → 风险预算回顾」整条链路在 **5 个连续交易日** 上跑通，
+并产出每天盘前/盘中/盘后的人工操作手册 v3，回答「这一周每天看什么、点什么、复盘什么」。
+
+### 修改文件
+- `tests/test_v012_paper_trial_5day_replay.py`（新增，40 tests）
+  - 5 日 fixture（plan_date 06-13 → 生效 06-15→06-19）：每天独立 candidate 池
+    （`trade_date=effective` 规避 save_candidate 的 `(trade_date, symbol)` upsert 冲突），
+    共享 paper ledger 跨日承接仓位。
+  - 逐日 step tests：收敛 / 触发 / 模拟进出场 / 失效退出 / 风险门禁硬拒绝 / 金额截断 /
+    全周 Review / drawdown 门禁。
+  - `_run_5day_replay` 跑完整一周 18 个步骤并生成验收报告到
+    `docs/tradeflow_trial_5day_replay_acceptance.md`。
+  - `TestV3UserGuideInSync` 守护 v3 手册不漂移 / 不含强买卖词。
+- `docs/tradeflow_trial_5day_replay_acceptance.md`（新增，验收报告，18/18 PASS）
+- `docs/tradeflow_trial_user_guide_v3.md`（新增，v3 操作手册：风险预算 + 失败退出 + 5 日逐日指引）
+
+### 第一性原理 / 验收对照
+- **最小实现**：不接真实交易、不调用 LLM、不写生产 DB，全程 fixture + mock 行情 + 规则引擎；
+  复用既有 `add_paper_candidate / confirm_paper_action / run_observe / generate_review`，
+  不新增生产代码路径。
+- **风险预算可解释**：单票 1500/500、每日 3、并发 5、数据质量 40、整体止损 −10%（−500）
+  全部以 `_DEFAULT_RISK_BUDGET` 真实值断言，并在报告中逐条回顾。
+- **失败退出闭环**：海螺水泥跌破失效价 → INVALIDATED；全周 realized P&L 始终 > −500，
+  未触发整体退出。
+- **安全**：FORBIDDEN_WORDS + 扩展禁词清单 0 命中；runtime_tier 全程不升级到 FULL_TA。
+
+### 测试
+- `pytest tests/test_v012_paper_trial_5day_replay.py -q` → **40 passed**。
+- 回归：`pytest tests/test_v007_tradeflow_trial_e2e.py tests/test_v008_paper_trial_acceptance.py
+  tests/test_v009_trial_guide_smoke.py tests/test_v010_small_cap_trial_v2_acceptance.py
+  tests/test_v012_paper_trial_5day_replay.py -q` → **202 passed**，无回归。
+
+### 风险点
+- `save_candidate` 是 `(trade_date, symbol)` upsert；5 日剧本里同一 symbol 跨日时必须让
+  `trade_date` 随 `effective_trade_date` 变化，否则后一天会覆盖前一天（已在 fixture 注释说明）。
+- 5 日回放在单个测试日内跑完，`daily_new_max` 按真实 `created_at` 日期计数，因此第 4 只新增
+  会被软降级为 observation（不影响金额截断断言）。
+
+### 非买入信号
+- 模拟账户仅供学习研究，**不构成投资建议**，不连接真实交易；所有动作需人工确认。
+
+---
+
 ## 2026-07-01 | IC-TA-004 investment-controller 飞书 briefing payload 与 TA 调度闭环验收
 
 - **执行者**：OpenCode
@@ -9649,3 +9702,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/IC-TA-004-20260701-round1.txt
 - **Run archive**: docs/task_runs/IC-TA-004-20260701-194255/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-012 - 5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/V-012-20260701-round1.txt
+- **Run archive**: docs/task_runs/V-012-20260701-200011/
