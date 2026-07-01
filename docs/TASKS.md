@@ -4417,7 +4417,7 @@
 ### KB-005: Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2）
 - **描述**：建立本地知识库清理清单，找出 inbox 积压、raw 已存但 wiki 未消化、wiki 有占位但未补充的内容，方便 Tree Work 后续处理。
 - **优先级**：P2
-- **状态**：done — OpenCode 产出 `tradingagents/dataflows/tree_work_backlog.py` + `scripts/tree_work_backlog.py` + `tests/test_kb005_tree_work_backlog.py`（39 tests）+ `docs/knowledge_reports/tree_work_ingest_backlog-2026-07-01.md`
+- **状态**：done -- commit ca3a477
 - **前置条件**：KB-001 完成。
 - **执行约束**：
   - 只生成清单，不移动/删除 knowledge 文件。
