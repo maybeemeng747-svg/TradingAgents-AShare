@@ -4,6 +4,68 @@
 
 ---
 
+## 2026-07-01 | KB-001：Tree Work 本地知识库只读索引与健康审计
+
+- **执行者**：OpenCode（task run KB-001-20260701-120814）
+- **类型**：feature + test + 只读审计
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+`KB-001` 历史两次（commit `81c64b9`、`5a93396` 路径）均为 FALSE_PASS：auto commit
+只包含 `docs/reviews/` 与 `docs/task_runs/` 档案，未生成任务要求的审计脚本与报告。
+根因是 OpenCode 读取 `/Users/maybee/Documents/knowledge` 时被 `external_directory`
+权限拒绝。本次已修复 `.opencode/opencode.json` 的 `permission.external_directory=allow`，
+并重跑产出真实实现。
+
+### 产出文件
+
+- `tradingagents/dataflows/local_knowledge_audit.py`：只读审计核心模块。
+  - `audit_local_knowledge(knowledge_root)`：扫描 `wiki/investment`、`inbox`、`raw`、
+    `wiki/index.md`、`wiki/log.md`，统计页面数、frontmatter 覆盖、章节缺失、index
+    缺失、inbox 未消化、待补充页等。
+  - `classify_page_type()`：识别 company / industry / score_table / summary /
+    to_be_supplemented / unclassified 6 类页面。
+  - `render_audit_report()`：渲染 Markdown 报告，**只含文件名/字段/统计/缺口，不含原文段落**。
+  - frontmatter 解析优先用 PyYAML，缺失时回退到内置极简解析器，不硬依赖 PyYAML。
+- `scripts/audit_local_knowledge.py`：CLI 封装，支持 `--knowledge-root` / `--output` /
+  `--json` / `--stdout`，退出码语义：审计总能跑完，缺口是预期产物。
+- `tests/test_kb001_local_knowledge_audit.py`：47 个测试，覆盖 frontmatter 解析、
+  页面类型识别、单页审计、整库聚合、报告渲染、只读安全、CLI 子进程冒烟。
+- `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`：真实知识库审计报告。
+
+### 真实知识库扫描结果（2026-07-01）
+
+- investment_md_pages: 76；inbox_items: 8；raw_md_files: 61。
+- 页面类型：company 40 / score_table 16 / to_be_supplemented 12 / industry 3 /
+  summary 2 / unclassified 3。
+- Machine Readiness：high 59 (78%) / medium 2 / low 15。
+- 8 类结构缺口（超出任务要求的 >=5 类）：缺一句话总结(6)、缺风险提示(10)、
+  缺 sources(4)、缺 machine symbols(10)、待补充/低置信(12)、stale_risk 高或
+  valid_until 已过期(29)、index 未引用(0)、inbox 未消化(8)。
+
+### 设计要点（第一性原理 + 剃刀定律）
+
+- **纯只读**：仅用 `open(..., "r")` 与 `Path.iterdir`/`rglob`，绝不向知识库写文件；
+  测试 `TestReadOnlySafety` 验证审计前后文件快照不变。
+- **不含原文**：只读 frontmatter 与 `^## `/`^### ` 章节标题，不读取段落正文；
+  测试 `test_report_no_original_paragraphs` 验证报告不含 fixture 正文句子。
+- **不调用 LLM / 不访问外网**：纯标准库 + 可选 PyYAML。
+- **不阻塞主链路**：审计只列缺口与接入建议，KB-002/KB-003 才真正接线 raw_evidence。
+
+### 安全边界
+
+- 未改 `tradingagents/prompts/`；未写生产 `tradingagents.db`；未调用 LLM；
+  未读取/输出大段研报原文与 API Key。
+
+### 测试
+
+- `pytest tests/test_kb001_local_knowledge_audit.py -q` → 47 passed。
+- 联动回归 `tests/test_data007_evidence_coverage_audit.py` + `tests/test_api_smoke.py`
+  → 171 passed。
+
+---
+
 ## 2026-07-01 | 修复 OpenCode 读取 Tree Work 知识库权限
 
 - **背景**：`KB-001/002/003` 自动开发 false pass 的根因是 OpenCode 读取 `/Users/maybee/Documents/knowledge` 时触发 `external_directory` 权限请求并被自动拒绝。
@@ -8948,3 +9010,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-003-20260630-round1.txt
 - **Run archive**: docs/task_runs/KB-003-20260630-200137/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-001 - Tree Work 本地知识库只读索引与健康审计（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-001-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-001-20260701-120814/

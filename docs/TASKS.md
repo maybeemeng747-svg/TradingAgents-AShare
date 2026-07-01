@@ -154,7 +154,7 @@
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
 130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
-131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，ready — 已修复 OpenCode external_directory 读取权限，重跑）。
+131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
 132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，blocked — 前置 KB-001 未真实完成，commit 5a93396 仅含运行档案）。
 133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，blocked — 前置 KB-001/KB-002 未真实完成，commit 8bab104 仅含运行档案）。
 134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，blocked — 前置 KB-003 未真实完成）。
@@ -4317,9 +4317,12 @@
 ### KB-001: Tree Work 本地知识库只读索引与健康审计（P1）
 - **描述**：把 `~/Documents/knowledge/` 作为 TA 的本地投研知识源进行只读审计，确认 Tree Work 产物是否能被机器稳定检索和追溯。
 - **优先级**：P1
-- **状态**：ready
-- **最近一次审计**：commit 81c64b9 为 FALSE_PASS，仅提交 run/review 档案，未生成审计脚本或 `docs/knowledge_reports` 报告。
-- **阻塞修复**：已在本机 `.opencode/opencode.json` 设置 `permission.external_directory=allow`，并在 `scripts/auto_dev_loop.sh` 增加 KB 本地知识库 preflight；允许重新领取。
+- **状态**：done — KB-001-20260701-120814，47 tests passed
+- **产出**：
+  - `tradingagents/dataflows/local_knowledge_audit.py`（只读审计模块）
+  - `scripts/audit_local_knowledge.py`（CLI）
+  - `tests/test_kb001_local_knowledge_audit.py`（47 tests）
+  - `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`（真实知识库审计报告）
 - **前置条件**：无。
 - **背景**：用户的 Tree Work 基于 Karpathy LLM Wiki 模式，`wiki/investment/` 已有 76 篇投资知识、`raw/` 保存原始资料、`inbox/` 有待处理材料。TA 需要接入消化后的 wiki，而不是直接消化 raw 研报。
 - **执行约束**：
