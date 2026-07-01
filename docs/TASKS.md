@@ -4257,7 +4257,7 @@
 ### IC-TA-004: investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2）
 - **描述**：investment-controller 已转型为 TA 调度官/播报官。本任务固定它给飞书/总控的 briefing payload，验证盘前、盘中、盘后各自只做调度与摘要，不越权下最终交易结论。
 - **优先级**：P2
-- **状态**：done — OpenCode 产出 `tradingagents/tradeflow/controller_briefing_payload.py` + `api/services/controller_briefing_payload_service.py` + `api/main.py` 路由 + `api/runtime_tier.py` 注册 + `tests/test_ic_ta004_controller_briefing_payload.py`（74 tests），回归 214+118 passed
+- **状态**：done -- commit 4473a4d
 - **前置条件**：IC-TA-003、NOTIFY-003 完成。
 - **执行约束**：
   - dry-run，不真实发送。
