@@ -4,6 +4,76 @@
 
 ---
 
+## 2026-07-01 | KB-002 investment wiki 输出协议升级：TA 可消费字段 lint
+
+- **执行者**：OpenCode
+- **类型**：feature + contract
+- **状态**：✅ 完成
+- **任务**：`docs/TASKS.md` KB-002（P1）
+
+### 背景
+
+- KB-001（commit 97e997f）已完成 Tree Work 本地知识库的只读**审计**（库存/健康概览）。
+- KB-002 需要在审计之上定义**稳定的 investment wiki 输出契约**，并在 TA 侧实现 lint，
+  避免后续消化研报后 TA 仍抓不到股票/主题/风险/来源/时效。
+- 历史 KB-002 自动运行（5a93396 / 7435956）只改动了 docs/reviews/task_runs，**未产出
+  实际实现文件**，因此任务重新打开。本轮补齐真实实现。
+
+### 变更
+
+- 新增 `tradingagents/dataflows/local_knowledge_lint.py`（`# [KB-002] local_knowledge_contract`）：
+  - 复用 KB-001 只读解析助手（`_split_frontmatter` / `_parse_frontmatter` /
+    `classify_page_type` 等），不重复读盘逻辑，不改 KB-001 数据类。
+  - 定义 12 条 lint 规则：`FMR-001/002`（必填/推荐字段）、`SEC-001~004`（必含章节）、
+    `SYM-001`（公司/评分表缺 symbols）、`TBL-001`（评分表表头）、`TODO-001`（待补充标记）、
+    `STALE-001/002`（过时/过期）、`EVID-001`（低置信）。
+  - 每条 finding 带 `severity`(error/warning/info) + `fix_suggestion`（可直接发给 Tree Work）。
+  - `machine_readiness`(high/medium/low) 由 findings 显式推导；待补充页一律 low。
+  - 整库聚合：缺口清单、规则命中分布、Top 修复优先级、index.md 对齐。
+- 新增 `scripts/lint_local_knowledge.py` CLI：
+  - 支持 `--knowledge-root / --output / --json / --stdout / --fail-on-error`。
+  - **默认非阻塞**：即使有 error finding 也返回 0（符合验收“低分页面不阻塞 TA”）；
+    `--fail-on-error` 供 CI 门禁返回 2；根目录不存在返回 1。
+- 新增 `docs/local_knowledge_contract.md`（契约 `kb-002-v1`）：
+  - 10 节交付标准：必填/推荐字段、必含章节、评分表表头、待补充标记、readiness 评分、
+    规则总表、CLI 用法、Tree Work 交付清单（按优先级）。
+- 新增 `tests/test_kb002_local_knowledge_lint.py`（52 tests）：单页 lint、字段规则、
+  readiness 计算、评分表表头解析、整库聚合、报告渲染、CLI 子进程冒烟（含退出码策略）、
+  只读安全性、契约文档一致性。
+- 新增 `docs/knowledge_reports/local_knowledge_lint-2026-07-01.md`：真实知识库 lint 报告
+  （76 页，high 38 / medium 21 / low 17，30 error / 126 warning / 21 info）。
+
+### 设计要点（第一性原理 + 剃刀）
+
+- **复用而非复制**：lint 复用 KB-001 解析助手，避免两套 frontmatter/章节解析行为分叉。
+- **lint 与审计职责分离**：KB-001 回答“有什么”，KB-002 回答“是否满足契约”，两条链路独立。
+- **建议性而非阻塞**：lint 默认退出 0，低分只降置信度，不抛异常，不阻塞 KB-003 接入。
+- **不批量改写历史页面**：只输出缺口清单和 Top 修复优先级，交 Tree Work 逐步补齐。
+
+### 约束遵守
+
+- ✅ 未改 `tradingagents/prompts/`。
+- ✅ 未写生产 `tradingagents.db`（纯只读知识库扫描 + 临时 fixture 测试）。
+- ✅ 未做全市场扫描 / 个股深度 TA / live LLM 调用。
+- ✅ 知识库扫描只读（已加只读安全性测试：前后文件 snapshot 不变、无新增文件）。
+
+### 验证
+
+- `pytest tests/test_kb001_local_knowledge_audit.py tests/test_kb002_local_knowledge_lint.py -q`
+  → **99 passed**（KB-001 47 + KB-002 52）。
+- `python scripts/lint_local_knowledge.py`（真实知识库）→ 76 页扫描完成，退出码 0。
+- `--fail-on-error` → 退出码 2（CI 门禁可用）。
+- 报告不含正文段落（已加测试断言）。
+
+### 风险点
+
+- 契约把 `related` 提为必填（KB-001 仅列为推荐），历史 76 篇大部分已有 `related`，
+  少量缺失会触发 warning（非 error），不阻塞。
+- `SEC-004`（缺投资逻辑）命中 47 页较多，但为 warning 级，Tree Work 可逐步补；
+  不影响 KB-003 接入（KB-003 只依赖 symbols/themes 命中）。
+
+---
+
 ## 2026-07-01 | 生产库测试数据污染治理工具
 
 - **执行者**：Codex
@@ -9100,3 +9170,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-001-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-001-20260701-120814/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-002 - investment wiki 输出协议升级：TA 可消费字段 lint（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-002-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-002-20260701-180014/
