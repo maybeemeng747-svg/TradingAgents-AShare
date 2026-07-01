@@ -4376,7 +4376,7 @@
 ### KB-003: TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1）
 - **描述**：TA 分析股票时，从 Tree Work 已消化的 `wiki/investment/` 中只读查询相关公司/主题，写入 `metadata.raw_evidence.local_knowledge`，并在报告中展示“本地知识补充”。
 - **优先级**：P1
-- **状态**：done — KB-003-20260701-181738
+- **状态**：done -- commit 01d751c
 - **前置条件**：KB-001、KB-002 完成。
 - **执行约束**：
   - TA 只接入消化后的 wiki，不直接读 raw PDF 做结论。
