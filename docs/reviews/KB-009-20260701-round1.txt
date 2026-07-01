@@ -1,0 +1,3411 @@
+Task: KB-009 - 研报来源去重、时效衰减与过热惩罚规则（P2）
+Date: 2026-07-01_21:05:19
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019f1dc6-e0f4-7c13-9cad-c7e7013d5fe0
+--------
+user
+current changes
+2026-07-01T13:03:22.569580Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-07-01T13:03:22.813869Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-07-01T13:03:23.966712Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-07-01T13:03:24.228431Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc "git status --short && echo '---BRANCH---' && git branch --show-current && echo '---REQUIRED DOC HEADS---' && for f in AGENTS.md docs/project-overview.md docs/TASKS.md docs/DECISIONS.md docs/DEVLOG.md; do echo \"### "'$f"; sed -n '"'1,120p' \""'$f" 2>/dev/null || true; done' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_5day_replay_acceptance.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M tradingagents/dataflows/research_attention.py
+?? docs/task_runs/KB-009-20260701-204409/
+?? tests/test_kb009_research_attention_decay.py
+?? tradingagents/dataflows/research_attention_decay.py
+---BRANCH---
+local/tradingagents-custom
+---REQUIRED DOC HEADS---
+### AGENTS.md
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 开发与验收思维模式
+
+### 功能开发：第一性原理 + 剃刀定律
+- 开发新功能或修 bug 时，先回到问题本质：用户真正要解决什么、系统必须满足的最小事实是什么、哪些约束不能破坏。
+- 默认选择能满足目标的最小实现，优先复用现有模块、数据契约和测试框架，不为“看起来完整”而堆叠复杂功能。
+- 每个新增字段、接口、状态和抽象都必须能回答：为什么它不可少；如果删掉它，哪个明确场景会失败。
+- 不用大改架构来解决局部问题；除非能证明现有结构已经无法承载目标。
+
+### 功能验收/测试：多 Agent + 墨菲定律 + 对抗性审查
+- 验收时默认假设：会遗漏的边界一定会遗漏，会被误用的字段一定会被误用，会超时/缺数据/脏状态的路径一定会发生。
+- 重要改动必须至少从三类视角审查：实现者视角、用户操作视角、风控/数据真实性视角；必要时让不同 AI/Agent 分别做 diff review、测试回放和失败路径检查。
+- 测试要覆盖失败、空数据、旧数据、字段缺失、重复执行、非交易日、脏工作区、接口顺序、状态迁移等最容易出事的路径。
+- Codex review 或人工 review 必须优先找 P0/P1 风险，而不是复述功能亮点；发现问题先打回修复，再谈提交。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+### docs/project-overview.md
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+### docs/TASKS.md
+# 任务池
+
+> 最后更新：2026-06-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+### docs/DECISIONS.md
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+### docs/DEVLOG.md
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-07-01 | KB-009 研报来源去重、时效衰减与过热惩罚规则
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` KB-009（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：KB-007 ✓（Research Attention Score 基线）/ KB-008 ✓（TA/TradeFlow 接入）
+
+### 背景
+KB-007 的 Research Attention Score 已能表征"被多少研报反复提及"，但缺少防刷分机制：同一机构的
+多篇报告会被逐页计入 mention_count，过期周报与热门题材也会把关注度过度放大。KB-009 在 KB-007
+基础分之上叠加一层"机构级去重 + 时效衰减 + 过热惩罚"，使 effective_score 更稳健，同时**不压制**
+真实多来源共识、**不改变**强动作门禁。
+
+核心边界（与 TASKS.md 执行约束一致）：
+- **不压制真实多来源共识**：3 家不同机构各提到一次 → 机构级去重比 = 1.0，不扣分；只有同一机构
+  重复出现才折叠。
+- **不用单日价格涨幅作为唯一过热指标**：过热惩罚由 `overheat_flags` + 短期涨幅 + 主题拥挤度
+  **三信号**叠加，任一缺失只跳过该项。
+- **不调用 LLM / 不访问外网 / 不写 DB**：纯标准库计算，只读叠加层。
+- **不改 KB-007 基线**：`research_attention_score` 与 `score_explain` 保持透明不变，KB-009 只产出
+  新的 `research_attention_effective_score` 与独立 explain。
+
+### 改动
+- **新增** `tradingagents/dataflows/research_attention_decay.py`（`# [KB-009] research_attention_decay`）：
+  - `split_institution(alias)`：从来源别名提取机构名（`中邮证券-华勤技术超节点 → 中邮证券`），支持
+    `- / — / ： / :` 分隔符；无分隔符视作独立来源（不折叠）。
+  - `compute_symbol_decay(sym)`：机构级去重（fresh 页按机构折叠，重复 × 0.2 扣分）+ 时效衰减
+    （过期弱证据 0.3/0.5；高 stale_risk 90 天到 0.6 地板，其余 365 天到 0.8 地板）。
+  - `compute_overheat_penalty(...)`：三信号叠加（flags×0.5 + 超 20% 涨幅×0.3/10pp + 超 6 主题×0.4）。
+  - `apply_overheat_penalty` / `compute_effective_attention`：链式叠加，effective ≥ 0。
+  - `decay_to_summary` / `render_decay_summary_inline`：扁平字典 + 一句话摘要（含去重/衰减/过热负面信息）。
+- **扩展** `tradingagents/dataflows/research_attention.py`：
+  - `attention_to_summary`：新增 9 个 KB-009 字段（`research_attention_effective_score` /
+    `research_attention_base_score` / `_dedup_penalty` / `_time_decay_factor` /
+    `_overheat_penalty` / `_unique_institution_count` / `_duplicate_institution_count` /
+    `_decay_explain` / `_warnings`）；symbol 级去重+时效衰减由 `_kb009_symbol_decay_summary` 注入，
+    依赖不可用时降级为"无衰减"中性结构。KB-008 字段保持不变（回归保护）。
+  - `render_research_attention_inline`：TA 报告"本地知识补充"段末尾附上去重/时效衰减摘要 + 明细。
+- **扩展** `api/services/tradeflow_service.py`：
+  - 新增 `_apply_kb009_overheat_to_item(item, sym_attention)`：从候选读取 `overheat_flags` /
+    `short_term_gain_pct`，配合 symbol `theme_count` 计算过热惩罚，覆写 effective_score 与 explain；
+    只降研究优先级，不改 tier/action/decision。无命中时 effective=0。
+  - `_enrich_candidate_with_research_attention` / `_enrich_candidates_with_research_attention`：
+    在 KB-008 注入后调用 KB-009 过热叠加（单条 + 批量）；所有 fallback 分支补齐 KB-009 字段默认值。
+- **扩展** `api/tradeflow_schemas.py`：`TradeFlowCandidateItem` 新增
+  `research_attention_effective_score` / `research_attention_overheat_penalty` 字段。
+- **新增** `tests/test_kb009_research_attention_decay.py`（45 tests）：
+  - 机构拆分 / 机构级去重（同机构扣分、不同机构共识不压制）/ 时效衰减（过期弱证据、高 stale 更快、
+    年龄衰减）/ 过热三信号叠加（单一涨幅不构成唯一指标、阈值边界）/ effective ≥ 0 /
+    attention_to_summary KB-009 字段 / TradeFlow 单条+批量过热叠加（不改强动作门禁）/ Pydantic schema /
+    只读安全 / explain 可读且不含强动作词。
+- **改动** `docs/TASKS.md`：KB-009 状态 `in_progress` → `done`。
+
+### 计分公式（可复现）
+```
+# 1. 机构级去重（仅 fresh 页）
+dedup_penalty = duplicate_institution_count × 0.2
+# 2. 时效衰减（fresh 页按页 [0,1] 因子均值）
+time_decay_factor = mean(page_factor)
+decay_adjusted = max(0, (base_score - dedup_penalty) × time_decay_factor)
+# 3. 过热惩罚（候选上下文）
+overheat_penalty = flags×0.5 + 超20%涨幅/10pp×0.3 + 超6主题×0.4
+effective_score = max(0, decay_adjusted - overheat_penalty)
+```
+
+### 验证
+- `pytest tests/test_kb009_research_attention_decay.py -q`：45 passed。
+- `pytest tests/test_kb007_research_attention.py tests/test_kb008_research_attention_integration.py -q`：
+  117 passed（KB-007/KB-008 无回归）。
+- 全量 `pytest tests/ -q`：**7983 passed, 17 skipped, 0 failed**。
+
+### 风险与边界
+- **过热惩罚是研究优先级因子**，不是交易动作：`tier / action / decision / target / stop_loss`
+  均不被 KB-009 修改，已由测试 `test_overheat_does_not_change_strong_action_gate` 锁定。
+- **候选无 overheat_flags 时**：过热惩罚 = 0，effective = decay_adjusted（仍含机构去重+时效衰减）。
+- **候选无 short_term_gain_pct 时**：涨幅项跳过，不影响其它信号。
+- **explain 同时展示负面信息**（重复机构 / 过期弱证据 / 高 stale / 过热信号），满足
+  "前端必须同时显示负面信息"。
+
+---
+
+## 2026-07-01 | DATA-025 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` DATA-025（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：DATA-011 ✓ / DATA-023 ✓
+
+### 背景
+DATA-011 已把研报接入 `research_report` raw_evidence，使用的是 AKShare `stock_institute_recommend`（券商评级/推荐接口，字段精简）。本任务梳理免费可用的券商研报元数据来源目录，并优先验证东方财富研报中心 / AKShare `stock_research_report_em`（全量研报元数据 + PDF 链接 + 盈利预测 + 东财评级），作为**外部研报元数据补充源**。
+
+核心边界（与 TASKS.md 执行约束一致）：
+- 第一版只做目录 + 小样本 smoke，不批量下载 PDF、不提交版权正文。
+- 免费研报仅作**观点 / 关注度 / 预期源**，不能替代公告或财报事实源。
+- 默认 fixture dry-run；live-smoke 必须显式开关 + 环境变量双重门禁。
+- 不改 `tradingagents/prompts/`；不写生产 `tradingagents.db`；不调用 LLM；不改强动作门禁。
+
+### 修改文件
+- `tradingagents/dataflows/research_report_sources.py`（新增，`# [DATA-025] free_research_report_sources`）
+  - `RESEARCH_REPORT_FREE_SOURCES` 目录：4 个免费来源（东财研报中心默认 smoke / 新浪评级补充索引 / 巨潮公告事实源 / 券商官网 IR 人工补充）。
+  - 每条来源区分 `content_role`（opinion 观点源 vs fact 事实源）与 `access_type`（default_smoke / supplemental_index / fact_cross_check / manual_only）。
+  - `SMOKE_FIXTURES`：3 类 fixture（HAS_DATA / NORMAL_NO_DATA / FAILED），覆盖验收要求的 3 种场景。
+  - `parse_research_report_rows`：解析 AKShare DataFrame（中文名优先 + 英文 fallback + NaN 跳过），只保留 PDF 链接，不存正文。
+  - `run_research_report_smoke`：fixture dry-run / live-smoke（`TA_LIVE_DATA_SMOKE=1` 双重门禁，最多 5 标的）。
+  - `render_research_report_smoke_report` / `save_research_report_smoke_report`：渲染并写入 `docs/data_source_reports/research_report_sources-YYYY-MM-DD.md`。
+  - `build_capability_matrix_supplement`：只读 supplement，不修改 matrix items。
+- `tradingagents/dataflows/source_capability_matrix.py`（修改）
+  - `get_source_capability_matrix` 新增 `include_research_report_free_sources` 参数（默认 True），把 supplement 作为顶层 `research_report_free_sources` 字段附加；不修改 items，避免破坏 DATA-023 已发布文档。
+- `api/main.py`（修改）
+  - `SourceCapabilityMatrixResponse` 新增可选字段 `research_report_free_sources: Dict[str, Any] = {}`，让 API 透传 supplement。
+- `scripts/run_research_report_smoke.py`（新增 CLI，对齐 `run_fund_flow_source_probe.py` 风格）
+  - 支持 `--symbols` / `--live-smoke` / `--output` / `--dry-run` / `--stdout-json`。
+
+exec
+/bin/zsh -lc "echo '--- cached stat ---'; git diff --cached --stat; echo '--- unstaged stat ---'; git diff --stat; echo '--- cached diff ---'; git diff --cached -- api/services/tradeflow_service.py api/tradeflow_schemas.py tradingagents/dataflows/research_attention.py tradingagents/dataflows/research_attention_decay.py tests/test_kb009_research_attention_decay.py; echo '--- unstaged diff code ---'; git diff -- api/services/tradeflow_service.py api/tradeflow_schemas.py tradingagents/dataflows/research_attention.py; echo '--- untracked files ---'; find docs/task_runs/KB-009-20260701-204409 tests/test_kb009_research_attention_decay.py tradingagents/dataflows/research_attention_decay.py -maxdepth 2 -type f -print" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+--- cached stat ---
+--- unstaged stat ---
+ api/services/tradeflow_service.py              | 63 ++++++++++++++++++++
+ api/tradeflow_schemas.py                       |  2 +
+ docs/DEVLOG.md                                 | 82 ++++++++++++++++++++++++++
+ docs/TASKS.md                                  |  4 +-
+ docs/tradeflow_trial_5day_replay_acceptance.md |  2 +-
+ docs/tradeflow_trial_acceptance.md             |  2 +-
+ docs/tradeflow_trial_acceptance_v2.md          |  2 +-
+ docs/tradeflow_trial_acceptance_v3.md          |  2 +-
+ tradingagents/dataflows/research_attention.py  | 57 ++++++++++++++++++
+ 9 files changed, 210 insertions(+), 6 deletions(-)
+--- cached diff ---
+--- unstaged diff code ---
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index ff7490f..ee0cbd1 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -241,6 +241,8 @@ def _enrich_candidate_with_research_attention(item: dict) -> dict:
+         item.setdefault("knowledge_theme_count", 0)
+         item.setdefault("research_attention_summary", "")
+         item.setdefault("research_attention_detail", {})
++        item.setdefault("research_attention_effective_score", 0.0)
++        item.setdefault("research_attention_overheat_penalty", 0.0)
+         return item
+ 
+     try:
+@@ -257,6 +259,8 @@ def _enrich_candidate_with_research_attention(item: dict) -> dict:
+         item.setdefault("knowledge_theme_count", 0)
+         item.setdefault("research_attention_summary", "")
+         item.setdefault("research_attention_detail", {})
++        item.setdefault("research_attention_effective_score", 0.0)
++        item.setdefault("research_attention_overheat_penalty", 0.0)
+         return item
+ 
+     try:
+@@ -268,9 +272,62 @@ def _enrich_candidate_with_research_attention(item: dict) -> dict:
+     item["knowledge_theme_count"] = summary["knowledge_theme_count"]
+     item["research_attention_summary"] = summary["research_attention_summary"]
+     item["research_attention_detail"] = summary
++    # [KB-009] research_attention_decay — 叠加候选过热惩罚（不改交易动作）。
++    _apply_kb009_overheat_to_item(item, sym_attention)
+     return item
+ 
+ 
++# [KB-009] research_attention_decay
++def _apply_kb009_overheat_to_item(item: dict, sym_attention: Any) -> None:
++    """在 KB-008 symbol 级去重/时效衰减之上叠加候选过热惩罚。
++
++    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
++    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
++    与相关 explain/warnings。只降低研究优先级，**不改变**强动作门禁与候选 tier；
++    依赖不可用时静默退化为已由 KB-008 写入的 symbol 级 effective score。
++    """
++    try:
++        from tradingagents.dataflows.research_attention_decay import (
++            apply_overheat_penalty as _kb009_apply_overheat,
++            compute_symbol_decay as _kb009_compute_decay,
++        )
++    except Exception:
++        return
++
++    try:
++        overheat_flags = item.get("overheat_flags") or []
++        short_term_gain = item.get("short_term_gain_pct")
++        if sym_attention is None:
++            # 无命中：effective = 0，但仍透出 overheat_flags 便于前端展示负面信号。
++            item["research_attention_effective_score"] = 0.0
++            item["research_attention_overheat_penalty"] = 0.0
++            return
++        theme_count = sym_attention.theme_count
++        decay = _kb009_compute_decay(sym_attention)
++        decay = _kb009_apply_overheat(
++            decay,
++            overheat_flags=overheat_flags,
++            short_term_gain_pct=short_term_gain,
++            theme_count=theme_count,
++        )
++        item["research_attention_effective_score"] = round(decay.effective_score, 2)
++        item["research_attention_overheat_penalty"] = round(decay.overheat_penalty, 2)
++        # 把过热明细合并回 detail，前端一处即可看到完整 explain。
++        detail = item.get("research_attention_detail")
++        if isinstance(detail, dict):
++            detail["research_attention_effective_score"] = round(
++                decay.effective_score, 2
++            )
++            detail["research_attention_overheat_penalty"] = round(
++                decay.overheat_penalty, 2
++            )
++            detail["research_attention_decay_explain"] = list(decay.explain)
++            detail["research_attention_warnings"] = list(decay.warnings)
++            detail["research_attention_overheat_flags"] = list(decay.overheat_flags)
++    except Exception:
++        return
++
++
+ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+     """批量注入研究关注度（[KB-008]）。
+ 
+@@ -294,6 +351,8 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+             it.setdefault("knowledge_theme_count", 0)
+             it.setdefault("research_attention_summary", "")
+             it.setdefault("research_attention_detail", {})
++            it.setdefault("research_attention_effective_score", 0.0)
++            it.setdefault("research_attention_overheat_penalty", 0.0)
+         return items
+ 
+     # 共享一次扫描结果；按 symbol_key 建索引加速候选批量查询。
+@@ -314,6 +373,8 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+             it.setdefault("knowledge_theme_count", 0)
+             it.setdefault("research_attention_summary", "")
+             it.setdefault("research_attention_detail", {})
++            it.setdefault("research_attention_effective_score", 0.0)
++            it.setdefault("research_attention_overheat_penalty", 0.0)
+             continue
+         # 优先精确匹配 symbol_key；找不到再做等价比较。
+         sym_attention = by_key.get(symbol)
+@@ -327,6 +388,8 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+         it["knowledge_theme_count"] = summary["knowledge_theme_count"]
+         it["research_attention_summary"] = summary["research_attention_summary"]
+         it["research_attention_detail"] = summary
++        # [KB-009] research_attention_decay — 批量也叠加候选过热惩罚。
++        _apply_kb009_overheat_to_item(it, sym_attention)
+     return items
+ 
+ 
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index c5e449a..25e5f06 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -121,6 +121,8 @@ class TradeFlowCandidateItem(BaseModel):
+     knowledge_theme_count: int = 0  # [KB-008] research_attention_integration
+     research_attention_summary: str = ""  # [KB-008] research_attention_integration
+     research_attention_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-008]
++    research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
++    research_attention_overheat_penalty: float = 0.0  # [KB-009] research_attention_decay
+     created_at: str = ""
+     updated_at: str = ""
+ 
+diff --git a/tradingagents/dataflows/research_attention.py b/tradingagents/dataflows/research_attention.py
+index 7dcff85..d5c64f8 100644
+--- a/tradingagents/dataflows/research_attention.py
++++ b/tradingagents/dataflows/research_attention.py
+@@ -929,6 +929,16 @@ def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
+             "matched_pages": [],
+             "score_explain": [],
+             "research_attention_summary": "",
++            # [KB-009] research_attention_decay — 无命中时填充空结构。
++            "research_attention_effective_score": 0.0,
++            "research_attention_base_score": 0.0,
++            "research_attention_dedup_penalty": 0.0,
++            "research_attention_time_decay_factor": 1.0,
++            "research_attention_overheat_penalty": 0.0,
++            "research_attention_unique_institution_count": 0,
++            "research_attention_duplicate_institution_count": 0,
++            "research_attention_decay_explain": [],
++            "research_attention_warnings": [],
+         }
+ 
+     matched_pages = [
+@@ -936,6 +946,10 @@ def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
+         for p in sym.matched_pages[:5]
+     ]
+     summary = _render_attention_summary(sym)
++    # [KB-009] research_attention_decay — 在 KB-007 基础分之上叠加机构级去重 +
++    # 时效衰减（symbol 级，不含候选过热惩罚；过热由 TradeFlow 候选 enrichment
++    # 用候选 overheat_flags 单独叠加）。降级时退化为空结构，绝不阻塞主流程。
++    decay_summary = _kb009_symbol_decay_summary(sym)
+     return {
+         "has_hit": True,
+         "research_attention_score": round(sym.research_attention_score, 2),
+@@ -952,9 +966,36 @@ def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
+         "matched_pages": matched_pages,
+         "score_explain": list(sym.score_explain[:6]),
+         "research_attention_summary": summary,
++        **decay_summary,
+     }
+ 
+ 
++def _kb009_symbol_decay_summary(sym: SymbolAttention) -> Dict[str, Any]:
++    """[KB-009] 计算单标的的 symbol 级去重 + 时效衰减摘要（不含过热惩罚）。
++
++    依赖不可用时降级为"无衰减"中性结构，绝不抛异常阻塞 KB-008 主链路。
++    """
++    try:
++        from tradingagents.dataflows.research_attention_decay import (
++            compute_symbol_decay as _kb009_compute_decay,
++            decay_to_summary as _kb009_decay_to_summary,
++        )
++        decay = _kb009_compute_decay(sym)
++        return _kb009_decay_to_summary(decay)
++    except Exception:
++        return {
++            "research_attention_effective_score": round(sym.research_attention_score, 2),
++            "research_attention_base_score": round(sym.research_attention_score, 2),
++            "research_attention_dedup_penalty": 0.0,
++            "research_attention_time_decay_factor": 1.0,
++            "research_attention_overheat_penalty": 0.0,
++            "research_attention_unique_institution_count": 0,
++            "research_attention_duplicate_institution_count": 0,
++            "research_attention_decay_explain": [],
++            "research_attention_warnings": [],
++        }
++
++
+ def _render_attention_summary(sym: SymbolAttention) -> str:
+     """渲染一句话摘要：综合关注度 + 命中篇数 + 主题交叉 + 负面信息。
+ 
+@@ -1039,6 +1080,22 @@ def render_research_attention_inline(sym: Optional[SymbolAttention]) -> str:
+         lines.append("- 分数构成：")
+         for line in sym.score_explain[:6]:
+             lines.append(f"  - {line}")
++    # [KB-009] research_attention_decay — 附上去重 / 时效衰减摘要（不含买卖建议）。
++    try:
++        from tradingagents.dataflows.research_attention_decay import (
++            compute_symbol_decay as _kb009_compute_decay,
++            render_decay_summary_inline as _kb009_render_decay,
++        )
++        decay = _kb009_compute_decay(sym)
++        decay_line = _kb009_render_decay(decay)
++        if decay_line:
++            lines.append(f"- 去重/时效：{decay_line}")
++        if decay.explain:
++            lines.append("  - 衰减明细：")
++            for line in decay.explain[:6]:
++                lines.append(f"    - {line}")
++    except Exception:
++        pass
+     lines.append("")
+     return "\n".join(lines)
+ 
+--- untracked files ---
+docs/task_runs/KB-009-20260701-204409/tests-round1.txt
+docs/task_runs/KB-009-20260701-204409/knowledge-preflight.txt
+docs/task_runs/KB-009-20260701-204409/codegraph-status.json
+docs/task_runs/KB-009-20260701-204409/prompt-round1.md
+docs/task_runs/KB-009-20260701-204409/codegraph-context.txt
+docs/task_runs/KB-009-20260701-204409/opencode-round1.txt
+docs/task_runs/KB-009-20260701-204409/task.md
+docs/task_runs/KB-009-20260701-204409/codegraph-impact.txt
+tests/test_kb009_research_attention_decay.py
+tradingagents/dataflows/research_attention_decay.py
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/research_attention_decay.py && echo '--- tests 1 ---' && sed -n '1,260p' tests/test_kb009_research_attention_decay.py && echo '--- tests 2 ---' && sed -n '261,620p' tests/test_kb009_research_attention_decay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [KB-009] research_attention_decay
+"""研报来源去重、时效衰减与过热惩罚规则。
+
+在 KB-007 ``research_attention_score``（多研报重复提及因子）之上，叠加一层
+"防刷分 / 防过期 / 防过热"的衰减与惩罚，避免关注度被下列三类噪声过度放大：
+
+  1. **同源重复**：同一机构 / 同一标题 / 同一 raw source 在多页重复命中，
+     只计一次主权重。本模块按**机构级**（最粗粒度，能折叠最多重复）做去重；
+     更细的 wiki-link alias 级去重已在 KB-007 ``duplicate_source_penalty`` 覆盖。
+  2. **时效衰减**：``valid_until`` 已过期的页面只保留弱证据；``stale_risk=高``
+     的页面权重随年龄衰减更快。
+  3. **过热惩罚**：结合候选已有 ``overheat_flags``、短期涨幅、主题拥挤度降低
+     研究**优先级**（注意：只降低研究优先级，**不改变**强动作门禁与交易决策）。
+
+设计约束（对应任务 KB-009）：
+  - **不压制真实多来源共识**：3 家不同机构各提到一次，机构级去重比 = 1.0，
+    不扣分；只有同一机构重复出现才折叠。
+  - **不用单日价格涨幅作为唯一过热指标**：过热惩罚由 ``overheat_flags`` +
+    短期涨幅 + 主题拥挤度**三个信号**叠加触发，任一缺失只跳过该项，不会单独
+    因涨幅高就把分数清零。
+  - **不调用 LLM / 不访问外网 / 不写 DB**：纯标准库计算，输入为 KB-007 已
+    聚合好的 :class:`SymbolAttention` 与候选上下文（overheat_flags 等）。
+  - **只读叠加层**：不修改 KB-007 的 ``research_attention_score`` 与
+    ``score_explain``（保持透明与回归稳定），只产出新的 ``effective_score``
+    与独立 explain。
+
+合成公式（解释可读、可复现）::
+
+    # 1. 机构级去重（仅对 fresh 页统计）
+    effective_fresh_institution_count = 去重机构数（无来源的页视作独立来源）
+    duplicate_institution_count      = fresh_mention_count - effective_fresh_institution_count
+    dedup_penalty = duplicate_institution_count × _P_INSTITUTION_DUPLICATE
+
+    # 2. 时效衰减（对 fresh 页按页计算 [0,1] 因子后取均值）
+    expired + stale_risk=高   → 0.3   （过期弱证据，衰减最快）
+    expired + stale_risk!=高  → 0.5
+    未过期 + stale_risk=高    → 随年龄在 [0.6, 1.0] 内衰减（90 天到地板）
+    未过期 + stale_risk!=高   → 随年龄在 [0.8, 1.0] 内衰减（365 天到地板）
+    time_decay_factor = mean(per-page factor over fresh pages)
+
+    decay_adjusted_score = max(0, (base_score - dedup_penalty) × time_decay_factor)
+
+    # 3. 过热惩罚（仅候选上下文提供时才计算）
+    overheat_penalty = overheat_flag_count × _P_OVERHEAT_FLAG
+                     + max(0, (short_term_gain_pct - threshold)/10) × _P_SHORT_TERM_GAIN
+                     + max(0, theme_count - crowding_threshold) × _P_THEME_CROWDING
+
+    effective_score = max(0, decay_adjusted_score - overheat_penalty)
+
+使用示例::
+
+    from tradingagents.dataflows.research_attention_decay import (
+        compute_symbol_decay,
+        apply_overheat_penalty,
+    )
+    decay = compute_symbol_decay(sym)              # 去重 + 时效衰减
+    final = apply_overheat_penalty(decay, overheat_flags=["短期过热"],
+                                   short_term_gain_pct=25.0, theme_count=8)
+    print(final.effective_score, final.explain)
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+from tradingagents.dataflows.local_knowledge_audit import _is_valid_until_expired
+from tradingagents.dataflows.local_knowledge_lint import HIGH_STALE_RISK_VALUES
+from tradingagents.dataflows.research_attention import (
+    PageMention,
+    SymbolAttention,
+    _is_fresh,
+)
+
+
+# ── 常量（暴露为模块常量，便于调参与测试覆盖）──────────────────────────
+
+CONTRACT_VERSION = "kb-009-v1"
+TASK_CODE = "KB-009"
+
+# 机构级重复惩罚（每个被折叠的重复 fresh 命中扣分）。
+_P_INSTITUTION_DUPLICATE = 0.2
+
+# 时效衰减地板与衰减周期。
+_EXPIRED_HIGH_STALE_FACTOR = 0.3
+_EXPIRED_LOW_STALE_FACTOR = 0.5
+_FRESH_HIGH_STALE_FLOOR = 0.6
+_FRESH_LOW_STALE_FLOOR = 0.8
+_FRESH_HIGH_STALE_HORIZON_DAYS = 90
+_FRESH_LOW_STALE_HORIZON_DAYS = 365
+
+# 过热惩罚权重（三信号叠加）。
+_P_OVERHEAT_FLAG = 0.5
+_P_SHORT_TERM_GAIN = 0.3  # 每超过阈值 10 个百分点扣分
+_P_THEME_CROWDING = 0.4   # 每超过拥挤阈值 1 个主题扣分
+
+# 过热触发阈值（任一信号单独不构成"唯一指标"）。
+_SHORT_TERM_GAIN_THRESHOLD_PCT = 20.0
+_THEME_CROWDING_THRESHOLD = 6
+
+
+# 机构名分隔符：中邮证券-华勤技术超节点 / 中金—腾讯 / 标题：副标题。
+_INSTITUTION_SPLIT_RE = re.compile(r"[-—：:]")
+
+
+# ── 数据类 ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SymbolDecayResult:
+    """单标的的 KB-009 去重 + 时效衰减结果（不含过热惩罚）。"""
+
+    base_score: float = 0.0
+    dedup_penalty: float = 0.0
+    time_decay_factor: float = 1.0
+    decay_adjusted_score: float = 0.0
+    fresh_mention_count: int = 0
+    unique_institution_count: int = 0
+    duplicate_institution_count: int = 0
+    expired_fresh_count: int = 0
+    high_stale_fresh_count: int = 0
+    overheat_penalty: float = 0.0
+    effective_score: float = 0.0
+    overheat_flags: List[str] = field(default_factory=list)
+    short_term_gain_pct: Optional[float] = None
+    theme_crowding_active: bool = False
+    explain: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "contract_version": CONTRACT_VERSION,
+            "base_score": round(self.base_score, 2),
+            "dedup_penalty": round(self.dedup_penalty, 2),
+            "time_decay_factor": round(self.time_decay_factor, 2),
+            "decay_adjusted_score": round(self.decay_adjusted_score, 2),
+            "overheat_penalty": round(self.overheat_penalty, 2),
+            "effective_score": round(self.effective_score, 2),
+            "fresh_mention_count": self.fresh_mention_count,
+            "unique_institution_count": self.unique_institution_count,
+            "duplicate_institution_count": self.duplicate_institution_count,
+            "expired_fresh_count": self.expired_fresh_count,
+            "high_stale_fresh_count": self.high_stale_fresh_count,
+            "overheat_flags": list(self.overheat_flags),
+            "short_term_gain_pct": self.short_term_gain_pct,
+            "theme_crowding_active": self.theme_crowding_active,
+            "explain": list(self.explain),
+            "warnings": list(self.warnings),
+        }
+
+
+# ── 机构级去重 ────────────────────────────────────────────────────────
+
+
+def split_institution(source_alias: str) -> str:
+    """从来源别名提取机构名（去重 key）。
+
+    规则：取首个 ``- / — / ： / :`` 之前的部分；无分隔符则取整串（视作独立来源）。
+
+    例：
+      ``中邮证券-华勤技术超节点`` → ``中邮证券``
+      ``国泰君安—华勤技术深度``   → ``国泰君安``
+      ``中金：腾讯``              → ``中金``
+      ``Bernstein-Dell``          → ``Bernstein``
+      ``星球社群截图``            → ``星球社群截图``（无分隔符，整串）
+    """
+    text = str(source_alias).strip()
+    if not text:
+        return ""
+    m = _INSTITUTION_SPLIT_RE.search(text)
+    if m:
+        inst = text[: m.start()].strip()
+        return inst or text
+    return text
+
+
+def _page_institution_key(page: PageMention) -> str:
+    """单页的机构去重 key：取首个 source alias 的机构名；无来源则用页面路径（独立）。"""
+    for alias in page.source_aliases:
+        inst = split_institution(alias)
+        if inst:
+            return inst
+    # 无 sources 的页面无法判定同源 —— 视作独立来源，避免误折叠真实多来源共识。
+    return page.rel_path
+
+
+def _compute_institution_dedup(fresh_pages: List[PageMention]) -> Tuple[List[str], int]:
+    """统计 fresh 页的机构级去重。
+
+    返回 ``(unique_institutions, duplicate_count)``，其中
+    ``duplicate_count = len(fresh_pages) - len(unique_institutions)``。
+    无来源的页面各自独立，不计入重复。
+    """
+    seen: List[str] = []
+    for p in fresh_pages:
+        key = _page_institution_key(p)
+        if key not in seen:
+            seen.append(key)
+    duplicates = max(0, len(fresh_pages) - len(seen))
+    return seen, duplicates
+
+
+# ── 时效衰减 ──────────────────────────────────────────────────────────
+
+
+def _parse_date(text: Optional[str]) -> Optional[date]:
+    """解析 ``updated`` / ``valid_until`` 字段中的日期；失败返回 None。"""
+    if not text:
+        return None
+    cleaned = re.sub(r"[/-]", "", str(text).strip())
+    if not re.fullmatch(r"\d{8}", cleaned):
+        return None
+    try:
+        return date(int(cleaned[:4]), int(cleaned[4:6]), int(cleaned[6:8]))
+    except ValueError:
+        return None
+
+
+def page_time_decay_factor(
+    page: PageMention,
+    valid_until_expired: bool,
+    today: Optional[date] = None,
+) -> float:
+    """单页时效衰减因子 ∈ [0, 1]。
+
+    - ``valid_until`` 已过期：弱证据，``高 stale_risk`` → 0.3，否则 → 0.5。
+    - 未过期：随 ``updated`` 年龄衰减；``高 stale_risk`` 衰减更快（90 天到 0.6 地板），
+      其余 365 天到 0.8 地板。无 ``updated`` 视作无年龄衰减（因子 1.0）。
+    """
+    if valid_until_expired:
+        return _EXPIRED_HIGH_STALE_FACTOR if page.is_stale else _EXPIRED_LOW_STALE_FACTOR
+
+    today = today or date.today()
+    updated = _parse_date(page.updated_at)
+    if updated is None:
+        return 1.0
+
+    age_days = max(0, (today - updated).days)
+    # is_stale 已综合 stale_risk=高 / 过期；过期分支已 return，剩下的 is_stale
+    # 即 stale_risk=高 —— 据此区分高低衰减速率。
+    is_high_stale = page.is_stale
+    if is_high_stale:
+        floor = _FRESH_HIGH_STALE_FLOOR
+        horizon = _FRESH_HIGH_STALE_HORIZON_DAYS
+    else:
+        floor = _FRESH_LOW_STALE_FLOOR
+        horizon = _FRESH_LOW_STALE_HORIZON_DAYS
+    if horizon <= 0:
+        return floor
+    factor = 1.0 - age_days / horizon
+    return max(floor, min(1.0, factor))
+
+
+def _compute_time_decay(
+    fresh_pages: List[PageMention],
+    today: Optional[date] = None,
+) -> Tuple[float, int, int]:
+    """返回 ``(avg_factor, expired_fresh_count, high_stale_fresh_count)``。
+--- tests 1 ---
+# [KB-009] research_attention_decay
+"""Tests for 研报来源去重、时效衰减与过热惩罚规则 (KB-009).
+
+覆盖：
+  - ``split_institution``：机构名提取（分隔符 / 无分隔符 / 空串）。
+  - ``compute_symbol_decay``：
+      * 机构级去重（同机构重复 → 扣分；不同机构共识 → 不压制）。
+      * 时效衰减（过期弱证据 / 高 stale_risk 衰减更快 / 年龄衰减）。
+      * explain 可读、warnings 透出。
+  - ``compute_overheat_penalty``：
+      * 三信号叠加（overheat_flags / 短期涨幅 / 主题拥挤）。
+      * 单一信号不构成清零（不用单日涨幅作为唯一指标）。
+      * 阈值边界（恰好等于 / 略超阈值）。
+  - ``apply_overheat_penalty`` / ``compute_effective_attention``：链式叠加。
+  - ``attention_to_summary``：KB-009 字段透出（命中 / 无命中）。
+  - TradeFlow ``_enrich_candidate_with_research_attention`` /
+    ``_enrich_candidates_with_research_attention``：
+      * 过热降低 effective_score，但不改 KB-007 base score / 强动作门禁。
+      * 无命中 NORMAL_NO_DATA；overheat_flags 从候选读取。
+  - Pydantic schema 包含 KB-009 字段。
+  - 只读安全性（不写知识库）。
+  - explain / summary 不含买卖建议或强动作词。
+"""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
+
+from tradingagents.dataflows.local_knowledge_audit import INVESTMENT_SUBDIR
+from tradingagents.dataflows.research_attention import (
+    PageMention,
+    SymbolAttention,
+    attention_to_summary,
+    lookup_research_attention,
+)
+from tradingagents.dataflows.research_attention_decay import (
+    CONTRACT_VERSION,
+    TASK_CODE,
+    SymbolDecayResult,
+    apply_overheat_penalty,
+    compute_effective_attention,
+    compute_overheat_penalty,
+    compute_symbol_decay,
+    decay_to_summary,
+    page_time_decay_factor,
+    render_decay_summary_inline,
+    split_institution,
+)
+from tradingagents.dataflows.local_knowledge_provider import STATUS_NORMAL_NO_DATA
+
+
+# ── 工具：构造 fixture 知识库 ─────────────────────────────────────────
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+# 同机构重复 fixture：两篇 fresh 研报都引用"中信证券"，第三篇引用"国泰君安"。
+# 用来验证"同机构重复只计一次主权重，不同机构共识不压制"。
+_DUP_INST_PAGE_A = """---
+title: 标的A-中信证券点评1
+created: 2026-06-01
+updated: 2026-06-29
+sources:
+  - "[[../../raw/2026-06-01-中信证券-标的A.md|中信证券-标的A]]"
+tags: [标的A]
+symbols: ["600000.SH 标的A"]
+themes: [消费, 白酒]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 标的A
+"""
+
+_DUP_INST_PAGE_B = """---
+title: 标的A-中信证券点评2
+created: 2026-06-10
+updated: 2026-06-30
+sources:
+  - "[[../../raw/2026-06-10-中信证券-标的A跟踪.md|中信证券-标的A跟踪]]"
+tags: [标的A]
+symbols: ["600000.SH 标的A"]
+themes: [消费, 食品]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 标的A跟踪
+"""
+
+_DUP_INST_PAGE_C = """---
+title: 标的A-国泰君安深度
+created: 2026-06-15
+updated: 2026-06-30
+sources:
+  - "[[../../raw/2026-06-15-国泰君安-标的A深度.md|国泰君安-标的A深度]]"
+tags: [标的A]
+symbols: ["600000.SH 标的A"]
+themes: [消费, 白酒, 食品]
+report_type: 深度
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 标的A深度
+"""
+
+# 不同机构共识 fixture：3 家不同机构各一篇（无重复）。
+_CONSENSUS_PAGE_X = """---
+title: 标的B-中金点评
+created: 2026-06-01
+updated: 2026-06-29
+sources:
+  - "中金-标的B"
+tags: [标的B]
+symbols: ["600001.SH 标的B"]
+themes: [新能源]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 标的B
+"""
+
+_CONSENSUS_PAGE_Y = """---
+title: 标的B-华泰点评
+created: 2026-06-02
+updated: 2026-06-30
+sources:
+  - "华泰-标的B"
+symbols: ["600001.SH 标的B"]
+themes: [新能源, 储能]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 标的B华泰
+"""
+
+_CONSENSUS_PAGE_Z = """---
+title: 标的B-招商点评
+created: 2026-06-03
+updated: 2026-06-30
+sources:
+  - "招商证券-标的B"
+symbols: ["600001.SH 标的B"]
+themes: [新能源]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 标的B招商
+"""
+
+# 高 stale_risk 页面（未过期，用于验证"高 stale_risk 衰减更快"）。
+_HIGH_STALE_PAGE = """---
+title: 标的C-高stale点评
+created: 2026-03-01
+updated: 2026-04-01
+sources:
+  - "中信建投-标的C"
+symbols: ["600002.SH 标的C"]
+themes: [周期]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 中
+stale_risk: 高
+---
+
+# 标的C
+"""
+
+
+@pytest.fixture()
+def fixture_kb(tmp_path: Path) -> Path:
+    inv = tmp_path / INVESTMENT_SUBDIR
+    _write(inv / "标的A-中信1.md", _DUP_INST_PAGE_A)
+    _write(inv / "标的A-中信2.md", _DUP_INST_PAGE_B)
+    _write(inv / "标的A-国泰君安.md", _DUP_INST_PAGE_C)
+    _write(inv / "标的B-中金.md", _CONSENSUS_PAGE_X)
+    _write(inv / "标的B-华泰.md", _CONSENSUS_PAGE_Y)
+    _write(inv / "标的B-招商.md", _CONSENSUS_PAGE_Z)
+    _write(inv / "标的C-高stale.md", _HIGH_STALE_PAGE)
+    return tmp_path
+
+
+@pytest.fixture()
+def empty_kb(tmp_path: Path) -> Path:
+    (tmp_path / INVESTMENT_SUBDIR).mkdir(parents=True)
+    return tmp_path
+
+
+# ── 1. split_institution ─────────────────────────────────────────────
+
+
+class TestSplitInstitution:
+    def test_hyphen_separator(self):
+        assert split_institution("中邮证券-华勤技术超节点") == "中邮证券"
+
+    def test_em_dash_separator(self):
+        assert split_institution("国泰君安—华勤技术深度") == "国泰君安"
+
+    def test_colon_separator(self):
+        assert split_institution("中金：腾讯") == "中金"
+
+    def test_ascii_colon(self):
+        assert split_institution("Bernstein:Dell") == "Bernstein"
+
+    def test_ascii_hyphen(self):
+        assert split_institution("Bernstein-Dell") == "Bernstein"
+
+    def test_no_separator_returns_whole(self):
+        # 无分隔符 → 整串作为独立来源 key（不折叠）。
+        assert split_institution("星球社群截图") == "星球社群截图"
+
+    def test_empty_returns_empty(self):
+        assert split_institution("") == ""
+
+    def test_strips_whitespace(self):
+        assert split_institution("  中信证券 - 标的A  ") == "中信证券"
+
+
+# ── 2. compute_symbol_decay — 机构级去重 ─────────────────────────────
+
+
+class TestInstitutionDedup:
+    def test_same_institution_duplicate_penalized(self, fixture_kb: Path):
+        """同机构（中信证券）在两篇 fresh 页重复 → 扣分，effective < base。"""
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        assert sym is not None
+        decay = compute_symbol_decay(sym)
+        # 3 篇 fresh，其中中信证券重复 1 次 → duplicate_institution_count=1。
+        assert decay.fresh_mention_count == 3
+        assert decay.unique_institution_count == 2  # 中信证券 + 国泰君安
+        assert decay.duplicate_institution_count == 1
+        assert decay.dedup_penalty > 0.0
+--- tests 2 ---
+        assert decay.effective_score < sym.research_attention_score
+        # explain 必须可读且含"机构级去重"。
+        joined = " ".join(decay.explain)
+        assert "机构级去重" in joined
+
+    def test_different_institutions_consensus_not_suppressed(self, fixture_kb: Path):
+        """3 家不同机构各一篇 → 不扣分，effective ≈ base（无去重惩罚）。"""
+        sym = lookup_research_attention(str(fixture_kb), "600001")
+        assert sym is not None
+        decay = compute_symbol_decay(sym)
+        assert decay.fresh_mention_count == 3
+        assert decay.unique_institution_count == 3
+        assert decay.duplicate_institution_count == 0
+        assert decay.dedup_penalty == 0.0
+        # 无过热时 effective 应接近 base（仅可能有微小时效衰减）。
+        assert decay.effective_score <= sym.research_attention_score
+        assert decay.effective_score >= sym.research_attention_score * 0.99
+
+    def test_no_fresh_pages_no_dedup(self, empty_kb: Path):
+        """无命中 → factor 默认 1.0，无扣分。"""
+        from tradingagents.dataflows.research_attention import SymbolAttention
+
+        sym = SymbolAttention(symbol_key="X", bare_code="", name="X", asset_class="OTHER")
+        decay = compute_symbol_decay(sym)
+        assert decay.fresh_mention_count == 0
+        assert decay.dedup_penalty == 0.0
+        assert decay.time_decay_factor == 1.0
+        assert decay.effective_score == 0.0
+
+
+# ── 3. compute_symbol_decay — 时效衰减 ───────────────────────────────
+
+
+class TestTimeDecay:
+    def test_expired_page_weak_evidence(self):
+        """valid_until 过期 → 弱证据因子（0.3 / 0.5）。"""
+        # 高 stale 过期页
+        p_high = PageMention(
+            rel_path="a", title="a", page_type="company", is_stale=True,
+            updated_at="2020-01-01",
+        )
+        # 低 stale 过期页
+        p_low = PageMention(
+            rel_path="b", title="b", page_type="company", is_stale=False,
+            updated_at="2020-01-01",
+        )
+        assert page_time_decay_factor(p_high, True) == 0.3
+        assert page_time_decay_factor(p_low, True) == 0.5
+
+    def test_high_stale_risk_decays_faster(self):
+        """未过期但高 stale_risk → 随年龄更快衰减到 0.6 地板。"""
+        today = date(2026, 7, 1)
+        # 100 天前更新，高 stale → 应低于低 stale 同龄页。
+        old_date = (today - timedelta(days=100)).strftime("%Y-%m-%d")
+        p_high = PageMention(
+            rel_path="h", title="h", page_type="company", is_stale=True,
+            updated_at=old_date,
+        )
+        p_low = PageMention(
+            rel_path="l", title="l", page_type="company", is_stale=False,
+            updated_at=old_date,
+        )
+        # 未过期分支（valid_until_expired=False）。
+        f_high = page_time_decay_factor(p_high, False, today)
+        f_low = page_time_decay_factor(p_low, False, today)
+        assert f_high < f_low
+        assert f_high >= 0.6  # 地板
+        assert f_low >= 0.8
+
+    def test_no_updated_no_decay(self):
+        """无 updated 字段 → 视作无年龄衰减（因子 1.0）。"""
+        p = PageMention(
+            rel_path="x", title="x", page_type="company", is_stale=False,
+            updated_at=None,
+        )
+        assert page_time_decay_factor(p, False) == 1.0
+
+    def test_recent_page_full_factor(self):
+        """近期更新的低 stale 页 → 因子接近 1.0。"""
+        today = date(2026, 7, 1)
+        recent = (today - timedelta(days=2)).strftime("%Y-%m-%d")
+        p = PageMention(
+            rel_path="r", title="r", page_type="company", is_stale=False,
+            updated_at=recent,
+        )
+        assert page_time_decay_factor(p, False, today) > 0.99
+
+
+# ── 4. compute_overheat_penalty ──────────────────────────────────────
+
+
+class TestOverheatPenalty:
+    def test_three_signals_combine(self):
+        penalty, explain, active = compute_overheat_penalty(
+            overheat_flags=["短期过热", "量能异常"],
+            short_term_gain_pct=30.0,
+            theme_count=8,
+        )
+        # flags=2×0.5 + gain((30-20)/10×0.3=0.3) + crowd((8-6)×0.4=0.8) = 2.1
+        assert penalty == pytest.approx(2.1, abs=0.001)
+        assert len(active) == 3
+        assert any("overheat_flags" in a for a in active)
+        assert any("short_term_gain" in a for a in active)
+        assert any("theme_crowding" in a for a in active)
+        # explain 可读。
+        assert all("=" in e for e in explain)
+
+    def test_single_gain_signal_does_not_zero_out(self):
+        """任务约束：不用单日价格涨幅作为唯一过热指标 → 单一涨幅仍能触发，但不会清零分数。"""
+        penalty, explain, active = compute_overheat_penalty(short_term_gain_pct=50.0)
+        assert penalty > 0.0
+        assert len(active) == 1
+        # 涨幅 50%：超出 30pp，(30/10)×0.3 = 0.9。
+        assert penalty == pytest.approx(0.9, abs=0.001)
+
+    def test_no_signals_zero_penalty(self):
+        penalty, explain, active = compute_overheat_penalty()
+        assert penalty == 0.0
+        assert active == []
+        assert explain == []
+
+    def test_gain_below_threshold_no_penalty(self):
+        """涨幅未超阈值 → 不触发。"""
+        penalty, _, active = compute_overheat_penalty(short_term_gain_pct=20.0)
+        assert penalty == 0.0
+        assert active == []
+
+    def test_theme_at_crowding_threshold_no_penalty(self):
+        """主题数恰好等于拥挤阈值（6）→ 不触发。"""
+        penalty, _, active = compute_overheat_penalty(theme_count=6)
+        assert penalty == 0.0
+        assert active == []
+
+    def test_theme_above_threshold_triggers(self):
+        penalty, _, active = compute_overheat_penalty(theme_count=7)
+        assert penalty > 0.0
+        assert any("theme_crowding" in a for a in active)
+
+    def test_empty_flags_ignored(self):
+        penalty, _, _ = compute_overheat_penalty(overheat_flags=["", "  "])
+        assert penalty == 0.0
+
+
+# ── 5. apply_overheat_penalty / compute_effective_attention ───────────
+
+
+class TestEffectiveAttention:
+    def test_overheat_reduces_effective_below_decay(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        decay = compute_symbol_decay(sym)
+        decay_adjusted = decay.decay_adjusted_score
+        final = apply_overheat_penalty(
+            decay, overheat_flags=["短期过热"], short_term_gain_pct=30.0, theme_count=8
+        )
+        assert final.overheat_penalty > 0.0
+        assert final.effective_score < decay_adjusted
+        assert final.effective_score >= 0.0
+
+    def test_no_overheat_effective_equals_decay(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600001")
+        final = compute_effective_attention(sym)  # 无过热参数
+        assert final.overheat_penalty == 0.0
+        assert final.effective_score == final.decay_adjusted_score
+
+    def test_effective_never_negative(self, fixture_kb: Path):
+        """极端过热 → effective 不会变成负数（max(0, ...)）。"""
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        final = compute_effective_attention(
+            sym,
+            overheat_flags=["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+            short_term_gain_pct=999.0,
+            theme_count=50,
+        )
+        assert final.effective_score >= 0.0
+
+
+# ── 6. attention_to_summary KB-009 字段 ──────────────────────────────
+
+
+class TestAttentionSummaryKB009:
+    def test_hit_summary_has_kb009_fields(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        s = attention_to_summary(sym)
+        for key in (
+            "research_attention_effective_score",
+            "research_attention_base_score",
+            "research_attention_dedup_penalty",
+            "research_attention_time_decay_factor",
+            "research_attention_overheat_penalty",
+            "research_attention_unique_institution_count",
+            "research_attention_duplicate_institution_count",
+            "research_attention_decay_explain",
+            "research_attention_warnings",
+        ):
+            assert key in s, f"missing KB-009 key: {key}"
+        # KB-007 base 字段保持不变（回归保护）。
+        assert "research_attention_score" in s
+        assert "score_explain" in s
+
+    def test_no_hit_summary_has_kb009_empty_fields(self):
+        s = attention_to_summary(None)
+        assert s["research_attention_effective_score"] == 0.0
+        assert s["research_attention_time_decay_factor"] == 1.0
+        assert s["research_attention_decay_explain"] == []
+        assert s["has_hit"] is False
+
+    def test_kb007_base_score_unchanged(self, fixture_kb: Path):
+        """KB-009 不修改 KB-007 base score（透明、回归稳定）。"""
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        s = attention_to_summary(sym)
+        assert s["research_attention_score"] == s["research_attention_base_score"]
+
+
+# ── 7. decay_to_summary / render_decay_summary_inline ─────────────────
+
+
+class TestDecaySummary:
+    def test_decay_to_summary_structure(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        decay = compute_symbol_decay(sym)
+        d = decay_to_summary(decay)
+        assert d["research_attention_effective_score"] >= 0.0
+        assert "research_attention_decay_explain" in d
+        assert "research_attention_warnings" in d
+
+    def test_decay_to_summary_none(self):
+        d = decay_to_summary(None)
+        assert d["research_attention_effective_score"] == 0.0
+        assert d["research_attention_time_decay_factor"] == 1.0
+
+    def test_render_inline_no_strong_action_words(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        decay = compute_effective_attention(
+            sym, overheat_flags=["短期过热"], short_term_gain_pct=25.0
+        )
+        text = render_decay_summary_inline(decay)
+        assert text != ""
+        for forbidden in ("买入", "卖出", "加仓", "减仓", "强烈推荐", "BUY", "SELL"):
+            assert forbidden not in text
+
+    def test_render_inline_none_empty(self):
+        assert render_decay_summary_inline(None) == ""
+
+
+# ── 8. TradeFlow candidate enrichment（KB-009 过热叠加）──────────────
+
+
+class TestTradeFlowEnrichmentKB009:
+    def test_overheat_reduces_effective_not_base(self, fixture_kb: Path, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidate_with_research_attention,
+        )
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        item_no_heat = {"symbol": "600000.SH", "name": "标的A"}
+        item_heat = {
+            "symbol": "600000.SH",
+            "name": "标的A",
+            "overheat_flags": ["短期过热", "量能异常"],
+            "short_term_gain_pct": 30.0,
+        }
+        r0 = _enrich_candidate_with_research_attention(dict(item_no_heat))
+        r1 = _enrich_candidate_with_research_attention(dict(item_heat))
+        # KB-007 base score 不受 overheat 影响（透明）。
+        assert r0["research_attention_score"] == r1["research_attention_score"]
+        # 过热时 effective 更低。
+        assert r1["research_attention_effective_score"] < r0["research_attention_effective_score"]
+        assert r1["research_attention_overheat_penalty"] > 0.0
+        assert r0["research_attention_overheat_penalty"] == 0.0
+
+    def test_overheat_does_not_change_strong_action_gate(
+        self, fixture_kb: Path, monkeypatch
+    ):
+        """过热只降低研究优先级，不改强动作门禁 / tier / decision。"""
+        from api.services.tradeflow_service import (
+            _enrich_candidate_with_research_attention,
+        )
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        item = {
+            "symbol": "600000.SH",
+            "name": "标的A",
+            "tier": "watch",
+            "action": "OBSERVE",
+            "overheat_flags": ["短期过热"],
+            "short_term_gain_pct": 40.0,
+        }
+        r = _enrich_candidate_with_research_attention(item)
+        assert r["tier"] == "watch"
+        assert r["action"] == "OBSERVE"
+        assert r["research_attention_overheat_penalty"] > 0.0
+
+    def test_no_hit_effective_zero(self, fixture_kb: Path, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidate_with_research_attention,
+        )
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        r = _enrich_candidate_with_research_attention(
+            {"symbol": "999999.SH", "overheat_flags": ["x"]}
+        )
+        assert r["research_attention_effective_score"] == 0.0
+        assert r["research_attention_score"] == 0.0
+
+    def test_empty_symbol_has_kb009_defaults(self, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidate_with_research_attention,
+        )
+
+        r = _enrich_candidate_with_research_attention({"symbol": ""})
+        assert r["research_attention_effective_score"] == 0.0
+        assert r["research_attention_overheat_penalty"] == 0.0
+
+    def test_detail_contains_decay_explain(self, fixture_kb: Path, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidate_with_research_attention,
+        )
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        r = _enrich_candidate_with_research_attention(
+            {"symbol": "600000.SH", "overheat_flags": ["短期过热"]}
+        )
+        detail = r["research_attention_detail"]
+        assert "research_attention_decay_explain" in detail
+        assert "research_attention_overheat_flags" in detail
+        # explain 非空（有机构去重或过热）。
+        assert len(detail["research_attention_decay_explain"]) > 0
+
+
+class TestTradeFlowBatchEnrichmentKB009:
+    def test_batch_applies_overheat_per_item(self, fixture_kb: Path, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidates_with_research_attention,
+        )
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        items = [
+            {"symbol": "600000.SH", "overheat_flags": ["短期过热"]},
+            {"symbol": "600001.SH"},  # 无过热
+            {"symbol": "999999.SH"},  # 无命中
+        ]
+        result = _enrich_candidates_with_research_attention(items)
+        eff = [it["research_attention_effective_score"] for it in result]
+        assert eff[2] == 0.0
+        # 共识标的（600001，不同机构）无过热 → effective 接近 base。
+        assert result[1]["research_attention_overheat_penalty"] == 0.0
+        # 过热标的 effective 受惩罚。
+        assert result[0]["research_attention_overheat_penalty"] > 0.0
+
+    def test_batch_shared_scan_consistent(self, fixture_kb: Path, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidates_with_research_attention,
+        )
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        items = [{"symbol": "600000.SH"}, {"symbol": "600000"}]
+        result = _enrich_candidates_with_research_attention(items)
+        # 两种写法命中同一标的 → effective 一致。
+        assert result[0]["research_attention_effective_score"] == result[1][
+            "research_attention_effective_score"
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tradingagents/dataflows/research_attention_decay.py && echo '--- tests rest ---' && sed -n '620,980p' tests/test_kb009_research_attention_decay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    """返回 ``(avg_factor, expired_fresh_count, high_stale_fresh_count)``。
+
+    ``expired_fresh_count``：fresh 页中 ``valid_until`` 已过期但未被 KB-007 判
+    stale 的边界页数（正常情况下为 0，因为过期即 stale 即非 fresh；保留统计
+    以便 explain 透明）。
+    """
+    today = today or date.today()
+    if not fresh_pages:
+        return 1.0, 0, 0
+    factors: List[float] = []
+    expired = 0
+    high_stale = 0
+    for p in fresh_pages:
+        vu_expired = _is_valid_until_expired(_valid_until_from_mention(p), today)
+        if vu_expired:
+            expired += 1
+        if p.is_stale:
+            high_stale += 1
+        factors.append(page_time_decay_factor(p, vu_expired, today))
+    avg = sum(factors) / len(factors) if factors else 1.0
+    return avg, expired, high_stale
+
+
+def _valid_until_from_mention(page: PageMention) -> Optional[str]:
+    """PageMention 不直接携带 valid_until；由 fresh 判定反推过期状态。"""
+    # KB-007: is_stale = stale_risk=高 OR valid_until_expired。
+    # 若 is_stale 且非高 stale_risk，则很可能是过期触发 —— 但无法精确还原，
+    # 这里返回 None，让 _is_valid_until_expired 在 page_time_decay_factor 中
+    # 通过 is_stale 兜底判定（未过期分支用 is_stale 区分高低）。
+    return None
+
+
+# ── 过热惩罚 ──────────────────────────────────────────────────────────
+
+
+def compute_overheat_penalty(
+    overheat_flags: Optional[List[str]] = None,
+    short_term_gain_pct: Optional[float] = None,
+    theme_count: Optional[int] = None,
+) -> Tuple[float, List[str], List[str]]:
+    """结合三信号计算过热惩罚（研究优先级降低，不改交易动作）。
+
+    返回 ``(penalty, explain_lines, active_signals)``。任一信号缺失只跳过该项，
+    不会因单一涨幅指标把分数清零（满足"不用单日价格涨幅作为唯一过热指标"）。
+    """
+    penalty = 0.0
+    explain: List[str] = []
+    active: List[str] = []
+
+    flags = [str(f).strip() for f in (overheat_flags or []) if str(f).strip()]
+    if flags:
+        flag_pen = len(flags) * _P_OVERHEAT_FLAG
+        penalty += flag_pen
+        active.append(f"overheat_flags={flags}")
+        explain.append(
+            f"overheat_flags={len(flags)} × {_P_OVERHEAT_FLAG} = -{flag_pen:.2f}"
+        )
+
+    if short_term_gain_pct is not None:
+        try:
+            gain = float(short_term_gain_pct)
+        except (TypeError, ValueError):
+            gain = None
+        if gain is not None and gain > _SHORT_TERM_GAIN_THRESHOLD_PCT:
+            excess = (gain - _SHORT_TERM_GAIN_THRESHOLD_PCT) / 10.0
+            gain_pen = excess * _P_SHORT_TERM_GAIN
+            penalty += gain_pen
+            active.append(f"short_term_gain={gain:.1f}%")
+            explain.append(
+                f"short_term_gain={gain:.1f}% 超过 {_SHORT_TERM_GAIN_THRESHOLD_PCT}%，"
+                f"超出 {excess * 10:.1f}pp × {_P_SHORT_TERM_GAIN} = -{gain_pen:.2f}"
+            )
+
+    if theme_count is not None and theme_count > _THEME_CROWDING_THRESHOLD:
+        crowd = theme_count - _THEME_CROWDING_THRESHOLD
+        crowd_pen = crowd * _P_THEME_CROWDING
+        penalty += crowd_pen
+        active.append(f"theme_crowding={theme_count}")
+        explain.append(
+            f"theme_crowding={theme_count} 超过 {_THEME_CROWDING_THRESHOLD}，"
+            f"超出 {crowd} × {_P_THEME_CROWDING} = -{crowd_pen:.2f}"
+        )
+
+    return penalty, explain, active
+
+
+# ── 主入口 ────────────────────────────────────────────────────────────
+
+
+def compute_symbol_decay(
+    sym: SymbolAttention,
+    *,
+    today: Optional[date] = None,
+) -> SymbolDecayResult:
+    """计算单标的的去重 + 时效衰减（不含过热惩罚）。
+
+    不修改输入 ``sym``；返回新的 :class:`SymbolDecayResult`。
+    ``effective_score`` 此时等于 ``decay_adjusted_score``，待
+    :func:`apply_overheat_penalty` 进一步叠加候选过热惩罚。
+    """
+    today = today or date.today()
+    res = SymbolDecayResult(base_score=sym.research_attention_score)
+
+    fresh_pages = [p for p in sym.matched_pages if _is_fresh(p)]
+    res.fresh_mention_count = len(fresh_pages)
+
+    explain: List[str] = []
+    warnings: List[str] = []
+
+    # 1. 机构级去重。
+    unique_inst, dup_count = _compute_institution_dedup(fresh_pages)
+    res.unique_institution_count = len(unique_inst)
+    res.duplicate_institution_count = dup_count
+    res.dedup_penalty = dup_count * _P_INSTITUTION_DUPLICATE
+    if dup_count > 0:
+        explain.append(
+            f"机构级去重：fresh {len(fresh_pages)} 篇来自 {len(unique_inst)} 家机构，"
+            f"重复 {dup_count} × {_P_INSTITUTION_DUPLICATE} = -{res.dedup_penalty:.2f}"
+        )
+        if unique_inst:
+            warnings.append(
+                f"重复机构：{', '.join(unique_inst[:5])}"
+            )
+
+    # 2. 时效衰减。
+    avg_factor, expired_fresh, high_stale_fresh = _compute_time_decay(fresh_pages, today)
+    res.time_decay_factor = avg_factor
+    res.expired_fresh_count = expired_fresh
+    res.high_stale_fresh_count = high_stale_fresh
+    if avg_factor < 0.995:
+        explain.append(
+            f"时效衰减：平均因子 {avg_factor:.2f}"
+            + (f"（含过期弱证据 {expired_fresh} 篇）" if expired_fresh else "")
+        )
+    if high_stale_fresh > 0:
+        warnings.append(f"高 stale_risk fresh 页 {high_stale_fresh} 篇，衰减更快")
+
+    # 3. 合成 decay_adjusted_score。
+    decayed = (sym.research_attention_score - res.dedup_penalty) * avg_factor
+    res.decay_adjusted_score = max(0.0, decayed)
+    res.effective_score = res.decay_adjusted_score
+
+    res.explain = explain
+    res.warnings = warnings
+    return res
+
+
+def apply_overheat_penalty(
+    decay: SymbolDecayResult,
+    *,
+    overheat_flags: Optional[List[str]] = None,
+    short_term_gain_pct: Optional[float] = None,
+    theme_count: Optional[int] = None,
+) -> SymbolDecayResult:
+    """在去重 + 时效衰减之上叠加候选过热惩罚，返回更新后的结果。
+
+    原地更新并返回同一对象，便于链式调用。``overheat_flags`` / 涨幅 / 主题拥挤
+    任一缺失只跳过该项（不因单一指标清零）。
+    """
+    penalty, pen_explain, active = compute_overheat_penalty(
+        overheat_flags=overheat_flags,
+        short_term_gain_pct=short_term_gain_pct,
+        theme_count=theme_count,
+    )
+    decay.overheat_penalty = penalty
+    decay.overheat_flags = [str(f) for f in (overheat_flags or []) if str(f).strip()]
+    decay.short_term_gain_pct = short_term_gain_pct
+    decay.theme_crowding_active = (
+        theme_count is not None and theme_count > _THEME_CROWDING_THRESHOLD
+    )
+    decay.effective_score = max(0.0, decay.decay_adjusted_score - penalty)
+    if pen_explain:
+        decay.explain.extend(pen_explain)
+    if active:
+        decay.warnings.append("过热信号：" + "、".join(active))
+    return decay
+
+
+def compute_effective_attention(
+    sym: SymbolAttention,
+    *,
+    overheat_flags: Optional[List[str]] = None,
+    short_term_gain_pct: Optional[float] = None,
+    theme_count: Optional[int] = None,
+    today: Optional[date] = None,
+) -> SymbolDecayResult:
+    """一站式：去重 + 时效衰减 + 过热惩罚。"""
+    decay = compute_symbol_decay(sym, today=today)
+    return apply_overheat_penalty(
+        decay,
+        overheat_flags=overheat_flags,
+        short_term_gain_pct=short_term_gain_pct,
+        theme_count=theme_count,
+    )
+
+
+def decay_to_summary(decay: Optional[SymbolDecayResult]) -> Dict[str, Any]:
+    """把 KB-009 衰减结果转为前端/UI 可直接展示的扁平字典。
+
+    ``decay is None`` 时返回空结构（无命中或降级时调用方渲染 NORMAL_NO_DATA）。
+    """
+    if decay is None:
+        return {
+            "research_attention_effective_score": 0.0,
+            "research_attention_base_score": 0.0,
+            "research_attention_dedup_penalty": 0.0,
+            "research_attention_time_decay_factor": 1.0,
+            "research_attention_overheat_penalty": 0.0,
+            "research_attention_unique_institution_count": 0,
+            "research_attention_duplicate_institution_count": 0,
+            "research_attention_decay_explain": [],
+            "research_attention_warnings": [],
+        }
+    return {
+        "research_attention_effective_score": round(decay.effective_score, 2),
+        "research_attention_base_score": round(decay.base_score, 2),
+        "research_attention_dedup_penalty": round(decay.dedup_penalty, 2),
+        "research_attention_time_decay_factor": round(decay.time_decay_factor, 2),
+        "research_attention_overheat_penalty": round(decay.overheat_penalty, 2),
+        "research_attention_unique_institution_count": decay.unique_institution_count,
+        "research_attention_duplicate_institution_count": decay.duplicate_institution_count,
+        "research_attention_decay_explain": list(decay.explain),
+        "research_attention_warnings": list(decay.warnings),
+    }
+
+
+def render_decay_summary_inline(decay: Optional[SymbolDecayResult]) -> str:
+    """渲染一句话 KB-009 摘要（嵌入研究关注度段，不含买卖建议或强动作词）。
+
+    同时展示去重 / 衰减 / 过热三类负面信息，满足"前端必须同时显示负面信息"。
+    """
+    if decay is None:
+        return ""
+    parts: List[str] = []
+    parts.append(f"有效关注度 {decay.effective_score:.2f}（原始 {decay.base_score:.2f}）")
+    if decay.dedup_penalty > 0:
+        parts.append(
+            f"机构去重 -{decay.dedup_penalty:.2f}"
+            f"（重复 {decay.duplicate_institution_count}）"
+        )
+    if decay.time_decay_factor < 1.0:
+        parts.append(f"时效衰减 ×{decay.time_decay_factor:.2f}")
+    if decay.overheat_penalty > 0:
+        parts.append(f"过热惩罚 -{decay.overheat_penalty:.2f}")
+    if not (decay.dedup_penalty or decay.time_decay_factor < 1.0 or decay.overheat_penalty):
+        parts.append("无明显衰减/惩罚")
+    return "；".join(parts) + "。"
+
+
+__all__ = [
+    "CONTRACT_VERSION",
+    "TASK_CODE",
+    "SymbolDecayResult",
+    "split_institution",
+    "page_time_decay_factor",
+    "compute_overheat_penalty",
+    "compute_symbol_decay",
+    "apply_overheat_penalty",
+    "compute_effective_attention",
+    "decay_to_summary",
+    "render_decay_summary_inline",
+]
+--- tests rest ---
+            "research_attention_effective_score"
+        ]
+
+
+# ── 9. Pydantic schema ───────────────────────────────────────────────
+
+
+class TestTradeFlowSchemaKB009:
+    def test_candidate_item_has_kb009_fields(self):
+        from api.tradeflow_schemas import TradeFlowCandidateItem
+
+        fields = TradeFlowCandidateItem.model_fields
+        assert "research_attention_effective_score" in fields
+        assert "research_attention_overheat_penalty" in fields
+
+    def test_candidate_item_default_values(self):
+        from api.tradeflow_schemas import TradeFlowCandidateItem
+
+        item = TradeFlowCandidateItem(symbol="600000.SH")
+        assert item.research_attention_effective_score == 0.0
+        assert item.research_attention_overheat_penalty == 0.0
+
+    def test_candidate_item_accepts_kb009_payload(self, fixture_kb: Path, monkeypatch):
+        from api.services.tradeflow_service import (
+            _enrich_candidate_with_research_attention,
+        )
+        from api.tradeflow_schemas import TradeFlowCandidateItem
+
+        monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+        item = _enrich_candidate_with_research_attention(
+            {"symbol": "600000.SH", "overheat_flags": ["短期过热"]}
+        )
+        schema_item = TradeFlowCandidateItem(**item)
+        assert schema_item.research_attention_effective_score >= 0.0
+
+
+# ── 10. 只读安全性 ───────────────────────────────────────────────────
+
+
+class TestReadOnlySafety:
+    def test_decay_does_not_write_to_knowledge_base(self, fixture_kb: Path):
+        files = list((fixture_kb / INVESTMENT_SUBDIR).rglob("*.md"))
+        assert files
+        before = {p: (p.stat().st_mtime, p.read_bytes()) for p in files}
+
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        compute_symbol_decay(sym)
+        compute_effective_attention(
+            sym, overheat_flags=["x"], short_term_gain_pct=30.0, theme_count=8
+        )
+
+        for p in files:
+            mt, content = before[p]
+            assert p.stat().st_mtime == mt, f"mtime changed: {p}"
+            assert p.read_bytes() == content, f"content changed: {p}"
+
+
+# ── 11. explain 可读 + 不含强动作词 ──────────────────────────────────
+
+
+class TestExplainReadable:
+    def test_explain_lines_are_strings(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        decay = compute_effective_attention(
+            sym, overheat_flags=["短期过热"], short_term_gain_pct=25.0
+        )
+        for line in decay.explain:
+            assert isinstance(line, str)
+            assert line != ""
+
+    def test_explain_no_strong_action_words(self, fixture_kb: Path):
+        sym = lookup_research_attention(str(fixture_kb), "600000")
+        decay = compute_effective_attention(
+            sym, overheat_flags=["短期过热"], short_term_gain_pct=25.0
+        )
+        blob = " ".join(decay.explain) + " ".join(decay.warnings)
+        for forbidden in ("买入", "卖出", "加仓", "减仓", "强烈推荐", "BUY", "SELL"):
+            assert forbidden not in blob
+
+exec
+/bin/zsh -lc "grep -R \"def _is_fresh\\|class PageMention\\|class SymbolAttention\\|def lookup_research_attention\\|def scan_research_attention\" -n tradingagents/dataflows/research_attention.py | head -50 && sed -n '1,180p' tradingagents/dataflows/research_attention.py && sed -n '730,940p' tradingagents/dataflows/research_attention.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/research_attention.py:145:class PageMention:
+tradingagents/dataflows/research_attention.py:181:class SymbolAttention:
+tradingagents/dataflows/research_attention.py:414:def _is_fresh(mention: PageMention) -> bool:
+tradingagents/dataflows/research_attention.py:859:def lookup_research_attention(
+# [KB-007] research_attention_score
+"""多研报重复提及因子 — Research Attention Score。
+
+在 KB-001 只读**审计**、KB-002 契约 **lint**、KB-003 单 symbol 查询之上，本模块
+对 Tree Work ``wiki/investment/`` 全量消化页面做**倒排索引**，统计每只标的被多少篇
+研报/评分表/主题页重复提及，合成一个中性的"研究关注度"分数，用于候选发现与中线
+研究优先级排序。
+
+设计约束（对应任务 KB-007）：
+  - **不是买入信号**：分数只表达"被多少研报反复提到"，**不构成**任何买卖建议或
+    强动作词；输出文档刻意避免 ``买入/卖出/加仓/减仓/强烈推荐`` 等强动作词。
+  - **只读消化后的 wiki**：只使用 ``wiki/investment/`` 已消化页面的 frontmatter 与
+    短摘要，**不读取 raw PDF 全文**。
+  - **不调用 LLM / 不访问外网**：纯标准库 + 复用 KB-001/KB-002 解析助手。
+  - **降权规则**：deprecated（待补充 / ``evidence_level=C``）、过期
+    （``valid_until`` 已过期）、``stale_risk=高`` 的页面**只作弱证据**，
+    不会提升主候选层级。
+  - **资产分类**：A 股 / 港股 / 美股 / 基金 / 未上市主体分开统计，不混成一类。
+  - **来源去重**：同一原始资料别名在多页命中时只计一次主权重，避免同源刷分
+    （KB-009 在此基础上进一步引入机构级去重，本版按 wiki-link alias 去重）。
+
+合成分数字段（与任务要求对齐）：
+  - ``mention_count``：命中页数（含 stale/deprecated）。
+  - ``fresh_mention_count``：非 stale 且非 deprecated 的命中页数。
+  - ``theme_count``：去重后的主题数。
+  - ``source_count``：去重 alias 后的来源数。
+  - ``high_quality_mention_count``：``source_quality=高`` 且 ``evidence_level=A`` 的页数。
+  - ``stale_mention_count``：``stale_risk=高`` 或 ``valid_until`` 已过期的页数。
+  - ``deprecated_mention_count``：待补充 / 低置信（``evidence_level=C``）的页数。
+  - ``report_type_distribution``：按 ``report_type`` 分组的命中页数。
+
+合成公式（解释可读、可复现）::
+
+    mention_component      = fresh_mention_count                       # +1.0 / 页
+    theme_component        = max(0, theme_count - 1) * 0.5             # 主题交叉奖励
+    source_quality_component = high_quality_mention_count * 0.5        # 高质量来源奖励
+    freshness_ratio        = fresh_mention_count / max(mention_count, 1)
+    stale_penalty          = stale_mention_count * 0.3
+    deprecated_penalty     = deprecated_mention_count * 0.5
+    duplicate_source_penalty = max(0, raw_source_mentions - source_count) * 0.1
+    raw  = (mention_component + theme_component + source_quality_component)
+           * freshness_ratio
+    score = max(0.0, raw - stale_penalty - deprecated_penalty
+                    - duplicate_source_penalty)
+
+使用示例::
+
+    from tradingagents.dataflows.research_attention import (
+        compute_research_attention,
+        render_research_attention_report,
+    )
+    result = compute_research_attention("/Users/maybee/Documents/knowledge")
+    print(render_research_attention_report(result))
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+# 复用 KB-001 / KB-002 / KB-003 的只读解析助手，保持单一解析实现，避免行为分叉。
+from tradingagents.dataflows.local_knowledge_audit import (
+    INVESTMENT_SUBDIR,
+    TODO_MARKERS,
+    _audit_single_page,
+    _is_nonempty_field,
+    _is_valid_until_expired,
+    _iter_markdown_files,
+    _parse_frontmatter,
+    _read_text_safe,
+    _safe_str,
+    _split_frontmatter,
+    default_knowledge_root,
+)
+from tradingagents.dataflows.local_knowledge_lint import (
+    HIGH_STALE_RISK_VALUES,
+    LOW_CONFIDENCE_EVIDENCE_LEVELS,
+)
+
+
+# ── 常量 ──────────────────────────────────────────────────────────────
+
+CONTRACT_VERSION = "kb-007-v1"
+TASK_CODE = "KB-007"
+
+# 资产类别枚举（与任务"对基金代码、港股、美股、未上市主体与 A 股股票分类型处理"对齐）。
+ASSET_CLASS_A_SHARE = "A_SHARE"
+ASSET_CLASS_HK = "HK"
+ASSET_CLASS_US = "US"
+ASSET_CLASS_FUND = "FUND"
+ASSET_CLASS_UNLISTED = "UNLISTED"
+ASSET_CLASS_OTHER = "OTHER"
+ALL_ASSET_CLASSES: Tuple[str, ...] = (
+    ASSET_CLASS_A_SHARE,
+    ASSET_CLASS_HK,
+    ASSET_CLASS_US,
+    ASSET_CLASS_FUND,
+    ASSET_CLASS_UNLISTED,
+    ASSET_CLASS_OTHER,
+)
+
+# A 股代码后缀（沪深北交所）。SS 是部分数据源对 SH 的别名，统一识别。
+_A_SHARE_SUFFIXES: Tuple[str, ...] = (".SH", ".SZ", ".BJ", ".SS")
+_HK_SUFFIXES: Tuple[str, ...] = (".HK",)
+_US_SUFFIXES: Tuple[str, ...] = (".US",)
+
+# 6 位 A 股 bare code（与 KB-001 ``_STOCK_CODE_RE`` 口径一致，但这里要求完整 6 位）。
+_BARE_A_SHARE_CODE_RE = re.compile(r"^\d{6}$")
+# 6 位 A 股代码（用于无后缀兜底识别，前缀 0/3/6/8/9 视作 A 股；4/5 视作基金候选）。
+_A_SHARE_PREFIXES: Tuple[str, ...] = ("0", "3", "6", "8", "9")
+_FUND_PREFIXES: Tuple[str, ...] = ("1", "4", "5")
+
+# 基金关键词（出现在 tags / themes / report_type / name 时判定为基金）。
+_FUND_KEYWORDS: Tuple[str, ...] = ("基金", "ETF", "LOF", "QDII", "指数基金", "联接基金")
+
+# 高质量来源阈值。
+HIGH_SOURCE_QUALITY_VALUES: Tuple[str, ...] = ("高", "high", "HIGH")
+HIGH_EVIDENCE_LEVEL_VALUES: Tuple[str, ...] = ("A", "a")
+
+# score 组件权重（暴露为模块常量，便于 KB-009 后续调参）。
+_W_MENTION = 1.0
+_W_THEME = 0.5
+_W_HIGH_QUALITY = 0.5
+_P_STALE = 0.3
+_P_DEPRECATED = 0.5
+_P_DUPLICATE_SOURCE = 0.1
+
+# 输出榜单默认上限。
+_DEFAULT_TOP = 30
+_DEFAULT_DETAIL = 15
+
+# wiki-link ``[[target|alias]]`` 提取 alias 作为来源去重 key。
+_WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+# ── 数据类 ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class PageMention:
+    """单页命中记录（只携带元数据，绝不携带大段原文）。"""
+
+    rel_path: str
+    title: str
+    page_type: str
+    report_type: str = ""
+    updated_at: Optional[str] = None
+    source_quality: str = ""
+    evidence_level: str = ""
+    is_stale: bool = False
+    is_deprecated: bool = False
+    is_low_confidence: bool = False
+    is_to_be_supplemented: bool = False
+    source_aliases: List[str] = field(default_factory=list)
+    themes: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rel_path": self.rel_path,
+            "title": self.title,
+            "page_type": self.page_type,
+            "report_type": self.report_type,
+            "updated_at": self.updated_at,
+            "source_quality": self.source_quality,
+            "evidence_level": self.evidence_level,
+            "is_stale": self.is_stale,
+            "is_deprecated": self.is_deprecated,
+            "is_low_confidence": self.is_low_confidence,
+            "is_to_be_supplemented": self.is_to_be_supplemented,
+            "source_aliases": list(self.source_aliases),
+            "themes": list(self.themes),
+        }
+
+
+@dataclass
+    # 4. 详细明细
+    detail_syms = result.symbols[:detail]
+    if detail_syms:
+        lines.append(f"## 4. 重点标的明细（前 {detail}）")
+        lines.append("")
+        for sym in detail_syms:
+            lines.append(f"### `{sym.symbol_key}` — {sym.name or '未命名'}")
+            lines.append("")
+            lines.append(
+                f"- asset_class: **{sym.asset_class}** ｜ "
+                f"score: **{sym.research_attention_score:.2f}** ｜ "
+                f"latest_updated: `{sym.latest_updated or '-'}`"
+            )
+            lines.append(
+                f"- mention={sym.mention_count} / fresh={sym.fresh_mention_count} / "
+                f"stale={sym.stale_mention_count} / deprecated={sym.deprecated_mention_count} / "
+                f"high_quality={sym.high_quality_mention_count}"
+            )
+            if sym.themes:
+                lines.append(f"- themes ({sym.theme_count}): {', '.join(sym.themes[:10])}")
+            if sym.sources:
+                lines.append(
+                    f"- sources ({sym.source_count}): {', '.join(sym.sources[:8])}"
+                )
+            if sym.report_type_distribution:
+                rt = ", ".join(
+                    f"{k}×{v}" for k, v in sorted(
+                        sym.report_type_distribution.items(), key=lambda kv: (-kv[1], kv[0])
+                    )
+                )
+                lines.append(f"- report_type_distribution: {rt}")
+            if sym.score_explain:
+                lines.append("- score_explain:")
+                for line in sym.score_explain:
+                    lines.append(f"  - {line}")
+            if sym.matched_pages:
+                lines.append(f"- matched_pages ({len(sym.matched_pages)}):")
+                for p in sym.matched_pages[:10]:
+                    flags: List[str] = []
+                    if p.is_stale:
+                        flags.append("STALE")
+                    if p.is_deprecated:
+                        flags.append("DEPRECATED")
+                    if p.is_low_confidence:
+                        flags.append("LOW_CONFIDENCE")
+                    if p.is_to_be_supplemented:
+                        flags.append("TODO")
+                    flag_text = f" [{', '.join(flags)}]" if flags else ""
+                    lines.append(
+                        f"  - `{p.rel_path}` ({p.page_type}/{p.report_type or '-'})"
+                        f"{flag_text}"
+                    )
+            lines.append("")
+
+    # 5. 计分口径
+    lines.append("## 5. 计分口径")
+    lines.append("")
+    lines.append("```")
+    lines.append("mention_component        = fresh_mention_count × 1.0")
+    lines.append("theme_component          = max(0, theme_count - 1) × 0.5")
+    lines.append("source_quality_component = high_quality_mention_count × 0.5")
+    lines.append("freshness_ratio          = fresh_mention_count / max(mention_count, 1)")
+    lines.append("raw  = (mention + theme + source_quality) × freshness_ratio")
+    lines.append("penalty = stale×0.3 + deprecated×0.5 + duplicate_source×0.1")
+    lines.append("score = max(0, raw - penalty)")
+    lines.append("```")
+    lines.append("")
+    lines.append(
+        "- **fresh**：非 stale 且非 deprecated 的命中页。"
+        "- **deprecated**：待补充标记 或 `evidence_level=C`。"
+        "- **stale**：`stale_risk=高` 或 `valid_until` 已过期。"
+        "- **duplicate_source**：同一 wiki-link alias 在多页重复出现。"
+    )
+    lines.append("")
+
+    # 6. 免责
+    lines.append("## 6. 免责声明")
+    lines.append("")
+    lines.append(
+        "- 本报告仅作为**研究关注度**与**候选研究优先级**因子，不构成任何买卖建议；"
+        "不与行情、公告、财务、资金流信号混用。"
+    )
+    lines.append(
+        "- 过期 / 低置信 / 待补充页面已显式降权，不会提升主候选层级。"
+    )
+    lines.append(
+        "- 港股 / 美股 / 基金 / 未上市主体与 A 股分类型展示，不混合排序加总。"
+    )
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        f"_由 `scripts/run_research_attention.py` 只读生成；"
+        f"对应模块 `tradingagents.dataflows.research_attention`。_"
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── 单 symbol 查询（KB-008 接入 TA 报告 / TradeFlow 候选）──────────────
+
+
+# 与 KB-003 local_knowledge_provider 命中口径一致：去后缀比较 bare code。
+_SUFFIX_RE_KB008 = re.compile(r"\.(SH|SZ|BJ|HK|US|SS)$", re.IGNORECASE)
+
+
+def _symbols_equivalent(query_symbol: str, sym_key: str, bare_code: str) -> bool:
+    """判断查询 symbol 与倒排索引 symbol_key 是否指同一标的。
+
+    - ``603296`` 命中 ``603296.SH``（bare code 相等）。
+    - ``603296.SH`` 命中 ``603296.SH``（去后缀比较 + 全字符串比较）。
+    - 大小写不敏感。
+    """
+    if not query_symbol or not sym_key:
+        return False
+    q = query_symbol.strip().upper()
+    s = sym_key.strip().upper()
+    if q == s:
+        return True
+    q_bare = _SUFFIX_RE_KB008.sub("", q).strip()
+    s_bare = _SUFFIX_RE_KB008.sub("", s).strip()
+    if q_bare and s_bare and q_bare == s_bare:
+        return True
+    # bare_code 字段兜底（sym_key 可能是 name 形态）。
+    if bare_code and q_bare and q_bare == bare_code.upper():
+        return True
+    return False
+
+
+def lookup_research_attention(
+    knowledge_root: str,
+    symbol: Optional[str],
+) -> Optional[SymbolAttention]:
+    """[KB-008] 单 symbol 查询研究关注度。
+
+    复用 :func:`compute_research_attention` 的全库倒排索引，按 symbol 命中
+    返回对应的 :class:`SymbolAttention`。无命中返回 ``None``。
+
+    设计约束（与 KB-007 一致）：
+      - **只读**：绝不向知识库写文件。
+      - **不调用 LLM / 不访问外网**。
+      - **非买卖信号**：返回值只表达"被多少研报反复提到"，调用方（TA 报告 /
+        TradeFlow）必须把它当作**研究优先级/解释信息**，不得直接改变交易动作。
+
+    参数:
+        knowledge_root: 知识库根目录绝对路径。
+        symbol: A 股代码或代码+后缀（如 ``603296`` / ``603296.SH``）。
+
+    返回:
+        :class:`SymbolAttention` 或 ``None``。永远不会因单页解析失败而抛异常：
+        异常向上层传播由调用方决定是否容错。
+    """
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return None
+    result = compute_research_attention(knowledge_root)
+    for sym in result.symbols:
+        if _symbols_equivalent(symbol, sym.symbol_key, sym.bare_code):
+            return sym
+    return None
+
+
+def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
+    """[KB-008] 把单 symbol 关注度聚合为前端/UI 可直接展示的扁平字典。
+
+    无命中（``sym is None``）时返回空命中结构，调用方据此渲染 NORMAL_NO_DATA。
+
+    返回字段（与任务要求对齐）：
+      - ``research_attention_score``：综合关注度（保留 2 位小数）。
+      - ``knowledge_theme_count``：去重主题数。
+      - ``mention_count``：命中篇数（含 stale/deprecated）。
+      - ``fresh_mention_count``：非 stale/deprecated 的命中篇数。
+      - ``high_quality_mention_count``：``source_quality=高`` 且 ``evidence_level=A``
+        的命中篇数。
+      - ``stale_mention_count``：``stale_risk=高`` 或 ``valid_until`` 已过期的页数。
+      - ``deprecated_mention_count``：待补充 / 低置信页数。
+      - ``source_count``：去重 alias 后的来源数。
+      - ``themes``：主题列表（前 10 个）。
+      - ``sources``：来源列表（前 8 个）。
+      - ``latest_updated``：最近更新时间。
+      - ``matched_pages``：命中页相对路径与标题列表（前 5 条，便于观察仓展示）。
+      - ``score_explain``：分数构成可读解释（前 6 条）。
+      - ``research_attention_summary``：一句话可读摘要，含负面信息（过期 / 低置信）。
+      - ``has_hit``：是否命中（False 时其余字段为空结构）。
+    """
+    if sym is None:
+        return {
+            "has_hit": False,
+            "research_attention_score": 0.0,
+            "knowledge_theme_count": 0,
+            "mention_count": 0,
+            "fresh_mention_count": 0,
+            "high_quality_mention_count": 0,
+            "stale_mention_count": 0,
+            "deprecated_mention_count": 0,
+            "source_count": 0,
+            "themes": [],
+            "sources": [],
+            "latest_updated": None,
+            "matched_pages": [],
+            "score_explain": [],
+            "research_attention_summary": "",
+            # [KB-009] research_attention_decay — 无命中时填充空结构。
+            "research_attention_effective_score": 0.0,
+            "research_attention_base_score": 0.0,
+            "research_attention_dedup_penalty": 0.0,
+            "research_attention_time_decay_factor": 1.0,
+            "research_attention_overheat_penalty": 0.0,
+            "research_attention_unique_institution_count": 0,
+            "research_attention_duplicate_institution_count": 0,
+            "research_attention_decay_explain": [],
+
+exec
+/bin/zsh -lc "sed -n '180,460p' tradingagents/dataflows/research_attention.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+@dataclass
+class SymbolAttention:
+    """单只标的的研究关注度聚合。"""
+
+    symbol_key: str
+    bare_code: str
+    name: str
+    asset_class: str
+    research_attention_score: float = 0.0
+    mention_count: int = 0
+    fresh_mention_count: int = 0
+    theme_count: int = 0
+    source_count: int = 0
+    high_quality_mention_count: int = 0
+    stale_mention_count: int = 0
+    deprecated_mention_count: int = 0
+    report_type_distribution: Dict[str, int] = field(default_factory=dict)
+    themes: List[str] = field(default_factory=list)
+    sources: List[str] = field(default_factory=list)
+    latest_updated: Optional[str] = None
+    matched_pages: List[PageMention] = field(default_factory=list)
+    score_explain: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol_key": self.symbol_key,
+            "bare_code": self.bare_code,
+            "name": self.name,
+            "asset_class": self.asset_class,
+            "research_attention_score": round(self.research_attention_score, 2),
+            "mention_count": self.mention_count,
+            "fresh_mention_count": self.fresh_mention_count,
+            "theme_count": self.theme_count,
+            "source_count": self.source_count,
+            "high_quality_mention_count": self.high_quality_mention_count,
+            "stale_mention_count": self.stale_mention_count,
+            "deprecated_mention_count": self.deprecated_mention_count,
+            "report_type_distribution": dict(self.report_type_distribution),
+            "themes": list(self.themes),
+            "sources": list(self.sources),
+            "latest_updated": self.latest_updated,
+            "matched_pages": [p.to_dict() for p in self.matched_pages],
+            "score_explain": list(self.score_explain),
+        }
+
+
+@dataclass
+class ResearchAttentionResult:
+    """整库研究关注度聚合结果。"""
+
+    knowledge_root: str
+    scanned_at: str
+    as_of_date: str
+    contract_version: str = CONTRACT_VERSION
+    task: str = TASK_CODE
+    investment_page_count: int = 0
+    page_with_symbols_count: int = 0
+    symbol_count: int = 0
+    asset_class_counts: Dict[str, int] = field(default_factory=dict)
+    symbols: List[SymbolAttention] = field(default_factory=list)
+    top_symbols: List[SymbolAttention] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "knowledge_root": self.knowledge_root,
+            "scanned_at": self.scanned_at,
+            "as_of_date": self.as_of_date,
+            "contract_version": self.contract_version,
+            "task": self.task,
+            "investment_page_count": self.investment_page_count,
+            "page_with_symbols_count": self.page_with_symbols_count,
+            "symbol_count": self.symbol_count,
+            "asset_class_counts": dict(self.asset_class_counts),
+            "symbols": [s.to_dict() for s in self.symbols],
+            "top_symbols": [s.to_dict() for s in self.top_symbols],
+            "errors": list(self.errors),
+        }
+
+
+# ── 解析辅助 ──────────────────────────────────────────────────────────
+
+
+def _normalize_str_list(raw: Any) -> List[str]:
+    """把 frontmatter 任意字段归一为去空字符串列表。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    if isinstance(raw, (list, tuple)):
+        out: List[str] = []
+        for x in raw:
+            if x is None:
+                continue
+            text = str(x).strip().strip('"').strip("'")
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def _strip_wiki_link(raw: str) -> str:
+    """``[[target|alias]]`` 取 alias；``[[target]]`` 取 target 末段；普通文本直通。"""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    m = _WIKI_LINK_RE.search(text)
+    if m:
+        inner = m.group(1)
+        if "|" in inner:
+            return inner.split("|", 1)[1].strip()
+        # 无 alias，取最后一段文件名（去 .md）。
+        tail = inner.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        return tail.strip()
+    return text
+
+
+def _dedup_preserve_order(items: List[str]) -> List[str]:
+    seen: List[str] = []
+    for it in items:
+        if it and it not in seen:
+            seen.append(it)
+    return seen
+
+
+def _split_symbol_entry(entry: str) -> Tuple[str, str, str]:
+    """``603296.SH 华勤技术`` → ``(code_with_suffix, bare_code, name)``。
+
+    - code_with_suffix: ``603296.SH``（保留交易所后缀，大写）。
+    - bare_code: ``603296``（去后缀）。
+    - name: ``华勤技术``（去首尾空白）。
+    """
+    parts = str(entry).strip().split(maxsplit=1)
+    code = parts[0] if parts else ""
+    name = parts[1].strip() if len(parts) > 1 else ""
+    bare = re.sub(r"\.(SH|SZ|BJ|HK|US|SS)$", "", code, flags=re.IGNORECASE).strip()
+    code_norm = code.upper() if code else ""
+    return code_norm, bare, name
+
+
+def classify_asset_class(
+    code_with_suffix: str,
+    bare_code: str,
+    name: str,
+    frontmatter: Dict[str, Any],
+) -> str:
+    """按后缀 + 代码前缀 + 上下文关键词识别资产类别。
+
+    优先级：HK / US 后缀 → 基金关键词（覆盖 .SH/.SZ/.BJ 后缀的 ETF/LOF）→
+    A 股后缀 → A 股前缀 → 基金前缀 → 未上市。
+
+    例：``510300.SH 沪深300ETF`` 因 tags/name 含 ``ETF`` 而归类为 FUND，
+    而非 A_SHARE；``603296.SH 华勤技术`` 因无基金关键词归类为 A_SHARE。
+    """
+    code_upper = code_with_suffix.upper()
+    if any(code_upper.endswith(s) for s in _HK_SUFFIXES):
+        return ASSET_CLASS_HK
+    if any(code_upper.endswith(s) for s in _US_SUFFIXES):
+        return ASSET_CLASS_US
+
+    # 上下文关键词：基金关键词命中优先于 A 股后缀，避免 ETF/LOF 被混入 A 股。
+    tags = _normalize_str_list(frontmatter.get("tags"))
+    themes = _normalize_str_list(frontmatter.get("themes"))
+    report_type = _safe_str(frontmatter.get("report_type")) or ""
+    context_blob = " ".join([name, report_type] + tags + themes).lower()
+    is_fund_context = any(kw.lower() in context_blob for kw in _FUND_KEYWORDS)
+
+    if is_fund_context:
+        return ASSET_CLASS_FUND
+
+    if any(code_upper.endswith(s) for s in _A_SHARE_SUFFIXES):
+        return ASSET_CLASS_A_SHARE
+
+    # 后缀缺失时按代码前缀兜底。
+    if _BARE_A_SHARE_CODE_RE.match(bare_code):
+        if bare_code[:1] in _FUND_PREFIXES:
+            return ASSET_CLASS_FUND
+        if bare_code[:1] in _A_SHARE_PREFIXES:
+            return ASSET_CLASS_A_SHARE
+
+    # 既无标准后缀，也无 6 位数字代码 —— 视为未上市主体（如私募/海外未代码化主体）。
+    # 有 name 但无 code 也归 UNLISTED（其它资本市场的主体），只有完全无信息才 OTHER。
+    if bare_code or name:
+        return ASSET_CLASS_UNLISTED
+    return ASSET_CLASS_OTHER
+
+
+def _build_page_mention(
+    rel_path: str,
+    abs_path: Path,
+    page_audit: Any,
+    frontmatter: Dict[str, Any],
+) -> PageMention:
+    """从单页构造一条 PageMention（只读，不输出原文）。"""
+    fm_sources = _normalize_str_list(frontmatter.get("sources"))
+    source_aliases = _dedup_preserve_order(
+        [_strip_wiki_link(s) for s in fm_sources]
+    )
+    themes = _dedup_preserve_order(_normalize_str_list(frontmatter.get("themes")))
+
+    stale_val = _safe_str(frontmatter.get("stale_risk")) or ""
+    is_stale = stale_val in HIGH_STALE_RISK_VALUES or page_audit.valid_until_expired
+    evidence = _safe_str(frontmatter.get("evidence_level")) or ""
+    is_low_conf = evidence in LOW_CONFIDENCE_EVIDENCE_LEVELS
+    is_todo = page_audit.is_to_be_supplemented
+
+    # deprecated：待补充 / 低置信，与 stale 分开统计（可能同时为真）。
+    is_deprecated = is_todo or is_low_conf
+
+    return PageMention(
+        rel_path=rel_path,
+        title=page_audit.title or abs_path.stem,
+        page_type=page_audit.page_type,
+        report_type=_safe_str(frontmatter.get("report_type")) or "",
+        updated_at=_safe_str(frontmatter.get("updated")),
+        source_quality=_safe_str(frontmatter.get("source_quality")) or "",
+        evidence_level=evidence,
+        is_stale=is_stale,
+        is_deprecated=is_deprecated,
+        is_low_confidence=is_low_conf,
+        is_to_be_supplemented=is_todo,
+        source_aliases=source_aliases,
+        themes=themes,
+    )
+
+
+def _is_high_quality(mention: PageMention) -> bool:
+    return (
+        mention.source_quality in HIGH_SOURCE_QUALITY_VALUES
+        and mention.evidence_level in HIGH_EVIDENCE_LEVEL_VALUES
+    )
+
+
+def _is_fresh(mention: PageMention) -> bool:
+    return not (mention.is_stale or mention.is_deprecated)
+
+
+# ── 分数合成 ──────────────────────────────────────────────────────────
+
+
+def _compose_score(sym: SymbolAttention) -> Tuple[float, List[str]]:
+    """合成 research_attention_score，返回 (score, explain 列表)。
+
+    explain 字段对每个加减分项给出可读解释，便于 KB-008/KB-009 在前端展示。
+    """
+    explain: List[str] = []
+
+    mention_component = sym.fresh_mention_count * _W_MENTION
+    if mention_component:
+        explain.append(
+            f"fresh_mention={sym.fresh_mention_count} × {_W_MENTION} "
+            f"= +{mention_component:.2f}"
+        )
+
+    extra_themes = max(0, sym.theme_count - 1)
+    theme_component = extra_themes * _W_THEME
+    if theme_component:
+        explain.append(
+            f"theme_cross={extra_themes} × {_W_THEME} = +{theme_component:.2f}"
+        )
+
+    high_q_component = sym.high_quality_mention_count * _W_HIGH_QUALITY
+    if high_q_component:
+        explain.append(
+            f"high_quality={sym.high_quality_mention_count} × {_W_HIGH_QUALITY} "
+            f"= +{high_q_component:.2f}"
+        )
+
+    base = mention_component + theme_component + high_q_component
+
+    freshness_ratio = (
+        sym.fresh_mention_count / sym.mention_count if sym.mention_count else 0.0
+    )
+    if sym.mention_count and freshness_ratio < 1.0:
+        explain.append(
+            f"freshness_ratio={sym.fresh_mention_count}/{sym.mention_count} "
+            f"= {freshness_ratio:.2f} (整体按比例缩放)"
+        )
+    base *= freshness_ratio
+
+
+exec
+/bin/zsh -lc "sed -n '1,430p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [UI-001] tradeflow_api
+# [PERF-001] runtime_tier_contract
+"""TradeFlow read-only data access service.
+
+Queries tradeflow SQLite tables for the API layer.
+Does NOT trigger TA, run full market scan, or call LLM.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from api.runtime_tier import RuntimeTier, tradeflow_meta as _tradeflow_meta  # [PERF-001]
+from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+)
+from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
+from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG  # [TF-OBS-004] observe_refresh_alert_queue
+
+
+def _get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _get_tradeflow_db_path() -> str:
+    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    if env_path:
+        return env_path
+    return os.path.join(_get_project_root(), "tradeflow.db")
+
+
+def _get_prod_db_path() -> str:
+    env_path = os.environ.get("DATABASE_URL", "")
+    if env_path.startswith("sqlite:///"):
+        return env_path.replace("sqlite:///", "", 1)
+    return os.path.join(_get_project_root(), "tradingagents.db")
+
+
+def _connect(
+    tf_db_path: str = "",
+    *,
+    read_only: bool = False,
+) -> Optional[sqlite3.Connection]:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return None
+    try:
+        if read_only:
+            # [H-016] mandate_daily_cli — genuinely read-only path: never call
+            # init_db() (which issues CREATE/ALTER TABLE) and open the DB in
+            # SQLite URI read-only mode so the report CLI / dry-run can never
+            # mutate tradeflow.db even if the on-disk schema is stale.
+            import urllib.request
+
+            uri = "file:" + urllib.request.pathname2url(os.path.abspath(db_path)) + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.row_factory = sqlite3.Row
+            return conn
+        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
+
+
+def _parse_json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default if default is not None else []
+    return value
+
+
+def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+    try:
+        val = row[col]
+        return val
+    except (KeyError, IndexError):
+        return default
+
+
+def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+    return {
+        "symbol": symbol,
+        "name": name,
+        "tier": _rget(row, "tier", ""),
+        "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
+        "score": _rget(row, "score", 0.0) or 0.0,
+        "strategy_tags": _parse_json(_rget(row, "strategy_tags_json"), []),
+        "primary_strategy": _rget(row, "primary_strategy", ""),
+        "trigger_price": _rget(row, "trigger_price"),
+        "support_price": _rget(row, "support_price"),
+        "invalid_price": _rget(row, "invalid_price"),
+        "need_deep_ta": bool(_rget(row, "need_deep_ta", 0)),
+        "observe_state": _rget(row, "observe_state", "WAITING"),
+        "observe_trigger_count": _rget(row, "observe_trigger_count", 0) or 0,
+        "observe_first_trigger_time": _rget(row, "observe_first_trigger_time", ""),
+        "tradeflow_data_completeness": _rget(row, "tradeflow_data_completeness", 0.0) or 0.0,
+        "missing_data_fields": _parse_json(_rget(row, "missing_data_fields_json"), []),
+        "data_completeness": _rget(row, "data_completeness", 0.0) or 0.0,
+        "missing_evidence": _parse_json(_rget(row, "missing_evidence_json"), []),
+        "game_balance": _rget(row, "game_balance", ""),
+        "bull_case": _rget(row, "bull_case", ""),
+        "bear_case": _rget(row, "bear_case", ""),
+        "policy_case": _rget(row, "policy_case", ""),
+        "fund_flow_case": _rget(row, "fund_flow_case", ""),
+        "why_deep_ta": _rget(row, "why_deep_ta", ""),
+        "why_not_deep_ta": _rget(row, "why_not_deep_ta", ""),
+        "risk_flags": _parse_json(_rget(row, "risk_flags_json"), []),
+        "policy_tags": _parse_json(_rget(row, "policy_tags_json"), []),
+        "version_score": _rget(row, "version_score", 0.0) or 0.0,
+        "narrative_score": _rget(row, "narrative_score", 0.0) or 0.0,
+        "fund_flow_anomaly_score": _rget(row, "fund_flow_anomaly_score", 0.0) or 0.0,
+        "fund_flow_anomaly_tags": _parse_json(_rget(row, "fund_flow_anomaly_tags_json"), []),
+        "fund_flow_unit_verified": bool(_rget(row, "fund_flow_unit_verified", 0)),
+        "evidence_gate_applied": bool(_rget(row, "evidence_gate_applied", 0)),
+        "deep_ta_status": _rget(row, "deep_ta_status", ""),
+        "deep_ta_dispatch_reason": _rget(row, "deep_ta_dispatch_reason", ""),
+        "deep_ta_model": _rget(row, "deep_ta_model", ""),
+        "source": _rget(row, "source", "manual"),
+        "universe_sources": _parse_json(_rget(row, "universe_sources_json"), []),
+        "resonance_count": _rget(row, "resonance_count", 0) or 0,
+        "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+        "tier_reason": _rget(row, "tier_reason", ""),
+        "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
+        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
+        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
+        "company_role": _rget(row, "company_role", ""),  # [H-005]
+        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
+        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
+        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
+        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
+        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
+        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
+        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
+        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
+        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+        "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+        "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
+        "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
+        "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
+        "counter_evidence": _parse_json(_rget(row, "counter_evidence_json"), []),  # [H-009]
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
+        "downgrade_reasons": _parse_json(_rget(row, "downgrade_reasons_json"), []),  # [H-009]
+        "what_would_change_mind": _parse_json(_rget(row, "what_would_change_mind_json"), []),  # [H-009]
+        "topic_lifecycle_state": _rget(row, "topic_lifecycle_state", ""),  # [H-010] mandate_topic_lifecycle
+        "topic_lifecycle_reason": _rget(row, "topic_lifecycle_reason", ""),  # [H-010]
+        "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
+        "topic_signal_count": _rget(row, "topic_signal_count", 0) or 0,  # [H-010]
+        "contradiction_level": _rget(row, "contradiction_level", ""),  # [H-011] candidate_contradiction_explainer
+        "contradiction_items": _parse_json(_rget(row, "contradiction_items_json"), []),  # [H-011]
+        "blocking_evidence_gaps": _parse_json(_rget(row, "blocking_evidence_gaps_json"), []),  # [H-011]
+        "next_verification_steps": _parse_json(_rget(row, "next_verification_steps_json"), []),  # [H-011]
+        # [TF-QUALITY-002] score_separation — split scores for precision gate
+        "technical_score": _rget(row, "technical_score", 0.0) or 0.0,
+        "policy_score": _rget(row, "policy_score", 0.0) or 0.0,
+        "fund_flow_score": _rget(row, "fund_flow_score", 0.0) or 0.0,
+        "event_score": _rget(row, "event_score", 0.0) or 0.0,
+        "risk_penalty_score": _rget(row, "risk_penalty_score", 0.0) or 0.0,
+        "data_quality_score": _rget(row, "data_quality_score", 0.0) or 0.0,
+        "ranking_reasons": _parse_json(_rget(row, "ranking_reasons_json"), []),
+        "weakness_reasons": _parse_json(_rget(row, "weakness_reasons_json"), []),
+        # [TF-QUALITY-003] candidate_precision_gate — fields for precision dimensions
+        "mandate_score_component": _rget(row, "mandate_score_component", 0.0) or 0.0,
+        "beneficiary_score_component": _rget(row, "beneficiary_score_component", 0.0) or 0.0,
+        "overheat_penalty": _rget(row, "overheat_penalty", 0.0) or 0.0,
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),
+        "created_at": _rget(row, "created_at", ""),
+        "updated_at": _rget(row, "updated_at", ""),
+    }
+
+
+def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+    item = _row_to_candidate_item(row)
+    item.update({
+        "evidence": _parse_json(_rget(row, "evidence_json"), {}),
+        "policy_evidence_refs": _parse_json(_rget(row, "policy_evidence_refs_json"), []),
+        "narrative_evidence_refs": _parse_json(_rget(row, "narrative_evidence_refs_json"), []),
+        "narrative_reasons": _parse_json(_rget(row, "narrative_reasons_json"), []),
+        "risk_evidence_refs": _parse_json(_rget(row, "risk_evidence_refs_json"), []),
+        "risk_reasons": _parse_json(_rget(row, "risk_reasons_json"), []),
+        "game_balance_refs": _parse_json(_rget(row, "game_balance_refs_json"), []),
+        "fund_flow_anomaly_refs": _parse_json(_rget(row, "fund_flow_anomaly_refs_json"), []),
+        "fund_flow_individual_summary": _rget(row, "fund_flow_individual_summary", ""),
+        "fund_flow_board_summary": _rget(row, "fund_flow_board_summary", ""),
+        "signal_category_hits": _parse_json(_rget(row, "signal_category_hits_json"), []),
+        "positive_category_count": _rget(row, "positive_category_count", 0) or 0,
+        "what_to_upgrade": _parse_json(_rget(row, "what_to_upgrade_json"), []),
+        "deep_ta_report_path": _rget(row, "deep_ta_report_path", ""),
+        "deep_ta_dispatch_time": _rget(row, "deep_ta_dispatch_time", ""),
+        "deep_ta_position_context": _rget(row, "deep_ta_position_context", ""),
+        "ambush_reasons": _parse_json(_rget(row, "ambush_reasons_json"), []),  # [H-005] mandate_radar_ui
+        "ambush_evidence_refs": _parse_json(_rget(row, "ambush_evidence_refs_json"), []),  # [H-005]
+        "mandate_evidence_refs": _parse_json(_rget(row, "mandate_evidence_refs_json"), []),  # [H-005]
+    })
+    return item
+
+
+# [KB-008] research_attention_integration
+def _enrich_candidate_with_research_attention(item: dict) -> dict:
+    """把单 symbol 研报关注度（多研报重复提及因子）注入候选 item。
+
+    只读、不调用 LLM、不写 DB；只作为研究优先级/解释信息，**不改变**强动作门禁
+    与候选 tier。无命中时填充空结构（``research_attention_score=0``、
+    ``research_attention_summary=""``），不影响 TA 主流程（NORMAL_NO_DATA 语义）。
+
+    负面信息（stale / deprecated / 主题拥挤）通过 ``research_attention_detail``
+    与 ``research_attention_summary`` 一并透出，前端必须能同时看到。
+    """
+    symbol = item.get("symbol") or ""
+    if not symbol:
+        item.setdefault("research_attention_score", 0.0)
+        item.setdefault("knowledge_theme_count", 0)
+        item.setdefault("research_attention_summary", "")
+        item.setdefault("research_attention_detail", {})
+        item.setdefault("research_attention_effective_score", 0.0)
+        item.setdefault("research_attention_overheat_penalty", 0.0)
+        return item
+
+    try:
+        from tradingagents.dataflows.local_knowledge_audit import (
+            default_knowledge_root as _lk_default_root,
+        )
+        from tradingagents.dataflows.research_attention import (
+            attention_to_summary as _kb008_to_summary,
+            lookup_research_attention as _kb008_lookup,
+        )
+    except Exception:
+        # 依赖不可用时退化为空结构，绝不阻塞候选读取主链路。
+        item.setdefault("research_attention_score", 0.0)
+        item.setdefault("knowledge_theme_count", 0)
+        item.setdefault("research_attention_summary", "")
+        item.setdefault("research_attention_detail", {})
+        item.setdefault("research_attention_effective_score", 0.0)
+        item.setdefault("research_attention_overheat_penalty", 0.0)
+        return item
+
+    try:
+        sym_attention = _kb008_lookup(_lk_default_root(), symbol)
+    except Exception:
+        sym_attention = None
+    summary = _kb008_to_summary(sym_attention)
+    item["research_attention_score"] = summary["research_attention_score"]
+    item["knowledge_theme_count"] = summary["knowledge_theme_count"]
+    item["research_attention_summary"] = summary["research_attention_summary"]
+    item["research_attention_detail"] = summary
+    # [KB-009] research_attention_decay — 叠加候选过热惩罚（不改交易动作）。
+    _apply_kb009_overheat_to_item(item, sym_attention)
+    return item
+
+
+# [KB-009] research_attention_decay
+def _apply_kb009_overheat_to_item(item: dict, sym_attention: Any) -> None:
+    """在 KB-008 symbol 级去重/时效衰减之上叠加候选过热惩罚。
+
+    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
+    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
+    与相关 explain/warnings。只降低研究优先级，**不改变**强动作门禁与候选 tier；
+    依赖不可用时静默退化为已由 KB-008 写入的 symbol 级 effective score。
+    """
+    try:
+        from tradingagents.dataflows.research_attention_decay import (
+            apply_overheat_penalty as _kb009_apply_overheat,
+            compute_symbol_decay as _kb009_compute_decay,
+        )
+    except Exception:
+        return
+
+    try:
+        overheat_flags = item.get("overheat_flags") or []
+        short_term_gain = item.get("short_term_gain_pct")
+        if sym_attention is None:
+            # 无命中：effective = 0，但仍透出 overheat_flags 便于前端展示负面信号。
+            item["research_attention_effective_score"] = 0.0
+            item["research_attention_overheat_penalty"] = 0.0
+            return
+        theme_count = sym_attention.theme_count
+        decay = _kb009_compute_decay(sym_attention)
+        decay = _kb009_apply_overheat(
+            decay,
+            overheat_flags=overheat_flags,
+            short_term_gain_pct=short_term_gain,
+            theme_count=theme_count,
+        )
+        item["research_attention_effective_score"] = round(decay.effective_score, 2)
+        item["research_attention_overheat_penalty"] = round(decay.overheat_penalty, 2)
+        # 把过热明细合并回 detail，前端一处即可看到完整 explain。
+        detail = item.get("research_attention_detail")
+        if isinstance(detail, dict):
+            detail["research_attention_effective_score"] = round(
+                decay.effective_score, 2
+            )
+            detail["research_attention_overheat_penalty"] = round(
+                decay.overheat_penalty, 2
+            )
+            detail["research_attention_decay_explain"] = list(decay.explain)
+            detail["research_attention_warnings"] = list(decay.warnings)
+            detail["research_attention_overheat_flags"] = list(decay.overheat_flags)
+    except Exception:
+        return
+
+
+def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+    """批量注入研究关注度（[KB-008]）。
+
+    共享一次全库倒排索引扫描结果，避免每个候选都重新扫一遍 wiki。当知识库
+    不可读或 symbol 解析失败时，逐项降级为空结构。
+    """
+    if not items:
+        return items
+    try:
+        from tradingagents.dataflows.local_knowledge_audit import (
+            default_knowledge_root as _lk_default_root,
+        )
+        from tradingagents.dataflows.research_attention import (
+            attention_to_summary as _kb008_to_summary,
+            compute_research_attention as _kb008_compute,
+            _symbols_equivalent as _kb008_equiv,
+        )
+    except Exception:
+        for it in items:
+            it.setdefault("research_attention_score", 0.0)
+            it.setdefault("knowledge_theme_count", 0)
+            it.setdefault("research_attention_summary", "")
+            it.setdefault("research_attention_detail", {})
+            it.setdefault("research_attention_effective_score", 0.0)
+            it.setdefault("research_attention_overheat_penalty", 0.0)
+        return items
+
+    # 共享一次扫描结果；按 symbol_key 建索引加速候选批量查询。
+    by_key: Dict[str, Any] = {}
+    try:
+        result = _kb008_compute(_lk_default_root())
+        for sym in result.symbols:
+            by_key[sym.symbol_key.upper()] = sym
+            if sym.bare_code:
+                by_key.setdefault(sym.bare_code.upper(), sym)
+    except Exception:
+        pass
+
+    for it in items:
+        symbol = (it.get("symbol") or "").strip().upper()
+        if not symbol:
+            it.setdefault("research_attention_score", 0.0)
+            it.setdefault("knowledge_theme_count", 0)
+            it.setdefault("research_attention_summary", "")
+            it.setdefault("research_attention_detail", {})
+            it.setdefault("research_attention_effective_score", 0.0)
+            it.setdefault("research_attention_overheat_penalty", 0.0)
+            continue
+        # 优先精确匹配 symbol_key；找不到再做等价比较。
+        sym_attention = by_key.get(symbol)
+        if sym_attention is None:
+            for key, sym in by_key.items():
+                if _kb008_equiv(symbol, key, sym.bare_code):
+                    sym_attention = sym
+                    break
+        summary = _kb008_to_summary(sym_attention)
+        it["research_attention_score"] = summary["research_attention_score"]
+        it["knowledge_theme_count"] = summary["knowledge_theme_count"]
+        it["research_attention_summary"] = summary["research_attention_summary"]
+        it["research_attention_detail"] = summary
+        # [KB-009] research_attention_decay — 批量也叠加候选过热惩罚。
+        _apply_kb009_overheat_to_item(it, sym_attention)
+    return items
+
+
+def _compute_action(item: dict) -> str:
+    if item.get("need_deep_ta"):
+        return "NEED_DEEP_TA"
+    trigger = item.get("trigger_price")
+    if trigger:
+        return "WAIT_TRIGGER"
+    return "OBSERVE"
+
+
+def _compute_summary(items: List[dict]) -> dict:
+    tier_counts = {"A": 0, "B": 0, "C": 0}
+    deep_ta_count = 0
+    total_comp = 0.0
+    for it in items:
+        t = it.get("tier", "")
+        if t in tier_counts:
+            tier_counts[t] += 1
+        if it.get("need_deep_ta"):
+            deep_ta_count += 1
+        total_comp += it.get("tradeflow_data_completeness", 0.0)
+    return {
+        "total_candidates": len(items),
+        "tier_a_count": tier_counts["A"],
+        "tier_b_count": tier_counts["B"],
+        "tier_c_count": tier_counts["C"],
+        "need_deep_ta_count": deep_ta_count,
+        "avg_completeness": round(total_comp / max(len(items), 1), 3),
+    }
+
+
+def _load_filtered_trace_candidates(
+    trade_date: str,
+    tf_db_path: str = "",
+    allowed_symbols: Optional[set[str]] = None,
+) -> list[dict]:
+
+exec
+/bin/zsh -lc "sed -n '1,180p' api/tradeflow_schemas.py && grep -R \"short_term_gain_pct\" -n . | head -100 && grep -R \"research_attention_effective_score\" -n . | head -100" in /Users/maybee/TradingAgents-AShare
+2026-07-01T13:04:23.966940Z ERROR codex_core::tools::router: error=write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open
+exec
+/bin/zsh -lc "git grep -n \"short_term_gain_pct\\|research_attention_effective_score\" -- . ':(exclude).venv' ':(exclude)node_modules' | head -200" in /Users/maybee/TradingAgents-AShare
+ succeeded in 202ms:
+api/services/tradeflow_service.py:244:        item.setdefault("research_attention_effective_score", 0.0)
+api/services/tradeflow_service.py:262:        item.setdefault("research_attention_effective_score", 0.0)
+api/services/tradeflow_service.py:284:    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
+api/services/tradeflow_service.py:285:    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
+api/services/tradeflow_service.py:299:        short_term_gain = item.get("short_term_gain_pct")
+api/services/tradeflow_service.py:302:            item["research_attention_effective_score"] = 0.0
+api/services/tradeflow_service.py:310:            short_term_gain_pct=short_term_gain,
+api/services/tradeflow_service.py:313:        item["research_attention_effective_score"] = round(decay.effective_score, 2)
+api/services/tradeflow_service.py:318:            detail["research_attention_effective_score"] = round(
+api/services/tradeflow_service.py:354:            it.setdefault("research_attention_effective_score", 0.0)
+api/services/tradeflow_service.py:376:            it.setdefault("research_attention_effective_score", 0.0)
+api/tradeflow_schemas.py:124:    research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
+docs/DEVLOG.md:28:  新的 `research_attention_effective_score` 与独立 explain。
+docs/DEVLOG.md:40:  - `attention_to_summary`：新增 9 个 KB-009 字段（`research_attention_effective_score` /
+docs/DEVLOG.md:48:    `short_term_gain_pct`，配合 symbol `theme_count` 计算过热惩罚，覆写 effective_score 与 explain；
+docs/DEVLOG.md:53:  `research_attention_effective_score` / `research_attention_overheat_penalty` 字段。
+docs/DEVLOG.md:83:- **候选无 short_term_gain_pct 时**：涨幅项跳过，不影响其它信号。
+tradingagents/dataflows/research_attention.py:933:            "research_attention_effective_score": 0.0,
+tradingagents/dataflows/research_attention.py:987:            "research_attention_effective_score": round(sym.research_attention_score, 2),
+
+ succeeded in 24209ms:
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+Binary file ./tests/__pycache__/test_kb009_research_attention_decay.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_kb009_research_attention_decay.cpython-312.pyc matches
+./tests/test_kb009_research_attention_decay.py:356:            short_term_gain_pct=30.0,
+./tests/test_kb009_research_attention_decay.py:370:        penalty, explain, active = compute_overheat_penalty(short_term_gain_pct=50.0)
+./tests/test_kb009_research_attention_decay.py:384:        penalty, _, active = compute_overheat_penalty(short_term_gain_pct=20.0)
+./tests/test_kb009_research_attention_decay.py:413:            decay, overheat_flags=["短期过热"], short_term_gain_pct=30.0, theme_count=8
+./tests/test_kb009_research_attention_decay.py:431:            short_term_gain_pct=999.0,
+./tests/test_kb009_research_attention_decay.py:494:            sym, overheat_flags=["短期过热"], short_term_gain_pct=25.0
+./tests/test_kb009_research_attention_decay.py:520:            "short_term_gain_pct": 30.0,
+./tests/test_kb009_research_attention_decay.py:546:            "short_term_gain_pct": 40.0,
+./tests/test_kb009_research_attention_decay.py:668:            sym, overheat_flags=["x"], short_term_gain_pct=30.0, theme_count=8
+./tests/test_kb009_research_attention_decay.py:684:            sym, overheat_flags=["短期过热"], short_term_gain_pct=25.0
+./tests/test_kb009_research_attention_decay.py:693:            sym, overheat_flags=["短期过热"], short_term_gain_pct=25.0
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:118:print(compute_overheat_penalty(overheat_flags=['短期过热'], short_term_gain_pct=25.0, theme_count=8))
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:119:print(compute_overheat_penalty(short_term_gain_pct=50.0))  # 单一涨幅不构成清零
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:280:+    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:295:+        short_term_gain = item.get("short_term_gain_pct")
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:301:+            short_term_gain_pct=short_term_gain,
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:360:     short_term_gain = item.get("short_term_gain_pct")
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:482:    item = {'symbol': '603296.SH', 'name': '华勤技术', 'overheat_flags': ['短期过热'], 'short_term_gain_pct': 25.0}
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:702:+    `short_term_gain_pct`，配合 symbol `theme_count` 计算过热惩罚，覆写 effective_score 与 explain；
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:737:+- **候选无 short_term_gain_pct 时**：涨幅项跳过，不影响其它信号。
+./docs/DEVLOG.md:48:    `short_term_gain_pct`，配合 symbol `theme_count` 计算过热惩罚，覆写 effective_score 与 explain；
+./docs/DEVLOG.md:83:- **候选无 short_term_gain_pct 时**：涨幅项跳过，不影响其它信号。
+./tradingagents/dataflows/research_attention_decay.py:45:                     + max(0, (short_term_gain_pct - threshold)/10) × _P_SHORT_TERM_GAIN
+./tradingagents/dataflows/research_attention_decay.py:58:                                   short_term_gain_pct=25.0, theme_count=8)
+./tradingagents/dataflows/research_attention_decay.py:127:    short_term_gain_pct: Optional[float] = None
+./tradingagents/dataflows/research_attention_decay.py:147:            "short_term_gain_pct": self.short_term_gain_pct,
+./tradingagents/dataflows/research_attention_decay.py:297:    short_term_gain_pct: Optional[float] = None,
+./tradingagents/dataflows/research_attention_decay.py:318:    if short_term_gain_pct is not None:
+./tradingagents/dataflows/research_attention_decay.py:320:            gain = float(short_term_gain_pct)
+./tradingagents/dataflows/research_attention_decay.py:411:    short_term_gain_pct: Optional[float] = None,
+./tradingagents/dataflows/research_attention_decay.py:421:        short_term_gain_pct=short_term_gain_pct,
+./tradingagents/dataflows/research_attention_decay.py:426:    decay.short_term_gain_pct = short_term_gain_pct
+./tradingagents/dataflows/research_attention_decay.py:442:    short_term_gain_pct: Optional[float] = None,
+./tradingagents/dataflows/research_attention_decay.py:451:        short_term_gain_pct=short_term_gain_pct,
+Binary file ./tradingagents/dataflows/__pycache__/research_attention_decay.cpython-312.pyc matches
+Binary file ./api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+./api/services/tradeflow_service.py:284:    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
+./api/services/tradeflow_service.py:299:        short_term_gain = item.get("short_term_gain_pct")
+./api/services/tradeflow_service.py:310:            short_term_gain_pct=short_term_gain,
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+Binary file ./tests/__pycache__/test_kb009_research_attention_decay.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_kb009_research_attention_decay.cpython-312.pyc matches
+./tests/test_kb009_research_attention_decay.py:445:            "research_attention_effective_score",
+./tests/test_kb009_research_attention_decay.py:462:        assert s["research_attention_effective_score"] == 0.0
+./tests/test_kb009_research_attention_decay.py:482:        assert d["research_attention_effective_score"] >= 0.0
+./tests/test_kb009_research_attention_decay.py:488:        assert d["research_attention_effective_score"] == 0.0
+./tests/test_kb009_research_attention_decay.py:527:        assert r1["research_attention_effective_score"] < r0["research_attention_effective_score"]
+./tests/test_kb009_research_attention_decay.py:562:        assert r["research_attention_effective_score"] == 0.0
+./tests/test_kb009_research_attention_decay.py:571:        assert r["research_attention_effective_score"] == 0.0
+./tests/test_kb009_research_attention_decay.py:603:        eff = [it["research_attention_effective_score"] for it in result]
+./tests/test_kb009_research_attention_decay.py:619:        assert result[0]["research_attention_effective_score"] == result[1][
+./tests/test_kb009_research_attention_decay.py:620:            "research_attention_effective_score"
+./tests/test_kb009_research_attention_decay.py:632:        assert "research_attention_effective_score" in fields
+./tests/test_kb009_research_attention_decay.py:639:        assert item.research_attention_effective_score == 0.0
+./tests/test_kb009_research_attention_decay.py:653:        assert schema_item.research_attention_effective_score >= 0.0
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:157:+            "research_attention_effective_score": 0.0,
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:204:+            "research_attention_effective_score": round(sym.research_attention_score, 2),
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:281:+    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:304:+        item["research_attention_effective_score"] = round(decay.effective_score, 2)
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:309:+            detail["research_attention_effective_score"] = round(
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:364:+        item["research_attention_effective_score"] = 0.0
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:384:+    item.setdefault("research_attention_effective_score", 0.0)
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:395:+    item.setdefault("research_attention_effective_score", 0.0)
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:415:+        it.setdefault("research_attention_effective_score", 0.0)
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:435:+    it.setdefault("research_attention_effective_score", 0.0)
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:454:+research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:485:    print('effective score:', r['research_attention_effective_score'])
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:492:    print('no-hit effective:', r2['research_attention_effective_score'])
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:496:    print('batch effective:', [i['research_attention_effective_score'] for i in items])
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:502:detail keys: ['research_attention_decay_explain', 'research_attention_dedup_penalty', 'research_attention_effective_score', 'research_attention_overheat_flags', 'research_attention_overheat_penalty', 'research_attention_time_decay_factor']
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:682:+  新的 `research_attention_effective_score` 与独立 explain。
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:694:+  - `attention_to_summary`：新增 9 个 KB-009 字段（`research_attention_effective_score` /
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:707:+  `research_attention_effective_score` / `research_attention_overheat_penalty` 字段。
+./docs/task_runs/KB-009-20260701-204409/opencode-round1.txt:786:4. **不改基线**：KB-007 `research_attention_score` 保持透明不变，只产出新的 `research_attention_effective_score`；只降研究优先级，不改 tier/action/decision（测试锁定）。
+./docs/DEVLOG.md:28:  新的 `research_attention_effective_score` 与独立 explain。
+./docs/DEVLOG.md:40:  - `attention_to_summary`：新增 9 个 KB-009 字段（`research_attention_effective_score` /
+./docs/DEVLOG.md:53:  `research_attention_effective_score` / `research_attention_overheat_penalty` 字段。
+./tradingagents/dataflows/research_attention_decay.py:463:            "research_attention_effective_score": 0.0,
+./tradingagents/dataflows/research_attention_decay.py:474:        "research_attention_effective_score": round(decay.effective_score, 2),
+Binary file ./tradingagents/dataflows/__pycache__/research_attention.cpython-312.pyc matches
+Binary file ./tradingagents/dataflows/__pycache__/research_attention_decay.cpython-312.pyc matches
+./tradingagents/dataflows/research_attention.py:933:            "research_attention_effective_score": 0.0,
+./tradingagents/dataflows/research_attention.py:987:            "research_attention_effective_score": round(sym.research_attention_score, 2),
+./api/tradeflow_schemas.py:124:    research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
+Binary file ./api/__pycache__/tradeflow_schemas.cpython-312.pyc matches
+Binary file ./api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+./api/services/tradeflow_service.py:244:        item.setdefault("research_attention_effective_score", 0.0)
+./api/services/tradeflow_service.py:262:        item.setdefault("research_attention_effective_score", 0.0)
+./api/services/tradeflow_service.py:285:    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
+./api/services/tradeflow_service.py:302:            item["research_attention_effective_score"] = 0.0
+./api/services/tradeflow_service.py:313:        item["research_attention_effective_score"] = round(decay.effective_score, 2)
+./api/services/tradeflow_service.py:318:            detail["research_attention_effective_score"] = round(
+./api/services/tradeflow_service.py:354:            it.setdefault("research_attention_effective_score", 0.0)
+./api/services/tradeflow_service.py:376:            it.setdefault("research_attention_effective_score", 0.0)
+
+exec
+/bin/zsh -lc "git grep -n \"short_term_gain\\|overheat_penalty\\|overheat_flags_json\" -- tradingagents api tests | head -300" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/services/tradeflow_service.py:171:        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
+api/services/tradeflow_service.py:194:        "overheat_penalty": _rget(row, "overheat_penalty", 0.0) or 0.0,
+api/services/tradeflow_service.py:195:        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),
+api/services/tradeflow_service.py:245:        item.setdefault("research_attention_overheat_penalty", 0.0)
+api/services/tradeflow_service.py:263:        item.setdefault("research_attention_overheat_penalty", 0.0)
+api/services/tradeflow_service.py:284:    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
+api/services/tradeflow_service.py:291:            apply_overheat_penalty as _kb009_apply_overheat,
+api/services/tradeflow_service.py:299:        short_term_gain = item.get("short_term_gain_pct")
+api/services/tradeflow_service.py:303:            item["research_attention_overheat_penalty"] = 0.0
+api/services/tradeflow_service.py:310:            short_term_gain_pct=short_term_gain,
+api/services/tradeflow_service.py:314:        item["research_attention_overheat_penalty"] = round(decay.overheat_penalty, 2)
+api/services/tradeflow_service.py:321:            detail["research_attention_overheat_penalty"] = round(
+api/services/tradeflow_service.py:322:                decay.overheat_penalty, 2
+api/services/tradeflow_service.py:355:            it.setdefault("research_attention_overheat_penalty", 0.0)
+api/services/tradeflow_service.py:377:            it.setdefault("research_attention_overheat_penalty", 0.0)
+api/tradeflow_schemas.py:125:    research_attention_overheat_penalty: float = 0.0  # [KB-009] research_attention_decay
+tests/test_h004_ambush_score.py:30:    _compute_overheat_penalty,
+tests/test_h004_ambush_score.py:209:# ── _compute_overheat_penalty ──
+tests/test_h004_ambush_score.py:213:        penalty, reasons = _compute_overheat_penalty()
+tests/test_h004_ambush_score.py:217:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:224:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:230:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:236:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:242:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:248:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:254:        penalty, reasons = _compute_overheat_penalty(
+tests/test_h004_ambush_score.py:301:            overheat_penalty=5,
+tests/test_h004_ambush_score.py:317:            overheat_penalty=3,
+tests/test_h004_ambush_score.py:332:            overheat_penalty=0,
+tests/test_h004_ambush_score.py:347:            overheat_penalty=45,
+tests/test_h004_ambush_score.py:379:            overheat_penalty=0,
+tests/test_h004_ambush_score.py:394:            overheat_penalty=0,
+tests/test_h004_ambush_score.py:417:            overheat_penalty=0,
+tests/test_h004_ambush_score.py:485:        assert c.overheat_penalty == 0.0
+tests/test_h004_ambush_score.py:500:            overheat_penalty=5.0,
+tests/test_h004_ambush_score.py:513:        assert row["overheat_penalty"] == 5.0
+tests/test_h004_ambush_score.py:528:            overheat_penalty=3.0,
+tests/test_h004_ambush_score.py:543:        assert restored.overheat_penalty == 3.0
+tests/test_h004_ambush_score.py:681:        assert result.overheat_penalty > 30
+tests/test_h004_ambush_score.py:762:                "overheat_penalty": 5.0,
+tests/test_h007_ta_queue_router.py:261:            overheat_penalty=45.0,
+tests/test_h007_ta_queue_router.py:271:            overheat_penalty=50.0,
+tests/test_h007_ta_queue_router.py:313:            overheat_penalty=40.0,
+tests/test_h007_ta_queue_router.py:498:                overheat_penalty=30.0,
+tests/test_h007_ta_queue_router.py:605:            overheat_penalty=80.0,
+tests/test_h007_ta_queue_router.py:615:        r4 = route_to_research_queue(candidate_type="OVERHEATED_AVOID", overheat_penalty=40.0)
+tests/test_h009_counter_evidence_calibration.py:145:        f = self._eval(overheat_penalty=30.0, has_new_policy_evidence=False)
+tests/test_h009_counter_evidence_calibration.py:150:        f = self._eval(overheat_penalty=30.0, has_new_policy_evidence=True)
+tests/test_h009_counter_evidence_calibration.py:158:        f = self._eval(overheat_penalty=10.0)
+tests/test_h009_counter_evidence_calibration.py:162:        f = self._eval(game_balance="fragile", overheat_penalty=18.0)
+tests/test_h009_counter_evidence_calibration.py:167:        f = self._eval(game_balance="favorable", overheat_penalty=18.0)
+tests/test_h009_counter_evidence_calibration.py:328:            overheat_penalty=5.0,
+tests/test_h009_counter_evidence_calibration.py:352:            overheat_penalty=35.0,
+tests/test_h009_counter_evidence_calibration.py:396:            overheat_penalty=30.0,
+tests/test_h009_counter_evidence_calibration.py:427:            overheat_penalty=30.0,
+tests/test_h009_counter_evidence_calibration.py:457:            overheat_penalty=5.0,
+tests/test_h009_counter_evidence_calibration.py:554:        assert "overheat_flags_json" in row
+tests/test_h009_counter_evidence_calibration.py:565:            "overheat_flags_json": '["高位过热"]',
+tests/test_h009_counter_evidence_calibration.py:599:            of = json.loads(row["overheat_flags_json"])
+tests/test_h009_counter_evidence_calibration.py:644:            overheat_penalty=30.0,
+tests/test_h009_counter_evidence_calibration.py:673:            overheat_penalty=5.0,
+tests/test_h009_counter_evidence_calibration.py:701:            overheat_penalty=30.0,
+tests/test_h009_counter_evidence_calibration.py:714:            overheat_penalty=50.0,
+tests/test_h009_counter_evidence_calibration.py:739:        conn.executescript("CREATE TABLE tradeflow_candidates (symbol TEXT, counter_evidence_json TEXT DEFAULT '[]', overheat_flags_json TEXT DEFAULT '[]', downgrade_reasons_json TEXT DEFAULT '[]', what_would_change_mind_json TEXT DEFAULT '[]')")
+tests/test_h011_candidate_contradictions.py:275:    def test_overheat_penalty(self):
+tests/test_h011_candidate_contradictions.py:277:            overheat_penalty=30,
+tests/test_h011_candidate_contradictions.py:620:            overheat_penalty=30,
+tests/test_h014_mandate_concentration_gate.py:71:        "overheat_penalty": 0,
+tests/test_tf_p0_001_runtime_fix.py:45:    "overheat_penalty",
+tests/test_tf_quality001_pool_gate.py:36:    overheat_penalty=0,
+tests/test_tf_quality001_pool_gate.py:60:        "overheat_penalty": overheat_penalty,
+tests/test_tf_quality001_pool_gate.py:576:        assert cfg.precision_overheat_penalty_max == 20.0
+tests/test_tf_quality001_pool_gate.py:687:            overheat_penalty=30.0,  # overheated → 反证不过热=False
+tests/test_tf_quality001_pool_gate.py:705:        entry["overheat_penalty"] = 30.0
+tests/test_tf_quality004_calibration.py:48:    overheat_penalty=0,
+tests/test_tf_quality004_calibration.py:81:        "overheat_penalty": overheat_penalty,
+tests/test_tf_quality005_strength_tiers.py:65:    overheat_penalty=0,
+tests/test_tf_quality005_strength_tiers.py:108:        "overheat_penalty": overheat_penalty,
+tests/test_ui010_candidate_compare.py:49:    overheat_flags_json: str = "[]",
+tests/test_ui010_candidate_compare.py:83:        "overheat_flags_json": overheat_flags_json,
+tests/test_ui010_candidate_compare.py:150:            overheat_flags_json TEXT DEFAULT '[]',
+tests/test_v004_mandate_e2e_smoke.py:476:            overheat_penalty=ambush_result.overheat_penalty,
+tradingagents/dataflows/research_attention.py:937:            "research_attention_overheat_penalty": 0.0,
+tradingagents/dataflows/research_attention.py:991:            "research_attention_overheat_penalty": 0.0,
+tradingagents/tradeflow/ambush_score.py:70:    overheat_penalty: float = 0.0
+tradingagents/tradeflow/ambush_score.py:84:            "overheat_penalty": round(self.overheat_penalty, 2),
+tradingagents/tradeflow/ambush_score.py:220:def _compute_overheat_penalty(
+tradingagents/tradeflow/ambush_score.py:320:    overheat_pen, overheat_reasons_list = _compute_overheat_penalty(
+tradingagents/tradeflow/ambush_score.py:345:        overheat_penalty=overheat_pen,
+tradingagents/tradeflow/ambush_score.py:368:        overheat_penalty=round(overheat_pen, 2),
+tradingagents/tradeflow/ambush_score.py:383:    overheat_penalty: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:211:    overheat_penalty: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:215:    tech_broken = game_balance in ("crowded", "fragile") or overheat_penalty >= 25
+tradingagents/tradeflow/candidate_contradictions.py:222:    if game_balance in ("crowded", "fragile") and overheat_penalty >= 25:
+tradingagents/tradeflow/candidate_contradictions.py:229:    tech_desc = f"博弈={game_balance or '未评估'}, 过热惩罚={overheat_penalty:.0f}"
+tradingagents/tradeflow/candidate_contradictions.py:426:    overheat_penalty: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:470:        overheat_penalty=overheat_penalty,
+tradingagents/tradeflow/candidate_engine.py:259:    ("overheat_penalty", "REAL DEFAULT 0.0"),
+tradingagents/tradeflow/candidate_engine.py:280:    ("overheat_flags_json", "TEXT DEFAULT '[]'"),
+tradingagents/tradeflow/candidate_engine.py:516:        ("overheat_penalty", "REAL DEFAULT 0.0"),
+tradingagents/tradeflow/candidate_engine.py:1141:    candidate.overheat_penalty = ambush_result.overheat_penalty
+tradingagents/tradeflow/candidate_engine.py:1157:        "overheat_penalty": ambush_result.overheat_penalty,
+tradingagents/tradeflow/candidate_engine.py:1166:        overheat_penalty=ambush_result.overheat_penalty,
+tradingagents/tradeflow/candidate_engine.py:1278:        overheat_penalty=candidate.overheat_penalty,
+tradingagents/tradeflow/candidate_engine.py:1299:        overheat_penalty=ambush_result.overheat_penalty,
+tradingagents/tradeflow/candidate_engine.py:1439:            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+tradingagents/tradeflow/candidate_engine.py:1445:            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, "
+tradingagents/tradeflow/candidate_engine.py:1515:            "overheat_penalty=excluded.overheat_penalty, "
+tradingagents/tradeflow/candidate_engine.py:1531:            "overheat_flags_json=excluded.overheat_flags_json, "
+tradingagents/tradeflow/candidate_engine.py:1589:                row["pricing_gap_score"], row["overheat_penalty"],
+tradingagents/tradeflow/candidate_engine.py:1597:                row["counter_evidence_json"], row["overheat_flags_json"],
+tradingagents/tradeflow/candidate_precision_gate.py:133:    overheat_penalty = _safe_float(entry.get("overheat_penalty"))
+tradingagents/tradeflow/candidate_precision_gate.py:164:    overheat_ok = overheat_penalty <= cfg.precision_overheat_penalty_max
+tradingagents/tradeflow/counter_evidence_calibration.py:98:    overheat_penalty: float = 0.0,
+tradingagents/tradeflow/counter_evidence_calibration.py:109:    high_overheat = overheat_penalty >= 25.0
+tradingagents/tradeflow/counter_evidence_calibration.py:115:        severity = min(overheat_penalty / 100.0, 1.0)
+tradingagents/tradeflow/counter_evidence_calibration.py:116:        desc = f"过热惩罚={overheat_penalty:.0f}但无新政策/公司证据"
+tradingagents/tradeflow/counter_evidence_calibration.py:121:    elif bad_game and overheat_penalty >= 15.0:
+tradingagents/tradeflow/counter_evidence_calibration.py:124:        desc = f"博弈{game_balance}且过热惩罚={overheat_penalty:.0f}"
+tradingagents/tradeflow/counter_evidence_calibration.py:320:    overheat_penalty: float = 0.0,
+tradingagents/tradeflow/counter_evidence_calibration.py:342:            overheat_penalty=overheat_penalty,
+tradingagents/tradeflow/discovery.py:528:        "overheat_penalty": candidate.overheat_penalty,
+tradingagents/tradeflow/mandate_replay_eval.py:959:            hints.append("H-004: overheat_penalty 权重(15%)验证有效")
+tradingagents/tradeflow/mandate_replay_eval.py:961:            hints.append("H-004: overheat_penalty 可能过重，需检查 LHB/MARGIN 标签误报")
+tradingagents/tradeflow/mandate_ta_queue_router.py:116:    overheat_penalty: float = 0.0,
+tradingagents/tradeflow/mandate_ta_queue_router.py:204:        reason = f"过热规避→已拒绝: overheat_penalty={overheat_penalty:.0f}"
+tradingagents/tradeflow/plan_runner.py:131:        "overheat_penalty": candidate.overheat_penalty,  # [H-004]
+tradingagents/tradeflow/schemas.py:126:    overheat_penalty: float = 0.0  # [H-004] mandate_ambush_score
+tradingagents/tradeflow/schemas.py:283:            "overheat_penalty": self.overheat_penalty,  # [H-004]
+tradingagents/tradeflow/schemas.py:299:            "overheat_flags_json": json.dumps(self.overheat_flags, ensure_ascii=False),  # [H-009]
+tradingagents/tradeflow/schemas.py:400:            overheat_penalty=row.get("overheat_penalty", 0.0),  # [H-004]
+tradingagents/tradeflow/schemas.py:416:            overheat_flags=json.loads(row.get("overheat_flags_json", "[]")),  # [H-009]
+tradingagents/tradeflow/schemas.py:681:            overheat_pen = c.get("overheat_penalty", 0)
+tradingagents/tradeflow/strategy_config.py:154:    precision_overheat_penalty_max: float = 20.0
+

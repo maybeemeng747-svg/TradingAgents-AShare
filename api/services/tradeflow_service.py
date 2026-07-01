@@ -241,6 +241,8 @@ def _enrich_candidate_with_research_attention(item: dict) -> dict:
         item.setdefault("knowledge_theme_count", 0)
         item.setdefault("research_attention_summary", "")
         item.setdefault("research_attention_detail", {})
+        item.setdefault("research_attention_effective_score", 0.0)
+        item.setdefault("research_attention_overheat_penalty", 0.0)
         return item
 
     try:
@@ -257,6 +259,8 @@ def _enrich_candidate_with_research_attention(item: dict) -> dict:
         item.setdefault("knowledge_theme_count", 0)
         item.setdefault("research_attention_summary", "")
         item.setdefault("research_attention_detail", {})
+        item.setdefault("research_attention_effective_score", 0.0)
+        item.setdefault("research_attention_overheat_penalty", 0.0)
         return item
 
     try:
@@ -268,7 +272,60 @@ def _enrich_candidate_with_research_attention(item: dict) -> dict:
     item["knowledge_theme_count"] = summary["knowledge_theme_count"]
     item["research_attention_summary"] = summary["research_attention_summary"]
     item["research_attention_detail"] = summary
+    # [KB-009] research_attention_decay — 叠加候选过热惩罚（不改交易动作）。
+    _apply_kb009_overheat_to_item(item, sym_attention)
     return item
+
+
+# [KB-009] research_attention_decay
+def _apply_kb009_overheat_to_item(item: dict, sym_attention: Any) -> None:
+    """在 KB-008 symbol 级去重/时效衰减之上叠加候选过热惩罚。
+
+    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
+    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
+    与相关 explain/warnings。只降低研究优先级，**不改变**强动作门禁与候选 tier；
+    依赖不可用时静默退化为已由 KB-008 写入的 symbol 级 effective score。
+    """
+    try:
+        from tradingagents.dataflows.research_attention_decay import (
+            apply_overheat_penalty as _kb009_apply_overheat,
+            compute_symbol_decay as _kb009_compute_decay,
+        )
+    except Exception:
+        return
+
+    try:
+        overheat_flags = item.get("overheat_flags") or []
+        short_term_gain = item.get("short_term_gain_pct")
+        if sym_attention is None:
+            # 无命中：effective = 0，但仍透出 overheat_flags 便于前端展示负面信号。
+            item["research_attention_effective_score"] = 0.0
+            item["research_attention_overheat_penalty"] = 0.0
+            return
+        theme_count = sym_attention.theme_count
+        decay = _kb009_compute_decay(sym_attention)
+        decay = _kb009_apply_overheat(
+            decay,
+            overheat_flags=overheat_flags,
+            short_term_gain_pct=short_term_gain,
+            theme_count=theme_count,
+        )
+        item["research_attention_effective_score"] = round(decay.effective_score, 2)
+        item["research_attention_overheat_penalty"] = round(decay.overheat_penalty, 2)
+        # 把过热明细合并回 detail，前端一处即可看到完整 explain。
+        detail = item.get("research_attention_detail")
+        if isinstance(detail, dict):
+            detail["research_attention_effective_score"] = round(
+                decay.effective_score, 2
+            )
+            detail["research_attention_overheat_penalty"] = round(
+                decay.overheat_penalty, 2
+            )
+            detail["research_attention_decay_explain"] = list(decay.explain)
+            detail["research_attention_warnings"] = list(decay.warnings)
+            detail["research_attention_overheat_flags"] = list(decay.overheat_flags)
+    except Exception:
+        return
 
 
 def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
@@ -294,6 +351,8 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
             it.setdefault("knowledge_theme_count", 0)
             it.setdefault("research_attention_summary", "")
             it.setdefault("research_attention_detail", {})
+            it.setdefault("research_attention_effective_score", 0.0)
+            it.setdefault("research_attention_overheat_penalty", 0.0)
         return items
 
     # 共享一次扫描结果；按 symbol_key 建索引加速候选批量查询。
@@ -314,6 +373,8 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
             it.setdefault("knowledge_theme_count", 0)
             it.setdefault("research_attention_summary", "")
             it.setdefault("research_attention_detail", {})
+            it.setdefault("research_attention_effective_score", 0.0)
+            it.setdefault("research_attention_overheat_penalty", 0.0)
             continue
         # 优先精确匹配 symbol_key；找不到再做等价比较。
         sym_attention = by_key.get(symbol)
@@ -327,6 +388,8 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
         it["knowledge_theme_count"] = summary["knowledge_theme_count"]
         it["research_attention_summary"] = summary["research_attention_summary"]
         it["research_attention_detail"] = summary
+        # [KB-009] research_attention_decay — 批量也叠加候选过热惩罚。
+        _apply_kb009_overheat_to_item(it, sym_attention)
     return items
 
 

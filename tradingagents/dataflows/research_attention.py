@@ -929,6 +929,16 @@ def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
             "matched_pages": [],
             "score_explain": [],
             "research_attention_summary": "",
+            # [KB-009] research_attention_decay — 无命中时填充空结构。
+            "research_attention_effective_score": 0.0,
+            "research_attention_base_score": 0.0,
+            "research_attention_dedup_penalty": 0.0,
+            "research_attention_time_decay_factor": 1.0,
+            "research_attention_overheat_penalty": 0.0,
+            "research_attention_unique_institution_count": 0,
+            "research_attention_duplicate_institution_count": 0,
+            "research_attention_decay_explain": [],
+            "research_attention_warnings": [],
         }
 
     matched_pages = [
@@ -936,6 +946,10 @@ def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
         for p in sym.matched_pages[:5]
     ]
     summary = _render_attention_summary(sym)
+    # [KB-009] research_attention_decay — 在 KB-007 基础分之上叠加机构级去重 +
+    # 时效衰减（symbol 级，不含候选过热惩罚；过热由 TradeFlow 候选 enrichment
+    # 用候选 overheat_flags 单独叠加）。降级时退化为空结构，绝不阻塞主流程。
+    decay_summary = _kb009_symbol_decay_summary(sym)
     return {
         "has_hit": True,
         "research_attention_score": round(sym.research_attention_score, 2),
@@ -952,7 +966,34 @@ def attention_to_summary(sym: Optional[SymbolAttention]) -> Dict[str, Any]:
         "matched_pages": matched_pages,
         "score_explain": list(sym.score_explain[:6]),
         "research_attention_summary": summary,
+        **decay_summary,
     }
+
+
+def _kb009_symbol_decay_summary(sym: SymbolAttention) -> Dict[str, Any]:
+    """[KB-009] 计算单标的的 symbol 级去重 + 时效衰减摘要（不含过热惩罚）。
+
+    依赖不可用时降级为"无衰减"中性结构，绝不抛异常阻塞 KB-008 主链路。
+    """
+    try:
+        from tradingagents.dataflows.research_attention_decay import (
+            compute_symbol_decay as _kb009_compute_decay,
+            decay_to_summary as _kb009_decay_to_summary,
+        )
+        decay = _kb009_compute_decay(sym)
+        return _kb009_decay_to_summary(decay)
+    except Exception:
+        return {
+            "research_attention_effective_score": round(sym.research_attention_score, 2),
+            "research_attention_base_score": round(sym.research_attention_score, 2),
+            "research_attention_dedup_penalty": 0.0,
+            "research_attention_time_decay_factor": 1.0,
+            "research_attention_overheat_penalty": 0.0,
+            "research_attention_unique_institution_count": 0,
+            "research_attention_duplicate_institution_count": 0,
+            "research_attention_decay_explain": [],
+            "research_attention_warnings": [],
+        }
 
 
 def _render_attention_summary(sym: SymbolAttention) -> str:
@@ -1039,6 +1080,22 @@ def render_research_attention_inline(sym: Optional[SymbolAttention]) -> str:
         lines.append("- 分数构成：")
         for line in sym.score_explain[:6]:
             lines.append(f"  - {line}")
+    # [KB-009] research_attention_decay — 附上去重 / 时效衰减摘要（不含买卖建议）。
+    try:
+        from tradingagents.dataflows.research_attention_decay import (
+            compute_symbol_decay as _kb009_compute_decay,
+            render_decay_summary_inline as _kb009_render_decay,
+        )
+        decay = _kb009_compute_decay(sym)
+        decay_line = _kb009_render_decay(decay)
+        if decay_line:
+            lines.append(f"- 去重/时效：{decay_line}")
+        if decay.explain:
+            lines.append("  - 衰减明细：")
+            for line in decay.explain[:6]:
+                lines.append(f"    - {line}")
+    except Exception:
+        pass
     lines.append("")
     return "\n".join(lines)
 

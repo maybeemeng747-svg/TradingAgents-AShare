@@ -1,0 +1,791 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "KB-009"[90m 94 matches[0m
+Let me search for the detailed KB-009 task description.
+[0m✱ [0mGrep "KB-008"[90m 462 matches[0m
+Now let me read the full KB-009 task description at line 4537.
+[0m→ [0mRead docs/TASKS.md[90m [limit=120, offset=4480][0m
+Now let me understand the existing codebase. Let me read the research_attention.py module and its tests.
+[0m→ [0mRead tradingagents/dataflows/research_attention.py
+Now let me look at the existing tests and the TradeFlow integration that uses research attention (to understand the overheat_flags context).
+[0m→ [0mRead tests/test_kb008_research_attention_integration.py
+Let me look at the KB-007 test fixtures and the TradeFlow enrichment to understand the existing data structures.
+[0m→ [0mRead tests/test_kb007_research_attention.py[90m [limit=200][0m
+[0m→ [0mRead tests/test_kb007_research_attention.py[90m [limit=120, offset=200][0m
+Let me look at the TradeFlow service to understand the enrichment and overheat_flags context.
+[0m✱ [0mGrep "_enrich_candidate_with_research_attention|overheat"[90m in . · 377 matches[0m
+Let me read the tradeflow_service.py enrichment function to understand the integration point.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=90, offset=225][0m
+Let me examine the schemas, report_service integration, and the run script to plan the wiring.
+[0m→ [0mRead api/tradeflow_schemas.py[90m [limit=40, offset=95][0m
+[0m→ [0mRead api/tradeflow_schemas.py[90m [limit=90, offset=1][0m
+[0m✱ [0mGrep "research_attention|attach_report_local_knowledge"[90m in api · 63 matches[0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=110, offset=249][0m
+I now have a complete understanding. Let me set up the task tracking and check git status before implementing.
+[0m
+[0m$ [0mgit status && git branch --show-current
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 251 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/KB-009-20260701-204409/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+local/tradingagents-custom
+[0m
+[0m$ [0mgit diff docs/TASKS.md | head -30
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index fcc6e08..559975d 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -4537,7 +4537,7 @@
+ ### KB-009: 研报来源去重、时效衰减与过热惩罚规则（P2）
+ - **描述**：防止 Research Attention Score 被同源重复、过期周报或热门题材过度放大，加入去重、时效衰减和过热惩罚。
+ - **优先级**：P2
+-- **状态**：ready — 前置 KB-007 已完成。
++- **状态**：in_progress — claimed KB-009-20260701-204409
+ - **前置条件**：KB-007 完成。
+ - **执行约束**：
+   - 不压制真实多来源共识，只惩罚重复和过期。
+[0m
+Let me check the date/validity helpers I'll reuse from the audit module.
+[0m✱ [0mGrep "def _is_valid_until_expired|def _parse_frontmatter|HIGH_STALE_RISK_VALUES|LOW_CONFIDENCE_EVIDENCE"[90m in tradingagents/dataflows · 15 matches[0m
+[0m→ [0mRead tradingagents/dataflows/local_knowledge_audit.py[90m [limit=35, offset=386][0m
+[0m
+[0m# [0mTodos
+[•] Create research_attention_decay.py module with dedup/time-decay/overheat rules
+[ ] Extend attention_to_summary in research_attention.py with KB-009 symbol-level decay fields
+[ ] Wire KB-009 overheat penalty into tradeflow_service enrichment (single + batch)
+[ ] Add KB-009 fields to tradeflow_schemas.py TradeFlowCandidateItem
+[ ] Write tests/test_kb009_research_attention_decay.py
+[ ] Update DEVLOG.md and mark KB-009 done in TASKS.md
+[ ] Run KB-007/KB-008/KB-009 tests to verify no regression
+[0m
+Now let me create the KB-009 decay module:
+[0m← [0mWrite tradingagents/dataflows/research_attention_decay.py
+Wrote file successfully.
+[0m
+Let me fix a leftover dead line in the decay module:
+[0m← [0mEdit tradingagents/dataflows/research_attention_decay.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention_decay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention_decay.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention_decay.py
+@@ -237,11 +237,10 @@
+ if updated is None:
+     return 1.0
+ 
+ age_days = max(0, (today - updated).days)
+-is_high_stale = bool(page.source_quality is None) or False
+-# is_stale 已综合 stale_risk=高 / 过期；这里只需区分 stale_risk 是否为高，
+-# 用 is_stale 近似（过期分支已 return，剩下的 is_stale 即 stale_risk=高）。
++# is_stale 已综合 stale_risk=高 / 过期；过期分支已 return，剩下的 is_stale
++# 即 stale_risk=高 —— 据此区分高低衰减速率。
+ is_high_stale = page.is_stale
+ if is_high_stale:
+     floor = _FRESH_HIGH_STALE_FLOOR
+     horizon = _FRESH_HIGH_STALE_HORIZON_DAYS
+
+[0m
+Now let me verify the module imports correctly and the institution-splitting/time-decay logic works as expected:
+[0m$ [0msource .venv/bin/activate && python -c "
+from tradingagents.dataflows.research_attention_decay import (
+    split_institution, page_time_decay_factor, compute_overheat_penalty
+)
+from tradingagents.dataflows.research_attention import PageMention
+from datetime import date
+
+# 机构拆分
+for s in ['中邮证券-华勤技术超节点', '国泰君安—华勤技术深度', '中金：腾讯', 'Bernstein-Dell', '星球社群截图', '']:
+    print(repr(s), '->', repr(split_institution(s)))
+
+# 过期页衰减
+p_expired_high = PageMention(rel_path='a', title='a', page_type='company', is_stale=True, updated_at='2020-01-01')
+p_expired_low = PageMention(rel_path='b', title='b', page_type='company', is_stale=False, updated_at='2020-01-01')
+print('expired+high stale:', page_time_decay_factor(p_expired_high, True))
+print('expired+low stale:', page_time_decay_factor(p_expired_low, True))
+
+# 过热三信号
+print(compute_overheat_penalty(overheat_flags=['短期过热'], short_term_gain_pct=25.0, theme_count=8))
+print(compute_overheat_penalty(short_term_gain_pct=50.0))  # 单一涨幅不构成清零
+print(compute_overheat_penalty())  # 无信号
+"
+
+'中邮证券-华勤技术超节点' -> '中邮证券'
+'国泰君安—华勤技术深度' -> '国泰君安'
+'中金：腾讯' -> '中金'
+'Bernstein-Dell' -> 'Bernstein'
+'星球社群截图' -> '星球社群截图'
+'' -> ''
+expired+high stale: 0.3
+expired+low stale: 0.5
+(1.4500000000000002, ['overheat_flags=1 × 0.5 = -0.50', 'short_term_gain=25.0% 超过 20.0%，超出 5.0pp × 0.3 = -0.15', 'theme_crowding=8 超过 6，超出 2 × 0.4 = -0.80'], ["overheat_flags=['短期过热']", 'short_term_gain=25.0%', 'theme_crowding=8'])
+(0.8999999999999999, ['short_term_gain=50.0% 超过 20.0%，超出 30.0pp × 0.3 = -0.90'], ['short_term_gain=50.0%'])
+(0.0, [], [])
+[0m
+[0m# [0mTodos
+[✓] Create research_attention_decay.py module with dedup/time-decay/overheat rules
+[•] Extend attention_to_summary in research_attention.py with KB-009 symbol-level decay fields
+[ ] Wire KB-009 overheat penalty into tradeflow_service enrichment (single + batch)
+[ ] Add KB-009 fields to tradeflow_schemas.py TradeFlowCandidateItem
+[ ] Write tests/test_kb009_research_attention_decay.py
+[ ] Update DEVLOG.md and mark KB-009 done in TASKS.md
+[ ] Run KB-007/KB-008/KB-009 tests to verify no regression
+[0m
+The module works correctly. Now let me update `attention_to_summary` in research_attention.py to surface KB-009 symbol-level decay:
+Now let me extend `attention_to_summary` to include KB-009 symbol-level decay (dedup + time decay, no overheat since no candidate context):
+[0m← [0mEdit tradingagents/dataflows/research_attention.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention.py
+@@ -928,15 +928,29 @@
+             "latest_updated": None,
+             "matched_pages": [],
+             "score_explain": [],
+             "research_attention_summary": "",
++            # [KB-009] research_attention_decay — 无命中时填充空结构。
++            "research_attention_effective_score": 0.0,
++            "research_attention_base_score": 0.0,
++            "research_attention_dedup_penalty": 0.0,
++            "research_attention_time_decay_factor": 1.0,
++            "research_attention_overheat_penalty": 0.0,
++            "research_attention_unique_institution_count": 0,
++            "research_attention_duplicate_institution_count": 0,
++            "research_attention_decay_explain": [],
++            "research_attention_warnings": [],
+         }
+ 
+     matched_pages = [
+         {"rel_path": p.rel_path, "title": p.title}
+         for p in sym.matched_pages[:5]
+     ]
+     summary = _render_attention_summary(sym)
++    # [KB-009] research_attention_decay — 在 KB-007 基础分之上叠加机构级去重 +
++    # 时效衰减（symbol 级，不含候选过热惩罚；过热由 TradeFlow 候选 enrichment
++    # 用候选 overheat_flags 单独叠加）。降级时退化为空结构，绝不阻塞主流程。
++    decay_summary = _kb009_symbol_decay_summary(sym)
+     return {
+         "has_hit": True,
+         "research_attention_score": round(sym.research_attention_score, 2),
+         "knowledge_theme_count": sym.theme_count,
+@@ -951,11 +965,38 @@
+         "latest_updated": sym.latest_updated,
+         "matched_pages": matched_pages,
+         "score_explain": list(sym.score_explain[:6]),
+         "research_attention_summary": summary,
++        **decay_summary,
+     }
+ 
+ 
++def _kb009_symbol_decay_summary(sym: SymbolAttention) -> Dict[str, Any]:
++    """[KB-009] 计算单标的的 symbol 级去重 + 时效衰减摘要（不含过热惩罚）。
++
++    依赖不可用时降级为"无衰减"中性结构，绝不抛异常阻塞 KB-008 主链路。
++    """
++    try:
++        from tradingagents.dataflows.research_attention_decay import (
++            compute_symbol_decay as _kb009_compute_decay,
++            decay_to_summary as _kb009_decay_to_summary,
++        )
++        decay = _kb009_compute_decay(sym)
++        return _kb009_decay_to_summary(decay)
++    except Exception:
++        return {
++            "research_attention_effective_score": round(sym.research_attention_score, 2),
++            "research_attention_base_score": round(sym.research_attention_score, 2),
++            "research_attention_dedup_penalty": 0.0,
++            "research_attention_time_decay_factor": 1.0,
++            "research_attention_overheat_penalty": 0.0,
++            "research_attention_unique_institution_count": 0,
++            "research_attention_duplicate_institution_count": 0,
++            "research_attention_decay_explain": [],
++            "research_attention_warnings": [],
++        }
++
++
+ def _render_attention_summary(sym: SymbolAttention) -> str:
+     """渲染一句话摘要：综合关注度 + 命中篇数 + 主题交叉 + 负面信息。
+ 
+     刻意同时展示 stale / deprecated 数量，满足任务约束"前端展示必须同时显示
+
+[0m
+Now let me add KB-009 decay info to the inline renderer for TA reports:
+[0m→ [0mRead tradingagents/dataflows/research_attention.py[90m [limit=60, offset=1040][0m
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_attention.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention.py
+@@ -1079,8 +1079,24 @@
+ if sym.score_explain:
+     lines.append("- 分数构成：")
+     for line in sym.score_explain[:6]:
+         lines.append(f"  - {line}")
++# [KB-009] research_attention_decay — 附上去重 / 时效衰减摘要（不含买卖建议）。
++try:
++    from tradingagents.dataflows.research_attention_decay import (
++        compute_symbol_decay as _kb009_compute_decay,
++        render_decay_summary_inline as _kb009_render_decay,
++    )
++    decay = _kb009_compute_decay(sym)
++    decay_line = _kb009_render_decay(decay)
++    if decay_line:
++        lines.append(f"- 去重/时效：{decay_line}")
++    if decay.explain:
++        lines.append("  - 衰减明细：")
++        for line in decay.explain[:6]:
++            lines.append(f"    - {line}")
++except Exception:
++    pass
+ lines.append("")
+ return "\n".join(lines)
+ 
+ 
+
+[0m
+Now let me wire KB-009 overheat penalty into the TradeFlow enrichment. First let me read the full enrichment functions:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=110, offset=227][0m
+Now let me add a KB-009 overheat overlay helper and wire it into both enrichment functions:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -267,11 +267,59 @@
+     item["research_attention_score"] = summary["research_attention_score"]
+     item["knowledge_theme_count"] = summary["knowledge_theme_count"]
+     item["research_attention_summary"] = summary["research_attention_summary"]
+     item["research_attention_detail"] = summary
++    # [KB-009] research_attention_decay — 叠加候选过热惩罚（不改交易动作）。
++    _apply_kb009_overheat_to_item(item, sym_attention)
+     return item
+ 
+ 
++# [KB-009] research_attention_decay
++def _apply_kb009_overheat_to_item(item: dict, sym_attention: Any) -> None:
++    """在 KB-008 symbol 级去重/时效衰减之上叠加候选过热惩罚。
++
++    从候选 item 读取 ``overheat_flags`` / ``short_term_gain_pct``，配合 symbol
++    的 ``theme_count`` 计算过热惩罚，覆写 ``research_attention_effective_score``
++    与相关 explain/warnings。只降低研究优先级，**不改变**强动作门禁与候选 tier；
++    依赖不可用时静默退化为已由 KB-008 写入的 symbol 级 effective score。
++    """
++    try:
++        from tradingagents.dataflows.research_attention_decay import (
++            apply_overheat_penalty as _kb009_apply_overheat,
++            compute_symbol_decay as _kb009_compute_decay,
++        )
++    except Exception:
++        return
++
++    try:
++        overheat_flags = item.get("overheat_flags") or []
++        short_term_gain = item.get("short_term_gain_pct")
++        theme_count = sym_attention.theme_count if sym_attention is not None else None
++        decay = _kb009_compute_decay(sym_attention)
++        decay = _kb009_apply_overheat(
++            decay,
++            overheat_flags=overheat_flags,
++            short_term_gain_pct=short_term_gain,
++            theme_count=theme_count,
++        )
++        item["research_attention_effective_score"] = round(decay.effective_score, 2)
++        item["research_attention_overheat_penalty"] = round(decay.overheat_penalty, 2)
++        # 把过热明细合并回 detail，前端一处即可看到完整 explain。
++        detail = item.get("research_attention_detail")
++        if isinstance(detail, dict):
++            detail["research_attention_effective_score"] = round(
++                decay.effective_score, 2
++            )
++            detail["research_attention_overheat_penalty"] = round(
++                decay.overheat_penalty, 2
++            )
++            detail["research_attention_decay_explain"] = list(decay.explain)
++            detail["research_attention_warnings"] = list(decay.warnings)
++            detail["research_attention_overheat_flags"] = list(decay.overheat_flags)
++    except Exception:
++        return
++
++
+ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
+     """批量注入研究关注度（[KB-008]）。
+ 
+     共享一次全库倒排索引扫描结果，避免每个候选都重新扫一遍 wiki。当知识库
+
+[0m
+Now let me wire KB-009 into the batch enrichment function too:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -374,8 +374,10 @@
+         it["research_attention_score"] = summary["research_attention_score"]
+         it["knowledge_theme_count"] = summary["knowledge_theme_count"]
+         it["research_attention_summary"] = summary["research_attention_summary"]
+         it["research_attention_detail"] = summary
++        # [KB-009] research_attention_decay — 批量也叠加候选过热惩罚。
++        _apply_kb009_overheat_to_item(it, sym_attention)
+     return items
+ 
+ 
+ def _compute_action(item: dict) -> str:
+
+[0m
+Let me update the fallback branches to also set KB-009 field defaults for consistency:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=130, offset=227][0m
+Let me handle the no-hit case in the overheat helper so top-level keys stay consistent:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -292,9 +292,14 @@
+ 
+ try:
+     overheat_flags = item.get("overheat_flags") or []
+     short_term_gain = item.get("short_term_gain_pct")
+-    theme_count = sym_attention.theme_count if sym_attention is not None else None
++    if sym_attention is None:
++        # 无命中：effective = 0，但仍透出 overheat_flags 便于前端展示负面信号。
++        item["research_attention_effective_score"] = 0.0
++        item["research_attention_overheat_penalty"] = 0.0
++        return
++    theme_count = sym_attention.theme_count
+     decay = _kb009_compute_decay(sym_attention)
+     decay = _kb009_apply_overheat(
+         decay,
+         overheat_flags=overheat_flags,
+
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -240,8 +240,10 @@
+     item.setdefault("research_attention_score", 0.0)
+     item.setdefault("knowledge_theme_count", 0)
+     item.setdefault("research_attention_summary", "")
+     item.setdefault("research_attention_detail", {})
++    item.setdefault("research_attention_effective_score", 0.0)
++    item.setdefault("research_attention_overheat_penalty", 0.0)
+     return item
+ 
+ try:
+     from tradingagents.dataflows.local_knowledge_audit import (
+@@ -256,8 +258,10 @@
+     item.setdefault("research_attention_score", 0.0)
+     item.setdefault("knowledge_theme_count", 0)
+     item.setdefault("research_attention_summary", "")
+     item.setdefault("research_attention_detail", {})
++    item.setdefault("research_attention_effective_score", 0.0)
++    item.setdefault("research_attention_overheat_penalty", 0.0)
+     return item
+ 
+ try:
+     sym_attention = _kb008_lookup(_lk_default_root(), symbol)
+
+[0m
+Now let me add the KB-009 fields to the fallback branches. Let me update the no-symbol and import-fail branches:
+Now the batch fallback branches:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -350,8 +350,10 @@
+         it.setdefault("research_attention_score", 0.0)
+         it.setdefault("knowledge_theme_count", 0)
+         it.setdefault("research_attention_summary", "")
+         it.setdefault("research_attention_detail", {})
++        it.setdefault("research_attention_effective_score", 0.0)
++        it.setdefault("research_attention_overheat_penalty", 0.0)
+     return items
+ 
+ # 共享一次扫描结果；按 symbol_key 建索引加速候选批量查询。
+ by_key: Dict[str, Any] = {}
+
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=357][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -372,8 +372,10 @@
+     it.setdefault("research_attention_score", 0.0)
+     it.setdefault("knowledge_theme_count", 0)
+     it.setdefault("research_attention_summary", "")
+     it.setdefault("research_attention_detail", {})
++    it.setdefault("research_attention_effective_score", 0.0)
++    it.setdefault("research_attention_overheat_penalty", 0.0)
+     continue
+ # 优先精确匹配 symbol_key；找不到再做等价比较。
+ sym_attention = by_key.get(symbol)
+ if sym_attention is None:
+
+[0m
+Now let me add the KB-009 fields to the Pydantic schema:
+[0m← [0mEdit api/tradeflow_schemas.py
+Index: /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
++++ /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+@@ -120,8 +120,10 @@
+ research_attention_score: float = 0.0  # [KB-008] research_attention_integration
+ knowledge_theme_count: int = 0  # [KB-008] research_attention_integration
+ research_attention_summary: str = ""  # [KB-008] research_attention_integration
+ research_attention_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-008]
++research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
++research_attention_overheat_penalty: float = 0.0  # [KB-009] research_attention_decay
+ created_at: str = ""
+ updated_at: str = ""
+ 
+ 
+
+[0m
+Let me run a quick smoke test of the full enrichment chain:
+[0m$ [0msource .venv/bin/activate && python -c "
+import tempfile, os
+from pathlib import Path
+from tradingagents.dataflows.local_knowledge_audit import INVESTMENT_SUBDIR
+
+# Reuse KB-007 huaqin fixtures
+import tests.test_kb007_research_attention as t
+with tempfile.TemporaryDirectory() as td:
+    tmp = Path(td)
+    inv = tmp / INVESTMENT_SUBDIR
+    def _w(p, c): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(c, encoding='utf-8')
+    _w(inv / '华勤技术603296-超节点.md', t._COMPANY_PAGE_A)
+    _w(inv / 'AI算力基础设施-公司评分表.md', t._SCORE_TABLE_PAGE)
+    _w(inv / '华勤技术-深度研究.md', t._COMPANY_PAGE_B)
+    os.environ['AUTO_DEV_KNOWLEDGE_ROOT'] = str(tmp)
+
+    from api.services.tradeflow_service import _enrich_candidate_with_research_attention, _enrich_candidates_with_research_attention
+
+    # single, with overheat flags
+    item = {'symbol': '603296.SH', 'name': '华勤技术', 'overheat_flags': ['短期过热'], 'short_term_gain_pct': 25.0}
+    r = _enrich_candidate_with_research_attention(item)
+    print('base score:', r['research_attention_score'])
+    print('effective score:', r['research_attention_effective_score'])
+    print('overheat penalty:', r['research_attention_overheat_penalty'])
+    print('detail keys:', sorted([k for k in r['research_attention_detail'] if 'effective' in k or 'decay' in k or 'overheat' in k or 'dedup' in k]))
+    print('decay explain:', r['research_attention_detail'].get('research_attention_decay_explain'))
+
+    # no hit
+    r2 = _enrich_candidate_with_research_attention({'symbol': '999999.SH', 'overheat_flags': ['x']})
+    print('no-hit effective:', r2['research_attention_effective_score'])
+
+    # batch
+    items = _enrich_candidates_with_research_attention([{'symbol':'603296.SH','overheat_flags':['短期过热']}, {'symbol':'999999.SH'}])
+    print('batch effective:', [i['research_attention_effective_score'] for i in items])
+"
+
+base score: 3.93
+effective score: 2.47
+overheat penalty: 1.45
+detail keys: ['research_attention_decay_explain', 'research_attention_dedup_penalty', 'research_attention_effective_score', 'research_attention_overheat_flags', 'research_attention_overheat_penalty', 'research_attention_time_decay_factor']
+decay explain: ['时效衰减：平均因子 1.00', 'overheat_flags=1 × 0.5 = -0.50', 'short_term_gain=25.0% 超过 20.0%，超出 5.0pp × 0.3 = -0.15', 'theme_crowding=8 超过 6，超出 2 × 0.4 = -0.80']
+no-hit effective: 0.0
+batch effective: [2.62, 0.0]
+[0m
+The math is consistent. Let me fix a minor display issue — the time decay line shouldn't show "平均因子 1.00" when decay is negligible:
+[0m← [0mEdit tradingagents/dataflows/research_attention_decay.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention_decay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention_decay.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_attention_decay.py
+@@ -385,9 +385,9 @@
+ avg_factor, expired_fresh, high_stale_fresh = _compute_time_decay(fresh_pages, today)
+ res.time_decay_factor = avg_factor
+ res.expired_fresh_count = expired_fresh
+ res.high_stale_fresh_count = high_stale_fresh
+-if avg_factor < 1.0:
++if avg_factor < 0.995:
+     explain.append(
+         f"时效衰减：平均因子 {avg_factor:.2f}"
+         + (f"（含过期弱证据 {expired_fresh} 篇）" if expired_fresh else "")
+     )
+
+[0m
+[0m# [0mTodos
+[✓] Create research_attention_decay.py module with dedup/time-decay/overheat rules
+[✓] Extend attention_to_summary in research_attention.py with KB-009 symbol-level decay fields
+[✓] Wire KB-009 overheat penalty into tradeflow_service enrichment (single + batch)
+[✓] Add KB-009 fields to tradeflow_schemas.py TradeFlowCandidateItem
+[•] Write tests/test_kb009_research_attention_decay.py
+[ ] Update DEVLOG.md and mark KB-009 done in TASKS.md
+[ ] Run KB-007/KB-008/KB-009 tests to verify no regression
+[0m
+Now let me write the comprehensive KB-009 tests. First let me update the todo:
+Now let me write the comprehensive KB-009 test file:
+[0m← [0mWrite tests/test_kb009_research_attention_decay.py
+Wrote file successfully.
+[0m
+Now let me run the KB-009 tests to verify they pass:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb009_research_attention_decay.py -q 2>&1 | tail -40
+.............................................                            [100%]
+45 passed in 1.30s
+[0m
+All 45 KB-009 tests pass. Now let me run the KB-007 and KB-008 tests to verify no regression:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb007_research_attention.py tests/test_kb008_research_attention_integration.py -q 2>&1 | tail -20
+........................................................................ [ 61%]
+.............................................                            [100%]
+117 passed in 1.91s
+[0m
+KB-007/KB-008 regression clean. Let me run the broader TradeFlow and report service tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb001_local_knowledge_audit.py tests/test_kb002_local_knowledge_lint.py tests/test_kb003_local_knowledge_provider.py tests/test_kb005_tree_work_backlog.py -q 2>&1 | tail -15
+........................................................................ [ 32%]
+........................................................................ [ 65%]
+........................................................................ [ 97%]
+.....                                                                    [100%]
+221 passed in 2.26s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/ -k "tradeflow or report or attention or decay or local_knowledge or knowledge" -q 2>&1 | tail -20
+........................................................................ [ 14%]
+........................................................................ [ 19%]
+........................................................................ [ 24%]
+........................................................................ [ 29%]
+........................................................................ [ 34%]
+........................................................................ [ 39%]
+........................................................................ [ 43%]
+........................................................................ [ 48%]
+........................................................................ [ 53%]
+........................................................................ [ 58%]
+........................................................................ [ 63%]
+........................................................................ [ 68%]
+........................................................................ [ 73%]
+........................................................................ [ 78%]
+........................................................................ [ 82%]
+........................................................................ [ 87%]
+........................................................................ [ 92%]
+........................................................................ [ 97%]
+...................................                                      [100%]
+1475 passed, 6525 deselected in 64.21s (0:01:04)
+[0m
+Broad regression clean (1475 passed). Let me verify the API imports cleanly and run the full test suite:
+[0m$ [0msource .venv/bin/activate && python -c "import api.main; import api.services.tradeflow_service; import tradingagents.dataflows.research_attention_decay; print('imports OK')" 2>&1 | tail -5
+imports OK
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/ -q 2>&1 | tail -15
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+........................................................................ [ 99%]
+........                                                                 [100%]
+=============================== warnings summary ===============================
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_does_not_set_hk_light_mode
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_still_attempts_ashare_fields
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock_fundamental/stock_recommend.py:91: FutureWarning: Passing literal html to 'read_html' is deprecated and will be removed in a future version. To read from a literal string, wrap it in a 'StringIO' object.
+    temp_df = pd.read_html(r.text, header=0)[0].iloc[:, :8]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+7983 passed, 17 skipped, 2 warnings in 296.72s (0:04:56)
+[0m
+[0m# [0mTodos
+[✓] Create research_attention_decay.py module with dedup/time-decay/overheat rules
+[✓] Extend attention_to_summary in research_attention.py with KB-009 symbol-level decay fields
+[✓] Wire KB-009 overheat penalty into tradeflow_service enrichment (single + batch)
+[✓] Add KB-009 fields to tradeflow_schemas.py TradeFlowCandidateItem
+[✓] Write tests/test_kb009_research_attention_decay.py
+[•] Update DEVLOG.md and mark KB-009 done in TASKS.md
+[✓] Run KB-007/KB-008/KB-009 tests to verify no regression
+[0m
+Full suite passes: **7983 passed, 17 skipped, 0 failed**. Now let me update the docs. First mark KB-009 done in TASKS.md:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -162,9 +162,9 @@
+ 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
+ 137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
+ 138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
+ 139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，done — DATA-025-20260701-202937，依赖 DATA-011/DATA-023 ✓）。
+-140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready — 前置 KB-007 已完成）。
++140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），依赖 KB-007 ✓）。
+ 
+ ### 数据源治理候选队列
+ 
+ > 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -4536,9 +4536,9 @@
+ 
+ ### KB-009: 研报来源去重、时效衰减与过热惩罚规则（P2）
+ - **描述**：防止 Research Attention Score 被同源重复、过期周报或热门题材过度放大，加入去重、时效衰减和过热惩罚。
+ - **优先级**：P2
+-- **状态**：in_progress — claimed KB-009-20260701-204409
++- **状态**：done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），7983 passed/0 failed
+ - **前置条件**：KB-007 完成。
+ - **执行约束**：
+   - 不压制真实多来源共识，只惩罚重复和过期。
+   - 不用单日价格涨幅作为唯一过热指标。
+
+[0m
+Now let me update the DEVLOG.md. Let me check the top of the file for the format:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=20][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,90 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-07-01 | KB-009 研报来源去重、时效衰减与过热惩罚规则
++
++- **执行者**：OpenCode
++- **类型**：feature
++- **任务**：`docs/TASKS.md` KB-009（P2）
++- **状态**：实现完成，待外层 commit
++- **前置**：KB-007 ✓（Research Attention Score 基线）/ KB-008 ✓（TA/TradeFlow 接入）
++
++### 背景
++KB-007 的 Research Attention Score 已能表征"被多少研报反复提及"，但缺少防刷分机制：同一机构的
++多篇报告会被逐页计入 mention_count，过期周报与热门题材也会把关注度过度放大。KB-009 在 KB-007
++基础分之上叠加一层"机构级去重 + 时效衰减 + 过热惩罚"，使 effective_score 更稳健，同时**不压制**
++真实多来源共识、**不改变**强动作门禁。
++
++核心边界（与 TASKS.md 执行约束一致）：
++- **不压制真实多来源共识**：3 家不同机构各提到一次 → 机构级去重比 = 1.0，不扣分；只有同一机构
++  重复出现才折叠。
++- **不用单日价格涨幅作为唯一过热指标**：过热惩罚由 `overheat_flags` + 短期涨幅 + 主题拥挤度
++  **三信号**叠加，任一缺失只跳过该项。
++- **不调用 LLM / 不访问外网 / 不写 DB**：纯标准库计算，只读叠加层。
++- **不改 KB-007 基线**：`research_attention_score` 与 `score_explain` 保持透明不变，KB-009 只产出
++  新的 `research_attention_effective_score` 与独立 explain。
++
++### 改动
++- **新增** `tradingagents/dataflows/research_attention_decay.py`（`# [KB-009] research_attention_decay`）：
++  - `split_institution(alias)`：从来源别名提取机构名（`中邮证券-华勤技术超节点 → 中邮证券`），支持
++    `- / — / ： / :` 分隔符；无分隔符视作独立来源（不折叠）。
++  - `compute_symbol_decay(sym)`：机构级去重（fresh 页按机构折叠，重复 × 0.2 扣分）+ 时效衰减
++    （过期弱证据 0.3/0.5；高 stale_risk 90 天到 0.6 地板，其余 365 天到 0.8 地板）。
++  - `compute_overheat_penalty(...)`：三信号叠加（flags×0.5 + 超 20% 涨幅×0.3/10pp + 超 6 主题×0.4）。
++  - `apply_overheat_penalty` / `compute_effective_attention`：链式叠加，effective ≥ 0。
++  - `decay_to_summary` / `render_decay_summary_inline`：扁平字典 + 一句话摘要（含去重/衰减/过热负面信息）。
++- **扩展** `tradingagents/dataflows/research_attention.py`：
++  - `attention_to_summary`：新增 9 个 KB-009 字段（`research_attention_effective_score` /
++    `research_attention_base_score` / `_dedup_penalty` / `_time_decay_factor` /
++    `_overheat_penalty` / `_unique_institution_count` / `_duplicate_institution_count` /
++    `_decay_explain` / `_warnings`）；symbol 级去重+时效衰减由 `_kb009_symbol_decay_summary` 注入，
++    依赖不可用时降级为"无衰减"中性结构。KB-008 字段保持不变（回归保护）。
++  - `render_research_attention_inline`：TA 报告"本地知识补充"段末尾附上去重/时效衰减摘要 + 明细。
++- **扩展** `api/services/tradeflow_service.py`：
++  - 新增 `_apply_kb009_overheat_to_item(item, sym_attention)`：从候选读取 `overheat_flags` /
++    `short_term_gain_pct`，配合 symbol `theme_count` 计算过热惩罚，覆写 effective_score 与 explain；
++    只降研究优先级，不改 tier/action/decision。无命中时 effective=0。
++  - `_enrich_candidate_with_research_attention` / `_enrich_candidates_with_research_attention`：
++    在 KB-008 注入后调用 KB-009 过热叠加（单条 + 批量）；所有 fallback 分支补齐 KB-009 字段默认值。
++- **扩展** `api/tradeflow_schemas.py`：`TradeFlowCandidateItem` 新增
++  `research_attention_effective_score` / `research_attention_overheat_penalty` 字段。
++- **新增** `tests/test_kb009_research_attention_decay.py`（45 tests）：
++  - 机构拆分 / 机构级去重（同机构扣分、不同机构共识不压制）/ 时效衰减（过期弱证据、高 stale 更快、
++    年龄衰减）/ 过热三信号叠加（单一涨幅不构成唯一指标、阈值边界）/ effective ≥ 0 /
++    attention_to_summary KB-009 字段 / TradeFlow 单条+批量过热叠加（不改强动作门禁）/ Pydantic schema /
++    只读安全 / explain 可读且不含强动作词。
++- **改动** `docs/TASKS.md`：KB-009 状态 `in_progress` → `done`。
++
++### 计分公式（可复现）
++```
++# 1. 机构级去重（仅 fresh 页）
++dedup_penalty = duplicate_institution_count × 0.2
++# 2. 时效衰减（fresh 页按页 [0,1] 因子均值）
++time_decay_factor = mean(page_factor)
++decay_adjusted = max(0, (base_score - dedup_penalty) × time_decay_factor)
++# 3. 过热惩罚（候选上下文）
++overheat_penalty = flags×0.5 + 超20%涨幅/10pp×0.3 + 超6主题×0.4
++effective_score = max(0, decay_adjusted - overheat_penalty)
++```
++
++### 验证
++- `pytest tests/test_kb009_research_attention_decay.py -q`：45 passed。
++- `pytest tests/test_kb007_research_attention.py tests/test_kb008_research_attention_integration.py -q`：
++  117 passed（KB-007/KB-008 无回归）。
++- 全量 `pytest tests/ -q`：**7983 passed, 17 skipped, 0 failed**。
++
++### 风险与边界
++- **过热惩罚是研究优先级因子**，不是交易动作：`tier / action / decision / target / stop_loss`
++  均不被 KB-009 修改，已由测试 `test_overheat_does_not_change_strong_action_gate` 锁定。
++- **候选无 overheat_flags 时**：过热惩罚 = 0，effective = decay_adjusted（仍含机构去重+时效衰减）。
++- **候选无 short_term_gain_pct 时**：涨幅项跳过，不影响其它信号。
++- **explain 同时展示负面信息**（重复机构 / 过期弱证据 / 高 stale / 过热信号），满足
++  "前端必须同时显示负面信息"。
++
++---
++
+ ## 2026-07-01 | DATA-025 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke
+ 
+ - **执行者**：OpenCode
+ - **类型**：feature
+
+[0m
+Let me do a final verification run of all KB-related tests and confirm the final state:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb009_research_attention_decay.py tests/test_kb007_research_attention.py tests/test_kb008_research_attention_integration.py -q 2>&1 | tail -6
+........................................................................ [ 44%]
+........................................................................ [ 88%]
+..................                                                       [100%]
+162 passed in 2.14s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pyflakes tradingagents/dataflows/research_attention_decay.py tradingagents/dataflows/research_attention.py api/services/tradeflow_service.py api/tradeflow_schemas.py tests/test_kb009_research_attention_decay.py 2>&1 | tail -10; echo "exit: $?"
+/Users/maybee/TradingAgents-AShare/.venv/bin/python: No module named pyflakes
+exit: 0
+[0m
+[0m$ [0msource .venv/bin/activate && python -m py_compile tradingagents/dataflows/research_attention_decay.py tradingagents/dataflows/research_attention.py api/services/tradeflow_service.py api/tradeflow_schemas.py tests/test_kb009_research_attention_decay.py && echo "compile OK"
+compile OK
+[0m
+[0m# [0mTodos
+[✓] Create research_attention_decay.py module with dedup/time-decay/overheat rules
+[✓] Extend attention_to_summary in research_attention.py with KB-009 symbol-level decay fields
+[✓] Wire KB-009 overheat penalty into tradeflow_service enrichment (single + batch)
+[✓] Add KB-009 fields to tradeflow_schemas.py TradeFlowCandidateItem
+[✓] Write tests/test_kb009_research_attention_decay.py
+[✓] Update DEVLOG.md and mark KB-009 done in TASKS.md
+[✓] Run KB-007/KB-008/KB-009 tests to verify no regression
+[0m
+KB-009 完成。
+
+## 改动文件
+- **新增** `tradingagents/dataflows/research_attention_decay.py` — KB-009 核心模块（机构级去重 + 时效衰减 + 过热惩罚）
+- **扩展** `tradingagents/dataflows/research_attention.py` — `attention_to_summary` 注入 9 个 KB-009 字段 + inline 渲染附衰减摘要
+- **扩展** `api/services/tradeflow_service.py` — `_apply_kb009_overheat_to_item` 过热叠加（单条+批量），fallback 补齐默认值
+- **扩展** `api/tradeflow_schemas.py` — `TradeFlowCandidateItem` 新增 effective_score / overheat_penalty 字段
+- **新增** `tests/test_kb009_research_attention_decay.py` — 45 tests
+- **改动** `docs/TASKS.md`（KB-009 → done）、`docs/DEVLOG.md`
+
+## 关键逻辑
+1. **机构级去重**：`split_institution` 从来源别名提取机构名，同机构 fresh 重复 × 0.2 扣分；不同机构共识不去重（`不压制真实多来源共识`）。
+2. **时效衰减**：过期页面 → 弱证据（0.3/0.5）；高 stale_risk 90 天到 0.6 地板，其余 365 天到 0.8 地板。
+3. **过热惩罚**：`overheat_flags×0.5 + 超20%涨幅×0.3/10pp + 超6主题×0.4` 三信号叠加，单一涨幅不构成唯一指标。
+4. **不改基线**：KB-007 `research_attention_score` 保持透明不变，只产出新的 `research_attention_effective_score`；只降研究优先级，不改 tier/action/decision（测试锁定）。
+
+## 测试结果
+- KB-009：**45 passed**
+- KB-007/KB-008 回归：117 passed
+- 全量：**7983 passed, 17 skipped, 0 failed**

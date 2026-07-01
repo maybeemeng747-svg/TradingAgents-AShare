@@ -121,6 +121,8 @@ class TradeFlowCandidateItem(BaseModel):
     knowledge_theme_count: int = 0  # [KB-008] research_attention_integration
     research_attention_summary: str = ""  # [KB-008] research_attention_integration
     research_attention_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-008]
+    research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
+    research_attention_overheat_penalty: float = 0.0  # [KB-009] research_attention_decay
     created_at: str = ""
     updated_at: str = ""
 

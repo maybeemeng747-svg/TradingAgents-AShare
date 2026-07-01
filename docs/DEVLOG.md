@@ -4,6 +4,88 @@
 
 ---
 
+## 2026-07-01 | KB-009 研报来源去重、时效衰减与过热惩罚规则
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **任务**：`docs/TASKS.md` KB-009（P2）
+- **状态**：实现完成，待外层 commit
+- **前置**：KB-007 ✓（Research Attention Score 基线）/ KB-008 ✓（TA/TradeFlow 接入）
+
+### 背景
+KB-007 的 Research Attention Score 已能表征"被多少研报反复提及"，但缺少防刷分机制：同一机构的
+多篇报告会被逐页计入 mention_count，过期周报与热门题材也会把关注度过度放大。KB-009 在 KB-007
+基础分之上叠加一层"机构级去重 + 时效衰减 + 过热惩罚"，使 effective_score 更稳健，同时**不压制**
+真实多来源共识、**不改变**强动作门禁。
+
+核心边界（与 TASKS.md 执行约束一致）：
+- **不压制真实多来源共识**：3 家不同机构各提到一次 → 机构级去重比 = 1.0，不扣分；只有同一机构
+  重复出现才折叠。
+- **不用单日价格涨幅作为唯一过热指标**：过热惩罚由 `overheat_flags` + 短期涨幅 + 主题拥挤度
+  **三信号**叠加，任一缺失只跳过该项。
+- **不调用 LLM / 不访问外网 / 不写 DB**：纯标准库计算，只读叠加层。
+- **不改 KB-007 基线**：`research_attention_score` 与 `score_explain` 保持透明不变，KB-009 只产出
+  新的 `research_attention_effective_score` 与独立 explain。
+
+### 改动
+- **新增** `tradingagents/dataflows/research_attention_decay.py`（`# [KB-009] research_attention_decay`）：
+  - `split_institution(alias)`：从来源别名提取机构名（`中邮证券-华勤技术超节点 → 中邮证券`），支持
+    `- / — / ： / :` 分隔符；无分隔符视作独立来源（不折叠）。
+  - `compute_symbol_decay(sym)`：机构级去重（fresh 页按机构折叠，重复 × 0.2 扣分）+ 时效衰减
+    （过期弱证据 0.3/0.5；高 stale_risk 90 天到 0.6 地板，其余 365 天到 0.8 地板）。
+  - `compute_overheat_penalty(...)`：三信号叠加（flags×0.5 + 超 20% 涨幅×0.3/10pp + 超 6 主题×0.4）。
+  - `apply_overheat_penalty` / `compute_effective_attention`：链式叠加，effective ≥ 0。
+  - `decay_to_summary` / `render_decay_summary_inline`：扁平字典 + 一句话摘要（含去重/衰减/过热负面信息）。
+- **扩展** `tradingagents/dataflows/research_attention.py`：
+  - `attention_to_summary`：新增 9 个 KB-009 字段（`research_attention_effective_score` /
+    `research_attention_base_score` / `_dedup_penalty` / `_time_decay_factor` /
+    `_overheat_penalty` / `_unique_institution_count` / `_duplicate_institution_count` /
+    `_decay_explain` / `_warnings`）；symbol 级去重+时效衰减由 `_kb009_symbol_decay_summary` 注入，
+    依赖不可用时降级为"无衰减"中性结构。KB-008 字段保持不变（回归保护）。
+  - `render_research_attention_inline`：TA 报告"本地知识补充"段末尾附上去重/时效衰减摘要 + 明细。
+- **扩展** `api/services/tradeflow_service.py`：
+  - 新增 `_apply_kb009_overheat_to_item(item, sym_attention)`：从候选读取 `overheat_flags` /
+    `short_term_gain_pct`，配合 symbol `theme_count` 计算过热惩罚，覆写 effective_score 与 explain；
+    只降研究优先级，不改 tier/action/decision。无命中时 effective=0。
+  - `_enrich_candidate_with_research_attention` / `_enrich_candidates_with_research_attention`：
+    在 KB-008 注入后调用 KB-009 过热叠加（单条 + 批量）；所有 fallback 分支补齐 KB-009 字段默认值。
+- **扩展** `api/tradeflow_schemas.py`：`TradeFlowCandidateItem` 新增
+  `research_attention_effective_score` / `research_attention_overheat_penalty` 字段。
+- **新增** `tests/test_kb009_research_attention_decay.py`（45 tests）：
+  - 机构拆分 / 机构级去重（同机构扣分、不同机构共识不压制）/ 时效衰减（过期弱证据、高 stale 更快、
+    年龄衰减）/ 过热三信号叠加（单一涨幅不构成唯一指标、阈值边界）/ effective ≥ 0 /
+    attention_to_summary KB-009 字段 / TradeFlow 单条+批量过热叠加（不改强动作门禁）/ Pydantic schema /
+    只读安全 / explain 可读且不含强动作词。
+- **改动** `docs/TASKS.md`：KB-009 状态 `in_progress` → `done`。
+
+### 计分公式（可复现）
+```
+# 1. 机构级去重（仅 fresh 页）
+dedup_penalty = duplicate_institution_count × 0.2
+# 2. 时效衰减（fresh 页按页 [0,1] 因子均值）
+time_decay_factor = mean(page_factor)
+decay_adjusted = max(0, (base_score - dedup_penalty) × time_decay_factor)
+# 3. 过热惩罚（候选上下文）
+overheat_penalty = flags×0.5 + 超20%涨幅/10pp×0.3 + 超6主题×0.4
+effective_score = max(0, decay_adjusted - overheat_penalty)
+```
+
+### 验证
+- `pytest tests/test_kb009_research_attention_decay.py -q`：45 passed。
+- `pytest tests/test_kb007_research_attention.py tests/test_kb008_research_attention_integration.py -q`：
+  117 passed（KB-007/KB-008 无回归）。
+- 全量 `pytest tests/ -q`：**7983 passed, 17 skipped, 0 failed**。
+
+### 风险与边界
+- **过热惩罚是研究优先级因子**，不是交易动作：`tier / action / decision / target / stop_loss`
+  均不被 KB-009 修改，已由测试 `test_overheat_does_not_change_strong_action_gate` 锁定。
+- **候选无 overheat_flags 时**：过热惩罚 = 0，effective = decay_adjusted（仍含机构去重+时效衰减）。
+- **候选无 short_term_gain_pct 时**：涨幅项跳过，不影响其它信号。
+- **explain 同时展示负面信息**（重复机构 / 过期弱证据 / 高 stale / 过热信号），满足
+  "前端必须同时显示负面信息"。
+
+---
+
 ## 2026-07-01 | DATA-025 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke
 
 - **执行者**：OpenCode
@@ -9858,3 +9940,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/DATA-025-20260701-round1.txt
 - **Run archive**: docs/task_runs/DATA-025-20260701-202937/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-009 - 研报来源去重、时效衰减与过热惩罚规则（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-009-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-009-20260701-204409/
