@@ -4317,7 +4317,7 @@
 ### KB-001: Tree Work 本地知识库只读索引与健康审计（P1）
 - **描述**：把 `~/Documents/knowledge/` 作为 TA 的本地投研知识源进行只读审计，确认 Tree Work 产物是否能被机器稳定检索和追溯。
 - **优先级**：P1
-- **状态**：done — KB-001-20260701-120814，47 tests passed
+- **状态**：done -- commit 97e997f
 - **产出**：
   - `tradingagents/dataflows/local_knowledge_audit.py`（只读审计模块）
   - `scripts/audit_local_knowledge.py`（CLI）
