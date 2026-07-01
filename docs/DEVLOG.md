@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-01 | 6 月 30 日自动开发进度审计
+
+- **审计范围**：`REPORT-UX-003`、`KB-001`、`KB-002`、`KB-003`、`AUTO-004` 超时策略相关提交，以及 2026-06-30 的 task run 档案。
+- **确认完成**：
+  - `REPORT-UX-003`：有实际代码改动和测试，commit `81511d1`。
+  - `AUTO-004`/自动化治理：`571c893` 将 cron 单轮改为只执行一个任务，避免 1200s 外层超时叠加杀第二个任务。
+- **重大审计发现**：`KB-001`、`KB-002`、`KB-003` 是 FALSE_PASS。对应 auto commit 只包含 `docs/reviews/` 与 `docs/task_runs/` 档案，未生成任务要求的实现文件：
+  - `KB-001` 未生成知识库审计脚本或 `docs/knowledge_reports/local_knowledge_audit-*.md`。
+  - `KB-002` 未生成 `scripts/lint_local_knowledge.py` 或 `docs/local_knowledge_contract.md`。
+  - `KB-003` 未生成 `local_knowledge_provider`，也未接入 DataCollector/raw_evidence。
+- **根因**：OpenCode 自动开发读取 `/Users/maybee/Documents/knowledge` 时被 `external_directory` 权限拒绝，日志中明确出现 `permission requested: external_directory ... auto-rejecting`。当前 `KB-001/002/003` 的 PASS 摘要不可信。
+- **修正**：已将 `KB-001` 至 `KB-009` 中依赖本地知识链的任务改为 `blocked`，防止自动开发在错误前置条件下继续领取 `KB-004/KB-008`。
+- **残余提醒**：preflight 仍提示 scheduler 进程运行中，属于低风险提示；若要严格控制 token，需要单独管理 scheduler。
+
 ## 2026-06-30 | KB-002 自动开发中断收口
 
 - **背景**：18:00 自动开发完成 `REPORT-UX-003` 和 `KB-001` 后继续领取 `KB-002`，第二个任务在 review/收口阶段进入 `NEEDS_HUMAN`，没有产生可提交实现代码。

@@ -154,16 +154,16 @@
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
 130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
-131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — commit 81c64b9）。
-132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，ready，依赖 KB-001）。
-133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，ready，依赖 KB-001/KB-002）。
-134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，ready，依赖 KB-003/H-017）。
-135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready，依赖 KB-001）。
-136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，ready，依赖 KB-003/IC-TA-004）。
-137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，ready，依赖 KB-001/KB-002）。
-138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，ready，依赖 KB-003/KB-007）。
+131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，blocked — FALSE_PASS，OpenCode 无法读取 `/Users/maybee/Documents/knowledge`，commit 81c64b9 仅含运行档案）。
+132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，blocked — 前置 KB-001 未真实完成，commit 5a93396 仅含运行档案）。
+133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，blocked — 前置 KB-001/KB-002 未真实完成，commit 8bab104 仅含运行档案）。
+134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，blocked — 前置 KB-003 未真实完成）。
+135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，blocked — 前置 KB-001 未真实完成）。
+136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
+137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，blocked — 前置 KB-001/KB-002 未真实完成）。
+138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，blocked — 前置 KB-003/KB-007 未真实完成）。
 139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，ready，依赖 DATA-011/DATA-023）。
-140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready，依赖 KB-007）。
+140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，blocked — 前置 KB-007 未真实完成）。
 
 ### 数据源治理候选队列
 
@@ -4317,7 +4317,8 @@
 ### KB-001: Tree Work 本地知识库只读索引与健康审计（P1）
 - **描述**：把 `~/Documents/knowledge/` 作为 TA 的本地投研知识源进行只读审计，确认 Tree Work 产物是否能被机器稳定检索和追溯。
 - **优先级**：P1
-- **状态**：done -- commit 81c64b9
+- **状态**：blocked — FALSE_PASS，commit 81c64b9 仅提交 run/review 档案，未生成审计脚本或 `docs/knowledge_reports` 报告。
+- **阻塞原因**：OpenCode 读取 `/Users/maybee/Documents/knowledge` 时被 `external_directory` 权限拒绝；见 `docs/task_runs/KB-001-20260630-181814/opencode-round2.txt`。
 - **前置条件**：无。
 - **背景**：用户的 Tree Work 基于 Karpathy LLM Wiki 模式，`wiki/investment/` 已有 76 篇投资知识、`raw/` 保存原始资料、`inbox/` 有待处理材料。TA 需要接入消化后的 wiki，而不是直接消化 raw 研报。
 - **执行约束**：
@@ -4339,7 +4340,7 @@
 ### KB-002: investment wiki 输出协议升级：TA 可消费字段 lint（P1）
 - **描述**：为 Tree Work 提出稳定的 investment wiki 输出协议，并在 TA 仓库实现 lint，避免后续消化研报后 TA 仍抓不到股票、主题、风险、来源和时效。
 - **优先级**：P1
-- **状态**：done -- commit 5a93396
+- **状态**：blocked — 前置 KB-001 未真实完成；commit 5a93396 仅提交 run/review 档案，未生成 `scripts/lint_local_knowledge.py` 或 `docs/local_knowledge_contract.md`。
 - **最近一次自动运行**：KB-002-20260630-182708 因 review/收口阶段进入 NEEDS_HUMAN，未产生可提交实现；已归档 run/review 记录，允许下一轮重新领取。
 - **前置条件**：KB-001 完成。
 - **Tree Work 新要求草案**：
@@ -4365,7 +4366,7 @@
 ### KB-003: TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1）
 - **描述**：TA 分析股票时，从 Tree Work 已消化的 `wiki/investment/` 中只读查询相关公司/主题，写入 `metadata.raw_evidence.local_knowledge`，并在报告中展示“本地知识补充”。
 - **优先级**：P1
-- **状态**：done -- commit 8bab104
+- **状态**：blocked — 前置 KB-001/KB-002 未真实完成；commit 8bab104 仅提交 run/review 档案，未生成 `local_knowledge_provider` 或 raw_evidence 接线。
 - **前置条件**：KB-001、KB-002 完成。
 - **执行约束**：
   - TA 只接入消化后的 wiki，不直接读 raw PDF 做结论。
@@ -4386,7 +4387,7 @@
 ### KB-004: TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1）
 - **描述**：TradeFlow 昊天左侧候选应优先利用 Tree Work 已消化的产业认知，候选入池时显示“本地知识命中：公司/主题/产业链角色/风险”。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — 前置 KB-003 未真实完成。
 - **前置条件**：KB-003、H-017 完成。
 - **执行约束**：
   - 本地知识命中只加解释力，不单独触发候选入池。
@@ -4406,7 +4407,7 @@
 ### KB-005: Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2）
 - **描述**：建立本地知识库清理清单，找出 inbox 积压、raw 已存但 wiki 未消化、wiki 有占位但未补充的内容，方便 Tree Work 后续处理。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — 前置 KB-001 未真实完成。
 - **前置条件**：KB-001 完成。
 - **执行约束**：
   - 只生成清单，不移动/删除 knowledge 文件。
@@ -4425,7 +4426,7 @@
 ### KB-006: 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
 - **描述**：提供只读 API/服务函数，让 investment-controller 在盘前/盘后 briefing 中引用 Tree Work 知识命中，而不是让它自己读文件或编造背景。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — 前置 KB-003 未真实完成。
 - **前置条件**：KB-003、IC-TA-004 完成。
 - **执行约束**：
   - 只读，不写 knowledge。
@@ -4445,7 +4446,7 @@
 ### KB-007: 多研报重复提及因子 Research Attention Score（P1）
 - **描述**：统计 Tree Work `wiki/investment/` 中每只股票被多少篇研报/评分表/主题页重复提及，形成“研报关注度/主题交叉度”因子，用于候选发现和中线研究优先级。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — 前置 KB-001/KB-002 未真实完成。
 - **前置条件**：KB-001、KB-002 完成。
 - **执行约束**：
   - 不把多研报提及当成买入信号。
@@ -4468,7 +4469,7 @@
 ### KB-008: TA/TradeFlow 接入研报关注度与主题交叉度展示（P1）
 - **描述**：将 KB-007 的研报关注度接入 TA 报告、TradeFlow 候选池和观察仓，使“多份研报反复提到同一股票”成为研究优先级和解释信息。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — 前置 KB-003/KB-007 未真实完成。
 - **前置条件**：KB-003、KB-007 完成。
 - **执行约束**：
   - 仅作为候选排序/研究优先级因子，不直接改变交易动作。
@@ -4514,7 +4515,7 @@
 ### KB-009: 研报来源去重、时效衰减与过热惩罚规则（P2）
 - **描述**：防止 Research Attention Score 被同源重复、过期周报或热门题材过度放大，加入去重、时效衰减和过热惩罚。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — 前置 KB-007 未真实完成。
 - **前置条件**：KB-007 完成。
 - **执行约束**：
   - 不压制真实多来源共识，只惩罚重复和过期。
