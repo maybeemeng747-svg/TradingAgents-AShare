@@ -160,10 +160,10 @@
 134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，blocked — 前置 KB-003 未真实完成）。
 135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready — 前置 KB-001 已由 commit 97e997f 真实完成）。
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，blocked — 前置 KB-003 未真实完成）。
-137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，ready — 前置 KB-001/KB-002 均已完成）。
-138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，blocked — 前置 KB-003/KB-007 未真实完成）。
+137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
+138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，ready — 前置 KB-003/KB-007 均已完成）。
 139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，ready，依赖 DATA-011/DATA-023）。
-140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，blocked — 前置 KB-007 未真实完成）。
+140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready — 前置 KB-007 已完成）。
 
 ### 数据源治理候选队列
 
@@ -4456,7 +4456,7 @@
 ### KB-007: 多研报重复提及因子 Research Attention Score（P1）
 - **描述**：统计 Tree Work `wiki/investment/` 中每只股票被多少篇研报/评分表/主题页重复提及，形成“研报关注度/主题交叉度”因子，用于候选发现和中线研究优先级。
 - **优先级**：P1
-- **状态**：ready — 前置 KB-001、KB-002 均已完成。
+- **状态**：done — 实现完成，待外层 commit
 - **前置条件**：KB-001、KB-002 完成。
 - **执行约束**：
   - 不把多研报提及当成买入信号。
@@ -4475,11 +4475,16 @@
   - 过期/低置信/废弃页面不提升强信号。
   - 无任何买卖建议或强动作词。
 - **代码标注要求**：`# [KB-007] research_attention_score`
+- **交付物**：
+  - `tradingagents/dataflows/research_attention.py`（倒排索引 + 资产分类 + 分数合成 + 报告渲染）
+  - `scripts/run_research_attention.py`（CLI：`--knowledge-root / --output / --json-output / --json / --stdout / --top`）
+  - `tests/test_kb007_research_attention.py`（78 tests）
+  - `docs/knowledge_reports/research_attention-2026-07-01.md` / `.json`（真实知识库 76 页 / 228 标的报告）
 
 ### KB-008: TA/TradeFlow 接入研报关注度与主题交叉度展示（P1）
 - **描述**：将 KB-007 的研报关注度接入 TA 报告、TradeFlow 候选池和观察仓，使“多份研报反复提到同一股票”成为研究优先级和解释信息。
 - **优先级**：P1
-- **状态**：blocked — 前置 KB-003/KB-007 未真实完成。
+- **状态**：ready — 前置 KB-003/KB-007 均已完成。
 - **前置条件**：KB-003、KB-007 完成。
 - **执行约束**：
   - 仅作为候选排序/研究优先级因子，不直接改变交易动作。
@@ -4525,7 +4530,7 @@
 ### KB-009: 研报来源去重、时效衰减与过热惩罚规则（P2）
 - **描述**：防止 Research Attention Score 被同源重复、过期周报或热门题材过度放大，加入去重、时效衰减和过热惩罚。
 - **优先级**：P2
-- **状态**：blocked — 前置 KB-007 未真实完成。
+- **状态**：ready — 前置 KB-007 已完成。
 - **前置条件**：KB-007 完成。
 - **执行约束**：
   - 不压制真实多来源共识，只惩罚重复和过期。

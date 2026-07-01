@@ -4,6 +4,85 @@
 
 ---
 
+## 2026-07-01 | KB-007 多研报重复提及因子 Research Attention Score
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待外层 commit）
+- **任务**：`docs/TASKS.md` KB-007（P1）
+
+### 背景
+
+- KB-001/KB-002/KB-003 已完成知识库只读**审计**、契约 **lint** 与单 symbol 查询接入。
+- KB-007 需要在**全量**消化页面上建立 `symbol -> matched_pages[]` 倒排索引，统计每只标的被
+  多少篇研报/评分表/主题页重复提及，合成中性的"研究关注度"分数，用于候选发现与中线研究优先级。
+- 该分数**不构成买卖信号**，仅作为研究优先级与解释因子；过期 / 低置信 / 待补充页面必须降权。
+
+### 变更
+
+- **新增** `tradingagents/dataflows/research_attention.py`（`# [KB-007] research_attention_score`）：
+  - 全量扫描 `wiki/investment/`，按 frontmatter `symbols` 字段建立倒排索引；
+    `symbols` 缺失的页面不进入索引（与 KB-003 命中口径一致）。
+  - **资产分类** `classify_asset_class`：A 股（.SH/.SZ/.BJ/.SS）/ 港股（.HK）/ 美股（.US）/
+    基金（ETF/LOF/基金关键词命中，覆盖 .SH 后缀的指数基金）/ 未上市主体 / 其它；
+    基金关键词优先于 A 股后缀，避免 510300 等 ETF 被混入 A 股。
+  - **字段聚合**：`mention_count` / `fresh_mention_count` / `theme_count` / `source_count` /
+    `high_quality_mention_count` / `stale_mention_count` / `deprecated_mention_count` /
+    `report_type_distribution` / `themes` / `sources` / `latest_updated`。
+  - **来源去重**：`[[target|alias]]` wiki-link 取 alias 作为去重 key，同一研报别名在多页
+    命中只计一次主权重；超出部分计入 `duplicate_source_penalty`。
+  - **分数合成** `_compose_score`：
+    `raw = (fresh×1.0 + max(0,theme-1)×0.5 + high_q×0.5) × freshness_ratio`
+    `- stale×0.3 - deprecated×0.5 - duplicate_source×0.1`，下限 0；
+    每个加减分项写入 `score_explain`，便于 KB-008 前端展示。
+  - **降权规则**：stale（`stale_risk=高` 或 `valid_until` 过期）/ deprecated（待补充 或
+    `evidence_level=C`）页面不进入 `fresh_mention_count`；freshness_ratio 把整体分数按比例
+    缩放，确保纯 stale / 纯 deprecated 标的分数为 0。
+  - `render_research_attention_report()` 输出 Markdown：扫描概览 / 资产类别分布 / Top 榜 /
+    重点明细（含 score_explain）/ 计分口径 / 免责声明；**刻意避免** `买入/卖出/加仓/减仓/
+    强烈推荐` 等强动作词。
+  - 复用 KB-001/KB-002 的 `_audit_single_page` / `_split_frontmatter` / stale 判断，
+    保持口径一致；不重复读盘逻辑。
+- **新增** `scripts/run_research_attention.py` CLI：
+  - `--knowledge-root / --output / --json-output / --json / --stdout / --top`。
+  - 与 KB-001/KB-002 CLI 风格一致：默认只打印 stdout，**不自动落盘**（避免测试/CI 误污染 docs）；
+    显式 `--output` / `--json-output` 才写文件；FAILED/空跑返回 1。
+- **新增** `tests/test_kb007_research_attention.py`（78 tests）：覆盖资产分类、symbol 解析、
+  倒排索引建立、字段聚合、来源去重、主题交叉、分数合成（含 freshness 缩放与下限 0）、
+  排序稳定性、报告渲染（含"无强动作词"验收）、错误与空库处理、序列化、CLI 子进程冒烟、
+  只读安全性、默认输出路径、任务契约 4 条验收方式综合。
+- **新增报告产物**（真实知识库 76 页 / 228 标的）：
+  - `docs/knowledge_reports/research_attention-2026-07-01.md`
+  - `docs/knowledge_reports/research_attention-2026-07-01.json`
+- **改动** `docs/TASKS.md`：KB-007 状态 `in_progress` → `done`；KB-008 / KB-009 解除 blocked。
+
+### 验收
+
+- ✅ 对真实知识库可生成 228 标的关注度榜（A 股 177 / 港股 11 / 美股 10 / 基金 13 / 未上市 17）。
+- ✅ 同一股票多篇命中能汇总主题与来源（华勤技术 3 篇命中聚合 themes>=5 / sources>=3）。
+- ✅ 过期 / 低置信 / 废弃页面不提升强信号（浦发银行 valid_until 过期 → score=0；
+  Dell 待补充+C 级 → score=0；华勤有 fresh 命中 → 排在两者之前）。
+- ✅ 报告与 JSON 输出均无买卖建议或强动作词（`买入/卖出/加仓/减仓/强烈推荐/清仓` 均不出现）。
+- ✅ 任务级测试：`pytest tests/test_kb007_research_attention.py -q` 78 passed。
+- ✅ 全量回归：`pytest tests/ -q --ignore=tests/test_kb007_research_attention.py`
+  7586 passed / 17 skipped，与 KB-003 基线一致，无回归。
+
+### 风险点与边界
+
+- **非买入信号**：分数只表达"被多少研报反复提到"，KB-008 接入时只能作为候选排序/研究优先级
+  因子，不能直接改变交易动作；报告显式声明此约束。
+- **资产分类边界**：`.SH` 后缀的 ETF（如 510300）通过 `ETF/基金` 关键词识别为 FUND；
+  若 Tree Work 未来给纯 A 股页误标基金关键词，会被误分类 —— 已在 lint (KB-002) 层面
+  约束 tags/themes 规范。
+- **来源去重粒度**：本版按 wiki-link alias 去重；KB-009 将在此基础上引入机构级去重与
+  时效衰减，权重常量已暴露为模块级变量便于调参。
+- **测试隔离**：所有测试基于 `tmp_path` fixture KB，绝不触碰真实知识库；
+  `test_cli_default_does_not_autowrite` 显式验证默认不落盘，避免 CI 误污染 docs。
+- **复用解析**：依赖 KB-001 的 `_audit_single_page`，若 KB-001 解析逻辑变更，本模块
+  自动跟随（与 KB-002/KB-003 保持同一解析实现，避免行为分叉）。
+
+---
+
 ## 2026-07-01 | KB-003 TA 本地知识源 raw_evidence 接入与报告"本地知识补充"区块
 
 - **执行者**：OpenCode
@@ -9284,3 +9363,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-003-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-003-20260701-181738/
+
+## 2026-07-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-007 - 多研报重复提及因子 Research Attention Score（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-007-20260701-round1.txt
+- **Run archive**: docs/task_runs/KB-007-20260701-184315/
