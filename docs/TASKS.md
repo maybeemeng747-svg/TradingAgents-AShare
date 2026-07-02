@@ -153,7 +153,7 @@
 127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，done，依赖 TF-OBS-005/UI-013 ✓）。
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，done，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，done，依赖 V-010/V-011 ✓）。
-130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
+130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，done — AUTO-004-20260702-231123，依赖 AUTO-003/V-011 ✓）。
 131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
 132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ 真实知识库 lint 报告；99 tests passed（KB-001+KB-002））。
 133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_provider.py` + `scripts/query_local_knowledge.py` + `tests/test_kb003_local_knowledge_provider.py`（83 tests）+ 接入 `data_collector.build_raw_evidence` / `evidence_contract` / `report_service.attach_report_local_knowledge` / `api/main.py` 响应顶层；7586 tests passed，无回归）。
@@ -4297,7 +4297,7 @@
 ### AUTO-004: 夜间三小时任务续航预算与失败后停止策略回归（P2）
 - **描述**：用户希望夜间能跑 3 小时左右。本任务给自动开发链增加续航预算报告：当前 ready 任务预计可跑多久、失败是否停止、是否会因任务池空而空转。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — AUTO-004-20260702-231123（OpenCode 产出 `scripts/summarize_auto_dev_runs.py` 的 `[AUTO-004] auto_dev_runtime_budget` 模块 + `tests/test_auto004_runtime_budget.py`，46 tests passed）
 - **前置条件**：AUTO-003、V-011 完成。
 - **执行约束**：
   - 不改变 cron 时间。

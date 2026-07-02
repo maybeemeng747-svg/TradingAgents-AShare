@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-07-02 | AUTO-004 夜间三小时任务续航预算与失败后停止策略回归
+
+- **执行者**：OpenCode
+- **类型**：feature + 回归
+- **任务**：AUTO-004（P2，依赖 AUTO-003 ✓ / V-011 ✓）
+- **状态**：done
+
+### 背景
+用户希望夜间自动开发能跑约 3 小时。V-011 的续航估计基于静态优先级预算
+（P0 30-60 分、P1 20-40 分……），没有利用 `docs/task_runs/` 的真实历史耗时，
+也无法回答“失败是否仍会停”、“任务池空是否会空转”。
+
+### 修改文件
+- `scripts/summarize_auto_dev_runs.py`：
+  - 新增 `[AUTO-004] auto_dev_runtime_budget` 模块：
+    - `compute_historical_runtimes()`：扫描全部历史 `task_runs/`，按优先级统计
+      平均/最小/最大耗时（秒），丢弃 <30s 与 >6h 的脏样本。
+    - `estimate_ready_endurance_from_history()`：用历史均值混合 V-011 静态预算；
+      样本不足（<2）时回退静态；输出 `meets_target` / `low_endurance` 标志
+      与 per-task 预估。
+    - `sort_ready_queue_for_budget()`：按 auto_dev_loop 的领取顺序（P0→P3 再文档序）排序。
+    - `verify_fail_stop_strategy()`：只读校验 `auto_dev_loop.sh` 的四道失败即停防线
+      （FAILED_TASKS>0 break、QUOTA_EXHAUSTED break、脏工作区 exit、仅 DONE continue）。
+    - `generate_low_endurance_proposal()`：ready 队列预计续航 <2h（或为空）时生成
+      `proposed` 补充建议（仅建议，绝不自动改 TASKS 状态）。
+    - `format_runtime_budget_section()`：渲染历史耗时表、续航估计、失败即停回归表。
+  - `scan_task_runs()`：`Rounds` 字段改为防御式整数解析，兼容遗留自由文本格式。
+  - `main()`：新增 `--with-runtime-budget`（默认开）/`--no-runtime-budget`/
+    `--target-hours`/`--low-hours` 参数；扫描全部历史 run 估算耗时。
+- `tests/test_auto004_runtime_budget.py`：新增 46 个测试，覆盖时间戳解析、历史
+  耗时统计（边界/脏数据/多优先级）、混合续航估计（历史/静态回退/阈值标志）、
+  队列排序、失败即停只读校验（真实脚本 + 合成/破损脚本）、低续航建议、
+  报告渲染（含脱敏）与 CLI dry-run 集成（含“不修改 TASKS.md”回归）。
+
+### 关键逻辑
+- 续航估计优先用历史均值：每类优先级样本 ≥2 时用历史中点 + 静态带宽做区间；
+  无历史时回退 V-011 静态预算并标注 `static_fallback`。
+- 失败即停校验只读不改 `auto_dev_loop.sh`，确认四道防线生效，验证“不影响现有
+  auto_dev_loop 领取逻辑”的验收点。
+- ready 为空或续航 <2h 时输出“夜间 cron 不应空转”提示与人工补充建议，
+  不自动启动 OpenCode、不绕过 Codex review、不改 cron 时间。
+
+### 验收
+- `pytest tests/test_auto004_runtime_budget.py -q` → 46 passed。
+- 相关回归：`tests/test_v002_nightly_acceptance.py tests/test_m002_summarize_runs.py
+  tests/test_m012_suggest_next_tasks.py` → 115 passed。
+- 默认 smoke：`tests/test_api_smoke.py tests/test_runtime_tier_contract.py
+  tests/test_auto_dev_loop_static.py` → 127 passed。
+- 真实仓库 dry-run：历史 130 个样本，整体均值 ~19 分/任务，失败即停四项全生效。
+
+---
+
 ## 2026-07-01 | KB-009 研报来源去重、时效衰减与过热惩罚规则
 
 - **执行者**：OpenCode
@@ -9952,3 +10004,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-009-20260701-round1.txt
 - **Run archive**: docs/task_runs/KB-009-20260701-204409/
+
+## 2026-07-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: AUTO-004 - 夜间三小时任务续航预算与失败后停止策略回归（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/AUTO-004-20260702-round1.txt
+- **Run archive**: docs/task_runs/AUTO-004-20260702-231123/

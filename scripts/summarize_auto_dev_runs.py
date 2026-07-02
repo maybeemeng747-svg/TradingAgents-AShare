@@ -323,6 +323,468 @@ def estimate_ready_endurance(
     }
 
 
+# ── [AUTO-004] auto_dev_runtime_budget ──────────────────────────────────────
+#
+# AUTO-004 extends V-011's static priority budget with historical runtime
+# estimation, fail-stop strategy verification, and proposed-suggestion
+# generation when the ready queue cannot sustain the nightly target window.
+#
+# Constraints honoured:
+#   - Read-only: never modifies TASKS.md status or auto_dev_loop.sh.
+#   - Does not change cron time, does not auto-start OpenCode, does not
+#     bypass Codex review.
+#   - Does not affect the existing auto_dev_loop pickup logic.
+
+# Nightly endurance targets (hours). The user wants ~3h of nightly runs; a
+# ready queue projected below ``_LOW_ENDURANCE_HOURS`` triggers a proposed
+# task suggestion so the pool does not idle-spin.
+_TARGET_ENDURANCE_HOURS = 3.0
+_LOW_ENDURANCE_HOURS = 2.0
+
+# Confidence threshold: if historical sample size per priority bucket is
+# smaller than this, we blend with the static V-011 budget instead of
+# trusting a noisy average outright.
+_MIN_HISTORY_SAMPLES = 2
+
+# Sanity caps for elapsed time parsing. Auto-dev OpenCode timeout is 1800s
+# and tests 900s, so a single round is bounded by ~2700s + overhead. Anything
+# outside this window is treated as a parsing/clock-skew artefact and dropped.
+_MAX_PLAUSIBLE_ELAPSED_SECONDS = 6 * 3600  # 6h (multi-round worst case)
+_MIN_PLAUSIBLE_ELAPSED_SECONDS = 30        # 30s
+
+
+def _parse_run_timestamp(ts: str) -> Optional[datetime]:
+    """Parse an auto-dev run timestamp of the form ``YYYY-MM-DD_HH:MM:SS``.
+
+    Returns a timezone-naive ``datetime`` or ``None`` if the value is empty or
+    does not match the expected format.
+    """
+    if not ts:
+        return None
+    ts = ts.strip()
+    for fmt in ("%Y-%m-%d_%H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(ts, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_priority_token(priority_raw: str) -> str:
+    """Extract the canonical P-level token (P0/P1/P2/P3) from a raw string."""
+    for tok in re.split(r"[\s,，、（）()]+", (priority_raw or "").strip()):
+        if tok.upper() in _PRIORITY_RUNTIME_MINUTES:
+            return tok.upper()
+    return ""
+
+
+def compute_historical_runtimes(runs: list[TaskRun]) -> dict[str, object]:
+    """Compute average elapsed time per priority from historical task runs.
+
+    Each historical ``TaskRun`` carries ``started_at`` (from task.md) and
+    ``finished_at`` (from summary.md). The elapsed seconds are bucketed by
+    priority. Out-of-window or unparseable entries are dropped.
+
+    Returns:
+        - ``by_priority``: ``{priority: {"count", "avg_seconds", "min", "max"}}``
+        - ``overall``: ``{"count", "avg_seconds"}``
+        - ``has_history``: bool — True when at least one valid sample exists.
+    """
+    by_priority: dict[str, list[int]] = {}
+    all_elapsed: list[int] = []
+
+    for run in runs:
+        started = _parse_run_timestamp(run.started_at)
+        finished = _parse_run_timestamp(run.finished_at)
+        if started is None or finished is None:
+            continue
+        elapsed = int((finished - started).total_seconds())
+        if elapsed < _MIN_PLAUSIBLE_ELAPSED_SECONDS:
+            continue
+        if elapsed > _MAX_PLAUSIBLE_ELAPSED_SECONDS:
+            # Clock skew or a stale run that never recorded finished_at
+            # correctly — skip rather than poison the average.
+            continue
+        prio = _extract_priority_token(run.priority) or "OTHER"
+        by_priority.setdefault(prio, []).append(elapsed)
+        all_elapsed.append(elapsed)
+
+    def _stats(samples: list[int]) -> dict[str, int | float]:
+        return {
+            "count": len(samples),
+            "avg_seconds": (sum(samples) / len(samples)) if samples else 0.0,
+            "min": min(samples) if samples else 0,
+            "max": max(samples) if samples else 0,
+        }
+
+    return {
+        "by_priority": {p: _stats(s) for p, s in by_priority.items()},
+        "overall": _stats(all_elapsed),
+        "has_history": bool(all_elapsed),
+    }
+
+
+def _blend_estimate(
+    static_minutes: tuple[int, int],
+    historical_seconds: float | None,
+    samples: int,
+) -> tuple[float, float]:
+    """Blend the static V-011 budget with a historical average.
+
+    When ``samples >= _MIN_HISTORY_SAMPLES`` the historical average (in
+    minutes) replaces the static midpoint; the static range is still used to
+    derive a conservative spread. With insufficient history we fall back to
+    the static range verbatim.
+    """
+    static_lo, static_hi = static_minutes
+    if historical_seconds is None or samples < _MIN_HISTORY_SAMPLES:
+        return (float(static_lo), float(static_hi))
+    hist_min = historical_seconds / 60.0
+    # Spread derived from the static range width, clamped so the historical
+    # midpoint stays centred. This keeps the band informative without
+    # trusting a single noisy sample.
+    half_spread = max((static_hi - static_lo) / 2.0, 5.0)
+    lo = max(1.0, hist_min - half_spread)
+    hi = hist_min + half_spread
+    return (lo, hi)
+
+
+def estimate_ready_endurance_from_history(
+    ready_queue: "list[dict[str, str]] | None",
+    historical: dict[str, object],
+    *,
+    target_hours: float = _TARGET_ENDURANCE_HOURS,
+    low_hours: float = _LOW_ENDURANCE_HOURS,
+) -> dict[str, object]:
+    """Estimate ready-queue endurance using historical averages.
+
+    Blends V-011 static budgets with AUTO-004 historical per-priority
+    averages. Falls back to the static budget when a priority bucket lacks
+    enough samples.
+
+    Returns the same shape as :func:`estimate_ready_endurance`, plus:
+      - ``method``: ``"historical"`` or ``"static_fallback"``
+      - ``target_hours`` / ``low_hours``
+      - ``meets_target`` / ``low_endurance`` flags
+      - ``per_task``: list of per-task estimates (id, priority, est_minutes)
+    """
+    if not ready_queue:
+        return {
+            "count": 0,
+            "total_min_minutes": 0,
+            "total_max_minutes": 0,
+            "hours_range": "0h",
+            "empty": True,
+            "by_priority": {},
+            "summary": "Ready 队列为空，夜间 cron 不应空转。",
+            "method": "static_fallback",
+            "target_hours": target_hours,
+            "low_hours": low_hours,
+            "meets_target": False,
+            "low_endurance": True,
+            "per_task": [],
+        }
+
+    hist_by_prio = historical.get("by_priority", {}) or {}
+    overall_hist = historical.get("overall", {}) or {}
+    has_history = bool(historical.get("has_history", False))
+
+    total_min = 0.0
+    total_max = 0.0
+    by_priority: dict[str, int] = {}
+    per_task: list[dict[str, object]] = []
+
+    for task in ready_queue:
+        prio = _extract_priority_token(task.get("priority", ""))
+        bucket = prio or "OTHER"
+        static = _PRIORITY_RUNTIME_MINUTES.get(prio, _DEFAULT_RUNTIME_MINUTES)
+        hist = hist_by_prio.get(prio) if prio else None
+        hist_seconds = hist.get("avg_seconds") if hist else None
+        samples = hist.get("count", 0) if hist else 0
+
+        lo, hi = _blend_estimate(static, hist_seconds, samples)
+        # If no per-priority history but we have an overall average, use it as
+        # a weak signal for the midpoint only when samples are sufficient.
+        if (hist_seconds is None or samples < _MIN_HISTORY_SAMPLES) and has_history:
+            overall_samples = overall_hist.get("count", 0)
+            if overall_samples >= _MIN_HISTORY_SAMPLES:
+                overall_min = overall_hist.get("avg_seconds", 0) / 60.0
+                half_spread = max((static[1] - static[0]) / 2.0, 5.0)
+                lo = max(1.0, overall_min - half_spread)
+                hi = overall_min + half_spread
+
+        total_min += lo
+        total_max += hi
+        by_priority[bucket] = by_priority.get(bucket, 0) + 1
+        per_task.append({
+            "task_id": task.get("task_id", ""),
+            "title": task.get("title", ""),
+            "priority": prio or "OTHER",
+            "est_min_minutes": round(lo, 1),
+            "est_max_minutes": round(hi, 1),
+            "source": "historical" if samples >= _MIN_HISTORY_SAMPLES else "static",
+        })
+
+    def _fmt_hours(minutes: float) -> str:
+        if minutes <= 0:
+            return "0h"
+        hours = minutes / 60.0
+        if hours >= 1.0:
+            return f"{hours:.1f}h"
+        return f"{int(minutes)}m"
+
+    hours_range = f"{_fmt_hours(total_min)}-{_fmt_hours(total_max)}"
+    est_hours_mid = (total_min + total_max) / 2.0 / 60.0
+    method = "historical" if has_history else "static_fallback"
+
+    meets_target = est_hours_mid >= target_hours
+    low_endurance = est_hours_mid < low_hours
+
+    summary = (
+        f"Ready 队列剩余 {len(ready_queue)} 个任务，"
+        f"基于历史耗时预计可续航约 {hours_range}（{int(total_min)}-"
+        f"{int(total_max)} 分钟）。"
+        if has_history
+        else (
+            f"Ready 队列剩余 {len(ready_queue)} 个任务，"
+            f"无历史耗时样本，使用静态预算约 {hours_range}（{int(total_min)}-"
+            f"{int(total_max)} 分钟）。"
+        )
+    )
+
+    return {
+        "count": len(ready_queue),
+        "total_min_minutes": int(total_min),
+        "total_max_minutes": int(total_max),
+        "hours_range": hours_range,
+        "empty": False,
+        "by_priority": by_priority,
+        "summary": summary,
+        "method": method,
+        "target_hours": target_hours,
+        "low_hours": low_hours,
+        "meets_target": meets_target,
+        "low_endurance": low_endurance,
+        "per_task": per_task,
+    }
+
+
+def sort_ready_queue_for_budget(
+    ready_queue: "list[dict[str, str]] | None",
+    historical: dict[str, object] | None = None,
+) -> "list[dict[str, str]]":
+    """Return the ready queue ordered the way auto_dev_loop would pick it.
+
+    Mirrors the ``parse_ready_tasks`` ordering in auto_dev_loop.sh: priority
+    ascending (P0 → P3), then document order. This is the order used for the
+    dry-run budget projection so the report matches what the loop would
+    actually consume.
+    """
+    if not ready_queue:
+        return []
+    priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    return sorted(
+        ready_queue,
+        key=lambda t: (
+            priority_order.get(_extract_priority_token(t.get("priority", "")), 9),
+            ready_queue.index(t),
+        ),
+    )
+
+
+def verify_fail_stop_strategy(script_path: Path) -> dict[str, object]:
+    """Read-only verification that auto_dev_loop.sh still stops on failure.
+
+    AUTO-004 acceptance requires confirming the fail-stop policy remains in
+    effect. This function greps the loop script for the canonical guards and
+    reports which are present. It never edits the script.
+
+    Returns ``{"ok": bool, "checks": {name: bool}, "script": str}``.
+    """
+    checks = {
+        "break_on_failed_tasks": False,
+        "break_on_quota_exhausted": False,
+        "stop_on_dirty_tree": False,
+        "continue_only_on_done": False,
+    }
+    script_name = ""
+    if script_path.exists():
+        try:
+            text = script_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        script_name = script_path.name
+
+        # break_on_failed_tasks: a shared guard ``if FAILED_TASKS -gt 0; break``
+        # (the QUOTA_EXHAUSTED and NEEDS_HUMAN branches both feed this counter).
+        checks["break_on_failed_tasks"] = bool(
+            re.search(r"FAILED_TASKS[^\n]*-gt\s*0[^\n]*\n\s*break", text, re.MULTILINE)
+        ) or (
+            bool(re.search(r"FAILED_TASKS[^\n]*-gt\s*0", text))
+            and "break" in text
+        )
+
+        # break_on_quota_exhausted: the QUOTA_EXHAUSTED branch must either break
+        # directly or increment FAILED_TASKS so the shared guard fires.
+        checks["break_on_quota_exhausted"] = bool(
+            re.search(r'QUOTA_EXHAUSTED', text)
+        ) and (
+            bool(re.search(r"QUOTA_EXHAUSTED[^\n]*\n(?:.*\n){0,8}?\s*break", text))
+            or bool(re.search(r"QUOTA_EXHAUSTED[^\n]*\n(?:.*\n){0,8}?FAILED_TASKS", text))
+        )
+
+        # stop_on_dirty_tree: dirty-tree guard that exits before claiming a task.
+        checks["stop_on_dirty_tree"] = bool(
+            re.search(r"[Ww]orking tree dirty", text)
+        )
+
+        # continue_only_on_done: only the DONE branch issues ``continue``; the
+        # failure branches fall through to the shared break guard (no continue).
+        checks["continue_only_on_done"] = bool(
+            re.search(r'RESULT_STATUS"\s*=\s*"DONE"', text)
+        ) and bool(re.search(r'DONE"[^\n]*\n(?:.*\n){0,10}?\s*continue', text))
+
+    return {
+        "ok": all(checks.values()),
+        "checks": checks,
+        "script": script_name,
+    }
+
+
+def generate_low_endurance_proposal(
+    endurance: dict[str, object],
+    *,
+    target_hours: float = _TARGET_ENDURANCE_HOURS,
+    low_hours: float = _LOW_ENDURANCE_HOURS,
+) -> str:
+    """Generate a ``proposed`` task-suggestion block when endurance is low.
+
+    AUTO-004 requires that when the ready queue projects below ``low_hours``
+    (default 2h) we surface proposed supplement suggestions so the nightly
+    cron does not idle-spin. This only emits a *suggestion* markdown block —
+    it never auto-promotes tasks to ``ready`` and never edits TASKS.md.
+    """
+    if endurance.get("empty", False):
+        return (
+            "## 续航补充建议（ready 队列为空）\n\n"
+            "> Ready 队列为空，夜间 cron 不应空转。\n"
+            "> 建议人工审核 `docs/task_suggestions/` 并将合适的 `proposed` "
+            "任务转为 `ready`，或新增任务。\n"
+        )
+
+    est_hours = (
+        (endurance.get("total_min_minutes", 0) + endurance.get("total_max_minutes", 0))
+        / 2.0
+        / 60.0
+    )
+    if not endurance.get("low_endurance", est_hours < low_hours):
+        return ""
+
+    deficit_min = max(0, int((target_hours - est_hours) * 60))
+    return (
+        "## 续航补充建议（ready 不足）\n\n"
+        f"> 当前 ready 队列预计续航约 {est_hours:.1f}h，"
+        f"低于 {low_hours:.1f}h 阈值，目标 {target_hours:.1f}h。\n"
+        f"> 建议补充约 {deficit_min} 分钟等价任务（参考历史每任务耗时），\n"
+        "> 以避免夜间 cron 因任务池耗尽而空转。\n"
+        "> 人工审核后将 `proposed` 任务转为 `ready`，或新增任务到 `docs/TASKS.md`。\n"
+    )
+
+
+def format_runtime_budget_section(
+    endurance: dict[str, object],
+    historical: dict[str, object],
+    fail_stop: dict[str, object],
+    *,
+    target_hours: float = _TARGET_ENDURANCE_HOURS,
+    low_hours: float = _LOW_ENDURANCE_HOURS,
+) -> str:
+    """Format the AUTO-004 runtime budget + fail-stop regression section."""
+    lines: list[str] = []
+    lines.append("## 续航预算与失败即停回归")
+    lines.append("")
+
+    # Historical runtime table
+    lines.append("### 历史每任务耗时（AUTO-004）")
+    lines.append("")
+    if historical.get("has_history"):
+        overall = historical.get("overall", {}) or {}
+        lines.append("| 维度 | 样本数 | 平均(秒) | 平均(分) | 最小(秒) | 最大(秒) |")
+        lines.append("|------|--------|----------|----------|----------|----------|")
+        lines.append(
+            f"| 总体 | {overall.get('count', 0)} | "
+            f"{overall.get('avg_seconds', 0):.0f} | "
+            f"{overall.get('avg_seconds', 0) / 60.0:.1f} | "
+            f"{overall.get('min', 0)} | {overall.get('max', 0)} |"
+        )
+        for prio in sorted((historical.get("by_priority", {}) or {}).keys()):
+            s = historical["by_priority"][prio]
+            lines.append(
+                f"| {prio} | {s.get('count', 0)} | "
+                f"{s.get('avg_seconds', 0):.0f} | "
+                f"{s.get('avg_seconds', 0) / 60.0:.1f} | "
+                f"{s.get('min', 0)} | {s.get('max', 0)} |"
+            )
+    else:
+        lines.append("> 无历史耗时样本，续航估计回退到静态优先级预算。")
+    lines.append("")
+
+    # Endurance projection
+    lines.append("### 续航估计")
+    lines.append("")
+    if endurance.get("empty", False):
+        lines.append("> Ready 队列为空，无续航。请人工补充 `ready` 任务。")
+    else:
+        lines.append(f"- **任务数**: {endurance.get('count', 0)}")
+        lines.append(f"- **预计续航**: {endurance.get('hours_range', 'N/A')} "
+                     f"({endurance.get('total_min_minutes', 0)}-"
+                     f"{endurance.get('total_max_minutes', 0)} 分钟)")
+        lines.append(f"- **估计方法**: {endurance.get('method', 'static_fallback')}")
+        lines.append(f"- **目标续航**: {target_hours:.1f}h")
+        meets = endurance.get("meets_target", False)
+        lines.append(f"- **是否达标**: {'是' if meets else '否'}")
+        per_task = endurance.get("per_task", []) or []
+        if per_task:
+            lines.append("")
+            lines.append("| 任务ID | 优先级 | 预计(分) | 来源 |")
+            lines.append("|--------|--------|----------|------|")
+            for t in per_task:
+                lo = t.get("est_min_minutes", 0)
+                hi = t.get("est_max_minutes", 0)
+                lines.append(
+                    f"| {t.get('task_id', '')} | {t.get('priority', '')} | "
+                    f"{lo:.0f}-{hi:.0f} | {t.get('source', '')} |"
+                )
+    lines.append("")
+    lines.append(f"> {redact(endurance.get('summary', ''))}")
+    lines.append("")
+
+    # Fail-stop verification
+    lines.append("### 失败即停策略回归")
+    lines.append("")
+    checks = fail_stop.get("checks", {}) or {}
+    lines.append("| 检查项 | 状态 |")
+    lines.append("|--------|------|")
+    label_map = {
+        "break_on_failed_tasks": "失败任务即停 (FAILED_TASKS>0 break)",
+        "break_on_quota_exhausted": "配额耗尽即停 (QUOTA_EXHAUSTED break)",
+        "stop_on_dirty_tree": "脏工作区即停 (dirty tree exit)",
+        "continue_only_on_done": "仅 DONE 继续 (continue on DONE)",
+    }
+    for key in ("break_on_failed_tasks", "break_on_quota_exhausted",
+                "stop_on_dirty_tree", "continue_only_on_done"):
+        ok = checks.get(key, False)
+        lines.append(f"| {label_map.get(key, key)} | {'生效' if ok else '缺失'} |")
+    lines.append("")
+    if fail_stop.get("ok"):
+        lines.append("> 失败即停策略全部生效，不影响现有 auto_dev_loop 领取逻辑。")
+    else:
+        lines.append("> **注意**: 部分失败即停检查未通过，请复核 auto_dev_loop.sh。")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── [V-002] nightly_acceptance_report: Test log parsing ──
 
 def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
@@ -535,7 +997,13 @@ def scan_task_runs(task_runs_dir: Path, target_date: Optional[str] = None) -> li
 
         if summary_meta:
             run.finished_at = summary_meta.get("finished_at", "")
-            run.rounds = int(summary_meta.get("rounds", "0") or "0")
+            # [AUTO-004] Defensive parse: some legacy summaries store a free
+            # form rounds string (e.g. "2 auto rounds + 1 manual closeout").
+            # Extract the leading integer; fall back to 0 so a single bad
+            # archive cannot crash the whole scan.
+            rounds_raw = summary_meta.get("rounds", "0") or "0"
+            m_round = re.search(r"\d+", rounds_raw)
+            run.rounds = int(m_round.group(0)) if m_round else 0
             run.reason = redact(summary_meta.get("reason", ""))
             run.review_file = summary_meta.get("review_file", "")
             final_status = summary_meta.get("final_status", "")
@@ -617,6 +1085,8 @@ def generate_report(
     replay_results: Optional[list[dict]] = None,  # [V-002]
     consistency_results: Optional[list[dict[str, object]]] = None,  # [V-011]
     endurance: Optional[dict[str, object]] = None,  # [V-011]
+    runtime_budget_section: Optional[str] = None,  # [AUTO-004]
+    low_endurance_proposal: Optional[str] = None,  # [AUTO-004]
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -833,12 +1303,20 @@ def generate_report(
         if replay_section:
             lines.append(replay_section)
 
+    # [AUTO-004] auto_dev_runtime_budget: historical runtime + fail-stop regression
+    if runtime_budget_section:
+        lines.append(runtime_budget_section)
+
+    # [AUTO-004] auto_dev_runtime_budget: low-endurance proposed supplement
+    if low_endurance_proposal:
+        lines.append(low_endurance_proposal)
+
     return "\n".join(lines)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="[M-002/V-002/V-011] Summarize auto dev runs into a daily report"
+        description="[M-002/V-002/V-011/AUTO-004] Summarize auto dev runs into a daily report"
     )
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
@@ -851,6 +1329,15 @@ def main() -> None:
                         help="Check each done task in window has run/review/DEVLOG")
     parser.add_argument("--no-endurance", action="store_true",  # [V-011]
                         help="Skip ready queue endurance estimate (default: on)")
+    parser.add_argument("--with-runtime-budget", action="store_true",  # [AUTO-004]
+                        help="Add historical runtime estimate, fail-stop regression "
+                             "and low-endurance proposal (default: on)")
+    parser.add_argument("--no-runtime-budget", action="store_true",  # [AUTO-004]
+                        help="Skip AUTO-004 runtime budget section")
+    parser.add_argument("--target-hours", type=float, default=_TARGET_ENDURANCE_HOURS,  # [AUTO-004]
+                        help=f"Nightly endurance target in hours (default {_TARGET_ENDURANCE_HOURS})")
+    parser.add_argument("--low-hours", type=float, default=_LOW_ENDURANCE_HOURS,  # [AUTO-004]
+                        help=f"Low-endurance threshold in hours (default {_LOW_ENDURANCE_HOURS})")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
@@ -891,10 +1378,41 @@ def main() -> None:
             done_tasks, runs, reviews_dir, devlog_path,
         )
 
+    # [AUTO-004] auto_dev_runtime_budget: historical runtime estimate +
+    # fail-stop regression + low-endurance proposal (default on).
+    runtime_budget_section: Optional[str] = None
+    low_endurance_proposal: Optional[str] = None
+    if not args.no_runtime_budget:
+        # Scan ALL historical runs (not just today) to estimate per-task
+        # average elapsed time. This is read-only and never edits the runs.
+        all_runs = scan_task_runs(task_runs_dir, target_date=None)
+        historical = compute_historical_runtimes(all_runs)
+        ordered_queue = sort_ready_queue_for_budget(ready_queue, historical)
+        budget_endurance = estimate_ready_endurance_from_history(
+            ordered_queue, historical,
+            target_hours=args.target_hours, low_hours=args.low_hours,
+        )
+        fail_stop = verify_fail_stop_strategy(
+            repo_dir / "scripts" / "auto_dev_loop.sh"
+        )
+        runtime_budget_section = format_runtime_budget_section(
+            budget_endurance, historical, fail_stop,
+            target_hours=args.target_hours, low_hours=args.low_hours,
+        )
+        low_endurance_proposal = generate_low_endurance_proposal(
+            budget_endurance,
+            target_hours=args.target_hours, low_hours=args.low_hours,
+        )
+        # When AUTO-004 is on, prefer the historically-informed endurance in
+        # the report header over the static V-011 estimate.
+        endurance = budget_endurance
+
     report = generate_report(
         runs, commits, reviews, target_date,
         ready_queue=ready_queue, replay_results=replay_results,  # [V-002]
         consistency_results=consistency_results, endurance=endurance,  # [V-011]
+        runtime_budget_section=runtime_budget_section,  # [AUTO-004]
+        low_endurance_proposal=low_endurance_proposal,  # [AUTO-004]
     )
 
     report = redact(report)  # [V-002] final redaction pass
