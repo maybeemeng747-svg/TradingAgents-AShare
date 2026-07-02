@@ -4297,7 +4297,7 @@
 ### AUTO-004: 夜间三小时任务续航预算与失败后停止策略回归（P2）
 - **描述**：用户希望夜间能跑 3 小时左右。本任务给自动开发链增加续航预算报告：当前 ready 任务预计可跑多久、失败是否停止、是否会因任务池空而空转。
 - **优先级**：P2
-- **状态**：done — AUTO-004-20260702-231123（OpenCode 产出 `scripts/summarize_auto_dev_runs.py` 的 `[AUTO-004] auto_dev_runtime_budget` 模块 + `tests/test_auto004_runtime_budget.py`，46 tests passed）
+- **状态**：done -- commit 6b9e8b5
 - **前置条件**：AUTO-003、V-011 完成。
 - **执行约束**：
   - 不改变 cron 时间。
