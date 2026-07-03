@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-07-04 | 释放 3-4 小时夜间自动开发任务池
+
+- **执行者**：Codex
+- **类型**：task planning
+- **状态**：✅ 完成
+
+### 背景
+
+- `docs/auto_dev_reports/2026-07-04.md` 显示 ready 队列为 0，预计续航 0h，夜间 cron 会空转。
+- KB-003 已真实完成，KB-004/KB-006 的 blocked 文案已过期。
+- 历史任务平均耗时约 19 分钟/任务，3-4 小时窗口需要约 10-12 个可领取任务。
+
+### 变更
+
+- 更新 `docs/TASKS.md` 最后更新时间为 2026-07-04。
+- 将 KB-004、KB-006 从过期 blocked 改为 ready。
+- 新增 8 个 ready 任务，形成 10 个任务的 3-4 小时批次：
+  - KB-010 本地知识索引缓存与 freshness manifest
+  - KB-011 本地知识/研报关注度前端与 API 契约回归
+  - DATA-026 生产库测试污染健康检查与 scheduler 启动告警
+  - AUTO-005 自动开发 preflight 接入 DB hygiene 与续航门禁
+  - REPORT-UX-004 本地知识补充区块历史报告回放验收
+  - TF-KB-001 TradeFlow 本地知识分校准回放与弱候选防提升
+  - KB-012 Tree Work 研报补录任务包导出
+  - V-013 Tree Work → TA → TradeFlow → investment-controller 知识链路验收
+
+### 验收目标
+
+- `scripts/auto_dev_loop.sh --dry-run` 首个任务应为 KB-004。
+- ready 队列预计续航应达到约 3 小时以上。
+- 所有新增任务默认不调用 LLM、不写生产 DB、不改 prompts。
+
+---
+
 ## 2026-07-02 | AUTO-004 夜间三小时任务续航预算与失败后停止策略回归
 
 - **执行者**：OpenCode
