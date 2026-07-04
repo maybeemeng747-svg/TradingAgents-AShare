@@ -400,6 +400,25 @@ async def _scheduler_loop():
 
 # ── Stale task recovery ──────────────────────────────────────────────────────
 
+# [DATA-026] db_hygiene_check — single read-only warning on scheduler startup.
+# Never triggers TA / LLM. P0 (test users would be executed) is logged at ERROR
+# so operators can alert on it; the scheduler keeps running real-user tasks so
+# long as the pending-task filter still excludes @test.com.
+def _warn_db_hygiene_on_startup() -> None:
+    try:
+        from api.services.db_hygiene_service import (
+            log_startup_hygiene_warning,
+            run_db_hygiene_check,
+        )
+
+        report = run_db_hygiene_check()
+        log_startup_hygiene_warning(report, logger=logger)
+    except Exception as exc:  # pragma: no cover - defensive, never break startup
+        logger.warning(
+            "[Scheduler] DB hygiene check failed (non-blocking): %s", exc
+        )
+
+
 def _recover_stale_tasks():
     """Reset tasks stuck in 'running' state (from previous crash/restart)."""
     with get_db_ctx() as db:
@@ -489,6 +508,11 @@ async def _startup():
 
     # Recover stale tasks from previous run
     _recover_stale_tasks()
+
+    # [DATA-026] db_hygiene_check — emit one consolidated warning block so
+    # operators know whether the prod DB has accumulated test-account rows
+    # and whether get_pending_tasks still filters them out. Read-only.
+    _warn_db_hygiene_on_startup()
 
     # Pre-load trade calendar (uses mini_racer/V8 which is not thread-safe)
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates

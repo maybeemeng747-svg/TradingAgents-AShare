@@ -4605,7 +4605,7 @@
 ### DATA-026: 生产库测试污染健康检查与 scheduler 启动告警（P1）
 - **描述**：把本次 `@test.com` 数据库污染治理固化为运行时健康检查，防止生产库再次积累测试用户、测试定时任务或测试报告。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/DATA-026-20260705-030754
 - **前置条件**：`scripts/cleanup_test_db_pollution.py` 已存在。
 - **执行约束**：
   - 默认只读，不自动删除生产数据。

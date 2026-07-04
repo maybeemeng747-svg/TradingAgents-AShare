@@ -4,6 +4,88 @@
 
 ---
 
+## 2026-07-05 | DATA-026 生产库测试污染健康检查与 scheduler 启动告警（P1）
+
+- **执行者**：OpenCode
+- **类型**：runtime hygiene / scheduler guard
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：DATA-026-20260705-030754
+
+### 背景
+
+`scripts/cleanup_test_db_pollution.py` 已经能一次性清掉生产库里的
+`@test.com` 测试账号残留（用户 / 定时任务 / 报告 / 自选 / 持仓 / Token /
+feedback / 邮箱验证码），但缺少**运行时**健康检查：
+
+- scheduler 每次启动时不知道生产库当前是否又被污染了，存在「清完又涨」的盲区。
+- `scheduled_service.get_pending_tasks` 通过 `~user_id IN @test.com` 子查询排除
+  测试用户，但这是「软约束」——一旦被改动，scheduler 会无声地开始执行测试用户
+  的定时任务，污染报告与日志。
+- 运维 / AUTO-005 preflight 没有一个统一的只读接口来判断「DB 是否干净」。
+
+### 变更
+
+**新增**
+
+- `api/services/db_hygiene_service.py`：只读 hygiene 检查服务。
+  - `run_db_hygiene_check()` 复用 `scripts.cleanup_test_db_pollution.collect_counts`
+    统计 `@test.com` 污染行数；默认不写库、不调用 LLM、不打印密钥。
+  - `_verify_pending_tasks_filter()` 用一个**独立的内存 SQLite fixture**
+    （1 test user + 1 real user + 各 1 个 active scheduled task）调用
+    `get_pending_tasks`，验证 test user 不在结果中。生产库零接触。
+  - `log_startup_hygiene_warning()` 把报告压成一行日志：all green 走 INFO；
+    污染走 WARNING（不阻塞）；filter 失效走 ERROR（P0，但仍不抛异常）。
+- `scripts/run_db_hygiene_check.py`：CLI 包装。all_green 退出码 0，否则 1，
+  方便 AUTO-005 preflight 接入。支持 `--db / --email-pattern / --json /
+  --skip-pending-tasks-check`。
+
+**改动**
+
+- `scheduler/main.py`：在 `_recover_stale_tasks()` 之后、`_load_cn_trade_dates()`
+  之前调用 `_warn_db_hygiene_on_startup()`。失败被 try/except 兜底，绝不阻塞
+  scheduler 启动；满足「不阻塞真实用户定时任务，除非 pending 队列会执行测试
+  用户」的约束（P0 风险以 ERROR 日志暴露，由运维决定是否停服）。
+- `api/main.py`：新增 `GET /v1/db-hygiene` 只读接口，返回 hygiene 报告 JSON
+  （counts / total_pollution / all_green / has_p0_risk / pending_tasks_filter_ok
+  / pending_tasks_filter_detail / risks[]）。无鉴权，与 `/healthz` 一致；
+  payload 只包含计数与代码，不含任何密钥或 PII。
+
+**测试**
+
+- `tests/test_data026_db_hygiene.py`（17 个用例）：
+  - polluted fixture → 返回非零计数，`all_green=False`，标记 P1 risk。
+  - clean fixture → `all_green=True`，无 P0 risk。
+  - missing DB → `info` risk（不是 P0，新部署场景）。
+  - monkeypatch `get_pending_tasks` 移除过滤 → `_verify_pending_tasks_filter`
+    返回 False，`run_db_hygiene_check` 标 P0 risk，`all_green=False`。
+  - 文件签名校验：hygiene 检查运行前后 DB 文件 size/mtime 一致 → 零写入。
+  - 静态守卫：pytest 下 hygiene 服务不能解析到生产 `tradingagents.db`
+    （conftest 隔离已生效）。
+  - scheduler wrapper 在 service 抛异常时只输出 non-blocking warning。
+  - CLI all-green 退出 0 / 有污染退出 1 / JSON payload 形状完整。
+  - 表集合守卫：cleanup script 新增的表必须能被 hygiene 服务覆盖。
+
+### 风险与遗留
+
+- hygiene 检查的 `_verify_pending_tasks_filter` 使用内存 SQLite + `Base.metadata.
+  create_all`，会在内存里建出全部 ~15 张表。开销 < 50ms，可接受；如果后续
+  schema 出现跨表 NOT NULL 约束，可能需要降级到只建 `users` + `scheduled_-
+  analyses`。
+- `GET /v1/db-hygiene` 当前无鉴权。生产部署若担心泄露「是否存在测试用户」
+  这类元信息，可后续加上 admin token 校验（与现有 `/healthz` 同步演进）。
+- AUTO-005 preflight 接入 hygiene dry-run 的工作留到 AUTO-005 自己做。
+
+### 验收对照（DATA-026）
+
+| 验收项 | 结果 |
+|---|---|
+| fixture 污染库能返回污染计数 | ✅ `test_polluted_fixture_returns_nonzero_counts` |
+| 干净库返回 all_green | ✅ `test_clean_fixture_is_all_green` |
+| scheduler 不会因 warning 触发 TA/LLM | ✅ `test_scheduler_startup_wrapper_never_raises` + service 代码无 LLM 调用 |
+| `get_pending_tasks` 失效时标 P0 risk | ✅ `test_run_db_hygiene_check_surfaces_p0_when_filter_broken` |
+
+---
+
 ## 2026-07-05 | KB-011 本地知识/研报关注度前端与 API 契约回归（P1）
 
 - **执行者**：OpenCode
@@ -10431,3 +10513,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/KB-011-20260705-023929/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-026 - 生产库测试污染健康检查与 scheduler 启动告警（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/DATA-026-20260705-030754/

@@ -2834,6 +2834,16 @@ def healthz() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+# [DATA-026] db_hygiene_check — read-only DB test pollution + scheduler filter health.
+# Never mutates the DB, never triggers TA/LLM, never prints keys. Used by ops
+# dashboards and AUTO-005 preflight to decide whether human cleanup is needed.
+@app.get("/v1/db-hygiene")
+def db_hygiene() -> Dict[str, Any]:
+    from api.services.db_hygiene_service import run_db_hygiene_check
+
+    return run_db_hygiene_check().to_dict()
+
+
 # Simple in-memory rate limiter for version stats: {ip: last_timestamp}
 _vs_rate_limit: Dict[str, float] = {}
 _VS_RATE_INTERVAL = 3600  # at most once per hour per IP
