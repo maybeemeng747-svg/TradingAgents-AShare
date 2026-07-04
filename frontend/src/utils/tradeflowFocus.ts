@@ -465,6 +465,11 @@ export function buildFixtureCandidate(opts: FixtureCandidateOptions = {}): Trade
         contradiction_items: [],
         blocking_evidence_gaps: [],
         next_verification_steps: [],
+        local_knowledge_score: 0,
+        knowledge_hit_count: 0,
+        local_knowledge_summary: '',
+        local_knowledge_detail: {},
+        needs_tree_work_research: false,
         created_at: '',
         updated_at: '',
     }

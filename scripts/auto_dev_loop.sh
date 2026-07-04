@@ -35,6 +35,7 @@ REVIEW_FILE=""
 HAVE_LOCK=false
 OPENCODE_TIMEOUT_SECONDS="${AUTO_DEV_OPENCODE_TIMEOUT_SECONDS:-1800}"
 TEST_TIMEOUT_SECONDS="${AUTO_DEV_TEST_TIMEOUT_SECONDS:-900}"
+CODEX_REVIEW_TIMEOUT_SECONDS="${AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS:-1200}"
 DEFAULT_TEST_CMD="${AUTO_DEV_DEFAULT_TEST_CMD:-pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short}"
 FULL_TEST_CMD="${AUTO_DEV_FULL_TEST_CMD:-pytest tests/ -q --tb=short}"
 AUTO_DEV_FULL_TESTS="${AUTO_DEV_FULL_TESTS:-0}"
@@ -333,7 +334,7 @@ PYEOF
 # --- 0. Pre-checks ---
 log "=== AUTO-002 Auto Dev Loop v1.4 ==="
 log "Repo: $REPO_DIR"
-log "Timeout budget: OpenCode=${OPENCODE_TIMEOUT_SECONDS}s, tests=${TEST_TIMEOUT_SECONDS}s"
+log "Timeout budget: OpenCode=${OPENCODE_TIMEOUT_SECONDS}s, tests=${TEST_TIMEOUT_SECONDS}s, Codex review=${CODEX_REVIEW_TIMEOUT_SECONDS}s"
 if [ "$AUTO_DEV_FULL_TESTS" = "1" ]; then
     log "Default tests: full suite (${FULL_TEST_CMD})"
 else
@@ -602,6 +603,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  Test cmd:   ${TASK_TESTS:-$DEFAULT_TEST_CMD}"
     echo "  OpenCode timeout: ${OPENCODE_TIMEOUT_SECONDS}s"
     echo "  Test timeout:     ${TEST_TIMEOUT_SECONDS}s"
+    echo "  Codex timeout:    ${CODEX_REVIEW_TIMEOUT_SECONDS}s"
     echo "  Full tests:       ${AUTO_DEV_FULL_TESTS}"
     echo "  Max tasks:        ${AUTO_DEV_MAX_TASKS} (0 means until no ready tasks)"
     echo "========================================"
@@ -624,6 +626,7 @@ cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 - Test commands: ${TASK_TESTS:-$DEFAULT_TEST_CMD}
 - OpenCode timeout seconds: $OPENCODE_TIMEOUT_SECONDS
 - Test timeout seconds: $TEST_TIMEOUT_SECONDS
+- Codex review timeout seconds: $CODEX_REVIEW_TIMEOUT_SECONDS
 - Full tests enabled: $AUTO_DEV_FULL_TESTS
 - Runner: scripts/auto_dev_loop.sh
 
@@ -908,7 +911,7 @@ FIX_EOF
     REVIEW_SKIPPED=false
     CODEX_EXIT=127  # default: not run (codex unavailable)
     set +e
-    codex review --help > /dev/null 2>&1
+    run_with_timeout 30 codex review --help > /dev/null 2>&1
     CODEX_HELP_EXIT=$?
     set -e
     if [ $CODEX_HELP_EXIT -ne 0 ]; then
@@ -921,22 +924,13 @@ FIX_EOF
     if [ "$CODEX_AVAILABLE" = true ]; then
         log "Running Codex review..."
         set +e
-        if command -v gtimeout &>/dev/null; then
-            gtimeout 120 codex review --uncommitted > "$REVIEW_FILE" 2>&1
-        elif command -v timeout &>/dev/null; then
-            timeout 120 codex review --uncommitted > "$REVIEW_FILE" 2>&1
-        else
-            codex review --uncommitted > "$REVIEW_FILE" 2>&1 &
-            CODXPID=$!
-            sleep 120 && kill $CODXPID 2>/dev/null &
-            wait $CODXPID 2>/dev/null
-        fi
+        run_with_timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" codex review --uncommitted > "$REVIEW_FILE" 2>&1
         CODEX_EXIT=$?
         set -e
         log "Codex exit code: $CODEX_EXIT"
         if [ $CODEX_EXIT -ne 0 ]; then
             REVIEW_ERR=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
-            if echo "$REVIEW_ERR" | grep -qiE "(auth|token|quota|rate.limit|401|403|429|unauthorized|billing)"; then
+            if echo "$REVIEW_ERR" | grep -qiE "(auth|token|quota|usage[[:space:]_-]*limit|credits|rate.limit|401|403|429|unauthorized|billing)"; then
                 warn "Codex token/auth error — blocking commit"
                 CODEX_AVAILABLE=false
                 REVIEW_SKIPPED=true
@@ -969,24 +963,23 @@ FIX_EOF
         break
     fi
 
-    # Codex review failed -> distrust result, enter fix or NEEDS_HUMAN
+    if [ $CODEX_EXIT -eq 124 ]; then
+        LAST_FAILURE_REASON="Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s"
+        ISSUES_LOG+=("[Round $ROUND] Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s")
+        err "Codex review timed out, stopping batch and leaving files for human review"
+        RESULT_STATUS="NEEDS_HUMAN"
+        break
+    fi
+
+    # Codex review failed -> infrastructure/config issue, not an implementation
+    # issue. Stop the batch and leave the dirty tree for human/Codex recovery
+    # instead of burning OpenCode rounds on a non-code failure.
     if [ $CODEX_EXIT -ne 0 ]; then
         LAST_FAILURE_REASON="Codex review failed with exit ${CODEX_EXIT}"
         ISSUES_LOG+=("[Round $ROUND] Codex review failed (exit=$CODEX_EXIT)")
-        err "Codex review failed (exit=${CODEX_EXIT}), not trusting empty result"
-        cat > "$PROMPT_FILE" <<FIX_EOF
-# Fix task: $TASK_ID
-
-Codex review failed last round (exit code $CODEX_EXIT). Check code quality and fix issues.
-
-## Constraints
-- No changes to tradingagents/prompts/
-- No writes to prod tradingagents.db
-- No push
-- **Do NOT git commit**
-- Update docs/DEVLOG.md after fix
-FIX_EOF
-        continue
+        err "Codex review failed (exit=${CODEX_EXIT}), stopping batch for human recovery"
+        RESULT_STATUS="NEEDS_HUMAN"
+        break
     fi
 
     # Check for P0/P1 findings
@@ -1040,6 +1033,7 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - Codex review: $REVIEW_NOTE
 - OpenCode timeout seconds: $OPENCODE_TIMEOUT_SECONDS
 - Test timeout seconds: $TEST_TIMEOUT_SECONDS
+- Codex review timeout seconds: $CODEX_REVIEW_TIMEOUT_SECONDS
 - Review file: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
 - Run directory: docs/task_runs/$RUN_ID
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)

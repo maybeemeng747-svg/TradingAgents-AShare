@@ -123,6 +123,11 @@ class TradeFlowCandidateItem(BaseModel):
     research_attention_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-008]
     research_attention_effective_score: float = 0.0  # [KB-009] research_attention_decay
     research_attention_overheat_penalty: float = 0.0  # [KB-009] research_attention_decay
+    local_knowledge_score: float = 0.0  # [KB-004] tradeflow_knowledge_score
+    knowledge_hit_count: int = 0  # [KB-004] tradeflow_knowledge_score
+    local_knowledge_summary: str = ""  # [KB-004] tradeflow_knowledge_score
+    local_knowledge_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-004]
+    needs_tree_work_research: bool = False  # [KB-004] tradeflow_knowledge_score
     created_at: str = ""
     updated_at: str = ""
 
@@ -834,6 +839,7 @@ class TopicHeatmapResponse(BaseModel):
 
 # [H-015] mandate_daily_report
 # [H-017] mandate_evidence_packet
+# [KB-004] tradeflow_knowledge_score
 class MandateEvidencePacketItem(BaseModel):
     symbol: str = ""
     name: str = ""
@@ -857,6 +863,7 @@ class MandateEvidencePacketItem(BaseModel):
     needs_manual_research: bool = False
     confidence: str = ""
     confidence_reason: str = ""
+    local_knowledge_summary: Dict[str, Any] = Field(default_factory=dict)  # [KB-004]
 
 
 class MandateDailyCandidateItem(BaseModel):

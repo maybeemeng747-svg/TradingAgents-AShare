@@ -1166,6 +1166,11 @@ export interface TradeFlowCandidateItem {
     contradiction_items: Array<Record<string, unknown>>  // [H-011]
     blocking_evidence_gaps: string[]  // [H-011]
     next_verification_steps: string[]  // [H-011]
+    local_knowledge_score: number  // [KB-004]
+    knowledge_hit_count: number  // [KB-004]
+    local_knowledge_summary: string  // [KB-004]
+    local_knowledge_detail: Record<string, unknown>  // [KB-004]
+    needs_tree_work_research: boolean  // [KB-004]
     created_at: string
     updated_at: string
 }

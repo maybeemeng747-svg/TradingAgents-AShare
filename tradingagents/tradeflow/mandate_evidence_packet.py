@@ -125,6 +125,12 @@ class MandateEvidencePacket:
     needs_manual_research: bool = False
     confidence: str = CONFIDENCE_LOW
     confidence_reason: str = ""
+    # [KB-004] tradeflow_knowledge_score — local knowledge hit summary injected
+    # onto the three-layer packet so the candidate detail UI / daily report
+    # can render "本地知识命中：公司/主题/产业链角色/风险" alongside policy /
+    # industry / company layers. Stays an empty dict when no knowledge lookup
+    # was performed; never used to inflate tier or strong action gate.
+    local_knowledge_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -150,6 +156,7 @@ class MandateEvidencePacket:
             "needs_manual_research": self.needs_manual_research,
             "confidence": self.confidence,
             "confidence_reason": self.confidence_reason,
+            "local_knowledge_summary": dict(self.local_knowledge_summary),  # [KB-004]
         }
 
 
@@ -350,6 +357,7 @@ def build_evidence_packet(
     *,
     topic_entry: Optional[Any] = None,
     raw_evidence: Optional[dict] = None,
+    local_knowledge_result: Optional[Any] = None,
 ) -> MandateEvidencePacket:
     """Build a :class:`MandateEvidencePacket` from a candidate dict.
 
@@ -368,6 +376,14 @@ def build_evidence_packet(
         Optional raw_evidence dict (``state.metadata.raw_evidence``). Only
         used to detect whether announcements / research_report / news were
         collected — free text is never parsed.
+    local_knowledge_result
+        [KB-004] Optional ``LocalKnowledgeQueryResult`` (or any object with a
+        ``matched_pages`` / ``status`` / ``confidence`` shape compatible with
+        :func:`compute_local_knowledge_score`). When supplied, the packet's
+        ``local_knowledge_summary`` field is populated so the candidate
+        detail UI can render "本地知识命中：公司/主题/产业链角色/风险".
+        ``None`` leaves it as an empty dict. The summary never inflates the
+        packet's confidence or ``needs_manual_research`` flag.
     """
     topic = _resolve_topic(candidate)
     symbol = candidate.get("symbol", "")
@@ -489,6 +505,19 @@ def build_evidence_packet(
         confidence = CONFIDENCE_MEDIUM
         confidence_reason = "虽有部分证据，但存在关键缺口，建议人工研究"
 
+    # [KB-004] tradeflow_knowledge_score — 把本地知识命中分聚合到证据包。
+    # 该字段**只**作为解释信息附加到三层证据包上，绝不影响 confidence /
+    # needs_manual_research / 强动作门禁；过期/低置信命中页不会推高分数。
+    local_knowledge_summary_dict: Dict[str, Any] = {}
+    if local_knowledge_result is not None:
+        try:
+            from tradingagents.dataflows.local_knowledge_provider import (
+                compute_local_knowledge_score as _kb004_score,
+            )
+            local_knowledge_summary_dict = _kb004_score(local_knowledge_result)
+        except Exception:
+            local_knowledge_summary_dict = {}
+
     return MandateEvidencePacket(
         symbol=symbol,
         name=name,
@@ -512,6 +541,7 @@ def build_evidence_packet(
         needs_manual_research=needs_manual_research,
         confidence=confidence,
         confidence_reason=confidence_reason,
+        local_knowledge_summary=local_knowledge_summary_dict,
     )
 
 
@@ -564,6 +594,7 @@ def build_evidence_packets_for_candidates(
     *,
     topic_registry: Optional[Any] = None,
     raw_evidence_by_symbol: Optional[Dict[str, dict]] = None,
+    local_knowledge_by_symbol: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, MandateEvidencePacket]:
     """Build packets for a list of candidate dicts, keyed by symbol.
 
@@ -571,6 +602,9 @@ def build_evidence_packets_for_candidates(
     the matching :class:`TopicRegistryEntry` is passed to
     :func:`build_evidence_packet` for richer policy / chain evidence.
     ``raw_evidence_by_symbol`` maps ``symbol → raw_evidence dict``.
+    ``local_knowledge_by_symbol`` ([KB-004]) maps ``symbol →
+    LocalKnowledgeQueryResult`` so each packet can carry a local-knowledge
+    hit summary alongside the three-layer evidence.
     """
     packets: Dict[str, MandateEvidencePacket] = {}
     for cand in candidates:
@@ -585,8 +619,14 @@ def build_evidence_packets_for_candidates(
         raw_ev = None
         if raw_evidence_by_symbol:
             raw_ev = raw_evidence_by_symbol.get(symbol)
+        local_kb = None
+        if local_knowledge_by_symbol:
+            local_kb = local_knowledge_by_symbol.get(symbol)
         packets[symbol] = build_evidence_packet(
-            cand, topic_entry=topic_entry, raw_evidence=raw_ev,
+            cand,
+            topic_entry=topic_entry,
+            raw_evidence=raw_ev,
+            local_knowledge_result=local_kb,
         )
     return packets
 

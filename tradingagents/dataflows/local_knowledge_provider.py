@@ -964,3 +964,252 @@ def query_failed_entry(
 def suggest_query_output_path(docs_dir: str = "docs/knowledge_reports") -> str:
     today = date.today().strftime("%Y-%m-%d")
     return os.path.join(docs_dir, f"local_knowledge_query-{today}.md")
+
+
+# ── TradeFlow 候选命中分（KB-004）─────────────────────────────────────
+
+# [KB-004] tradeflow_knowledge_score
+"""命中分计算约束（对应任务 KB-004）：
+
+- **过期知识不得加分**：``is_stale=True`` 的命中页对 ``local_knowledge_score``
+  贡献为 0，但仍计入 ``stale_hit_count`` 与 ``matched_pages`` 列表，便于前端
+  提示用户更新。
+- **低置信/待补充同理**：``is_low_confidence`` 或 ``is_to_be_supplemented``
+  的命中页贡献为 0，但仍计入 ``low_confidence_hit_count``。
+- **只加解释力，不改变强动作门禁**：``local_knowledge_score`` 仅作为研究优先级
+  /解释因子；调用方不得据此把候选 tier / action 提升或降级。
+- **不输出长篇原文**：``matched_pages_brief`` 每条只携带 ``rel_path / title /
+  updated_at / confidence / is_stale / is_low_confidence / summary_snippet``，
+  摘要片段裁剪到 ``_SUMMARY_MAX_CHARS``。
+- **不调用 LLM / 不访问外网**。
+"""
+
+# 单页命中分上限与权重（fresh 命中页才计入分数）。
+_PAGE_SCORE_WEIGHTS = {
+    "high": 1.0,
+    "medium": 0.6,
+    "low": 0.3,
+}
+_LOCAL_KNOWLEDGE_SCORE_MAX = 3.0
+
+
+def _page_score(match: LocalKnowledgeMatch) -> float:
+    """单页命中分：fresh + confidence 决定，过期/低置信/待补充一律 0。"""
+    if match.is_stale or match.is_low_confidence or match.is_to_be_supplemented:
+        return 0.0
+    return _PAGE_SCORE_WEIGHTS.get(match.confidence, 0.0)
+
+
+def compute_local_knowledge_score(
+    result: Optional[LocalKnowledgeQueryResult],
+) -> Dict[str, Any]:
+    """[KB-004] 把 :class:`LocalKnowledgeQueryResult` 聚合为候选命中分字典。
+
+    返回字段：
+      - ``local_knowledge_score``：float，上限 ``_LOCAL_KNOWLEDGE_SCORE_MAX``。
+      - ``knowledge_hit_count``：命中页总数（含 stale / low）。
+      - ``fresh_hit_count``：fresh 命中页数。
+      - ``stale_hit_count``：仅 stale 命中页数。
+      - ``low_confidence_hit_count``：低置信/待补充命中页数。
+      - ``has_hit``：是否有任何 fresh 命中。
+      - ``status``：透传查询状态（``HAS_DATA`` / ``NORMAL_NO_DATA`` / …）。
+      - ``confidence``：透传 ``result.confidence``。
+      - ``updated_at``：透传 ``result.updated_at``。
+      - ``themes``：去重主题列表（前 10 条）。
+      - ``risks``：风险提示列表（前 5 条）。
+      - ``matched_pages_brief``：命中页精简列表，便于前端展示。
+      - ``errors``：查询失败 / 解析失败原因（前 5 条），便于前端排障。
+      - ``local_knowledge_summary``：一句话可读摘要，含负面信息。
+
+    参数:
+        result: 已计算的 :class:`LocalKnowledgeQueryResult`，或 ``None``。
+            传 ``None`` 时返回空命中结构（score=0、hit_count=0），调用方据此
+            渲染 NORMAL_NO_DATA 语义。
+
+    返回:
+        上述字段的扁平字典。永远不会抛异常。
+    """
+    empty: Dict[str, Any] = {
+        "local_knowledge_score": 0.0,
+        "knowledge_hit_count": 0,
+        "fresh_hit_count": 0,
+        "stale_hit_count": 0,
+        "low_confidence_hit_count": 0,
+        "has_hit": False,
+        "status": STATUS_NORMAL_NO_DATA,
+        "confidence": "low",
+        "updated_at": None,
+        "themes": [],
+        "risks": [],
+        "matched_pages_brief": [],
+        "errors": [],
+        "local_knowledge_summary": "",
+    }
+    if result is None or not isinstance(result, LocalKnowledgeQueryResult):
+        return empty
+
+    matched = result.matched_pages or []
+    if not matched:
+        # 显式保留 status / confidence，方便调用方区分 NORMAL_NO_DATA / FAILED。
+        empty["status"] = result.status
+        empty["confidence"] = result.confidence
+        empty["errors"] = list(result.errors or [])[:5]
+        if result.status == STATUS_HAS_DATA:
+            # 防御：状态为 HAS_DATA 但 matched 为空时仍视为无命中。
+            empty["status"] = STATUS_NORMAL_NO_DATA
+        elif result.status == STATUS_FAILED:
+            empty["local_knowledge_summary"] = "本地知识查询失败，不参与命中分计算。"
+        return empty
+
+    fresh_count = 0
+    stale_count = 0
+    low_count = 0
+    total_score = 0.0
+    briefs: List[Dict[str, Any]] = []
+    for m in matched:
+        if m.is_stale and not (m.is_low_confidence or m.is_to_be_supplemented):
+            stale_count += 1
+        elif m.is_low_confidence or m.is_to_be_supplemented:
+            low_count += 1
+        else:
+            fresh_count += 1
+        total_score += _page_score(m)
+        briefs.append({
+            "rel_path": m.rel_path,
+            "title": m.title,
+            "page_type": m.page_type,
+            "updated_at": m.updated_at,
+            "confidence": m.confidence,
+            "is_stale": m.is_stale,
+            "is_low_confidence": m.is_low_confidence,
+            "is_to_be_supplemented": m.is_to_be_supplemented,
+            "summary_snippet": (m.summary or "")[:_SUMMARY_MAX_CHARS],
+            "matched_by": list(m.matched_by),
+        })
+
+    score = min(total_score, _LOCAL_KNOWLEDGE_SCORE_MAX)
+    score = round(score, 2)
+    has_hit = fresh_count > 0
+
+    summary = _render_local_knowledge_summary(
+        score=score,
+        hit_count=len(matched),
+        fresh_count=fresh_count,
+        stale_count=stale_count,
+        low_count=low_count,
+        has_hit=has_hit,
+        status=result.status,
+        themes=result.themes,
+        risks=result.risks,
+    )
+
+    return {
+        "local_knowledge_score": score,
+        "knowledge_hit_count": len(matched),
+        "fresh_hit_count": fresh_count,
+        "stale_hit_count": stale_count,
+        "low_confidence_hit_count": low_count,
+        "has_hit": has_hit,
+        "status": result.status,
+        "confidence": result.confidence,
+        "updated_at": result.updated_at,
+        "themes": list(result.themes)[:10],
+        "risks": list(result.risks)[:_MAX_RISK_ENTRIES],
+        "matched_pages_brief": briefs[:_MAX_MATCHED_PAGES],
+        "errors": list(result.errors or [])[:5],
+        "local_knowledge_summary": summary,
+    }
+
+
+def _render_local_knowledge_summary(
+    *,
+    score: float,
+    hit_count: int,
+    fresh_count: int,
+    stale_count: int,
+    low_count: int,
+    has_hit: bool,
+    status: str,
+    themes: List[str],
+    risks: List[str],
+) -> str:
+    """[KB-004] 渲染候选本地知识命中的一句话摘要。
+
+    必须包含负面信息（过期/低置信命中数）；不得包含买卖建议词。
+    无命中时返回空字符串（与 KB-008 NORMAL_NO_DATA 语义一致）。
+    """
+    if not has_hit:
+        if status == STATUS_FAILED:
+            return "本地知识查询失败，不参与命中分计算。"
+        if stale_count and not low_count:
+            return (
+                f"本地知识仅命中 {stale_count} 条过期页，需更新；"
+                f"命中分 0.00。"
+            )
+        if low_count and not stale_count:
+            return (
+                f"本地知识仅命中 {low_count} 条低置信/待补充页，仅供参考；"
+                f"命中分 0.00。"
+            )
+        if stale_count and low_count:
+            return (
+                f"本地知识命中 {stale_count + low_count} 条过期/低置信页，"
+                f"不参与命中分计算。"
+            )
+        return ""
+
+    parts: List[str] = [f"本地知识命中 {hit_count} 条（fresh {fresh_count}）"]
+    parts.append(f"命中分 {score:.2f}")
+    if themes:
+        parts.append("主题：" + "、".join(themes[:3]))
+    if stale_count:
+        parts.append(f"过期 {stale_count} 条需更新")
+    if low_count:
+        parts.append(f"低置信 {low_count} 条仅供参考")
+    text = "；".join(parts) + "。"
+    if risks:
+        text += " 风险提示：" + "、".join(risks[:2])
+    return text
+
+
+def needs_tree_work_research(
+    *,
+    candidate_type: str = "",
+    mandate_topic: str = "",
+    topic_status: str = "",
+    mandate_score: float = 0.0,
+    knowledge_summary: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """[KB-004] 判断候选是否需要标记 ``needs_tree_work_research``。
+
+    触发条件（全部满足）：
+      1. 候选属于昊天左侧池（``POLICY_AMBUSH`` / ``POLICY_CONFIRM`` /
+         ``EVENT_WATCH``）或携带非空 ``mandate_topic``。
+      2. 主题“较热”：``mandate_score > 0``，或 ``topic_status`` 处于升温/
+         已确认/加速等正面状态。
+      3. 本地知识命中分结构 ``has_hit=False``（无 fresh 命中）。
+
+    任意条件不满足返回 ``False``；该函数**只**生成提示标记，不改变候选 tier。
+    """
+    mandate_types = {"POLICY_AMBUSH", "POLICY_CONFIRM", "EVENT_WATCH"}
+    is_mandate_candidate = (
+        (candidate_type or "").strip() in mandate_types
+        or bool((mandate_topic or "").strip())
+    )
+    if not is_mandate_candidate:
+        return False
+
+    hot_topic_statuses = {
+        "RISING", "CONFIRMED", "ACCELERATING", "HEATING_UP",
+        "LEFT_SIDE", "ACTIVE",
+    }
+    is_hot = (
+        (mandate_score or 0.0) > 0.0
+        or (topic_status or "").strip().upper() in hot_topic_statuses
+    )
+    if not is_hot:
+        return False
+
+    if not isinstance(knowledge_summary, dict):
+        return True
+    return not knowledge_summary.get("has_hit", False)

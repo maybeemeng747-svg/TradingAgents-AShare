@@ -148,8 +148,21 @@ def _topic_summary(topic: dict) -> dict:
     }
 
 
-def build_mandate_daily_report(heatmap: dict, *, as_of: str = "") -> MandateDailyReport:
-    """Build a daily mandate report from a topic heatmap response."""
+def build_mandate_daily_report(
+    heatmap: dict,
+    *,
+    as_of: str = "",
+    knowledge_root: Optional[str] = None,
+) -> MandateDailyReport:
+    """Build a daily mandate report from a topic heatmap response.
+
+    [KB-004] ``knowledge_root`` is an optional absolute path to the Tree Work
+    knowledge base. When supplied, each main/observation candidate's
+    ``evidence_packet.local_knowledge_summary`` is populated from a per-symbol
+    lookup against ``wiki/investment/``. The lookup is read-only, never
+    inflates the candidate tier / mandate_score, and is skipped silently when
+    the knowledge base is unavailable so the daily report still renders.
+    """
     as_of = as_of or heatmap.get("as_of") or datetime.now().strftime("%Y-%m-%d")
     topics = list(heatmap.get("topics") or [])
     active_topics = [t for t in topics if t.get("candidates") or t.get("heat_curve")]
@@ -169,6 +182,30 @@ def build_mandate_daily_report(heatmap: dict, *, as_of: str = "") -> MandateDail
     observation_candidates: List[MandateDailyCandidate] = []
     entry_reasons: List[dict] = []
     evidence_gaps: List[dict] = []
+
+    # [KB-004] tradeflow_knowledge_score — resolve the default root when the
+    # caller did not pass one. This keeps production API/CLI callers active
+    # without needing to thread the argument through every existing call site.
+    if knowledge_root is None:
+        try:
+            from tradingagents.dataflows.local_knowledge_audit import (
+                default_knowledge_root as _kb004_default_root,
+            )
+            knowledge_root = _kb004_default_root()
+        except Exception:
+            knowledge_root = None
+
+    # Import the lookup helper only after root resolution. The import is
+    # deferred so this module remains importable in environments without the
+    # local knowledge stack.
+    _kb004_query = None
+    if knowledge_root:
+        try:
+            from tradingagents.dataflows.local_knowledge_provider import (
+                query_local_knowledge as _kb004_query,
+            )
+        except Exception:
+            _kb004_query = None
 
     for topic in active_topics:
         topic_name = topic.get("topic", "")
@@ -194,7 +231,26 @@ def build_mandate_daily_report(heatmap: dict, *, as_of: str = "") -> MandateDail
             # without needing a lifecycle → status round-trip.
             if topic.get("topic_status") and not enriched.get("topic_status"):
                 enriched["topic_status"] = topic.get("topic_status", "")
-            packet = build_evidence_packet(enriched)
+            # [KB-004] tradeflow_knowledge_score — read-only per-symbol local
+            # knowledge lookup; failures degrade to ``None`` so the packet
+            # still builds with an empty ``local_knowledge_summary``.
+            local_kb_result = None
+            if _kb004_query is not None:
+                cand_symbol = c.get("symbol", "")
+                cand_name = c.get("name", "")
+                themes_list = [topic_name] if topic_name else None
+                try:
+                    local_kb_result = _kb004_query(
+                        knowledge_root,
+                        symbol=cand_symbol or None,
+                        name=cand_name or None,
+                        themes=themes_list,
+                    )
+                except Exception:
+                    local_kb_result = None
+            packet = build_evidence_packet(
+                enriched, local_knowledge_result=local_kb_result,
+            )
             item = MandateDailyCandidate(
                 symbol=c.get("symbol", ""),
                 name=c.get("name", ""),

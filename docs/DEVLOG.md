@@ -4,6 +4,161 @@
 
 ---
 
+## 2026-07-05 | 自动开发 review 阶段超时与卡死治理
+
+- **执行者**：Codex
+- **类型**：automation reliability
+- **状态**：✅ 完成（本轮收口）
+
+### 背景
+
+- 2026-07-04 18:00 cron 领取 KB-004 后，OpenCode 与测试均已完成，但外层脚本卡在
+  `codex review --help` 子进程，遗留 PID 32167 与 `.auto_dev.lock`，导致后续任务无法继续。
+- 根因包括：
+  1. 本机 Codex CLI vendor 二进制损坏，`codex review --help` 无超时保护。
+  2. review 阶段只给 120 秒，复杂 diff 不够。
+  3. review 非 0 退出会进入 OpenCode 修复轮，误把工具故障当代码问题。
+
+### 变更
+
+- 重装 `@openai/codex@0.142.5`，`codex review --help` 恢复正常。
+- `scripts/auto_dev_loop.sh`：
+  - 新增 `AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS`，默认 1200 秒。
+  - `codex review --help` 也走 `run_with_timeout 30`。
+  - `codex review --uncommitted` 统一走 `run_with_timeout`，确保超时会 kill 完整进程组。
+  - review 超时或非 0 退出时直接 `NEEDS_HUMAN` 停批，不再消耗 OpenCode 修复轮。
+  - token/auth 识别补充 `usage limit` / `credits` 文案，覆盖 Codex CLI 实际额度错误输出。
+
+### 预期效果
+
+- 复杂 review 有足够时间完成。
+- 工具故障不会留下活进程和锁。
+- 下一轮自动开发不会因为上一轮 stale lock / 脏树无限卡住。
+
+---
+
+## 2026-07-04 | KB-004 TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1）
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：KB-004-20260704-020304
+
+### 背景
+
+- KB-003 已为 TA 报告提供"本地知识补充"区块；KB-007/KB-008 已为候选注入
+  研报关注度。TradeFlow 昊天左侧候选缺少"本地知识命中：公司 / 主题 /
+  产业链角色 / 风险"维度的解释信息，无法体现 Tree Work 已消化的产业认知。
+- 用户希望在候选入池时直接看到本地知识命中页、更新时间与风险提示，
+  并对"主题热但无知识命中"的候选给出待研究标记。
+
+### 变更
+
+- `tradingagents/dataflows/local_knowledge_provider.py`
+  - 新增 `compute_local_knowledge_score(result)`：把 `LocalKnowledgeQueryResult`
+    聚合为 `local_knowledge_score` / `knowledge_hit_count` / `fresh_hit_count` /
+    `stale_hit_count` / `low_confidence_hit_count` / `matched_pages_brief` /
+    `local_knowledge_summary` 等字段。
+  - 计分规则：fresh 命中按 confidence high=1.0 / medium=0.6 / low=0.3 计分，
+    上限 3.0；**过期 / 低置信 / 待补充命中一律计 0 分但仍计入命中数**，
+    满足"过期知识不得加分，只能提示需更新"约束。
+  - 新增 `needs_tree_work_research(...)` 判定：候选为昊天左侧池
+    （`POLICY_AMBUSH/POLICY_CONFIRM/EVENT_WATCH` 或非空 `mandate_topic`） +
+    主题较热（`mandate_score>0` 或 topic_status 在 RISING/CONFIRMED/...） +
+    本地知识无 fresh 命中 → 触发 `needs_tree_work_research`。
+
+- `tradingagents/tradeflow/mandate_evidence_packet.py`
+  - `MandateEvidencePacket` 新增 `local_knowledge_summary: Dict[str, Any]`
+    字段并在 `to_dict()` 透出。
+  - `build_evidence_packet` 增加可选 `local_knowledge_result` 参数；传入时
+    调用 `compute_local_knowledge_score` 填充 `local_knowledge_summary`，
+    **绝不影响** confidence / needs_manual_research / 强动作门禁。
+  - `build_evidence_packets_for_candidates` 增加可选
+    `local_knowledge_by_symbol` 批量参数。
+
+- `tradingagents/tradeflow/mandate_daily_report.py`
+  - `build_mandate_daily_report` 增加可选 `knowledge_root` 参数；传入时
+    对每个候选按 (symbol, name, themes=topic) 只读查询本地知识并注入到
+    `evidence_packet.local_knowledge_summary`。默认 `None` 保持原行为。
+
+- `api/services/tradeflow_service.py`
+  - 新增 `_resolve_knowledge_root` / `_query_local_knowledge_for_candidate` /
+    `_apply_local_knowledge_to_item` / `_enrich_candidate_with_local_knowledge` /
+    `_enrich_candidates_with_local_knowledge` 工具函数（与 KB-008 同构，
+    但保留 KB-003 多维度查询语义）。
+  - 在 `get_daily_plan` / `get_candidates` / `get_candidate_detail` 的 KB-008
+    enrichment 之后追加 KB-004 enrichment，确保两个字段族共存、互不影响。
+  - 失败 / 无 knowledge_root 时静默退化为空结构，绝不阻塞候选读取主链路。
+  - 查询异常返回 `FAILED` 结构并透出 `errors`，避免把索引故障误判为 Tree Work
+    待补研报。
+
+- `api/tradeflow_schemas.py`
+  - `TradeFlowCandidateItem` 新增 `local_knowledge_score` /
+    `knowledge_hit_count` / `local_knowledge_summary` / `local_knowledge_detail` /
+    `needs_tree_work_research` 字段。
+  - `MandateEvidencePacketItem` 新增 `local_knowledge_summary` 字段。
+
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx` /
+  `frontend/src/types/index.ts`
+  - 候选详情抽屉展示本地知识分、命中数、命中页面、更新时间、风险提示、
+    查询异常和 `needs_tree_work_research` 标记。
+
+- `tests/test_kb004_tradeflow_knowledge_score.py`
+  - 新增 61 个测试覆盖：基础计分、过期/低置信不加分、summary 内容、
+    needs_tree_work_research 判定、evidence packet 字段、批量构造、
+    mandate_daily_report 集成、TradeFlow 候选 enrichment（单条 + 批量）、
+    查询异常归因、只读安全性、Pydantic schema、真实知识库 smoke。
+
+### 验收
+
+- `pytest tests/test_kb004_tradeflow_knowledge_score.py -q`：**61 passed**。
+- `pytest tests/test_h017_mandate_evidence_packet.py
+  tests/test_kb008_research_attention_integration.py
+  tests/test_kb003_local_knowledge_provider.py
+  tests/test_h015_mandate_daily_report.py
+  tests/test_kb004_tradeflow_knowledge_score.py -q`：**222 passed**。
+- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`
+  （task.md 指定命令）：**119 passed**。
+- `cd frontend && npm run build`：通过（仅 Vite chunk-size warning）。
+- 大范围回归 `pytest tests/ -q -k "tradeflow or mandate or kb00 or h017 or h015"`：
+  **1711 passed / 1 failed**，唯一失败为 KB-009 既有 date-sensitive 测试
+  （`test_different_institutions_consensus_not_suppressed`），与本次改动无关
+  （已通过 `git stash` 验证在 clean checkout 上同样失败）。
+
+### 约束遵循
+
+- 不改 `tradingagents/prompts/`。
+- 不写生产 `tradingagents.db`（所有持久化字段只在 tradeflow.db 候选读取层
+  附加内存字段；无 schema migration）。
+- 不调用 LLM / 不访问外网。
+- 不做全市场扫描 / 个股深度 TA。
+- 本地知识命中只加解释力，不单独触发候选入池；过期/低置信不加分。
+
+### Codex review 补修
+
+- `codex review --uncommitted` 发现 2 个 P2：
+  1. 知识库路径失败时不应标记 `needs_tree_work_research`。
+  2. 日报生成未显式传 `knowledge_root` 时应自动解析默认知识库路径。
+- 已修复：
+  - `score_dict.status == FAILED` 时强制 `needs_tree_work_research=False`。
+  - `build_mandate_daily_report()` 在 `knowledge_root is None` 时调用
+    `default_knowledge_root()`，保持现有 API/CLI 调用链有效。
+- 第二轮 review 继续发现 2 个 P2：
+  1. `query_local_knowledge` 抛异常时不应被吞成 NORMAL_NO_DATA。
+  2. 后端字段已扩展，但前端候选详情没有展示本地知识命中信息。
+- 已修复：
+  - `_query_local_knowledge_for_candidate()` 查询异常返回 `LocalKnowledgeQueryResult(status=FAILED)`。
+  - `compute_local_knowledge_score()` 透出 `errors`。
+  - 前端候选详情增加“本地知识”区块，显示命中分、命中页面、风险和异常。
+- 第三轮 review 发现 2 个可观察性问题：
+  1. 前端命中页面卡片读取了 `summary`，但后端字段是 `summary_snippet`。
+  2. 有命中但存在部分解析错误时，非空路径未透出 `errors`。
+- 已修复：
+  - 前端优先读取 `summary_snippet`，兼容旧 `summary`。
+  - `compute_local_knowledge_score()` 在 HAS_DATA 路径同样透出 `errors`。
+
+---
+
 ## 2026-07-04 | 释放 3-4 小时夜间自动开发任务池
 
 - **执行者**：Codex

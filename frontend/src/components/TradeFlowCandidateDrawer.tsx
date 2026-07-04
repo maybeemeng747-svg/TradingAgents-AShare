@@ -170,6 +170,26 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
     }, [open])
 
     const data = detail ?? candidate
+    const localKnowledgeDetail = (data.local_knowledge_detail || {}) as Record<string, unknown>
+    const localKnowledgeStatus = String(localKnowledgeDetail.status || '')
+    const localKnowledgeConfidence = String(localKnowledgeDetail.confidence || '')
+    const localKnowledgeUpdatedAt = String(localKnowledgeDetail.updated_at || '')
+    const localKnowledgeMatchedPages = Array.isArray(localKnowledgeDetail.matched_pages_brief)
+        ? localKnowledgeDetail.matched_pages_brief as Array<Record<string, unknown>>
+        : []
+    const localKnowledgeRisks = Array.isArray(localKnowledgeDetail.risks)
+        ? localKnowledgeDetail.risks.map(String).filter(Boolean)
+        : []
+    const localKnowledgeErrors = Array.isArray(localKnowledgeDetail.errors)
+        ? localKnowledgeDetail.errors.map(String).filter(Boolean)
+        : []
+    const showLocalKnowledge = Boolean(
+        (data.local_knowledge_score || 0) > 0 ||
+        (data.knowledge_hit_count || 0) > 0 ||
+        data.local_knowledge_summary ||
+        data.needs_tree_work_research ||
+        localKnowledgeStatus
+    )
 
     return (
         <>
@@ -398,6 +418,88 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                         <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
                                             {data.trigger_price != null ? '等待技术触发确认入场时机' : '等待技术面出现合理入场位置'}
                                             {data.need_deep_ta ? '；已建议深度TA验证' : '；建议等待更多证据'}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {showLocalKnowledge && (  // [KB-004] tradeflow_knowledge_score
+                        <div>
+                            <SectionTitle icon={FileText} title="本地知识" />
+                            <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                    <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                        命中 {data.knowledge_hit_count || 0} 条
+                                    </span>
+                                    <span className="inline-flex items-center rounded bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                                        知识分 {(data.local_knowledge_score || 0).toFixed(2)}
+                                    </span>
+                                    {localKnowledgeStatus && (
+                                        <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ${
+                                            localKnowledgeStatus === 'FAILED'
+                                                ? 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300'
+                                                : localKnowledgeStatus === 'HAS_DATA'
+                                                ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                                : 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300'
+                                        }`}>
+                                            {localKnowledgeStatus}
+                                        </span>
+                                    )}
+                                    {data.needs_tree_work_research && (
+                                        <span className="inline-flex items-center rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">
+                                            需 Tree Work 补研报
+                                        </span>
+                                    )}
+                                </div>
+                                {(localKnowledgeUpdatedAt || localKnowledgeConfidence) && (
+                                    <div className="flex flex-wrap gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+                                        {localKnowledgeUpdatedAt && <span>更新时间: {localKnowledgeUpdatedAt}</span>}
+                                        {localKnowledgeConfidence && <span>置信度: {localKnowledgeConfidence}</span>}
+                                    </div>
+                                )}
+                                {data.local_knowledge_summary && (
+                                    <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-xs leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/30 dark:text-slate-300">
+                                        {data.local_knowledge_summary}
+                                    </div>
+                                )}
+                                {localKnowledgeMatchedPages.length > 0 && (
+                                    <div className="space-y-1.5">
+                                        <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">命中页面</div>
+                                        {localKnowledgeMatchedPages.slice(0, 5).map((page, i) => {
+                                            const title = String(page.title || page.rel_path || `页面 ${i + 1}`)
+                                            const relPath = String(page.rel_path || '')
+                                            const summary = String(page.summary_snippet || page.summary || '')
+                                            return (
+                                                <div key={`${title}-${i}`} className="rounded-lg border border-slate-100 bg-white p-2 dark:border-slate-700 dark:bg-slate-800/30">
+                                                    <div className="truncate text-xs font-medium text-slate-700 dark:text-slate-200" title={title}>{title}</div>
+                                                    {relPath && <div className="mt-0.5 truncate text-[11px] text-slate-400" title={relPath}>{relPath}</div>}
+                                                    {summary && <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">{summary}</div>}
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                                {localKnowledgeRisks.length > 0 && (
+                                    <div className="rounded-lg border border-orange-100 bg-orange-50/50 p-3 dark:border-orange-800 dark:bg-orange-900/10">
+                                        <div className="text-[11px] font-medium text-orange-600 dark:text-orange-400">知识库风险提示</div>
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                            {localKnowledgeRisks.slice(0, 5).map((risk, i) => (
+                                                <span key={`${risk}-${i}`} className="inline-block max-w-full truncate rounded bg-orange-100 px-1.5 py-0.5 text-[11px] text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" title={risk}>
+                                                    {risk}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {localKnowledgeErrors.length > 0 && (
+                                    <div className="rounded-lg border border-red-100 bg-red-50/50 p-3 dark:border-red-800 dark:bg-red-900/10">
+                                        <div className="text-[11px] font-medium text-red-600 dark:text-red-400">知识库查询异常</div>
+                                        <div className="mt-1 space-y-1">
+                                            {localKnowledgeErrors.slice(0, 3).map((err, i) => (
+                                                <div key={`${err}-${i}`} className="break-words text-[11px] text-red-500 dark:text-red-300">{err}</div>
+                                            ))}
                                         </div>
                                     </div>
                                 )}

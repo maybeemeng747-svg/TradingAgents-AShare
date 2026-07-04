@@ -393,6 +393,156 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
     return items
 
 
+# [KB-004] tradeflow_knowledge_score
+def _resolve_knowledge_root() -> str:
+    """解析当前生效的本地知识库根目录（环境变量优先）。
+
+    与 KB-008 共享 ``default_knowledge_root`` 的解析口径，保证 TA 报告 /
+    TradeFlow 候选 / 研报关注度使用同一份 wiki 索引。
+    """
+    try:
+        from tradingagents.dataflows.local_knowledge_audit import (
+            default_knowledge_root as _lk_default_root,
+        )
+        return _lk_default_root()
+    except Exception:
+        return ""
+
+
+# [KB-004] tradeflow_knowledge_score
+def _query_local_knowledge_for_candidate(
+    item: dict,
+    knowledge_root: str,
+):
+    """按候选 symbol / name / mandate_topic 只读查询本地知识。
+
+    查询异常返回 ``FAILED`` 结构而不是 ``None``，避免把基础设施故障误判为
+    Tree Work 待补研报。命中维度优先级：symbol > name > themes(mandate_topic)。
+    当三者都为空时返回 ``None``。
+    """
+    if not knowledge_root:
+        return None
+    symbol = (item.get("symbol") or "").strip() or None
+    name = (item.get("name") or "").strip() or None
+    topic = (item.get("mandate_topic") or "").strip() or None
+    themes = [topic] if topic else None
+    if not any([symbol, name, themes]):
+        return None
+    try:
+        from tradingagents.dataflows.local_knowledge_provider import (
+            query_local_knowledge as _kb004_query,
+        )
+        return _kb004_query(
+            knowledge_root,
+            symbol=symbol,
+            name=name,
+            themes=themes,
+        )
+    except Exception as exc:
+        try:
+            from tradingagents.dataflows.local_knowledge_provider import (
+                LocalKnowledgeQueryResult,
+                STATUS_FAILED,
+            )
+
+            return LocalKnowledgeQueryResult(
+                status=STATUS_FAILED,
+                knowledge_root=knowledge_root,
+                query={
+                    "symbol": symbol or "",
+                    "name": name or "",
+                    "themes": themes or [],
+                },
+                errors=[f"query_local_knowledge failed: {type(exc).__name__}: {exc}"],
+            )
+        except Exception:
+            return None
+
+
+# [KB-004] tradeflow_knowledge_score
+def _apply_local_knowledge_to_item(
+    item: dict,
+    knowledge_result,
+) -> dict:
+    """把单次本地知识查询结果注入候选 item。
+
+    只读、不调用 LLM、不写 DB；``local_knowledge_score`` 仅作为研究优先级 /
+    解释信息，**不改变** tier / action / 强动作门禁。无命中时填充空结构
+    （score=0、hit_count=0），符合 NORMAL_NO_DATA 语义。过期/低置信命中页
+    不贡献分数但仍透出，便于前端提示用户更新知识库。
+    """
+    try:
+        from tradingagents.dataflows.local_knowledge_provider import (
+            compute_local_knowledge_score as _kb004_score,
+            needs_tree_work_research as _kb004_needs,
+        )
+    except Exception:
+        item.setdefault("local_knowledge_score", 0.0)
+        item.setdefault("knowledge_hit_count", 0)
+        item.setdefault("local_knowledge_summary", "")
+        item.setdefault("local_knowledge_detail", {})
+        item.setdefault("needs_tree_work_research", False)
+        return item
+
+    score_dict = _kb004_score(knowledge_result)
+    # [KB-004] tradeflow_knowledge_score — FAILED means infrastructure/config
+    # failure, not a Tree Work research gap. Do not turn a bad knowledge_root
+    # into a false backlog signal.
+    needs_flag = False
+    if score_dict.get("status") != "FAILED":
+        needs_flag = _kb004_needs(
+            candidate_type=item.get("candidate_type", ""),
+            mandate_topic=item.get("mandate_topic", ""),
+            topic_status=item.get("topic_lifecycle_state") or item.get("topic_status", ""),
+            mandate_score=float(item.get("mandate_score") or item.get("mandate_score_component") or 0.0),
+            knowledge_summary=score_dict,
+        )
+    item["local_knowledge_score"] = score_dict["local_knowledge_score"]
+    item["knowledge_hit_count"] = score_dict["knowledge_hit_count"]
+    item["local_knowledge_summary"] = score_dict["local_knowledge_summary"]
+    item["local_knowledge_detail"] = score_dict
+    item["needs_tree_work_research"] = bool(needs_flag)
+    return item
+
+
+# [KB-004] tradeflow_knowledge_score
+def _enrich_candidate_with_local_knowledge(item: dict) -> dict:
+    """单条候选注入本地知识命中分（[KB-004]）。
+
+    失败 / 无 knowledge_root 时静默退化为空结构，绝不阻塞候选读取主链路。
+    """
+    symbol = item.get("symbol") or ""
+    if not symbol:
+        return _apply_local_knowledge_to_item(item, None)
+    knowledge_root = _resolve_knowledge_root()
+    if not knowledge_root:
+        return _apply_local_knowledge_to_item(item, None)
+    knowledge_result = _query_local_knowledge_for_candidate(item, knowledge_root)
+    return _apply_local_knowledge_to_item(item, knowledge_result)
+
+
+# [KB-004] tradeflow_knowledge_score
+def _enrich_candidates_with_local_knowledge(items: List[dict]) -> List[dict]:
+    """批量注入本地知识命中分（[KB-004]）。
+
+    与 KB-008 不同，本地知识查询是按 (symbol, name, themes) 多维度匹配，
+    无法像 KB-008 那样共享一次扫描结果（KB-003 的 query 接口本身就是按
+    查询条件过滤）。因此批量版逐项调用 ``query_local_knowledge``；对于
+    TradeFlow 候选池规模（通常 < 20 只）这是可接受的开销。失败项降级为
+    空结构，绝不阻塞候选读取主链路。
+    """
+    if not items:
+        return items
+    knowledge_root = _resolve_knowledge_root()
+    for it in items:
+        if not knowledge_root or not (it.get("symbol") or ""):
+            _apply_local_knowledge_to_item(it, None)
+            continue
+        knowledge_result = _query_local_knowledge_for_candidate(it, knowledge_root)
+        _apply_local_knowledge_to_item(it, knowledge_result)
+    return items
+
+
 def _compute_action(item: dict) -> str:
     if item.get("need_deep_ta"):
         return "NEED_DEEP_TA"
@@ -648,6 +798,10 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
         # 只读、不调用 LLM、共享一次全库扫描；不改变 tier / action 门禁。
         candidate_items = _enrich_candidates_with_research_attention(candidate_items)
 
+        # [KB-004] tradeflow_knowledge_score — 注入本地知识命中分与证据摘要。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；过期/低置信命中不加分。
+        candidate_items = _enrich_candidates_with_local_knowledge(candidate_items)
+
         return {
             "status": "ok",
             "trade_date": _rget(plan_row, "trade_date", trade_date),
@@ -739,6 +893,10 @@ def get_candidates(
         # 只读、不调用 LLM、共享一次全库扫描；不改变 tier / action 门禁。
         items = _enrich_candidates_with_research_attention(items)
 
+        # [KB-004] tradeflow_knowledge_score — 注入本地知识命中分与证据摘要。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；过期/低置信命中不加分。
+        items = _enrich_candidates_with_local_knowledge(items)
+
         # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
         # while exposing the strict main/observation/filtered split separately.
         from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
@@ -803,6 +961,10 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         # [KB-008] research_attention_integration — 注入研报关注度字段。
         # 只读、不调用 LLM、不改变 tier / action 门禁；无命中返回空结构。
         detail = _enrich_candidate_with_research_attention(detail)
+
+        # [KB-004] tradeflow_knowledge_score — 候选详情也注入本地知识命中分与
+        # 证据摘要（命中页路径 / 更新时间 / 风险提示），便于前端 drawer 展示。
+        detail = _enrich_candidate_with_local_knowledge(detail)
 
         return {
             "status": "ok",
