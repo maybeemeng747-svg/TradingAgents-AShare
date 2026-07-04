@@ -169,7 +169,7 @@
 143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，ready，依赖 DB 污染治理脚本 ✓）。
 144. `AUTO-005`：自动开发 preflight 接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
  145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
-146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，ready，依赖 KB-004/KB-009 ✓）。
+ 146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
 147. `KB-012`：Tree Work 研报补录任务包导出（P2，ready，依赖 KB-002/KB-005/KB-007 ✓）。
 148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，ready，依赖 KB-006/TF-KB-001 ✓）。
 
@@ -4665,7 +4665,7 @@
 ### TF-KB-001: TradeFlow 本地知识分校准回放与弱候选防提升（P1）
 - **描述**：验证 KB-004/KB-009 接入后，TradeFlow 不会因为本地知识命中把技术弱、数据弱或过热候选错误提升为主候选。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/TF-KB-001-20260705-032741
 - **前置条件**：KB-004、KB-009 完成。
 - **执行约束**：
   - 本地知识分只能作为解释和排序辅助，不得单独触发候选入池。

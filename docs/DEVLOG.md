@@ -4,6 +4,98 @@
 
 ---
 
+## 2026-07-05 | TF-KB-001 本地知识分校准回放与弱候选防提升（P1）
+
+- **执行者**：OpenCode
+- **类型**：calibration / regression lock / explain
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：TF-KB-001-20260705-032741
+
+### 背景
+
+KB-004/KB-009 已经把 `local_knowledge_score` 与
+`research_attention_effective_score` 接入 TradeFlow 候选 item。需要验证并锁定
+一条核心不变量：**本地知识分只能作为解释和排序辅助，不得单独触发候选入池，
+不得改变 action_tier / action / 强动作门禁。** 重点防止"强知识命中把技术弱、
+数据弱或过热候选错误提升为主候选"。
+
+不变量的物理基础在于 `action_tier_scorer.run_action_tier_scorer` 的 7 个评分
+因子均不读取知识分字段——但这条事实此前没有显式的校准、explain 与回归守门。
+
+### 变更
+
+**新增**
+
+- `tradingagents/tradeflow/knowledge_score_calibration.py`
+  （`# [TF-KB-001] knowledge_score_calibration`）：
+  - **常量**：`LOCAL_KNOWLEDGE_SCORE_CAP=3.0`（与 KB-004
+    `_LOCAL_KNOWLEDGE_SCORE_MAX` 单一事实源对齐）、
+    `RESEARCH_ATTENTION_EFFECTIVE_SCORE_SORT_REF=8.0`（排序参考上限，仅影响
+    研究优先级）、`WEAK_DATA_COMPLETENESS=0.3` / `WEAK_CATEGORY_COUNT=2`
+    （与 action_tier_scorer 的 watch/actionable 门禁对齐）。
+  - **explain**：`build_knowledge_influence_explain(item)` →
+    `KnowledgeInfluenceExplain`。每条候选产出"为什么没提升 / 为什么只是加解释"
+    文案：主不变量句 + 弱/过热/反证降级句 + 无命中 NORMAL_NO_DATA 句。explain
+    不含任何买卖建议词。
+  - **calibrate**：`calibrate_candidate_knowledge_influence` /
+    `calibrate_candidates_knowledge_influence` 把 explain 写回 item
+    （`knowledge_influence_explain` / `knowledge_influence_detail`），不改
+    tier/action/强动作门禁，不改 KB-004/KB-009 已写入字段。失败项静默降级。
+  - **对抗性回归**：`verify_no_knowledge_promotion(items)` 三层断言：
+    ① scorer 签名不含任何 knowledge/attention 参数（用 inspect 守门）；
+    ② 把知识分拉到极值（score=cap、effective×10）后 scorer 输出 tier/score
+       完全不变；③ explain 无买卖建议词。返回结构化报告 dict。
+  - **fixture + 回放**：`build_calibration_fixtures()` 构造三套场景
+    （S1 强知识+技术弱 / S2 强知识+技术确认 / S3 无知识+技术强），
+    `run_calibration_replay()` 端到端校验 tier/weak/blocked 符合预期 +
+    对抗回归通过；`render_calibration_replay_markdown` 渲染落档报告。
+
+- `tests/test_tf_kb001_knowledge_score_calibration.py`（20 个测试）：
+  常量口径、三类 explain、弱候选保护、失效候选降级、无买卖建议词、对抗回归
+  （含故意给 scorer 加 knowledge 参数会被守门测试抓到的 `test_verify_catches_synthetic_leak`）、
+  端到端回放、Markdown 渲染、service 失败安全（含 import 失败降级）、
+  Pydantic schema 字段、数据不足仍走 scan。
+
+- `docs/knowledge_reports/tf_kb001_calibration_replay-2026-07-05.md`：
+  校准回放报告（状态 PASS）。三套 fixture 全部通过，对抗回归全部通过。
+
+**修改**
+
+- `api/tradeflow_schemas.py`：
+  `TradeFlowCandidateItem` 与 `ObservationItemResponse` 新增
+  `knowledge_influence_explain: List[str]` 与
+  `knowledge_influence_detail: Dict[str, Any]`（默认 `[]` / `{}`，
+  与 NORMAL_NO_DATA 语义一致）。
+- `api/services/tradeflow_service.py`：
+  新增 `_apply_knowledge_calibration_explain(items)` 失败安全叠加层，在三处
+  KB-004/KB-008 注入点之后调用（日计划候选 / tiered view 候选 / 观察仓 item），
+  把 explain 透出到 API 响应。模块 import 失败时静默降级为空 explain，不阻塞
+  候选读取主链路。
+
+### 验收
+
+- 三套 fixture 回放：S1 scan（弱候选保持降级，知识分 3.00 未提升 tier）、
+  S2 watch（技术确认提研究优先级，知识未输出强动作）、S3 actionable
+  （无知识命中，技术/数据门禁单独足以入池）。
+- 对抗回归：scorer 签名干净、知识分拉极值 tier/score 不变、explain 无买卖词。
+- 数据不足 + 知识满命中：scorer 仍输出 scan，action 不变。
+- 测试：`tests/test_tf_kb001_knowledge_score_calibration.py` 20 passed。
+- 关联回归：KB-004/KB-008/KB-011 + REPORT-UX-004 + API smoke + runtime tier
+  contract + TF-QUALITY-004/UI-011 共 230+ passed。
+  （KB-009 `test_different_institutions_consensus_not_suppressed` 为**预存在的
+  日期敏感失败**，stash 改动后在 clean HEAD 同样失败，与本任务无关。）
+
+### 风险点
+
+- explain 是只读叠加层，不改任何评分/门禁；模块不可用时降级为空 explain，
+  候选读取主链路不受影响。
+- `research_attention_effective_score` 无硬上限（随 fresh 机构数线性增长），
+  `RESEARCH_ATTENTION_EFFECTIVE_SCORE_SORT_REF=8.0` 只是排序参考，不做强制
+  clamp——与 KB-009 设计一致（保留真实多来源共识）。
+- 不涉及 prompts/、生产 DB、LLM 调用、定时任务。
+
+---
+
 ## 2026-07-05 | REPORT-UX-004 本地知识补充区块历史报告回放验收（P1）
 
 - **执行者**：OpenCode
@@ -10627,3 +10719,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/REPORT-UX-004-20260705-031930/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-KB-001 - TradeFlow 本地知识分校准回放与弱候选防提升（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/TF-KB-001-20260705-032741/

@@ -128,6 +128,8 @@ class TradeFlowCandidateItem(BaseModel):
     local_knowledge_summary: str = ""  # [KB-004] tradeflow_knowledge_score
     local_knowledge_detail: Dict[str, Any] = Field(default_factory=dict)  # [KB-004]
     needs_tree_work_research: bool = False  # [KB-004] tradeflow_knowledge_score
+    knowledge_influence_explain: List[str] = Field(default_factory=list)  # [TF-KB-001] knowledge_score_calibration
+    knowledge_influence_detail: Dict[str, Any] = Field(default_factory=dict)  # [TF-KB-001] knowledge_score_calibration
     created_at: str = ""
     updated_at: str = ""
 
@@ -941,6 +943,8 @@ class ObservationItemResponse(BaseModel):
     local_knowledge_summary: str = ""
     local_knowledge_detail: Dict[str, Any] = Field(default_factory=dict)
     needs_tree_work_research: bool = False
+    knowledge_influence_explain: List[str] = Field(default_factory=list)  # [TF-KB-001] knowledge_score_calibration
+    knowledge_influence_detail: Dict[str, Any] = Field(default_factory=dict)  # [TF-KB-001] knowledge_score_calibration
 
 
 # [TRACK-001] observation_warehouse

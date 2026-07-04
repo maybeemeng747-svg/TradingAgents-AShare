@@ -415,6 +415,32 @@ def _enrich_observation_items_with_knowledge(items: list[dict]) -> list[dict]:
     return items
 
 
+# [TF-KB-001] knowledge_score_calibration
+def _apply_knowledge_calibration_explain(items: List[dict]) -> List[dict]:
+    """[TF-KB-001] 在 KB-004/KB-008/KB-009 注入后追加知识分影响 explain。
+
+    只读叠加层：仅新增 ``knowledge_influence_explain`` /
+    ``knowledge_influence_detail``，明确"知识分只作解释/排序辅助，不改变
+    tier / action / 强动作门禁"。失败项静默跳过，绝不阻塞候选读取主链路。
+    """
+    if not items:
+        return items
+    try:
+        from tradingagents.tradeflow.knowledge_score_calibration import (
+            calibrate_candidates_knowledge_influence as _tfkb001_calibrate,
+        )
+    except Exception:
+        return items
+    try:
+        _tfkb001_calibrate(items)
+    except Exception:
+        for it in items:
+            if isinstance(it, dict):
+                it.setdefault("knowledge_influence_explain", [])
+                it.setdefault("knowledge_influence_detail", {})
+    return items
+
+
 # [KB-004] tradeflow_knowledge_score
 def _resolve_knowledge_root() -> str:
     """解析当前生效的本地知识库根目录（环境变量优先）。
@@ -824,6 +850,9 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
         # 只读、不调用 LLM、不改变 tier / action 门禁；过期/低置信命中不加分。
         candidate_items = _enrich_candidates_with_local_knowledge(candidate_items)
 
+        # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
+        candidate_items = _apply_knowledge_calibration_explain(candidate_items)
+
         return {
             "status": "ok",
             "trade_date": _rget(plan_row, "trade_date", trade_date),
@@ -918,6 +947,9 @@ def get_candidates(
         # [KB-004] tradeflow_knowledge_score — 注入本地知识命中分与证据摘要。
         # 只读、不调用 LLM、不改变 tier / action 门禁；过期/低置信命中不加分。
         items = _enrich_candidates_with_local_knowledge(items)
+
+        # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
+        items = _apply_knowledge_calibration_explain(items)
 
         # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
         # while exposing the strict main/observation/filtered split separately.
@@ -4250,6 +4282,8 @@ def get_observation_items(
         # observation warehouse detail surfaces the same fields as TradeFlow
         # candidates. Failure-safe; falls back to NORMAL_NO_DATA defaults.
         _enrich_observation_items_with_knowledge(items)
+        # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
+        _apply_knowledge_calibration_explain(items)
         return {
             "status": "ok",
             "items": items,
