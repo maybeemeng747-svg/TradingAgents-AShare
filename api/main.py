@@ -41,7 +41,7 @@ import pandas as pd
 
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
-from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload
+from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -4917,6 +4917,42 @@ def post_briefing_payload_dry_run(
         db, current_user.id,
         scene=body.scene,
         tf_db_path=body.tf_db_path,
+    )
+
+
+# [KB-006] local_knowledge_context_api
+@app.get("/v1/knowledge/local/search")
+def search_local_knowledge(
+    symbol: Optional[str] = None,
+    name: Optional[str] = None,
+    themes: Optional[str] = None,
+    tags: Optional[str] = None,
+    max_pages: Optional[int] = None,
+    knowledge_root: Optional[str] = None,
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Read-only search of Tree Work ``wiki/investment`` pages.
+
+    Returns a slim summary (title / rel_path / updated_at / confidence /
+    summary_snippet / risks / negative flags) of pages matching the supplied
+    ``symbol`` / ``name`` / ``themes`` / ``tags``. Only the ``wiki/investment``
+    partition is visible; other partitions (``inbox/``, ``raw/``, private
+    notes) are never exposed.
+
+    READ-ONLY: never writes to the knowledge base, never calls LLM, never
+    hits the network. Supports disable via ``KNOWLEDGE_CONTEXT_DISABLED``
+    / ``KNOWLEDGE_LOCAL_DISABLED`` env (returns ``data_status=skipped``).
+    runtime_tier=FAST_RADAR.
+    """
+    theme_list = local_knowledge_context_service._split_multi(themes)
+    tag_list = local_knowledge_context_service._split_multi(tags)
+    return local_knowledge_context_service.search_local_knowledge(
+        symbol=symbol,
+        name=name,
+        themes=theme_list or None,
+        tags=tag_list or None,
+        max_pages=max_pages,
+        knowledge_root=knowledge_root,
     )
 
 

@@ -1,5 +1,6 @@
 # [IC-TA-001] investment_controller_context
 # [IC-TA-002] controller_context_tradeflow_report
+# [KB-006] local_knowledge_context_api
 """Read-only context pack for the investment-controller.
 
 Aggregates the stable buckets that the investment-controller (the external
@@ -25,6 +26,16 @@ IC-TA-002 (mandate radar + report data gaps):
                                     only enter the daily report, and which
                                     should not be pushed because data is
                                     insufficient.
+
+KB-006 (local knowledge hits):
+    9. local_knowledge_hits       - Tree Work ``wiki/investment`` background
+                                    digest per symbol + cross-symbol theme
+                                    query. Read-only, no full page body, no
+                                    LLM. Only the ``wiki/investment`` partition
+                                    is visible; supports disable via
+                                    ``KNOWLEDGE_CONTEXT_DISABLED`` env. Used as
+                                    a research-priority hint only — never
+                                    changes the strong-action gate.
 
 Design contract (see docs/TASKS.md IC-TA-001):
 
@@ -145,6 +156,16 @@ def get_investment_controller_context(
         db, user_id, as_of, notes
     )
 
+    # --- Bucket 9 (KB-006): local knowledge hits ---
+    local_knowledge_hits = _collect_local_knowledge_hits(
+        as_of,
+        holdings=holdings,
+        observation=observation,
+        candidates=candidates,
+        mandate_report=mandate_report,
+        notes=notes,
+    )
+
     # --- Controller hints (IC-TA-002): soft scheduling hints ---
     controller_hints = _build_controller_hints(
         as_of,
@@ -152,6 +173,7 @@ def get_investment_controller_context(
         pending_ta=pending_ta,
         mandate_report=mandate_report,
         report_blockers=report_blockers,
+        local_knowledge_hits=local_knowledge_hits,  # [KB-006]
         notes=notes,
     )
 
@@ -170,6 +192,7 @@ def get_investment_controller_context(
         "pending_ta_required": pending_ta,
         "mandate_daily_report": mandate_report,  # [IC-TA-002]
         "recent_report_data_blockers": report_blockers,  # [IC-TA-002]
+        "local_knowledge_hits": local_knowledge_hits,  # [KB-006]
         "controller_hints": controller_hints,  # [IC-TA-002]
         "notes": notes,
         "runtime_tier_meta": _tradeflow_meta("investment_controller_context"),
@@ -783,6 +806,128 @@ def _collect_recent_report_data_blockers(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Bucket 9 (KB-006): local knowledge hits
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Cap how many symbols we run a per-symbol local-knowledge lookup for, to keep
+# the IC context inside the FAST_RADAR latency budget. Holdings + observation
+# + mandate main candidates are typically well under this cap.
+_LOCAL_KNOWLEDGE_SYMBOL_CAP = 12
+# Mandate topics to include in the cross-symbol theme query (top-N by score).
+_LOCAL_KNOWLEDGE_THEME_CAP = 5
+
+
+def _empty_local_knowledge_bucket(as_of: str, data_status: str) -> dict[str, Any]:
+    """Stable empty shape for the local_knowledge_hits bucket."""
+    return {
+        "source": "local_knowledge_context",
+        "as_of": as_of,
+        "data_status": data_status,
+        "knowledge_root": "",
+        "symbol_count": 0,
+        "theme_count": 0,
+        "fresh_symbol_count": 0,
+        "stale_symbol_count": 0,
+        "items": [],
+        "theme_query": None,
+        "errors": [],
+        "read_only": True,
+    }
+
+
+def _collect_local_knowledge_hits(
+    as_of: str,
+    *,
+    holdings: dict[str, Any],
+    observation: dict[str, Any],
+    candidates: dict[str, Any],
+    mandate_report: dict[str, Any],
+    notes: list[str],
+) -> dict[str, Any]:
+    """[KB-006] Tree Work ``wiki/investment`` background digest for the IC.
+
+    Per-symbol KB-003 lookups are run for the union of:
+      - holdings items (real positions)
+      - observation items (active watchlist)
+      - TradeFlow main candidates (top by composite_score)
+      - mandate main candidates (H-015 昊天主题日报)
+
+    Plus one cross-symbol theme query built from the mandate report's rising
+    topics. All results are slimmed to the controller-safe fields (no full
+    page body, only summary/path/updated_at/confidence/risks).
+
+    READ-ONLY: never writes, never calls LLM, never raises. Degrades to
+    ``data_status=skipped`` when disabled via env, ``failed`` on lookup
+    exception, ``missing`` when nothing was scanned.
+    """
+    try:
+        from api.services.local_knowledge_context_service import (
+            collect_local_knowledge_hits as _collect,
+        )
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("[kb-006] local_knowledge_context_service import failed: %s", exc)
+        return _empty_local_knowledge_bucket(as_of, DATA_STATUS_FAILED)
+
+    # Build the symbol union (dedupe, preserve first-seen order, cap to keep
+    # the bucket inside FAST_RADAR).
+    seen: set[str] = set()
+    symbols: list[str] = []
+
+    def _add_symbol(symbol: Any) -> None:
+        if len(symbols) >= _LOCAL_KNOWLEDGE_SYMBOL_CAP:
+            return
+        sym = str(symbol or "").strip()
+        if not sym or sym in seen:
+            return
+        seen.add(sym)
+        symbols.append(sym)
+
+    for item in holdings.get("items", []) or []:
+        _add_symbol(item.get("symbol"))
+    for item in observation.get("items", []) or []:
+        _add_symbol(item.get("symbol"))
+    for item in (candidates.get("items", []) or [])[:6]:
+        _add_symbol(item.get("symbol"))
+    if mandate_report.get("data_status") == DATA_STATUS_FRESH:
+        for item in mandate_report.get("main_candidates", []) or []:
+            _add_symbol(item.get("symbol"))
+
+    # Theme query: rising + cooling topics from the mandate daily report.
+    themes: list[str] = []
+    if mandate_report.get("data_status") == DATA_STATUS_FRESH:
+        for topic in mandate_report.get("rising_topics", []) or []:
+            t = str(topic.get("topic") or "").strip()
+            if t and t not in themes:
+                themes.append(t)
+        for topic in mandate_report.get("cooling_topics", []) or []:
+            t = str(topic.get("topic") or "").strip()
+            if t and t not in themes:
+                themes.append(t)
+        themes = themes[:_LOCAL_KNOWLEDGE_THEME_CAP]
+
+    try:
+        bucket = _collect(
+            symbols=symbols,
+            themes=themes or None,
+            as_of=as_of,
+            notes=notes,
+            max_symbols=_LOCAL_KNOWLEDGE_SYMBOL_CAP,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("[kb-006] collect_local_knowledge_hits failed: %s", exc)
+        return _empty_local_knowledge_bucket(as_of, DATA_STATUS_FAILED)
+
+    if not symbols and not themes:
+        # No underlying data → treat as skipped (not missing) so the controller
+        # can tell "no positions/candidates yet" apart from "knowledge base
+        # unreachable".
+        if bucket.get("data_status") == DATA_STATUS_MISSING:
+            bucket["data_status"] = DATA_STATUS_SKIPPED
+            notes.append("local_knowledge_hits: no symbols/themes to query")
+    return bucket
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Controller hints (IC-TA-002): soft scheduling guidance
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -798,6 +943,7 @@ def _build_controller_hints(
     pending_ta: dict[str, Any],
     mandate_report: dict[str, Any],
     report_blockers: dict[str, Any],
+    local_knowledge_hits: dict[str, Any] | None = None,  # [KB-006]
     notes: list[str],
 ) -> dict[str, Any]:
     """Derive soft scheduling hints from the already-collected buckets.
@@ -887,7 +1033,51 @@ def _build_controller_hints(
             "as_of": as_of,
         })
 
-    has_any = bool(needs_ta or daily_only or suppress_push)
+    # [KB-006] local-knowledge-driven research-review lane.
+    # Symbols whose local knowledge is stale / low-confidence / outdated get a
+    # soft "needs research review" hint. Symbols with fresh hits get a
+    # background-supplement note. Neither changes the strong-action gate.
+    research_review: list[dict[str, Any]] = []
+    seen_review: set[str] = set()
+    if isinstance(local_knowledge_hits, dict):
+        for entry in local_knowledge_hits.get("items", []) or []:
+            symbol = entry.get("symbol", "")
+            if not symbol or symbol in seen_review:
+                continue
+            stale = int(entry.get("stale_hit_count") or 0)
+            low = int(entry.get("low_confidence_hit_count") or 0)
+            fresh = int(entry.get("fresh_hit_count") or 0)
+            total = int(entry.get("hit_count") or 0)
+            if total == 0:
+                continue
+            seen_review.add(symbol)
+            if fresh > 0:
+                research_review.append({
+                    "symbol": symbol,
+                    "name": "",
+                    "origin": "local_knowledge_hits",
+                    "reason": (
+                        f"本地知识命中 {total} 条（fresh {fresh}），可作为背景补充"
+                    ),
+                    "suggested_next_step": "background_supplement",
+                    "source": "local_knowledge_context",
+                    "as_of": as_of,
+                })
+            else:
+                research_review.append({
+                    "symbol": symbol,
+                    "name": "",
+                    "origin": "local_knowledge_hits",
+                    "reason": (
+                        f"本地知识命中 {total} 条但均为过期/低置信"
+                        f"（stale {stale}、low {low}），待研究补强"
+                    ),
+                    "suggested_next_step": "needs_research_review",
+                    "source": "local_knowledge_context",
+                    "as_of": as_of,
+                })
+
+    has_any = bool(needs_ta or daily_only or suppress_push or research_review)
     if not has_any:
         notes.append("controller_hints: no routing hints derived")
 
@@ -898,6 +1088,7 @@ def _build_controller_hints(
         "needs_ta": needs_ta,
         "daily_report_only": daily_only,
         "suppress_push_data_insufficient": suppress_push,
+        "research_review": research_review,  # [KB-006]
     }
 
 
@@ -940,14 +1131,35 @@ def assert_no_strong_action_verbs(payload: dict[str, Any]) -> None:
         str(payload.get("notes", "")),
         str(payload.get("generated_by", "")),
     ]
-    # Controller-synthesised hint reasons (IC-TA-002) — never carry trade verbs.
+    # Controller-synthesised hint reasons (IC-TA-002 + KB-006) — never carry
+    # trade verbs.
     hints = payload.get("controller_hints") or {}
     if isinstance(hints, dict):
-        for lane in ("needs_ta", "daily_report_only", "suppress_push_data_insufficient"):
+        for lane in (
+            "needs_ta",
+            "daily_report_only",
+            "suppress_push_data_insufficient",
+            "research_review",  # [KB-006]
+        ):
             for item in hints.get(lane, []) or []:
                 if isinstance(item, dict):
                     chunks.append(str(item.get("reason", "")))
                     chunks.append(str(item.get("suggested_next_step", "")))
+    # [KB-006] local_knowledge_hits synthesised text (summary_lines / errors /
+    # score summaries) must also stay free of trade verbs.
+    local_hits = payload.get("local_knowledge_hits") or {}
+    if isinstance(local_hits, dict):
+        for line in local_hits.get("errors") or []:
+            chunks.append(str(line))
+        theme_q = local_hits.get("theme_query") or {}
+        if isinstance(theme_q, dict):
+            for line in theme_q.get("summary_lines") or []:
+                chunks.append(str(line))
+        for item in local_hits.get("items") or []:
+            if isinstance(item, dict):
+                score = item.get("score") or {}
+                if isinstance(score, dict):
+                    chunks.append(str(score.get("local_knowledge_summary") or ""))
     for pattern in _STRONG_ACTION_PATTERNS:
         for chunk in chunks:
             if pattern in chunk:

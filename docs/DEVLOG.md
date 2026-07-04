@@ -4,6 +4,114 @@
 
 ---
 
+## 2026-07-05 | KB-006 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
+
+- **执行者**：OpenCode
+- **类型**：feature / read-only API / context integration
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：KB-006-20260705-033743
+
+### 背景
+
+KB-003 已经把 Tree Work `wiki/investment` 只读查询能力接入 TA `raw_evidence`
+链路，KB-004 把命中分接入 TradeFlow 候选，但 investment-controller（盘前/盘后
+briefing 调度器）一直没有稳定的只读入口去引用本地知识命中。如果让 controller
+自己读文件或自行编造背景，会破坏"同一套上下文、不各自保存独立记忆"的协作原则，
+也存在泄露非 investment 分区、输出原文、误触 LLM 等风险。
+
+KB-006 提供一个只读 API/服务函数，让 controller 在 briefing 中以"背景补充/待
+研究提示"的方式引用本地知识命中，并新增 IC context 第 9 个 bucket
+`local_knowledge_hits`。
+
+### 变更
+
+**新增**
+
+- `api/services/local_knowledge_context_service.py`
+  （`# [KB-006] local_knowledge_context_api`）：
+  - **配置**：`is_local_knowledge_disabled`（env `KNOWLEDGE_CONTEXT_DISABLED` /
+    `KNOWLEDGE_LOCAL_DISABLED` 任意 truthy 即关闭，返回 `data_status=skipped`）、
+    `resolve_knowledge_root`（kwarg > `KNOWLEDGE_ROOT` > `AUTO_DEV_KNOWLEDGE_ROOT`
+    > `~/Documents/knowledge`）。
+  - **状态映射**：KB-003 `HAS_DATA/STALE/LOW_CONFIDENCE/FAILED/NORMAL_NO_DATA` →
+    IC-TA-001 `fresh/stale/stale/failed/missing`。
+  - **search_local_knowledge**：包装 `query_local_knowledge`，输出 slim payload
+    （`source/as_of/data_status/vendor/endpoint/knowledge_root/query/hit_count/
+    fresh_hit_count/stale_hit_count/low_confidence_hit_count/has_fresh_hit/
+    themes/summary_lines/risks/confidence/updated_at/hits/score/errors/read_only/
+    runtime_tier_meta`）。每条 hit 只含 `rel_path/title/page_type/
+    summary_snippet(<=200字)/themes/symbols/risks(<=5)/updated_at/confidence/
+    machine_readiness/is_stale/is_low_confidence/is_to_be_supplemented/matched_by`，
+    绝不输出页面正文。`max_pages` 默认 5，硬上限 20。
+  - **collect_local_knowledge_hits**：为 IC context 构造 per-symbol 摘要 +
+    跨标的 theme query bucket。data_status 综合 symbol fresh 命中与 theme query
+    fresh 命中：任一 fresh → `fresh`；只有 stale/low → `stale`；都无 → `missing`。
+  - **safety**：`assert_no_strong_action_verbs` 检查 `summary_lines/errors/
+    score.local_knowledge_summary/theme_query.summary_lines` 不得包含
+    `立即买入/立即卖出/满仓/清仓/全仓`。
+
+- `tests/test_kb006_local_knowledge_context_api.py`（65 tests，13 个 TestClass）：
+  配置助手 / search happy path / slim output / partition isolation / status
+  mapping / disable / max_pages clamp / collect_local_knowledge_hits / IC context
+  bucket / controller hints research_review lane / cross-contract safety / API
+  endpoint smoke（TestClient）/ read-only safety。
+
+**修改**
+
+- `api/services/investment_controller_context.py`：
+  - 新增第 9 个 bucket `local_knowledge_hits`：`_collect_local_knowledge_hits`
+    收集 holdings + observation + TradeFlow 主候选 + 昊天主候选的 symbol 并集
+    （上限 12 个），加上 mandate 日报 rising/cooling topic 驱动的 theme query
+    （上限 5 个），委托 `local_knowledge_context_service.collect_local_knowledge_hits`。
+    无任何 underlying 数据时降级为 `skipped`（区分"尚未有持仓/候选"与"知识库不可达"）。
+  - `controller_hints` 新增 `research_review` lane（KB-006）：fresh 命中 →
+    `background_supplement`；仅 stale/low 命中 → `needs_research_review`；无命中
+    不产生 hint。该 lane 只作为研究优先级/背景补充提示，**绝不**改变强动作门禁。
+  - `assert_no_strong_action_verbs` 扩展覆盖 `research_review` lane 与
+    `local_knowledge_hits` bucket 的合成文本。
+
+- `api/main.py`：
+  - 导入 `local_knowledge_context_service`。
+  - 新增 `GET /v1/knowledge/local/search`（`# [KB-006]`），支持 `symbol/name/
+    themes/tags/max_pages/knowledge_root` 查询参数；调用
+    `search_local_knowledge`，返回 slim payload + `runtime_tier_meta`。
+
+- `api/runtime_tier.py`：`_TRADEFLOW_FAST_ENDPOINTS` 新增
+  `local_knowledge_search`（FAST_RADAR，不调 LLM）。
+
+### 关键不变量
+
+- **只读**：服务仅用 `open(..., "r")` + `Path.iterdir`，绝不写知识库；测试
+  `TestReadOnlySafety` 校验 mtime 与文件列表不变。
+- **partition 隔离**：只开放 `wiki/investment`，inbox/raw/私人笔记不可见；测试
+  `TestPartitionIsolation` 把含"立即买入/满仓"的 inbox 页面排除在外。
+- **不输出原文**：hit 字段白名单，无 `body/raw/content/text/markdown`；
+  `summary_snippet` 硬上限 200 字。
+- **不调用 LLM / 不访问外网**：runtime_tier=FAST_RADAR，`llm_allowed=False`。
+- **不改变强动作门禁**：`research_review` 只是研究优先级提示；IC context
+  `assert_no_strong_action_verbs` 覆盖新 lane。
+- **支持禁用**：env `KNOWLEDGE_CONTEXT_DISABLED=1` → `data_status=skipped`，
+  empty items，永不抛异常。
+- **JSON-serializable**：search payload 与 IC context 全量可序列化。
+
+### 测试结果
+
+- `tests/test_kb006_local_knowledge_context_api.py`：**65 passed**。
+- IC 回归：`test_ic_ta001/002/003/004` **194 passed**。
+- KB 回归：`test_kb001/002/003/004/005/010` **335 passed**。
+- API/runtime_tier 回归：`test_api_smoke/test_runtime_tier_contract`
+  **119 passed**。
+
+### 风险与后续
+
+- IC context 现在会为最多 12 个 symbol + 5 个 theme 调用 KB-003，每次全量扫描
+  `wiki/investment`。生产环境建议启用 KB-010 缓存（`get_or_build_cache`）以避免
+  FAST_RADAR 延迟超预算。本任务未自动接入缓存，留给后续任务统一收口。
+- `research_review` lane 目前只读 `local_knowledge_hits`；如果后续要把
+  `needs_research_review` 升级为飞书推送，必须先过 NOTIFY-003 去噪规则。
+
+---
+
 ## 2026-07-05 | TF-KB-001 本地知识分校准回放与弱候选防提升（P1）
 
 - **执行者**：OpenCode
@@ -10728,3 +10836,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/TF-KB-001-20260705-032741/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-006 - 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/KB-006-20260705-033743/
