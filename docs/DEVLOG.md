@@ -4,6 +4,79 @@
 
 ---
 
+## 2026-07-05 | KB-010 本地知识索引缓存与 freshness manifest（P1）
+
+- **执行者**：OpenCode
+- **类型**：feature / performance
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：KB-010-20260705-015530
+
+### 背景
+
+- KB-003 `query_local_knowledge` / KB-007 `compute_research_attention` 每次调用都
+  对 `~/Documents/knowledge/wiki/investment/` 全量扫描 + 重复解析 frontmatter / 段落，
+  连续多 symbol 查询成本累积；同时缺少"知识库是否过期"的显式信号。
+- 任务 KB-010 要求：基于文件 (path, mtime, size) 生成 manifest，未变化时复用索引，
+  变化时自动重建；输出 `freshness_status`（fresh/stale/missing/error）；缓存缺失/损坏
+  时自动回退全量扫描，不影响 TA 主流程。
+
+### 变更
+
+- **新增** `tradingagents/dataflows/local_knowledge_cache.py`：
+  - `ManifestEntry` / `CachedPageData` / `KnowledgeCache` 数据类（JSON 可序列化）。
+  - `build_manifest(root)` — 基于 (rel_path, size, mtime_ns, sha1_prefix) 的 manifest。
+  - `build_cache_from_scan(root)` — 全量扫描 + 复用 KB-001/KB-003 解析逻辑预填充
+    每页 frontmatter / symbols / themes / tags / summary / risks / sources。
+  - `get_or_build_cache(root, *, cache_path, rebuild, no_cache)` — 主入口，落盘
+    `.cache/knowledge_cache.json`；manifest 一致 → `fresh`；变更 → `stale`（重建）；
+    缓存缺失 → `missing`；知识库不可读 → `error`。
+  - `query_local_knowledge_cached(cache, ...)` — 缓存驱动的命中查询，与 KB-003
+    全量扫描**语义等价**（复用 `_symbol_matches` / `_aggregate_result` / `_rank_key`）。
+  - `freshness_summary(cache)` — 供 CLI / 任务运行档案透出的摘要。
+  - 缓存损坏 / `contract_version` 不匹配 / `knowledge_root` 不匹配 → 自动回退重建。
+  - contract_version = `kb-010-v1`，sha1 前缀 16 字符作为 mtime 兜底校验。
+- **修改** `tradingagents/dataflows/local_knowledge_provider.py`：
+  - `query_local_knowledge(...)` 新增可选 `cache: Any = None` 参数；传入时委托到
+    `query_local_knowledge_cached`，跳过全量扫描；`None` 时保持原全量扫描（向后兼容）。
+- **修改** `scripts/query_local_knowledge.py`：
+  - 新增 CLI 参数 `--rebuild-cache` / `--no-cache` / `--cache-path` / `--freshness-only`。
+  - 默认自动构建并复用 `.cache/knowledge_cache.json`；stderr 透出 freshness 摘要。
+  - `--freshness-only` 只输出缓存状态，不要求查询条件。
+
+### 设计约束遵守
+
+- 只读知识库：仅 `open(r)` + `Path.iterdir`，绝不向知识库写文件（测试 `test_cache_does_not_write_to_knowledge_dir` / `test_build_cache_does_not_modify_kb_files` 验证）。
+- 缓存只写项目运行目录（默认 `.cache/`，已在 `.gitignore`）；不写生产 DB。
+- 缓存命中不改变交易动作：cache 路径与全量扫描产出语义等价（测试
+  `TestCachedQueryEquivalence` 对 status / matched_pages / summary / symbols / themes /
+  risks / sources / confidence / matched_by 逐一断言等价）。
+- 不调用 LLM / 不访问外网。
+- 段落上限保持 KB-003 一致（summary ≤ 200 字，risks ≤ 5×120 字）。
+
+### 测试
+
+- `tests/test_kb010_local_knowledge_cache.py`：**53 tests passed**。
+  - Manifest 构建 + 一致性判定（size/mtime/新增/删除/修改 5 种差异）。
+  - freshness 四态：fresh / stale / missing / error。
+  - 缓存损坏 / 版本不匹配 / knowledge_root 不匹配自动回退。
+  - 缓存命中与全量扫描语义等价（symbol/name/theme/tag 四维度 + 无命中 + 无查询条件）。
+  - CachedPageData roundtrip + `_cached_page_to_match` stale/low/todo 分支。
+  - 只读安全性（不写知识库、不改文件 mtime/content）。
+  - CLI `--rebuild-cache` / `--no-cache` / `--cache-path` / `--freshness-only` 子进程冒烟。
+- KB 系列回归：KB-001/002/003/004/005/007/008/010 共 **496 passed**（KB-009 有 1 个
+  与日期相关的 pre-existing 失败，stash 验证非本任务引入）。
+
+### 风险点
+
+- 缓存命中页的 stale/low 判定复用 KB-003 `_build_match` 的口径，但通过
+  `_cached_page_to_match` 重新计算（不直接缓存 `is_stale` 字段），确保与
+  KB-001 `valid_until_expired` / KB-002 `HIGH_STALE_RISK_VALUES` 联动逻辑一致。
+- sha1 前缀只读首 1MB（性能折中），主校验仍是 (size, mtime_ns)；超大文件内容
+  变化但首 1MB + size 不变的极端情况理论上可能漏判，但 mtime 会捕获。
+- 默认缓存路径 `.cache/knowledge_cache.json` 在 `.gitignore` 中，不会误提交。
+
+---
+
 ## 2026-07-05 | 自动开发 review 阶段超时与卡死治理
 
 - **执行者**：Codex
@@ -10205,3 +10278,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/AUTO-004-20260702-round1.txt
 - **Run archive**: docs/task_runs/AUTO-004-20260702-231123/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-010 - 本地知识索引缓存与 freshness manifest（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/KB-010-20260705-015530/

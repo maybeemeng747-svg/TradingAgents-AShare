@@ -639,6 +639,7 @@ def query_local_knowledge(
     themes: Optional[List[str]] = None,
     tags: Optional[List[str]] = None,
     max_pages: int = _MAX_MATCHED_PAGES,
+    cache: Any = None,
 ) -> LocalKnowledgeQueryResult:
     """按 symbol/name/themes/tags 只读查询 investment wiki。
 
@@ -649,11 +650,29 @@ def query_local_knowledge(
         themes: 主题列表（与页面 themes 子串匹配）。
         tags: tag 列表（与页面 tags 集合交集匹配）。
         max_pages: 最多返回的命中页数。
+        cache: [KB-010] 可选的 :class:`KnowledgeCache`。传入时跳过全量扫描，
+            直接基于缓存做命中匹配（语义与全量扫描等价）。``None`` 时走原全量
+            扫描逻辑（向后兼容）。缓存由调用方通过
+            ``tradingagents.dataflows.local_knowledge_cache.get_or_build_cache``
+            构建。
 
     返回:
         :class:`LocalKnowledgeQueryResult`。永远不会因单页解析失败而抛异常：
         单页失败记入 ``errors`` 并跳过；知识库不存在时返回 status=FAILED。
     """
+    # [KB-010] local_knowledge_cache — 传入缓存时走缓存路径，避免全量扫描。
+    if cache is not None:
+        from tradingagents.dataflows.local_knowledge_cache import (
+            query_local_knowledge_cached,
+        )
+        return query_local_knowledge_cached(
+            cache,
+            symbol=symbol,
+            name=name,
+            themes=themes,
+            tags=tags,
+            max_pages=max_pages,
+        )
     symbol = (symbol or "").strip() or None
     name = (name or "").strip() or None
     themes_norm = [t.strip() for t in (themes or []) if t and t.strip()]

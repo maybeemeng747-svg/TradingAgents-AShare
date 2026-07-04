@@ -1,0 +1,1006 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "KB-010"[90m in docs/TASKS.md · 4 matches[0m
+Let me find the detailed KB-010 task description:
+[0m✱ [0mGrep "KB-00[7-9]|KB-010|KB-011"[90m in docs/TASKS.md · 31 matches[0m
+Let me read the full KB-010 task description:
+[0m→ [0mRead docs/TASKS.md[90m [limit=30, offset=4565][0m
+[0m
+[0m# [0mTodos
+[•] Explore existing KB modules (KB-001/002/003/007/009) and CLI scripts
+[ ] Design KB-010 manifest + cache schema
+[ ] Implement local_knowledge_cache.py module
+[ ] Integrate cache into local_knowledge_provider.py
+[ ] Add --rebuild-cache / --no-cache CLI options
+[ ] Write tests for KB-010
+[ ] Run tests, update DEVLOG.md, mark task done
+[0m
+Now I have the full task. Let me explore the existing codebase to understand dependencies:
+[0m→ [0mRead tradingagents/dataflows/local_knowledge_provider.py
+Now let me look at the CLI script and the KB-009 research_attention_decay module to understand how it's structured:
+[0m→ [0mRead scripts/query_local_knowledge.py
+[0m→ [0mRead tradingagents/dataflows/local_knowledge_audit.py[90m [limit=200][0m
+[0m✱ [0mGrep "^def |^class |default_knowledge_root|_iter_markdown_files"[90m in tradingagents/dataflows/local_knowledge_audit.py · 28 matches[0m
+[0m→ [0mRead tradingagents/dataflows/local_knowledge_audit.py[90m [limit=75, offset=497][0m
+[0m✱ [0mGrep "research_attention"[90m in tradingagents/dataflows · 85 matches[0m
+Now let me look at the KB-009 research_attention_decay module and KB-007:
+[0m✱ [0mGlob "tradingagents/dataflows/*knowledge*"[90m 3 matches[0m
+[0m✱ [0mGlob "tradingagents/dataflows/*research*"[90m 3 matches[0m
+[0m→ [0mRead tradingagents/dataflows/research_attention.py[90m [limit=130, offset=490][0m
+Now let me look at existing tests to understand patterns:
+[0m✱ [0mGlob "tests/test_kb*"[90m 8 matches[0m
+[0m→ [0mRead tests/test_kb003_local_knowledge_provider.py[90m [limit=120][0m
+[0m→ [0mRead tests/test_kb003_local_knowledge_provider.py[90m [limit=200, offset=120][0m
+Let me check the git status, default_knowledge_root, and existing test patterns for KB-009:
+[0m→ [0mRead tradingagents/dataflows/local_knowledge_audit.py[90m [limit=15, offset=971][0m
+[0m
+[0m$ [0mgit status && git log --oneline -5
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 262 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/KB-010-20260705-015530/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+a61e0eb docs(tasks): mark KB-004 committed
+1b94c70 feat(tradeflow): connect local knowledge score to candidates
+60928ae docs(tasks): release 3h auto-dev batch
+dfc65ad docs: mark AUTO-004 done after auto run
+6b9e8b5 auto: AUTO-004 夜间三小时任务续航预算与失败后停止策略回归（P2） [AUTO-002]
+[0m
+[0m$ [0mls docs/task_runs/KB-010-20260705-015530/ 2>/dev/null; echo "---"; ls .venv/bin/activate 2>/dev/null && echo "venv exists"
+codegraph-context.txt
+codegraph-status.json
+knowledge-preflight.txt
+prompt-round1.md
+task.md
+---
+.venv/bin/activate
+venv exists
+[0m
+[0m→ [0mRead docs/task_runs/KB-010-20260705-015530/task.md
+Now I have enough context. Let me check a few more details, then start implementing:
+[0m→ [0mRead tests/test_kb009_research_attention_decay.py[90m [limit=60][0m
+[0m→ [0mRead tradingagents/dataflows/research_attention_decay.py[90m [limit=90][0m
+[0m
+[0m# [0mTodos
+[✓] Explore existing KB modules (KB-001/002/003/007/009) and CLI scripts
+[•] Design KB-010 manifest + cache schema
+[ ] Implement local_knowledge_cache.py module
+[ ] Integrate cache into local_knowledge_provider.py
+[ ] Add --rebuild-cache / --no-cache CLI options
+[ ] Write tests for KB-010
+[ ] Run tests, update DEVLOG.md, mark task done
+[0m
+Now let me update todos and look at the DEVLOG to know what format to follow:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=50][0m
+Now I have a complete picture. Let me design and implement the KB-010 module. Here's my plan:
+
+**Design Summary:**
+1. Create `tradingagents/dataflows/local_knowledge_cache.py`:
+   - `KnowledgeManifest`: per-file entry `{rel_path, size, mtime_ns, sha1_prefix}`
+   - `KnowledgeCache`: stores manifest + pre-parsed `WikiPageAudit` + frontmatter + `LocalKnowledgeMatch` partial info + research attention inverted index
+   - `freshness_status`: `fresh / stale / missing / error`
+   - Functions: `build_manifest(root)`, `load_cache(path)`, `save_cache(path, cache)`, `get_or_build_cache(root, cache_path, *, rebuild=False, no_cache=False)`, `query_with_cache(...)` 
+2. Integrate into `local_knowledge_provider.query_local_knowledge` with optional `cache` parameter
+3. Update CLI `scripts/query_local_knowledge.py` with `--rebuild-cache` / `--no-cache`
+4. Write comprehensive tests
+
+Let me create the cache module:
+[0m→ [0mRead tradingagents/dataflows/research_attention.py[90m [limit=90, offset=100][0m
+Let me check for existing cache conventions in the project:
+[0m
+[0m$ [0mls -la .cache 2>/dev/null; ls -la cache 2>/dev/null; echo "---"; ls .gitignore 2>/dev/null && head -50 .gitignore
+---
+.gitignore
+# Docs — ignore local design docs but track workflow files
+docs/report_reviews/
+docs/*_draft*
+docs/*_notes*
+
+# Local auto-dev runtime state
+.auto_dev.lock/
+.zai_quota_state.json
+
+# LangGraph Checkpoints
+graph_checkpoints.db
+graph_checkpoints.db-shm
+graph_checkpoints.db-wal
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#   Usually these files are written by a python script from a template
+#   before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+[0m
+[0m$ [0mgrep -n "task_runs\|knowledge_reports\|\.cache" .gitignore
+59:.cache
+[0m
+`.cache` is gitignored — perfect default location. Now let me create the KB-010 cache module:
+[0m← [0mWrite tradingagents/dataflows/local_knowledge_cache.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Explore existing KB modules (KB-001/002/003/007/009) and CLI scripts
+[✓] Design KB-010 manifest + cache schema
+[✓] Implement local_knowledge_cache.py module
+[•] Integrate cache into local_knowledge_provider.py
+[ ] Add --rebuild-cache / --no-cache CLI options
+[ ] Write tests for KB-010
+[ ] Run tests, update DEVLOG.md, mark task done
+[0m
+Now let me update the CLI script to add `--rebuild-cache` / `--no-cache` options:
+Now let me integrate the cache into `query_local_knowledge` via an optional `cache` parameter:
+[0m→ [0mRead tradingagents/dataflows/local_knowledge_provider.py[90m [limit=15, offset=630][0m
+[0m
+[0m← [0mEdit tradingagents/dataflows/local_knowledge_provider.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/local_knowledge_provider.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/local_knowledge_provider.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/local_knowledge_provider.py
+@@ -638,8 +638,9 @@
+     name: Optional[str] = None,
+     themes: Optional[List[str]] = None,
+     tags: Optional[List[str]] = None,
+     max_pages: int = _MAX_MATCHED_PAGES,
++    cache: Any = None,
+ ) -> LocalKnowledgeQueryResult:
+     """按 symbol/name/themes/tags 只读查询 investment wiki。
+ 
+     参数:
+@@ -648,13 +649,31 @@
+         name: 公司/主题简称（与 title/filename 子串匹配）。
+         themes: 主题列表（与页面 themes 子串匹配）。
+         tags: tag 列表（与页面 tags 集合交集匹配）。
+         max_pages: 最多返回的命中页数。
++        cache: [KB-010] 可选的 :class:`KnowledgeCache`。传入时跳过全量扫描，
++            直接基于缓存做命中匹配（语义与全量扫描等价）。``None`` 时走原全量
++            扫描逻辑（向后兼容）。缓存由调用方通过
++            ``tradingagents.dataflows.local_knowledge_cache.get_or_build_cache``
++            构建。
+ 
+     返回:
+         :class:`LocalKnowledgeQueryResult`。永远不会因单页解析失败而抛异常：
+         单页失败记入 ``errors`` 并跳过；知识库不存在时返回 status=FAILED。
+     """
++    # [KB-010] local_knowledge_cache — 传入缓存时走缓存路径，避免全量扫描。
++    if cache is not None:
++        from tradingagents.dataflows.local_knowledge_cache import (
++            query_local_knowledge_cached,
++        )
++        return query_local_knowledge_cached(
++            cache,
++            symbol=symbol,
++            name=name,
++            themes=themes,
++            tags=tags,
++            max_pages=max_pages,
++        )
+     symbol = (symbol or "").strip() or None
+     name = (name or "").strip() or None
+     themes_norm = [t.strip() for t in (themes or []) if t and t.strip()]
+     tags_norm = [t.strip() for t in (tags or []) if t and t.strip()]
+
+[0m
+Now let me update the CLI script:
+[0m← [0mEdit scripts/query_local_knowledge.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/query_local_knowledge.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/query_local_knowledge.py
++++ /Users/maybee/TradingAgents-AShare/scripts/query_local_knowledge.py
+@@ -5,15 +5,23 @@
+ 返回 raw_evidence 兼容的结构化结果，并渲染"本地知识补充" Markdown 区块。
+ 
+ **只读**：绝不向知识库写文件；不调用 LLM；不访问外网；不输出原文段落。
+ 
++KB-010 起支持索引缓存（``--rebuild-cache`` / ``--no-cache`` / ``--cache-path``），
++默认会在 ``.cache/knowledge_cache.json`` 落盘一份 manifest + 预解析页面索引，
++连续查询复用缓存，仅在知识库文件变更时重建。
++
+ Usage::
+ 
+     python scripts/query_local_knowledge.py --symbol 603296
+     python scripts/query_local_knowledge.py --symbol 603296.SH --json
+     python scripts/query_local_knowledge.py --theme "AI算力基础设施"
+     python scripts/query_local_knowledge.py --name "华勤技术" --output docs/knowledge_reports/local_knowledge_query-2026-07-01.md
+     python scripts/query_local_knowledge.py --symbol 603296 --theme "AI服务器" --tag "AI服务器"
++    # [KB-010] 强制重建缓存：
++    python scripts/query_local_knowledge.py --symbol 603296 --rebuild-cache
++    # [KB-010] 完全禁用缓存（每次全量扫描）：
++    python scripts/query_local_knowledge.py --symbol 603296 --no-cache
+ """
+ 
+ from __future__ import annotations
+ 
+@@ -30,8 +38,13 @@
+ )
+ from tradingagents.dataflows.local_knowledge_audit import (  # noqa: E402
+     default_knowledge_root,
+ )
++from tradingagents.dataflows.local_knowledge_cache import (  # noqa: E402
++    TASK_CODE as KB010_TASK_CODE,
++    get_or_build_cache,
++    freshness_summary,
++)
+ 
+ 
+ def main() -> int:
+     parser = argparse.ArgumentParser(
+@@ -84,21 +97,60 @@
+         "--stdout",
+         action="store_true",
+         help="同时打印 payload 到 stdout（与 --output 配合）。",
+     )
++    # [KB-010] local_knowledge_cache — 缓存控制参数。
++    parser.add_argument(
++        "--rebuild-cache",
++        action="store_true",
++        help="[KB-010] 强制重建索引缓存（忽略落盘缓存，重建后写回）。",
++    )
++    parser.add_argument(
++        "--no-cache",
++        action="store_true",
++        help="[KB-010] 完全禁用缓存（内存构建，不读/不写落盘）。",
++    )
++    parser.add_argument(
++        "--cache-path",
++        default=None,
++        help="[KB-010] 缓存文件路径。默认 .cache/knowledge_cache.json。",
++    )
++    parser.add_argument(
++        "--freshness-only",
++        action="store_true",
++        help="[KB-010] 只输出缓存 freshness manifest 摘要，不执行查询。",
++    )
+     args = parser.parse_args()
+ 
+-    if not any([args.symbol, args.name, args.theme, args.tag]):
+-        parser.error("至少需要 --symbol / --name / --theme / --tag 中的一个")
++    if not any([args.symbol, args.name, args.theme, args.tag]) and not args.freshness_only:
++        parser.error(
++            "至少需要 --symbol / --name / --theme / --tag 中的一个"
++            "（或使用 --freshness-only 只查看缓存状态）"
++        )
+ 
+     knowledge_root = args.knowledge_root or default_knowledge_root()
++
++    # [KB-010] local_knowledge_cache — 获取或构建缓存（freshness 仅依赖 manifest）。
++    cache = get_or_build_cache(
++        knowledge_root,
++        cache_path=args.cache_path,
++        rebuild=args.rebuild_cache,
++        no_cache=args.no_cache,
++    )
++
++    if args.freshness_only:
++        payload = json.dumps(freshness_summary(cache), ensure_ascii=False, indent=2)
++        print(payload)
++        return 0 if cache.freshness_status != "error" else 1
++
+     result = query_local_knowledge(
+         knowledge_root,
+         symbol=args.symbol,
+         name=args.name,
+         themes=args.theme,
+         tags=args.tag,
+         max_pages=args.max_pages,
++        cache=cache,
+     )
+ 
+     if args.json:
+         payload = json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+@@ -114,8 +166,16 @@
+                     payload += f"> - {err}\n"
+         else:
+             payload = block
+ 
++    # [KB-010] 把 freshness 摘要附到 stderr，不影响 stdout payload 的可解析性。
++    fr = freshness_summary(cache)
++    print(
++        f"[{KB010_TASK_CODE}] freshness={fr['freshness_status']} "
++        f"page_count={fr['page_count']} reused_disk_cache={fr['reused_disk_cache']}",
++        file=sys.stderr,
++    )
++
+     print_to_stdout = args.stdout or not args.output
+     if print_to_stdout:
+         print(payload)
+     if args.output:
+@@ -134,4 +194,5 @@
+ 
+ 
+ if __name__ == "__main__":
+     raise SystemExit(main())
++
+
+[0m
+[0m# [0mTodos
+[✓] Explore existing KB modules (KB-001/002/003/007/009) and CLI scripts
+[✓] Design KB-010 manifest + cache schema
+[✓] Implement local_knowledge_cache.py module
+[✓] Integrate cache into local_knowledge_provider.py
+[✓] Add --rebuild-cache / --no-cache CLI options
+[•] Write tests for KB-010
+[ ] Run tests, update DEVLOG.md, mark task done
+[0m
+Let me verify the module imports cleanly before writing tests:
+[0m$ [0msource .venv/bin/activate && python -c "
+from tradingagents.dataflows.local_knowledge_cache import (
+    KnowledgeCache, ManifestEntry, CachedPageData,
+    build_manifest, build_cache_from_scan, get_or_build_cache,
+    query_local_knowledge_cached, freshness_summary,
+    default_cache_path, CONTRACT_VERSION, FRESHNESS_FRESH,
+)
+print('OK, default_cache_path:', default_cache_path())
+print('CONTRACT_VERSION:', CONTRACT_VERSION)
+"
+OK, default_cache_path: .cache/knowledge_cache.json
+CONTRACT_VERSION: kb-010-v1
+[0m
+Now let me write comprehensive tests:
+[0m← [0mWrite tests/test_kb010_local_knowledge_cache.py
+Wrote file successfully.
+[0m
+Now let me run the tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb010_local_knowledge_cache.py -q --tb=short 2>&1 | tail -80
+....F...................................F..FFFFFF...                     [100%]
+=================================== FAILURES ===================================
+_______________ TestManifestBuild.test_manifest_entry_roundtrip ________________
+tests/test_kb010_local_knowledge_cache.py:242: in test_manifest_entry_roundtrip
+    assert d == {"size": 100, "mtime_ns": 12345, "sha1_prefix": "abcabcabcabcd"}
+E   AssertionError: assert {'mtime_ns': ..., 'size': 100} == {'mtime_ns': ..., 'size': 100}
+E     
+E     Omitting 2 identical items, use -vv to show
+E     Differing items:
+E     {'sha1_prefix': 'abcabcabcabcabcd'} != {'sha1_prefix': 'abcabcabcabcd'}
+E     Use -v to get more diff
+________ TestReadOnlySafety.test_cache_does_not_write_to_knowledge_dir _________
+tests/test_kb010_local_knowledge_cache.py:692: in test_cache_does_not_write_to_knowledge_dir
+    assert json_files == []
+E   AssertionError: assert [PosixPath('/...e_kb/c.json')] == []
+E     
+E     Left contains one more item: PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-558/test_cache_does_not_write_to_k0/outside_kb/c.json')
+E     Use -v to get more diff
+_____________________ TestCli.test_cli_default_uses_cache ______________________
+tests/test_kb010_local_knowledge_cache.py:738: in test_cli_default_uses_cache
+    assert r1.returncode == 0, r1.stderr
+E   AssertionError: /opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory
+E     
+E   assert 2 == 0
+E    +  where 2 = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--s...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").returncode
+________________________ TestCli.test_cli_rebuild_cache ________________________
+tests/test_kb010_local_knowledge_cache.py:767: in test_cli_rebuild_cache
+    assert r.returncode == 0, r.stderr
+E   AssertionError: /opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory
+E     
+E   assert 2 == 0
+E    +  where 2 = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--s...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").returncode
+__________________________ TestCli.test_cli_no_cache ___________________________
+tests/test_kb010_local_knowledge_cache.py:779: in test_cli_no_cache
+    assert r.returncode == 0, r.stderr
+E   AssertionError: /opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory
+E     
+E   assert 2 == 0
+E    +  where 2 = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--s...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").returncode
+_______________________ TestCli.test_cli_freshness_only ________________________
+tests/test_kb010_local_knowledge_cache.py:793: in test_cli_freshness_only
+    assert r.returncode == 0, r.stderr
+E   AssertionError: /opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory
+E     
+E   assert 2 == 0
+E    +  where 2 = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--c...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").returncode
+______________ TestCli.test_cli_freshness_only_no_query_required _______________
+tests/test_kb010_local_knowledge_cache.py:805: in test_cli_freshness_only_no_query_required
+    assert r.returncode == 0, r.stderr
+E   AssertionError: /opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory
+E     
+E   assert 2 == 0
+E    +  where 2 = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--c...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").returncode
+____________ TestCli.test_cli_requires_query_without_freshness_only ____________
+tests/test_kb010_local_knowledge_cache.py:815: in test_cli_requires_query_without_freshness_only
+    assert "至少需要" in r.stderr or "至少需要" in r.stdout
+E   assert ('至少需要' in "/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacO...bee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n" or '至少需要' in '')
+E    +  where "/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacO...bee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n" = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--c...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").stderr
+E    +  and   '' = CompletedProcess(args=['/Users/maybee/TradingAgents-AShare/.venv/bin/python', 'scripts/query_local_knowledge.py', '--c...ee/.openclaw/tmp/pytest-of-maybee/pytest-558/scripts/query_local_knowledge.py': [Errno 2] No such file or directory\n").stdout
+=========================== short test summary info ============================
+FAILED tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_manifest_entry_roundtrip
+FAILED tests/test_kb010_local_knowledge_cache.py::TestReadOnlySafety::test_cache_does_not_write_to_knowledge_dir
+FAILED tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_default_uses_cache
+FAILED tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_rebuild_cache
+FAILED tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_no_cache
+FAILED tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_freshness_only
+FAILED tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_freshness_only_no_query_required
+FAILED tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_requires_query_without_freshness_only
+8 failed, 44 passed in 0.37s
+[0m
+Good — 44 passed, 8 failures to fix. Let me fix them:
+[0m← [0mEdit tests/test_kb010_local_knowledge_cache.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+@@ -236,17 +236,25 @@
+         assert manifest == {}
+         assert errors == []
+ 
+     def test_manifest_entry_roundtrip(self):
+-        entry = ManifestEntry(size=100, mtime_ns=12345, sha1_prefix="abc" * 5 + "d")
++        raw_prefix = "abc" * 5 + "d"  # 16 chars
++        entry = ManifestEntry(size=100, mtime_ns=12345, sha1_prefix=raw_prefix)
+         d = entry.to_dict()
+-        assert d == {"size": 100, "mtime_ns": 12345, "sha1_prefix": "abcabcabcabcd"}
++        assert d == {"size": 100, "mtime_ns": 12345, "sha1_prefix": raw_prefix}
+         entry2 = ManifestEntry.from_dict(d)
+         assert entry2.size == 100
+         assert entry2.mtime_ns == 12345
+-        assert entry2.sha1_prefix == "abcabcabcabcd"
++        assert entry2.sha1_prefix == raw_prefix
+ 
++    def test_manifest_entry_truncates_long_sha1_on_load(self):
++        # from_dict 应截断到 _SHA1_PREFIX_LEN，保持缓存可读性。
++        long_entry = ManifestEntry.from_dict(
++            {"size": 1, "mtime_ns": 1, "sha1_prefix": "x" * 32}
++        )
++        assert len(long_entry.sha1_prefix) == 16
+ 
++
+ class TestManifestMatch:
+     def test_identical_manifest_matches(self, fixture_kb: Path):
+         m1, _ = build_manifest(str(fixture_kb))
+         m2, _ = build_manifest(str(fixture_kb))
+
+[0m
+Now fix the read-only safety test (cache path should be outside the knowledge tree):
+[0m← [0mEdit tests/test_kb010_local_knowledge_cache.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+@@ -688,12 +688,14 @@
+ 
+ 
+ class TestReadOnlySafety:
+     def test_cache_does_not_write_to_knowledge_dir(
+-        self, fixture_kb: Path, tmp_path: Path
++        self, fixture_kb: Path, tmp_path_factory
+     ):
+         """缓存文件必须只写在调用方指定路径，不写知识库目录。"""
+-        cache_path = str(tmp_path / "outside_kb" / "c.json")
++        # 用独立的 tmp 目录存缓存，确保与知识库目录完全隔离。
++        outside = tmp_path_factory.mktemp("outside_kb")
++        cache_path = str(outside / "c.json")
+         get_or_build_cache(str(fixture_kb), cache_path=cache_path)
+         assert os.path.exists(cache_path)
+         # 知识库目录下不应出现 .json 缓存文件。
+         json_files = list(fixture_kb.rglob("*.json"))
+
+[0m
+Now fix the CLI tests — need to use the actual project root as cwd and a separate cache dir:
+[0m← [0mEdit tests/test_kb010_local_knowledge_cache.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+@@ -726,12 +726,14 @@
+ def _env(self, monkeypatch, fixture_kb):
+     # 确保 CLI 默认知识库根目录指向 fixture。
+     monkeypatch.setenv("AUTO_DEV_KNOWLEDGE_ROOT", str(fixture_kb))
+ 
+-def _run(self, *args: str, cwd: Path) -> subprocess.CompletedProcess:
++def _run(self, *args: str) -> subprocess.CompletedProcess:
++    # CLI 脚本在项目根目录，cwd 必须指向项目根（而非 tmp_path）。
++    project_root = Path(__file__).resolve().parent.parent
+     return subprocess.run(
+         [sys.executable, "scripts/query_local_knowledge.py", *args],
+-        cwd=str(cwd),
++        cwd=str(project_root),
+         capture_output=True,
+         text=True,
+         timeout=60,
+     )
+@@ -742,9 +744,8 @@
+     r1 = self._run(
+         "--symbol", "603296",
+         "--cache-path", cache_path,
+         "--json",
+-        cwd=fixture_kb.parent,
+     )
+     assert r1.returncode == 0, r1.stderr
+     assert os.path.exists(cache_path)
+     # stderr 应有 freshness 透出。
+@@ -753,9 +754,8 @@
+     r2 = self._run(
+         "--symbol", "603296",
+         "--cache-path", cache_path,
+         "--json",
+-        cwd=fixture_kb.parent,
+     )
+     assert r2.returncode == 0, r2.stderr
+     assert "freshness=fresh" in r2.stderr
+     # 两次 stdout payload 应一致（缓存语义等价）。
+@@ -765,15 +765,13 @@
+     cache_path = str(tmp_path / "cli_rebuild.json")
+     self._run(
+         "--symbol", "603296",
+         "--cache-path", cache_path,
+-        cwd=fixture_kb.parent,
+     )
+     r = self._run(
+         "--symbol", "603296",
+         "--cache-path", cache_path,
+         "--rebuild-cache",
+-        cwd=fixture_kb.parent,
+     )
+     assert r.returncode == 0, r.stderr
+     assert "freshness=stale" in r.stderr
+ 
+@@ -783,9 +781,8 @@
+         "--symbol", "603296",
+         "--cache-path", cache_path,
+         "--no-cache",
+         "--json",
+-        cwd=fixture_kb.parent,
+     )
+     assert r.returncode == 0, r.stderr
+     # no_cache 不写盘。
+     assert not os.path.exists(cache_path)
+@@ -797,9 +794,8 @@
+     cache_path = str(tmp_path / "cli_fr.json")
+     r = self._run(
+         "--cache-path", cache_path,
+         "--freshness-only",
+-        cwd=fixture_kb.parent,
+     )
+     assert r.returncode == 0, r.stderr
+     summary = json.loads(r.stdout)
+     assert "freshness_status" in summary
+@@ -809,18 +805,16 @@
+     """--freshness-only 不应要求 --symbol 等查询条件。"""
+     r = self._run(
+         "--cache-path", str(tmp_path / "f.json"),
+         "--freshness-only",
+-        cwd=fixture_kb.parent,
+     )
+     assert r.returncode == 0, r.stderr
+ 
+ def test_cli_requires_query_without_freshness_only(
+     self, fixture_kb: Path, tmp_path: Path
+ ):
+     r = self._run(
+         "--cache-path", str(tmp_path / "f.json"),
+-        cwd=fixture_kb.parent,
+     )
+     assert r.returncode != 0
+     assert "至少需要" in r.stderr or "至少需要" in r.stdout
+ 
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb010_local_knowledge_cache.py -q --tb=short 2>&1 | tail -40
+.....................................................                    [100%]
+53 passed in 0.53s
+[0m
+All 53 tests pass. Now let me run the broader KB-series regression tests to make sure I haven't broken anything:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb001_local_knowledge_audit.py tests/test_kb002_local_knowledge_lint.py tests/test_kb003_local_knowledge_provider.py tests/test_kb004_tradeflow_knowledge_score.py tests/test_kb005_tree_work_backlog.py tests/test_kb007_research_attention.py tests/test_kb008_research_attention_integration.py tests/test_kb009_research_attention_decay.py tests/test_kb010_local_knowledge_cache.py -q --tb=short 2>&1 | tail -20
+........................................................................ [ 14%]
+........................................................................ [ 28%]
+........................................................................ [ 43%]
+........................................................................ [ 57%]
+........................................................................ [ 72%]
+................................................F....................... [ 86%]
+.................................................................        [100%]
+=================================== FAILURES ===================================
+__ TestInstitutionDedup.test_different_institutions_consensus_not_suppressed ___
+tests/test_kb009_research_attention_decay.py:277: in test_different_institutions_consensus_not_suppressed
+    assert decay.effective_score >= sym.research_attention_score * 0.99
+E   AssertionError: assert 4.9269406392694055 >= (5.0 * 0.99)
+E    +  where 4.9269406392694055 = SymbolDecayResult(base_score=5.0, dedup_penalty=0.0, time_decay_factor=0.9853881278538812, decay_adjusted_score=4.9269...055, overheat_flags=[], short_term_gain_pct=None, theme_crowding_active=False, explain=['时效衰减：平均因子 0.99'], warnings=[]).effective_score
+E    +  and   5.0 = SymbolAttention(symbol_key='600001.SH', bare_code='600001', name='标的B', asset_class='A_SHARE', research_attention_scor...能源'])], score_explain=['fresh_mention=3 × 1.0 = +3.00', 'theme_cross=1 × 0.5 = +0.50', 'high_quality=3 × 0.5 = +1.50']).research_attention_score
+=========================== short test summary info ============================
+FAILED tests/test_kb009_research_attention_decay.py::TestInstitutionDedup::test_different_institutions_consensus_not_suppressed
+1 failed, 496 passed in 4.41s
+[0m
+The single KB-009 failure looks unrelated to my changes (it's a time-decay date-sensitive test). Let me verify it's pre-existing:
+[0m$ [0msource .venv/bin/activate && git stash && python -m pytest tests/test_kb009_research_attention_decay.py::TestInstitutionDedup::test_different_institutions_consensus_not_suppressed -q --tb=short 2>&1 | tail -10; git stash pop
+保存工作目录和索引状态 WIP on local/tradingagents-custom: a61e0eb docs(tasks): mark KB-004 committed
+=================================== FAILURES ===================================
+__ TestInstitutionDedup.test_different_institutions_consensus_not_suppressed ___
+tests/test_kb009_research_attention_decay.py:277: in test_different_institutions_consensus_not_suppressed
+    assert decay.effective_score >= sym.research_attention_score * 0.99
+E   AssertionError: assert 4.9269406392694055 >= (5.0 * 0.99)
+E    +  where 4.9269406392694055 = SymbolDecayResult(base_score=5.0, dedup_penalty=0.0, time_decay_factor=0.9853881278538812, decay_adjusted_score=4.9269...055, overheat_flags=[], short_term_gain_pct=None, theme_crowding_active=False, explain=['时效衰减：平均因子 0.99'], warnings=[]).effective_score
+E    +  and   5.0 = SymbolAttention(symbol_key='600001.SH', bare_code='600001', name='标的B', asset_class='A_SHARE', research_attention_scor...能源'])], score_explain=['fresh_mention=3 × 1.0 = +3.00', 'theme_cross=1 × 0.5 = +0.50', 'high_quality=3 × 0.5 = +1.50']).research_attention_score
+=========================== short test summary info ============================
+FAILED tests/test_kb009_research_attention_decay.py::TestInstitutionDedup::test_different_institutions_consensus_not_suppressed
+1 failed in 0.05s
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 262 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+	修改：     scripts/query_local_knowledge.py
+	修改：     tradingagents/dataflows/local_knowledge_provider.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/KB-010-20260705-015530/
+	tests/test_kb010_local_knowledge_cache.py
+	tradingagents/dataflows/local_knowledge_cache.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+丢弃了 refs/stash@{0}（31c72fc3e5bce76d83d2390d6d5066d0b44fc117）
+[0m
+Confirmed — the KB-009 failure is pre-existing (date-sensitive, unrelated to my changes). Now let me run a broader regression on the consumers of `query_local_knowledge`:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb010_local_knowledge_cache.py tests/test_kb003_local_knowledge_provider.py tests/test_kb008_research_attention_integration.py -q --tb=short 2>&1 | tail -10
+........................................................................ [ 41%]
+........................................................................ [ 82%]
+...............................                                          [100%]
+175 passed in 2.24s
+[0m
+Let me also check there are no lint issues with my new files:
+[0m$ [0msource .venv/bin/activate && python -m ruff check tradingagents/dataflows/local_knowledge_cache.py tests/test_kb010_local_knowledge_cache.py scripts/query_local_knowledge.py tradingagents/dataflows/local_knowledge_provider.py 2>&1 | tail -20 || echo "ruff not available, trying flake8"; python -m pyflakes tradingagents/dataflows/local_knowledge_cache.py 2>&1 | tail -10 || true
+/Users/maybee/TradingAgents-AShare/.venv/bin/python: No module named ruff
+/Users/maybee/TradingAgents-AShare/.venv/bin/python: No module named pyflakes
+[0m
+[0m$ [0msource .venv/bin/activate && python -m py_compile tradingagents/dataflows/local_knowledge_cache.py tradingagents/dataflows/local_knowledge_provider.py scripts/query_local_knowledge.py tests/test_kb010_local_knowledge_cache.py && echo "compile OK"
+compile OK
+[0m
+Let me check for unused imports in my test file:
+[0m$ [0msource .venv/bin/activate && python -c "
+import ast, sys
+for path in ['tests/test_kb010_local_knowledge_cache.py']:
+    tree = ast.parse(open(path).read())
+    imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for n in node.names:
+                imports.append(n.name)
+        elif isinstance(node, ast.ImportFrom):
+            for n in node.names:
+                imports.append(n.name)
+    src = open(path).read()
+    for imp in imports:
+        mod = imp.split('.')[0]
+        if imp not in src.replace(f'import {imp}', '') and mod not in ['pytest']:
+            # check usage
+            count = src.count(imp)
+            if count <= 1:
+                print(f'possibly unused: {imp} ({count} occurrences)')
+print('done')
+"
+possibly unused: annotations (1 occurrences)
+possibly unused: Any (1 occurrences)
+done
+[0m
+Let me clean up unused imports in the test file:
+[0m← [0mEdit tests/test_kb010_local_knowledge_cache.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_kb010_local_knowledge_cache.py
+@@ -18,11 +18,9 @@
+ import json
+ import os
+ import subprocess
+ import sys
+-import time
+ from pathlib import Path
+-from typing import Any, Dict, List
+ 
+ import pytest
+ 
+ from tradingagents.dataflows.local_knowledge_audit import INVESTMENT_SUBDIR
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb010_local_knowledge_cache.py -q --tb=short 2>&1 | tail -5
+.....................................................                    [100%]
+53 passed in 0.53s
+[0m
+[0m# [0mTodos
+[✓] Explore existing KB modules (KB-001/002/003/007/009) and CLI scripts
+[✓] Design KB-010 manifest + cache schema
+[✓] Implement local_knowledge_cache.py module
+[✓] Integrate cache into local_knowledge_provider.py
+[✓] Add --rebuild-cache / --no-cache CLI options
+[✓] Write tests for KB-010
+[•] Run tests, update DEVLOG.md, mark task done
+[0m
+Now let me update the docs. First, mark KB-010 as done in TASKS.md:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -163,9 +163,9 @@
+ 137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
+ 138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
+ 139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，done — DATA-025-20260701-202937，依赖 DATA-011/DATA-023 ✓）。
+ 140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），依赖 KB-007 ✓）。
+-141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，ready，依赖 KB-003/KB-007/KB-009 ✓）。
++141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `scripts/query_local_knowledge.py` 缓存参数 + `tests/test_kb010_local_knowledge_cache.py`（53 tests），依赖 KB-003/KB-007/KB-009 ✓）。
+ 142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，ready，依赖 KB-008/KB-009 ✓）。
+ 143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，ready，依赖 DB 污染治理脚本 ✓）。
+ 144. `AUTO-005`：自动开发 preflight 接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
+ 145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，ready，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -4564,9 +4564,9 @@
+ 
+ ### KB-010: 本地知识索引缓存与 freshness manifest（P1）
+ - **描述**：为 `local_knowledge_provider` / `research_attention` 增加轻量索引缓存和 freshness manifest，减少每次查询全量扫描 `~/Documents/knowledge` 的成本，并明确知识库是否过期。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed KB-010-20260705-015530
++- **状态**：done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `tests/test_kb010_local_knowledge_cache.py`（53 tests）+ `scripts/query_local_knowledge.py` 缓存参数（`--rebuild-cache` / `--no-cache` / `--cache-path` / `--freshness-only`）+ `local_knowledge_provider.query_local_knowledge(cache=...)` 可选参数。
+ - **前置条件**：KB-003、KB-007、KB-009 完成。
+ - **执行约束**：
+   - 只读 `~/Documents/knowledge`，不得修改 knowledge 文件。
+   - 缓存只写项目本地运行目录或 `docs/knowledge_reports/` 里的报告，不写生产 DB。
+
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,81 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-07-05 | KB-010 本地知识索引缓存与 freshness manifest（P1）
++
++- **执行者**：OpenCode
++- **类型**：feature / performance
++- **状态**：✅ 完成（待外层 commit）
++- **任务编号**：KB-010-20260705-015530
++
++### 背景
++
++- KB-003 `query_local_knowledge` / KB-007 `compute_research_attention` 每次调用都
++  对 `~/Documents/knowledge/wiki/investment/` 全量扫描 + 重复解析 frontmatter / 段落，
++  连续多 symbol 查询成本累积；同时缺少"知识库是否过期"的显式信号。
++- 任务 KB-010 要求：基于文件 (path, mtime, size) 生成 manifest，未变化时复用索引，
++  变化时自动重建；输出 `freshness_status`（fresh/stale/missing/error）；缓存缺失/损坏
++  时自动回退全量扫描，不影响 TA 主流程。
++
++### 变更
++
++- **新增** `tradingagents/dataflows/local_knowledge_cache.py`：
++  - `ManifestEntry` / `CachedPageData` / `KnowledgeCache` 数据类（JSON 可序列化）。
++  - `build_manifest(root)` — 基于 (rel_path, size, mtime_ns, sha1_prefix) 的 manifest。
++  - `build_cache_from_scan(root)` — 全量扫描 + 复用 KB-001/KB-003 解析逻辑预填充
++    每页 frontmatter / symbols / themes / tags / summary / risks / sources。
++  - `get_or_build_cache(root, *, cache_path, rebuild, no_cache)` — 主入口，落盘
++    `.cache/knowledge_cache.json`；manifest 一致 → `fresh`；变更 → `stale`（重建）；
++    缓存缺失 → `missing`；知识库不可读 → `error`。
++  - `query_local_knowledge_cached(cache, ...)` — 缓存驱动的命中查询，与 KB-003
++    全量扫描**语义等价**（复用 `_symbol_matches` / `_aggregate_result` / `_rank_key`）。
++  - `freshness_summary(cache)` — 供 CLI / 任务运行档案透出的摘要。
++  - 缓存损坏 / `contract_version` 不匹配 / `knowledge_root` 不匹配 → 自动回退重建。
++  - contract_version = `kb-010-v1`，sha1 前缀 16 字符作为 mtime 兜底校验。
++- **修改** `tradingagents/dataflows/local_knowledge_provider.py`：
++  - `query_local_knowledge(...)` 新增可选 `cache: Any = None` 参数；传入时委托到
++    `query_local_knowledge_cached`，跳过全量扫描；`None` 时保持原全量扫描（向后兼容）。
++- **修改** `scripts/query_local_knowledge.py`：
++  - 新增 CLI 参数 `--rebuild-cache` / `--no-cache` / `--cache-path` / `--freshness-only`。
++  - 默认自动构建并复用 `.cache/knowledge_cache.json`；stderr 透出 freshness 摘要。
++  - `--freshness-only` 只输出缓存状态，不要求查询条件。
++
++### 设计约束遵守
++
++- 只读知识库：仅 `open(r)` + `Path.iterdir`，绝不向知识库写文件（测试 `test_cache_does_not_write_to_knowledge_dir` / `test_build_cache_does_not_modify_kb_files` 验证）。
++- 缓存只写项目运行目录（默认 `.cache/`，已在 `.gitignore`）；不写生产 DB。
++- 缓存命中不改变交易动作：cache 路径与全量扫描产出语义等价（测试
++  `TestCachedQueryEquivalence` 对 status / matched_pages / summary / symbols / themes /
++  risks / sources / confidence / matched_by 逐一断言等价）。
++- 不调用 LLM / 不访问外网。
++- 段落上限保持 KB-003 一致（summary ≤ 200 字，risks ≤ 5×120 字）。
++
++### 测试
++
++- `tests/test_kb010_local_knowledge_cache.py`：**53 tests passed**。
++  - Manifest 构建 + 一致性判定（size/mtime/新增/删除/修改 5 种差异）。
++  - freshness 四态：fresh / stale / missing / error。
++  - 缓存损坏 / 版本不匹配 / knowledge_root 不匹配自动回退。
++  - 缓存命中与全量扫描语义等价（symbol/name/theme/tag 四维度 + 无命中 + 无查询条件）。
++  - CachedPageData roundtrip + `_cached_page_to_match` stale/low/todo 分支。
++  - 只读安全性（不写知识库、不改文件 mtime/content）。
++  - CLI `--rebuild-cache` / `--no-cache` / `--cache-path` / `--freshness-only` 子进程冒烟。
++- KB 系列回归：KB-001/002/003/004/005/007/008/010 共 **496 passed**（KB-009 有 1 个
++  与日期相关的 pre-existing 失败，stash 验证非本任务引入）。
++
++### 风险点
++
++- 缓存命中页的 stale/low 判定复用 KB-003 `_build_match` 的口径，但通过
++  `_cached_page_to_match` 重新计算（不直接缓存 `is_stale` 字段），确保与
++  KB-001 `valid_until_expired` / KB-002 `HIGH_STALE_RISK_VALUES` 联动逻辑一致。
++- sha1 前缀只读首 1MB（性能折中），主校验仍是 (size, mtime_ns)；超大文件内容
++  变化但首 1MB + size 不变的极端情况理论上可能漏判，但 mtime 会捕获。
++- 默认缓存路径 `.cache/knowledge_cache.json` 在 `.gitignore` 中，不会误提交。
++
++---
++
+ ## 2026-07-05 | 自动开发 review 阶段超时与卡死治理
+ 
+ - **执行者**：Codex
+ - **类型**：automation reliability
+
+[0m
+Now update DEVLOG.md:
+Let me do a final full test run on the new module to confirm everything is green:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_kb010_local_knowledge_cache.py -v --tb=short 2>&1 | tail -65
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 53 items
+
+tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_build_manifest_returns_per_file_entry PASSED [  1%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_build_manifest_missing_root PASSED [  3%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_build_manifest_missing_investment_subdir PASSED [  5%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_build_manifest_empty_investment PASSED [  7%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_manifest_entry_roundtrip PASSED [  9%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestBuild::test_manifest_entry_truncates_long_sha1_on_load PASSED [ 11%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestMatch::test_identical_manifest_matches PASSED [ 13%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestMatch::test_size_change_detected PASSED [ 15%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestMatch::test_mtime_change_detected PASSED [ 16%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestMatch::test_added_file_detected PASSED [ 18%]
+tests/test_kb010_local_knowledge_cache.py::TestManifestMatch::test_removed_file_detected PASSED [ 20%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_first_call_is_missing PASSED [ 22%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_second_call_is_fresh PASSED [ 24%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_file_change_triggers_stale_rebuild PASSED [ 26%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_rebuild_flag_forces_rebuild PASSED [ 28%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_no_cache_skips_disk PASSED [ 30%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_missing_root_is_error PASSED [ 32%]
+tests/test_kb010_local_knowledge_cache.py::TestGetOrBuildCache::test_empty_investment_is_stale_not_error PASSED [ 33%]
+tests/test_kb010_local_knowledge_cache.py::TestCacheFallback::test_corrupt_json_triggers_rebuild PASSED [ 35%]
+tests/test_kb010_local_knowledge_cache.py::TestCacheFallback::test_wrong_contract_version_triggers_rebuild PASSED [ 37%]
+tests/test_kb010_local_knowledge_cache.py::TestCacheFallback::test_wrong_knowledge_root_triggers_rebuild PASSED [ 39%]
+tests/test_kb010_local_knowledge_cache.py::TestCacheFallback::test_load_missing_disk_cache_returns_none PASSED [ 41%]
+tests/test_kb010_local_knowledge_cache.py::TestCacheFallback::test_save_and_load_roundtrip PASSED [ 43%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_symbol_query_equivalent PASSED [ 45%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_provider_accepts_cache_param PASSED [ 47%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_theme_query_equivalent PASSED [ 49%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_name_query_equivalent PASSED [ 50%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_tag_query_equivalent PASSED [ 52%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_no_match_equivalent PASSED [ 54%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_no_query_condition_returns_normal_no_data PASSED [ 56%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_max_pages_truncation PASSED [ 58%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryEquivalence::test_summary_caps_no_raw_text PASSED [ 60%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryFreshnessSemantics::test_failed_when_knowledge_unreadable PASSED [ 62%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedQueryFreshnessSemantics::test_failed_cache_path_carried_into_result PASSED [ 64%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedPageData::test_cached_page_built_correctly PASSED [ 66%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedPageData::test_cached_page_to_match_preserves_confidence PASSED [ 67%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedPageData::test_cached_page_to_match_stale PASSED [ 69%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedPageData::test_cached_page_to_match_todo PASSED [ 71%]
+tests/test_kb010_local_knowledge_cache.py::TestCachedPageData::test_cached_page_data_roundtrip PASSED [ 73%]
+tests/test_kb010_local_knowledge_cache.py::TestFreshnessSummary::test_summary_has_required_fields PASSED [ 75%]
+tests/test_kb010_local_knowledge_cache.py::TestFreshnessSummary::test_summary_fresh_status_second_call PASSED [ 77%]
+tests/test_kb010_local_knowledge_cache.py::TestReadOnlySafety::test_cache_does_not_write_to_knowledge_dir PASSED [ 79%]
+tests/test_kb010_local_knowledge_cache.py::TestReadOnlySafety::test_default_cache_path_under_dotcache PASSED [ 81%]
+tests/test_kb010_local_knowledge_cache.py::TestReadOnlySafety::test_build_cache_does_not_modify_kb_files PASSED [ 83%]
+tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_default_uses_cache PASSED [ 84%]
+tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_rebuild_cache PASSED [ 86%]
+tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_no_cache PASSED [ 88%]
+tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_freshness_only PASSED [ 90%]
+tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_freshness_only_no_query_required PASSED [ 92%]
+tests/test_kb010_local_knowledge_cache.py::TestCli::test_cli_requires_query_without_freshness_only PASSED [ 94%]
+tests/test_kb010_local_knowledge_cache.py::TestModuleConstants::test_task_code PASSED [ 96%]
+tests/test_kb010_local_knowledge_cache.py::TestModuleConstants::test_contract_version PASSED [ 98%]
+tests/test_kb010_local_knowledge_cache.py::TestModuleConstants::test_freshness_constants_distinct PASSED [100%]
+
+============================== 53 passed in 0.51s ==============================
+[0m
+All 53 tests pass. Let me do a final git status check to confirm the change set:
+[0m$ [0mgit status && echo "---DIFF STAT---" && git diff --stat
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 262 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     scripts/query_local_knowledge.py
+	修改：     tradingagents/dataflows/local_knowledge_provider.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/KB-010-20260705-015530/
+	tests/test_kb010_local_knowledge_cache.py
+	tradingagents/dataflows/local_knowledge_cache.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+---DIFF STAT---
+ docs/DEVLOG.md                                     | 73 ++++++++++++++++++++++
+ docs/TASKS.md                                      |  4 +-
+ scripts/query_local_knowledge.py                   | 65 ++++++++++++++++++-
+ .../dataflows/local_knowledge_provider.py          | 19 ++++++
+ 4 files changed, 157 insertions(+), 4 deletions(-)
+[0m
+[0m# [0mTodos
+[✓] Explore existing KB modules (KB-001/002/003/007/009) and CLI scripts
+[✓] Design KB-010 manifest + cache schema
+[✓] Implement local_knowledge_cache.py module
+[✓] Integrate cache into local_knowledge_provider.py
+[✓] Add --rebuild-cache / --no-cache CLI options
+[✓] Write tests for KB-010
+[✓] Run tests, update DEVLOG.md, mark task done
+[0m
+KB-010 实施完成。
+
+## 改动文件
+
+**新增：**
+- `tradingagents/dataflows/local_knowledge_cache.py` — 缓存核心模块（manifest + 预解析页面索引 + freshness 四态）
+- `tests/test_kb010_local_knowledge_cache.py` — 53 个测试
+
+**修改：**
+- `tradingagents/dataflows/local_knowledge_provider.py` — `query_local_knowledge(...)` 新增可选 `cache` 参数，传入时委托到缓存路径
+- `scripts/query_local_knowledge.py` — 新增 `--rebuild-cache` / `--no-cache` / `--cache-path` / `--freshness-only` CLI 参数
+- `docs/TASKS.md` — 标记 KB-010 done
+- `docs/DEVLOG.md` — 新增变更记录
+
+## 关键逻辑
+
+1. **manifest 驱动失效**：基于 `(rel_path, size, mtime_ns, sha1_prefix)` 生成 manifest，文件新增/删除/修改任一变化触发重建。
+2. **freshness_status 四态**：`fresh`（manifest 完全匹配，复用缓存）/ `stale`（有变更，自动重建）/ `missing`（首次构建）/ `error`（知识库不可读）。
+3. **语义等价保证**：缓存命中页通过 `_cached_page_to_match` 重新计算 stale/low/confidence，复用 KB-003 的 `_symbol_matches`/`_aggregate_result`/`_rank_key`，确保不改变交易动作。
+4. **自动回退**：缓存损坏 / `contract_version` 不匹配 / `knowledge_root` 不匹配时丢弃缓存并重建，不影响主流程。
+5. **只读安全**：缓存只写 `.cache/`（已在 `.gitignore`），绝不写知识库目录或生产 DB。
+
+## 测试结果
+
+- **KB-010 新测试**：53 passed / 0 failed
+- **KB 系列回归**（KB-001/002/003/004/005/007/008/010）：496 passed / 0 failed
+- **KB-009** 有 1 个 pre-existing 失败（日期敏感的时效衰减测试，`git stash` 验证非本任务引入）

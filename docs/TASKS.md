@@ -164,7 +164,7 @@
 138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
 139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，done — DATA-025-20260701-202937，依赖 DATA-011/DATA-023 ✓）。
 140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），依赖 KB-007 ✓）。
-141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，ready，依赖 KB-003/KB-007/KB-009 ✓）。
+141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `scripts/query_local_knowledge.py` 缓存参数 + `tests/test_kb010_local_knowledge_cache.py`（53 tests），依赖 KB-003/KB-007/KB-009 ✓）。
 142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，ready，依赖 KB-008/KB-009 ✓）。
 143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，ready，依赖 DB 污染治理脚本 ✓）。
 144. `AUTO-005`：自动开发 preflight 接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
@@ -4565,7 +4565,7 @@
 ### KB-010: 本地知识索引缓存与 freshness manifest（P1）
 - **描述**：为 `local_knowledge_provider` / `research_attention` 增加轻量索引缓存和 freshness manifest，减少每次查询全量扫描 `~/Documents/knowledge` 的成本，并明确知识库是否过期。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-010-20260705-015530
 - **前置条件**：KB-003、KB-007、KB-009 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge`，不得修改 knowledge 文件。
