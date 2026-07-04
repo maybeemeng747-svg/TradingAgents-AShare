@@ -4715,7 +4715,7 @@
 ### V-013: Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2）
 - **描述**：端到端验收本地知识链路：Tree Work wiki 被 TA raw_evidence 读取，报告展示补充区块，TradeFlow 候选显示知识分，investment-controller context 只读引用。
 - **优先级**：P2
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/V-013-20260705-040318
+- **状态**：done — commit 72c20de [PASS_UNREVIEWED]-20260705-040318
 - **前置条件**：KB-006、TF-KB-001 完成。
 - **执行约束**：
   - 使用 fixture / dry-run，不调用 live LLM。
