@@ -2630,7 +2630,7 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/V-001-20260608-022250
+- **状态**：done — commit f97c6f6 [PASS_UNREVIEWED]
 - **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成 ✓。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
@@ -4565,7 +4565,7 @@
 ### KB-010: 本地知识索引缓存与 freshness manifest（P1）
 - **描述**：为 `local_knowledge_provider` / `research_attention` 增加轻量索引缓存和 freshness manifest，减少每次查询全量扫描 `~/Documents/knowledge` 的成本，并明确知识库是否过期。
 - **优先级**：P1
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-010-20260705-015530
+- **状态**：done — commit f97c6f6 [PASS_UNREVIEWED]
 - **前置条件**：KB-003、KB-007、KB-009 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge`，不得修改 knowledge 文件。
