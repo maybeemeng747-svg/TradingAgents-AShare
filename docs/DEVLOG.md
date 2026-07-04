@@ -4,6 +4,102 @@
 
 ---
 
+## 2026-07-05 | REPORT-UX-004 本地知识补充区块历史报告回放验收（P1）
+
+- **执行者**：OpenCode
+- **类型**：acceptance replay / contract regression
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：REPORT-UX-004-20260705-031930
+
+### 背景
+
+KB-003/KB-008/KB-009 已经把"本地知识补充"和"研报关注度"接入 TA 报告响应（顶层字段
++ Markdown 区块 + KB-009 衰减字段）。需要用历史报告样本回放验证三个解释性层
+**互不污染**：
+
+1. **本地知识补充**（KB-003 `local_knowledge_block` / `local_knowledge_summary`）
+2. **研报关注度**（KB-008/KB-009 `research_attention_score` / `_effective_score`）
+3. **数据不足观察原因**（REPORT-UX-003 `wait_reason_codes` / DATA-021 `data_blockers`）
+
+核心担忧：本地知识命中不能被误当成行情事实或最终动作依据，也不能冲掉真实的数据缺口
+原因（`DATA_MISSING` / `query_failed`）。
+
+### 变更
+
+**新增**
+
+- `tests/test_report_ux004_local_knowledge_replay.py`（28 个测试）：5 个回放场景 × 5
+  类断言 + 3 个聚焦回归用例。
+  - 5 场景：
+    - S1 数据不足观察 + HAS_DATA 命中（603296 华勤技术）— **核心回归**
+    - S2 数据不足观察 + 无命中（999999 NORMAL_NO_DATA）
+    - S3 数据不足观察 + 仅 stale 命中（600000 浦发银行）
+    - S4 数据不足观察 + 低置信命中（DELL.US 待补充）
+    - S5 方向性 ENTER + HAS_DATA 命中（验证 KB 不把方向性结论推成 WAIT）
+  - 5 类断言（parametrized over scenarios）：
+    - 强动作门禁保留（`decision` / `action_label` / `research_direction` /
+      `execution_action` 在 KB attach 后不变）
+    - `wait_reason_codes` 保留（KB 不冲掉 `DATA_MISSING`；非 WAIT 动作产生空列表）
+    - `data_blockers` 保留（`individual_fund_flow: query_failed` 逐字存活）
+    - `local_knowledge_block` 渲染状态与符号映射一致（HAS_DATA/NORMAL_NO_DATA/
+      STALE/LOW_CONFIDENCE）
+    - `ReportResponse.model_dump()` 三层字段全部序列化（KB-011 回归）
+  - 聚焦回归：
+    - `test_headline_kb_hit_does_not_mask_data_missing`：6032996 KB 命中 +
+      `query_failed` 仍透出 `DATA_MISSING` 与 `数据不足观察` 标签。
+    - `test_stale_and_low_confidence_hits_do_not_inflate_research_score`：KB-009
+      衰减让 stale/低置信命中的 `effective_score ≤ 0.5`。
+    - `test_attach_report_local_knowledge_is_additive_only`：attach 函数纯加性，
+      不修改任何既有 result_data 键（包括 `data_blockers` / `wait_reason_codes`）。
+
+**新增文档**
+
+- `docs/knowledge_reports/report_ux004_local_knowledge_replay-2026-07-05.md`：回放验收
+  报告，含场景矩阵、字段快照（probe 实测值）、三层隔离结论。
+
+### 关键逻辑
+
+- KB fixture 复用 KB-007/KB-008/KB-011 同款 mini Tree Work 知识库（10 页），命中映射
+  覆盖 HAS_DATA / NORMAL_NO_DATA / STALE / LOW_CONFIDENCE 4 类。
+- 每个场景通过完整生产链路回放：`create_report` →
+  `_attach_report_data_blockers_for_response` → `ReportResponse.model_validate`，
+  而不是只单测某个函数，确保 schema 真的不破坏前端。
+- `attach_report_local_knowledge` 的"纯加性"通过快照对比验证（pre-attach 既有键的值
+  与 post-attach 完全相等），证明它不会悄悄重写 `data_blockers` /
+  `wait_reason_codes` / 强动作字段。
+
+### 验收
+
+- `pytest tests/test_report_ux004_local_knowledge_replay.py -q` → **28 passed**。
+- KB 系列回归：`tests/test_kb003_local_knowledge_provider.py` /
+  `test_kb007_research_attention.py` / `test_kb008_research_attention_integration.py` /
+  `test_kb011_knowledge_contract_ui.py` / `test_report_ux001_data_blocker_replay.py` /
+  `test_report_ux003_wait_reason_codes.py` → **247 passed**。
+- 注：`tests/test_kb009_research_attention_decay.py::test_different_institutions_consensus_not_suppressed`
+  存在与本次改动无关的预存在日期相关失败（stash 后仍失败），不在本任务回归范围。
+
+### 风险与遗留
+
+- KB fixture 是合成的 mini 知识库（10 页），未来真实知识库扩张后可能命中更多边
+  缘页面；本任务的 4 类状态映射已覆盖核心场景，新边缘页面可通过新增 fixture 补测。
+- `attach_report_local_knowledge` 仍按现状支持 "metadata.raw_evidence.local_knowledge
+  缓存" 和 "无缓存时按 symbol 重查" 两条路径，本任务覆盖的是 symbol 重查路径（历史
+  报告 fixture 没有 cached entry，等价于 KB-003 落地前的旧行）。缓存的 raw_evidence
+  路径已由 `test_kb003_local_knowledge_provider.py` 覆盖。
+
+### 验收对照（REPORT-UX-004）
+
+| 验收项 | 结果 |
+|---|---|
+| 选 3-5 份历史报告 fixture | ✅ 5 份（命中/无命中/低置信/过期/方向性回归） |
+| 回放 `attach_report_local_knowledge` 与报告响应字段 | ✅ 28 测试全链路回放 |
+| `wait_reason_codes`/`data_blockers` 不被本地知识冲掉 | ✅ 5 场景全部保留 |
+| "数据不足观察"仍显示真实数据缺口原因 | ✅ S1-S4 全部 `[DATA_MISSING]` + `query_failed` |
+| 本地知识区块只作为补充背景 | ✅ KB block 与 data_blockers 共存 |
+| 历史报告 response schema 不破坏前端 | ✅ `ReportResponse.model_dump()` 三层字段全部序列化 |
+
+---
+
 ## 2026-07-05 | DATA-026 生产库测试污染健康检查与 scheduler 启动告警（P1）
 
 - **执行者**：OpenCode
@@ -10522,3 +10618,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/DATA-026-20260705-030754/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: REPORT-UX-004 - 本地知识补充区块历史报告回放验收（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/REPORT-UX-004-20260705-031930/

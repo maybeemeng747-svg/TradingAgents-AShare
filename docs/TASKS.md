@@ -168,7 +168,7 @@
 142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，done — OpenCode 产出 `frontend/src/utils/knowledgeContract.ts` + `tests/test_kb011_knowledge_contract_ui.py`（14 tests）+ `frontend/src/utils/kb011KnowledgeContract.test.ts`（26 tests），修复 `ReportResponse` setattr/serialize 静默丢失 + 观察仓 KB schema 缺失 + 前端 research_attention 类型与渲染缺口，依赖 KB-008/KB-009 ✓）。
 143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，ready，依赖 DB 污染治理脚本 ✓）。
 144. `AUTO-005`：自动开发 preflight 接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
-145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，ready，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
+ 145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
 146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，ready，依赖 KB-004/KB-009 ✓）。
 147. `KB-012`：Tree Work 研报补录任务包导出（P2，ready，依赖 KB-002/KB-005/KB-007 ✓）。
 148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，ready，依赖 KB-006/TF-KB-001 ✓）。
@@ -4643,9 +4643,9 @@
 - **代码标注要求**：`# [AUTO-005] db_hygiene_preflight`
 
 ### REPORT-UX-004: 本地知识补充区块历史报告回放验收（P1）
-- **描述**：用历史报告样本回放验证“本地知识补充/研报关注度/数据不足观察原因”三者不会互相污染，避免本地知识被误当成行情事实或最终动作依据。
+- **描述**：用历史报告样本回放验证"本地知识补充/研报关注度/数据不足观察原因"三者不会互相污染，避免本地知识被误当成行情事实或最终动作依据。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/REPORT-UX-004-20260705-031930
 - **前置条件**：KB-003、KB-008、REPORT-UX-003 完成。
 - **执行约束**：
   - 不重跑 live TA。
