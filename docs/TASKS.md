@@ -157,7 +157,7 @@
 131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
 132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ 真实知识库 lint 报告；99 tests passed（KB-001+KB-002））。
 133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_provider.py` + `scripts/query_local_knowledge.py` + `tests/test_kb003_local_knowledge_provider.py`（83 tests）+ 接入 `data_collector.build_raw_evidence` / `evidence_contract` / `report_service.attach_report_local_knowledge` / `api/main.py` 响应顶层；7586 tests passed，无回归）。
-134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，done — OpenCode 产出 `compute_local_knowledge_score` / `needs_tree_work_research` + `MandateEvidencePacket.local_knowledge_summary` + TradeFlow candidate/frontend enrichment + `tests/test_kb004_tradeflow_knowledge_score.py`（61 tests），KB/H 系列相关回归 222 passed）。
+134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，done — commit 1b94c70，OpenCode 产出 `compute_local_knowledge_score` / `needs_tree_work_research` + `MandateEvidencePacket.local_knowledge_summary` + TradeFlow candidate/frontend enrichment + `tests/test_kb004_tradeflow_knowledge_score.py`（61 tests），KB/H 系列相关回归 222 passed）。
 135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，done — OpenCode 产出 `tradingagents/dataflows/tree_work_backlog.py` + `scripts/tree_work_backlog.py` + `tests/test_kb005_tree_work_backlog.py`（39 tests）+ `docs/knowledge_reports/tree_work_ingest_backlog-2026-07-01.md`，KB 系列 338 tests passed）。
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，ready — 前置 KB-003/IC-TA-004 已完成）。
 137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
@@ -4405,7 +4405,7 @@
 ### KB-004: TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1）
 - **描述**：TradeFlow 昊天左侧候选应优先利用 Tree Work 已消化的产业认知，候选入池时显示“本地知识命中：公司/主题/产业链角色/风险”。
 - **优先级**：P1
-- **状态**：done — claimed KB-004-20260704-020304，Codex review 补修完成，待外层 commit
+- **状态**：done — commit 1b94c70；claimed KB-004-20260704-020304，Codex review 补修完成
 - **前置条件**：KB-003、H-017 完成。
 - **执行约束**：
   - 本地知识命中只加解释力，不单独触发候选入池。
