@@ -171,7 +171,7 @@
  145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
  146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
 147. `KB-012`：Tree Work 研报补录任务包导出（P2，ready，依赖 KB-002/KB-005/KB-007 ✓）。
-148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，ready，依赖 KB-006/TF-KB-001 ✓）。
+  148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
 
 ### 数据源治理候选队列
 
@@ -4715,7 +4715,7 @@
 ### V-013: Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2）
 - **描述**：端到端验收本地知识链路：Tree Work wiki 被 TA raw_evidence 读取，报告展示补充区块，TradeFlow 候选显示知识分，investment-controller context 只读引用。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/V-013-20260705-040318
 - **前置条件**：KB-006、TF-KB-001 完成。
 - **执行约束**：
   - 使用 fixture / dry-run，不调用 live LLM。

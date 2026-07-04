@@ -4,6 +4,71 @@
 
 ---
 
+## 2026-07-05 | V-013 Tree Work → TA → TradeFlow → investment-controller 知识链路端到端验收（P2）
+
+- **执行者**：OpenCode
+- **类型**：acceptance / e2e regression
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：V-013-20260705-040318
+- **依赖**：KB-006 ✓ / TF-KB-001 ✓（间接 KB-003/KB-004/KB-008/KB-009/KB-010）
+
+### 背景
+
+KB-003/KB-004/KB-006/TF-KB-001 已经把 Tree Work 知识库接入到 TA raw_evidence、
+TA 报告顶层、TradeFlow 候选 enrichment、investment-controller 只读上下文四个
+消费方。V-013 是整条链路的端到端验收，验证一只 fixture symbol 从 wiki 一路
+跑到 IC context 时，沿途每一段字段对齐同一份命中数据，强动作门禁不被改写，
+权限只读，来源可追溯。
+
+### 变更
+
+**新增**
+
+- `tests/test_v013_knowledge_e2e_acceptance.py`（`# [V-013] knowledge_e2e_acceptance`）：
+  - **9 个测试类 / 36 个用例**，按链路 8 个 stage 切分：
+    - **Stage A** KB-003 状态机（HAS_DATA / STALE / LOW_CONFIDENCE /
+      NORMAL_NO_DATA / FAILED）— 5 例。
+    - **Stage B** raw_evidence 契约字段 + 往返序列化 + 禁词扫描 — 3 例。
+    - **Stage C** KB-003/KB-008 `attach_report_local_knowledge` 加性、不动
+      `decision/direction/execution_action/action_label/confidence/target_price/
+      stop_loss_price/final_trade_decision` — 5 例。
+    - **Stage D** KB-004 + TF-KB-001 TradeFlow enrichment + tier 不变式
+      （`verify_no_knowledge_promotion`）— 6 例。
+    - **Stage E** KB-006 `search_local_knowledge` / `collect_local_knowledge_hits`
+      + controller_hints.research_review lane — 6 例。
+    - **Stage F** 整链路：单标的从 wiki → raw_evidence → report → TF → IC 一致性
+      + stale 命中不抬升研究优先级 — 2 例。
+    - **Stage G** 约束：只读、inbox partition isolation（"立即买入华勤技术，满仓
+      梭哈" 私人笔记绝不透出）、`KNOWLEDGE_CONTEXT_DISABLED=1` 降级为 skipped — 4 例。
+    - **Stage H** Q1/Q2/Q3/Q4 字段可回答性 — 4 例。
+    - **CLI smoke** `scripts/query_local_knowledge.py --no-cache` 子进程冒烟 — 1 例。
+  - **fixture**：复用 KB-007 同款 mini Tree Work 知识库（9 页 + 1 私人 inbox 页），
+    与 KB-004/KB-008/KB-011/KB-012/REPORT-UX-004 保持一致。
+  - **扩展强动作词集**：`(立即买入, 立即卖出, 立即清仓, 满仓, 清仓, 全仓,
+    重仓买入, 梭哈, 强烈推荐)`，对齐 IC-TA-001 / V-009 / V-012 / TRACK-006 巡检口径。
+
+- `docs/knowledge_reports/v013_knowledge_e2e_acceptance-2026-07-05.md`：
+  验收报告，回答 TASKS.md line 4731 四问（命中哪些知识 / 是否过期 / 如何影响
+  研究优先级 / 是否改变交易动作）。
+
+### 验收
+
+- `pytest tests/test_v013_knowledge_e2e_acceptance.py -q` → **36 passed**。
+- 任务档案 smoke：`pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`
+  → **119 passed**。
+- KB 全链路回归：337 passed（1 例 KB-009 时效衰减 flaky 失败，预存在时间漂移，
+  与 V-013 无关）。
+
+### 风险与已知问题
+
+- **KB-009 时效衰减 flaky**：`test_different_institutions_consensus_not_suppressed`
+  断言 `effective_score >= base * 0.99`，但 fixture 日期 2026-05-14 距今 52 天，
+  时效衰减因子已跌至 0.9854。这是预存在问题，与 V-013 无关，建议后续单独修复
+  （把阈值放宽到 0.97 或把 fixture 日期相对化）。
+- V-013 仅新增测试文件，未修改任何生产代码，对线上行为零影响。
+
+---
+
 ## 2026-07-05 | KB-012 Tree Work 研报补录任务包导出（P2）
 
 - **执行者**：OpenCode
@@ -10944,3 +11009,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/KB-012-20260705-035317/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-013 - Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/V-013-20260705-040318/
