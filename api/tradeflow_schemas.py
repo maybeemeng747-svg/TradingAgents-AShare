@@ -925,6 +925,22 @@ class ObservationItemResponse(BaseModel):
     action_label: str = ""
     research_direction: str = ""
     source_history: List[Dict[str, Any]] = Field(default_factory=list)
+    # [KB-011] knowledge_contract_ui — read-only KB fields surfaced on the
+    # observation warehouse detail so the frontend can render the same
+    # "本地知识 / 研报关注度" block as TradeFlow candidates. Populated
+    # best-effort by ``_enrich_observation_items_with_knowledge``; empty
+    # defaults equal NORMAL_NO_DATA semantics (never an error).
+    research_attention_score: float = 0.0
+    research_attention_effective_score: float = 0.0
+    research_attention_overheat_penalty: float = 0.0
+    research_attention_summary: str = ""
+    research_attention_detail: Dict[str, Any] = Field(default_factory=dict)
+    knowledge_theme_count: int = 0
+    local_knowledge_score: float = 0.0
+    knowledge_hit_count: int = 0
+    local_knowledge_summary: str = ""
+    local_knowledge_detail: Dict[str, Any] = Field(default_factory=dict)
+    needs_tree_work_research: bool = False
 
 
 # [TRACK-001] observation_warehouse

@@ -470,6 +470,14 @@ export function buildFixtureCandidate(opts: FixtureCandidateOptions = {}): Trade
         local_knowledge_summary: '',
         local_knowledge_detail: {},
         needs_tree_work_research: false,
+        // [KB-011] knowledge_contract_ui — research attention defaults
+        // (NORMAL_NO_DATA semantics: zero/empty, never an error).
+        research_attention_score: 0,
+        research_attention_effective_score: 0,
+        research_attention_overheat_penalty: 0,
+        research_attention_summary: '',
+        research_attention_detail: {},
+        knowledge_theme_count: 0,
         created_at: '',
         updated_at: '',
     }

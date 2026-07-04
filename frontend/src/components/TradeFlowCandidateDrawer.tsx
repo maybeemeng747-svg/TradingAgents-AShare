@@ -2,11 +2,13 @@
 // [TA-UI-001] analysis_console_horizon_intent
 // [TF-UI-011] candidate_research_entry
 // [TRACK-006] add_to_observation
+// [KB-011] knowledge_contract_ui
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu, Wallet, Eye } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu, Wallet, Eye, BookOpen } from 'lucide-react'
 import { api } from '@/services/api'
 import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse, CompanyOverviewResponse } from '@/types'
 import MiniKline from './MiniKline'
+import { classifyResearchAttention, classifyLocalKnowledge, isKnowledgeStrongPositive } from '@/utils/knowledgeContract'
 
 const ALL_STRATEGIES = [
     'VCP',
@@ -189,6 +191,21 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
         data.local_knowledge_summary ||
         data.needs_tree_work_research ||
         localKnowledgeStatus
+    )
+    // [KB-011] knowledge_contract_ui — research attention breakdown + strong
+    // positive gate. When the payload is empty, the helper returns
+    // hasAnySignal=false so we render the NORMAL_NO_DATA empty state instead
+    // of pretending there is positive coverage.
+    const researchDetail = (data.research_attention_detail || {}) as Record<string, unknown>
+    const researchBreakdown = classifyResearchAttention(researchDetail)
+    const localBreakdown = classifyLocalKnowledge(localKnowledgeDetail)
+    const knowledgeStrongPositive = isKnowledgeStrongPositive(researchDetail, localKnowledgeDetail)
+    const showResearchAttention = Boolean(
+        researchBreakdown.hasAnySignal ||
+        (data.research_attention_score || 0) > 0 ||
+        (data.research_attention_effective_score || 0) > 0 ||
+        (data.knowledge_theme_count || 0) > 0 ||
+        data.research_attention_summary
     )
 
     return (
@@ -440,11 +457,16 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                         <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ${
                                             localKnowledgeStatus === 'FAILED'
                                                 ? 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300'
-                                                : localKnowledgeStatus === 'HAS_DATA'
+                                                : localKnowledgeStatus === 'HAS_DATA' && !localBreakdown.isWeakOrPenalized
                                                 ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300'
                                                 : 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300'
                                         }`}>
                                             {localKnowledgeStatus}
+                                        </span>
+                                    )}
+                                    {localBreakdown.isWeakOrPenalized && (
+                                        <span className="inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                                            仅过期/低置信，非强正面
                                         </span>
                                     )}
                                     {data.needs_tree_work_research && (
@@ -501,6 +523,72 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                                 <div key={`${err}-${i}`} className="break-words text-[11px] text-red-500 dark:text-red-300">{err}</div>
                                             ))}
                                         </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {showResearchAttention && (  // [KB-011] knowledge_contract_ui
+                        <div>
+                            <SectionTitle icon={BookOpen} title="研报关注度" />
+                            <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                    <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                        基础分 {(researchBreakdown.baseScore || data.research_attention_score || 0).toFixed(2)}
+                                    </span>
+                                    {researchBreakdown.effectiveScore > 0 && (
+                                        <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ${
+                                            researchBreakdown.isWeakOrPenalized
+                                                ? 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300'
+                                                : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                        }`}>
+                                            有效分 {researchBreakdown.effectiveScore.toFixed(2)}
+                                        </span>
+                                    )}
+                                    {(data.knowledge_theme_count || 0) > 0 && (
+                                        <span className="inline-flex items-center rounded bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                                            主题交叉 {data.knowledge_theme_count}
+                                        </span>
+                                    )}
+                                    {researchBreakdown.isWeakOrPenalized && (
+                                        <span className="inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                                            仅过期/低置信，非强正面
+                                        </span>
+                                    )}
+                                    {knowledgeStrongPositive && (
+                                        <span className="inline-flex items-center rounded bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                                            强正面
+                                        </span>
+                                    )}
+                                </div>
+                                {(researchBreakdown.credits.length > 0 || researchBreakdown.penalties.length > 0) && (
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                        {researchBreakdown.credits.length > 0 && (
+                                            <div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-2 dark:border-emerald-800 dark:bg-emerald-900/10">
+                                                <div className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">加分项</div>
+                                                <ul className="mt-1 space-y-0.5">
+                                                    {researchBreakdown.credits.map((c, i) => (
+                                                        <li key={`credit-${i}`} className="text-[11px] leading-relaxed text-emerald-700 dark:text-emerald-300">+ {c}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                        {researchBreakdown.penalties.length > 0 && (
+                                            <div className="rounded-lg border border-orange-100 bg-orange-50/40 p-2 dark:border-orange-800 dark:bg-orange-900/10">
+                                                <div className="text-[11px] font-medium text-orange-600 dark:text-orange-400">降权项</div>
+                                                <ul className="mt-1 space-y-0.5">
+                                                    {researchBreakdown.penalties.map((p, i) => (
+                                                        <li key={`penalty-${i}`} className="text-[11px] leading-relaxed text-orange-700 dark:text-orange-300">- {p}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                {data.research_attention_summary && (
+                                    <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-xs leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/30 dark:text-slate-300">
+                                        {data.research_attention_summary}
                                     </div>
                                 )}
                             </div>

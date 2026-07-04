@@ -393,6 +393,28 @@ def _enrich_candidates_with_research_attention(items: List[dict]) -> List[dict]:
     return items
 
 
+# [KB-011] knowledge_contract_ui
+def _enrich_observation_items_with_knowledge(items: list[dict]) -> list[dict]:
+    """Best-effort, read-only KB enrichment for observation warehouse items.
+
+    Reuses the same KB-008 (research attention) + KB-004 (local knowledge)
+    helpers as TradeFlow candidates so the observation detail panel renders
+    the same "本地知识 / 研报关注度" block with identical field semantics.
+    Failure-safe: any exception falls back to the NORMAL_NO_DATA defaults
+    already set on the item — never blocks the observation list endpoint.
+    """
+    if not items:
+        return items
+    try:
+        # KB-008 first (shares one scan via the batch helper).
+        _enrich_candidates_with_research_attention(items)
+        # KB-004 local knowledge batch (per-item query, handles its own root).
+        _enrich_candidates_with_local_knowledge(items)
+    except Exception:
+        return items
+    return items
+
+
 # [KB-004] tradeflow_knowledge_score
 def _resolve_knowledge_root() -> str:
     """解析当前生效的本地知识库根目录（环境变量优先）。
@@ -4021,6 +4043,18 @@ def _empty_observation_item(symbol: str = "", name: str = "") -> dict:
         "action_label": "",
         "research_direction": "",
         "source_history": [],
+        # [KB-011] knowledge_contract_ui — empty defaults equal NORMAL_NO_DATA.
+        "research_attention_score": 0.0,
+        "research_attention_effective_score": 0.0,
+        "research_attention_overheat_penalty": 0.0,
+        "research_attention_summary": "",
+        "research_attention_detail": {},
+        "knowledge_theme_count": 0,
+        "local_knowledge_score": 0.0,
+        "knowledge_hit_count": 0,
+        "local_knowledge_summary": "",
+        "local_knowledge_detail": {},
+        "needs_tree_work_research": False,
     }
 
 
@@ -4095,6 +4129,20 @@ def _row_to_observation_item(row: sqlite3.Row) -> dict:
         "action_label": _rget(row, "action_label", "") or "",
         "research_direction": _rget(row, "research_direction", "") or "",
         "source_history": source_history if isinstance(source_history, list) else [],
+        # [KB-011] knowledge_contract_ui — empty defaults; enrichment fills
+        # them in via ``_enrich_observation_items_with_knowledge`` so the
+        # raw row reader never needs to know about KB columns.
+        "research_attention_score": 0.0,
+        "research_attention_effective_score": 0.0,
+        "research_attention_overheat_penalty": 0.0,
+        "research_attention_summary": "",
+        "research_attention_detail": {},
+        "knowledge_theme_count": 0,
+        "local_knowledge_score": 0.0,
+        "knowledge_hit_count": 0,
+        "local_knowledge_summary": "",
+        "local_knowledge_detail": {},
+        "needs_tree_work_research": False,
     }
 
 
@@ -4198,6 +4246,10 @@ def get_observation_items(
 
         rows = conn.execute(query, params).fetchall()
         items = [_row_to_observation_item(r) for r in rows]
+        # [KB-011] knowledge_contract_ui — best-effort KB enrichment so the
+        # observation warehouse detail surfaces the same fields as TradeFlow
+        # candidates. Failure-safe; falls back to NORMAL_NO_DATA defaults.
+        _enrich_observation_items_with_knowledge(items)
         return {
             "status": "ok",
             "items": items,

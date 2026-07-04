@@ -4,6 +4,141 @@
 
 ---
 
+## 2026-07-05 | KB-011 本地知识/研报关注度前端与 API 契约回归（P1）
+
+- **执行者**：OpenCode
+- **类型**：contract regression / frontend
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：KB-011-20260705-023929
+
+### 背景
+
+KB-003/KB-004/KB-007/KB-008/KB-009 已落地产出 `local_knowledge_summary`、
+`research_attention_score`、`research_attention_effective_score` 等字段，但 KB-011
+验收时发现契约断裂：
+
+1. **`ReportResponse`** 在 `_attach_report_data_blockers_for_response` 中通过
+   `setattr` 给 ORM 对象挂上 KB 字段，但 Pydantic model 没声明这些字段，
+   `model_validate` / JSON 序列化时被静默丢弃，前端只能从 `result_data` 深挖。
+2. **TradeFlow 候选详情**：后端 `TradeFlowCandidateItem` schema 全部声明了
+   KB-008/KB-009 字段，但前端 TS `TradeFlowCandidateItem` 类型完全缺失
+   `research_attention_*`，drawer 也没有渲染研报关注度 / 过热惩罚 / 同源去重。
+3. **观察仓详情**：`ObservationItemResponse` 0 个 KB 字段，前端 `ObservationItemV2`
+   同样缺失，违反"补齐观察仓详情中本地知识字段的 schema/type"。
+4. **KB-011 弱信号规则未实现**：只有过期/低置信命中时仍可能被显示为强正面
+   （HAS_DATA → emerald chip）。
+
+### 变更
+
+**后端**
+
+- `api/main.py:ReportResponse`：声明 `local_knowledge_block` /
+  `local_knowledge_summary` (dict 形态) / `research_attention_score` /
+  `knowledge_theme_count` / `research_attention_summary` /
+  `research_attention_block`，修复 setattr 后被 Pydantic 丢弃的死路。
+- `api/tradeflow_schemas.py:ObservationItemResponse`：新增 11 个 KB 字段
+  （`research_attention_*` + `local_knowledge_*` + `knowledge_theme_count` 等），
+  默认值符合 NORMAL_NO_DATA 语义。
+- `api/services/tradeflow_service.py`：
+  - `_empty_observation_item` / `_row_to_observation_item` 补齐 KB 空默认值。
+  - 新增 `_enrich_observation_items_with_knowledge`：复用 KB-008 批量 +
+    KB-004 批量 enrich helper，失败安全降级到 NORMAL_NO_DATA。
+  - `get_observation_items` 调用 enrich helper。
+
+**前端**
+
+- `frontend/src/types/index.ts`：
+  - `TradeFlowCandidateItem` 补齐 `research_attention_score` /
+    `research_attention_effective_score` /
+    `research_attention_overheat_penalty` / `research_attention_summary` /
+    `research_attention_detail` / `knowledge_theme_count`。
+  - `Report` 新增 6 个可选 KB 字段（注意 `local_knowledge_summary` 在报告侧
+    是 dict 形态，与 TradeFlow 候选侧的 string 形态不同，两者都被接受）。
+  - `ObservationItemV2` 新增 11 个可选 KB 字段。
+- `frontend/src/utils/tradeflowFocus.ts:buildFixtureCandidate`：补齐新 TS 字段
+  的默认值，避免 type error。
+- `frontend/src/utils/knowledgeContract.ts`（新增）：纯函数工具模块，提供
+  `classifyResearchAttention` / `classifyLocalKnowledge` /
+  `isKnowledgeStrongPositive`，把"加分项 vs 降权项"分类逻辑集中且可单测。
+  关键 KB-011 规则：base_score 单独不算 credit（可能全由过期命中堆出来），
+  必须 `fresh_mention_count > 0` 或 `high_quality_mention_count > 0` 才算
+  强正面。
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx`：
+  - 新增"研报关注度"区块，并排显示加分项（emerald）与降权项（orange），
+    显示基础分 / 有效分 / 主题交叉数，弱信号时打"仅过期/低置信，非强正面"chip。
+  - 调整本地知识 status chip：`HAS_DATA` 且 `isWeakOrPenalized` 时不再显示
+    绿色，改为 amber 并打弱信号 chip。
+- `frontend/src/components/ReportViewer.tsx`：历史报告模式新增"本地知识补充"
+  区块，渲染 `local_knowledge_block` markdown + 研报关注度 badges，强调"仅作为
+  研究背景，不构成数据完整或买卖依据"。
+
+**测试**
+
+- `tests/test_kb011_knowledge_contract_ui.py`（新增，14 tests）：
+  - `ReportResponse` 声明 KB 字段 + 序列化（修复回归的核心断言）。
+  - attach helper 端到端：fixture 603296 命中后所有 KB 顶层字段非空。
+  - legacy 行（无 KB 字段）不崩溃，fields 为 null（NORMAL_NO_DATA）。
+  - `ObservationItemResponse` schema 字段完整性 + 默认值。
+  - `_enrich_observation_items_with_knowledge` 命中/无命中/空 list/失败安全。
+  - KB-009 decay 字段（`research_attention_effective_score` 等）确实进入
+    `local_knowledge_summary` dict，前端能拿到加分+降权明细。
+- `frontend/src/utils/kb011KnowledgeContract.test.ts`（新增，26 tests）：
+  - 防御性数字/字符串解析。
+  - 空命中 → NORMAL_NO_DATA 语义。
+  - 强正面（fresh + high-quality）正确分类。
+  - **KB-011 弱信号规则**：仅 stale / 仅 deprecated / 仅 dedup / 仅 overheat
+    四种场景全部判为 `isWeakOrPenalized=true`，不显示为强正面。
+  - 混合 credit + penalty 同时列出。
+  - `isKnowledgeStrongPositive` 在任一侧弱信号时返回 false。
+  - `buildFixtureCandidate` 包含所有 KB-011 字段且默认值为 NORMAL_NO_DATA。
+
+### 验收
+
+- `pytest tests/test_kb011_knowledge_contract_ui.py -q`：14 passed。
+- KB 系列相关回归（KB-003/KB-004/KB-007/KB-008/KB-010 +
+  REPORT-UX-001/003）：391 passed（仅 KB-009 1 个 institution dedup 时间衰减
+  阈值的预存在 edge case failure，stash 验证与本任务无关）。
+- TRACK-* 系列（001/002/004/005/006/008/009）+ API smoke +
+  tradeflow_candidate_engine：234 + 226 passed。
+- `npx tsc --noEmit`：clean。
+- `npm run build`：✓ built in 1.44s。
+- `npx vitest run`：5 files / 76 tests passed。
+
+### 风险点与边界
+
+- `local_knowledge_summary` 在 TradeFlow 候选侧是 string，在报告侧是 dict
+  （KB-003/KB-008 merge），在 MandateEvidencePacket 也是 dict。前端类型已分别
+  声明（`string` vs `Record<string, unknown>`），但若未来统一 schema 需要同步
+  更新两侧。
+- 观察仓单条写入响应（create/update/mark）未做 enrich，依赖下次列表刷新；这是
+  主动选择（write 路径走 raw row dict 即可），符合剃刀定律。前端
+  `TrackingBoardV2Panel` 在 create 后调用 `refreshBoard()`，会触发 enrich。
+- `_enrich_observation_items_with_knowledge` 失败安全降级到 NORMAL_NO_DATA
+  默认，绝不阻塞观察仓列表主链路。
+
+### 修改文件列表
+
+后端：
+
+- `api/main.py`
+- `api/tradeflow_schemas.py`
+- `api/services/tradeflow_service.py`
+
+前端：
+
+- `frontend/src/types/index.ts`
+- `frontend/src/utils/tradeflowFocus.ts`
+- `frontend/src/utils/knowledgeContract.ts`（新增）
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx`
+- `frontend/src/components/ReportViewer.tsx`
+
+测试：
+
+- `tests/test_kb011_knowledge_contract_ui.py`（新增）
+- `frontend/src/utils/kb011KnowledgeContract.test.ts`（新增）
+
+---
+
 ## 2026-07-05 | KB-010 本地知识索引缓存与 freshness manifest（P1）
 
 - **执行者**：OpenCode
@@ -10287,3 +10422,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/KB-010-20260705-015530/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-011 - 本地知识/研报关注度前端与 API 契约回归（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/KB-011-20260705-023929/

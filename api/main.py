@@ -849,6 +849,18 @@ class ReportResponse(BaseModel):
     # [REPORT-UX-003] wait_reason_codes — explainable codes for WAIT actions.
     wait_reason_codes: Optional[List[str]] = None
     wait_reason_labels: Optional[Dict[str, str]] = None
+    # [KB-011] knowledge_contract_ui — KB fields surfaced at top level so the
+    # frontend can render "本地知识补充 / 研报关注度" without digging into
+    # result_data. These are attached by ``_attach_report_data_blockers_for_response``
+    # and were previously dropped because the Pydantic model did not declare them.
+    # [KB-003] local knowledge block (markdown) + summary (dict shape).
+    local_knowledge_block: Optional[str] = None
+    local_knowledge_summary: Optional[Dict[str, Any]] = None
+    # [KB-008] research attention — flat fields mirrored from result_data.
+    research_attention_score: Optional[float] = None
+    knowledge_theme_count: Optional[int] = None
+    research_attention_summary: Optional[str] = None
+    research_attention_block: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

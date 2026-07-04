@@ -1,4 +1,4 @@
-import { FileText, Download, ChevronDown, ChevronRight, Loader2, MousePointerClick } from 'lucide-react'
+import { FileText, Download, ChevronDown, ChevronRight, Loader2, MousePointerClick, BookOpen } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -156,6 +156,74 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
                             </div>
                         )
                     })}
+                    {/* [KB-011] knowledge_contract_ui — 本地知识补充 / 研报关注度
+                        block rendered from top-level KB fields. Falls back
+                        silently when the report predates KB-003 (then the
+                        fields are null and the card is hidden). The block is
+                        already a markdown blob produced by
+                        ``render_local_knowledge_block`` + KB-008 inline
+                        section, so we render it verbatim through ReactMarkdown. */}
+                    {(() => {
+                        const lkBlock = reportData?.local_knowledge_block
+                        const lkSummary = reportData?.local_knowledge_summary
+                        const attentionScore = reportData?.research_attention_score
+                        const themeCount = reportData?.knowledge_theme_count
+                        const attentionSummary = reportData?.research_attention_summary
+                        if (!lkBlock && attentionScore == null && !attentionSummary) return null
+                        // local_knowledge_summary on reports is a dict; pull a
+                        // status safely without assuming any specific key.
+                        const lkStatus = lkSummary && typeof lkSummary === 'object' && 'status' in lkSummary
+                            ? String((lkSummary as Record<string, unknown>).status || '')
+                            : ''
+                        const lkMatched = lkSummary && typeof lkSummary === 'object' && 'matched_count' in lkSummary
+                            ? Number((lkSummary as Record<string, unknown>).matched_count || 0)
+                            : 0
+                        return (
+                            <div className="border border-indigo-200/70 dark:border-indigo-500/20 rounded-2xl overflow-hidden bg-indigo-50/30 dark:bg-indigo-900/10">
+                                <div className="flex items-center gap-2 px-4 py-2.5 bg-indigo-50/80 dark:bg-indigo-900/20">
+                                    <BookOpen className="w-4 h-4 text-indigo-500" />
+                                    <span className="font-medium text-slate-900 dark:text-slate-100">本地知识补充</span>
+                                    <span className="text-xs text-slate-500 dark:text-slate-400">仅作为研究背景，不构成数据完整或买卖依据</span>
+                                    {lkStatus === 'NORMAL_NO_DATA' && (
+                                        <span className="ml-auto inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                                            暂无本地知识
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="p-4 bg-white dark:bg-slate-800/30 space-y-2">
+                                    {(attentionScore != null || themeCount != null || attentionSummary) && (
+                                        <div className="flex flex-wrap gap-2">
+                                            {attentionScore != null && attentionScore > 0 && (
+                                                <span className="inline-flex items-center rounded bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                                                    研报关注度 {Number(attentionScore).toFixed(2)}
+                                                </span>
+                                            )}
+                                            {themeCount != null && themeCount > 0 && (
+                                                <span className="inline-flex items-center rounded bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+                                                    主题交叉 {themeCount}
+                                                </span>
+                                            )}
+                                            {lkMatched > 0 && (
+                                                <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                                    本地知识命中 {lkMatched} 条
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                    {lkBlock && (
+                                        <div className="prose dark:prose-invert prose-sm max-w-none">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{lkBlock}</ReactMarkdown>
+                                        </div>
+                                    )}
+                                    {attentionSummary && (
+                                        <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-xs leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/30 dark:text-slate-300">
+                                            {attentionSummary}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )
+                    })()}
                     <div className="rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-xs leading-6 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{REPORT_DISCLAIMER}</ReactMarkdown>
                     </div>

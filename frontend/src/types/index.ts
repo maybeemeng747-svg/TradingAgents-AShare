@@ -470,6 +470,17 @@ export interface Report {
     // [REPORT-UX-003] wait_reason_codes
     wait_reason_codes?: string[] | null
     wait_reason_labels?: Record<string, string> | null
+    // [KB-011] knowledge_contract_ui — top-level KB fields mirrored from
+    // result_data so the report viewer can render 本地知识补充 / 研报关注度
+    // without digging into result_data. Note: ``local_knowledge_summary`` on
+    // reports is a DICT (KB-003/KB-008 merge), unlike the STRING shape on
+    // TradeFlow candidates. Both shapes are accepted here.
+    local_knowledge_block?: string | null
+    local_knowledge_summary?: Record<string, unknown> | null
+    research_attention_score?: number | null
+    knowledge_theme_count?: number | null
+    research_attention_summary?: string | null
+    research_attention_block?: string | null
 }
 
 export interface ReportDetail extends Report {
@@ -909,6 +920,21 @@ export interface ObservationItemV2 {
         via: string
         reason: string
     }>
+    // [KB-011] knowledge_contract_ui — read-only KB fields populated
+    // best-effort by ``_enrich_observation_items_with_knowledge``. All
+    // fields default to zero/empty when there is no knowledge hit; never
+    // an error.
+    research_attention_score?: number
+    research_attention_effective_score?: number
+    research_attention_overheat_penalty?: number
+    research_attention_summary?: string
+    research_attention_detail?: Record<string, unknown>
+    knowledge_theme_count?: number
+    local_knowledge_score?: number
+    knowledge_hit_count?: number
+    local_knowledge_summary?: string
+    local_knowledge_detail?: Record<string, unknown>
+    needs_tree_work_research?: boolean
 }
 
 export interface TrackingBoardV2Response {
@@ -1171,6 +1197,16 @@ export interface TradeFlowCandidateItem {
     local_knowledge_summary: string  // [KB-004]
     local_knowledge_detail: Record<string, unknown>  // [KB-004]
     needs_tree_work_research: boolean  // [KB-004]
+    // [KB-011] knowledge_contract_ui — research attention fields mirrored from
+    // backend ``TradeFlowCandidateItem`` so the drawer can render 研报关注度
+    // (base score + effective score + decay/overheat breakdown). Defaults to
+    // zero/empty when there is no hit (NORMAL_NO_DATA semantics).
+    research_attention_score: number  // [KB-008]
+    research_attention_effective_score: number  // [KB-009]
+    research_attention_overheat_penalty: number  // [KB-009]
+    research_attention_summary: string  // [KB-008]
+    research_attention_detail: Record<string, unknown>  // [KB-008/KB-009]
+    knowledge_theme_count: number  // [KB-008]
     created_at: string
     updated_at: string
 }
