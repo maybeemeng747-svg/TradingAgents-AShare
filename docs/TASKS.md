@@ -4695,7 +4695,7 @@
 ### KB-012: Tree Work 研报补录任务包导出（P2）
 - **描述**：把 KB-002 lint、KB-005 backlog、KB-007/009 关注度结果整理成可直接发给 Tree Work 的补录任务包，帮助后续研报消化更符合 TA 消费要求。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-012-20260705-035317
 - **前置条件**：KB-002、KB-005、KB-007 完成。
 - **执行约束**：
   - 只生成任务包，不修改 knowledge。

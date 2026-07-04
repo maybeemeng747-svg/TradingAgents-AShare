@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-07-05 | KB-012 Tree Work 研报补录任务包导出（P2）
+
+- **执行者**：OpenCode
+- **类型**：feature / read-only aggregation
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：KB-012-20260705-035317
+
+### 背景
+
+KB-002 lint、KB-005 inbox/raw/wiki backlog、KB-007/009 研究关注度各自产出过
+修复建议、未消化清单、过期/过热信号，但分散在三套独立输出里。Tree Work（人工
+消化研报流程）需要一份**可直接逐项执行**的补录任务包：按"缺什么字段"分组，每
+条任务带来源路径与建议动作，并给出 ingest 模板，避免后续消化研报时再次出现 TA
+抓不到 symbol / 缺 thesis / 缺 risks / 缺 sources 的问题。
+
+KB-012 把上述三套信号合并为一份 Markdown/JSON 任务包，导出到
+`docs/knowledge_reports/tree_work_task_pack-YYYY-MM-DD.md`。
+
+### 变更
+
+**新增**
+
+- `tradingagents/dataflows/tree_work_task_pack.py`
+  （`# [KB-012] tree_work_task_pack`）：
+  - **数据类**：`TaskPackItem` / `TreeWorkTaskPack`，可序列化、可去重、可排序。
+  - **7 个分组**（与任务描述"缺 symbol/name / 缺 thesis / 缺 risks / 缺 sources /
+    过期需复核 / 热门但证据薄 / ingest 新页面"对齐）：
+    `GROUP_MISSING_SYMBOL / MISSING_THESIS / MISSING_RISKS / MISSING_SOURCES /
+    NEEDS_REVIEW_STALE / HOT_BUT_THIN / INGEST_NEW`。
+  - **信号映射器**：
+    - `_collect_from_lint`：KB-002 finding（rule_id + field）→ 分组，error=high、
+      warning=medium、info（TODO/EVID）→ needs_review_stale。
+    - `_collect_from_backlog`：KB-005 backlog（category + action）→ 分组；
+      `index_not_synced` 跳过（不属于 ingest 补录）。
+    - `_collect_from_attention`：KB-007 stale page → needs_review_stale；KB-007 +
+      KB-009 高分且证据薄（stale_ratio≥34% / theme≥6 / overheat）→ hot_but_thin；
+      非 A 股不进入任务包。
+  - **去重合并** `_dedup_items`：同一 (group, location) 多来源合并为单条任务，
+    priority 取最严、sources 去重、detail 取最长（≤300 字）。
+  - **上游降级**：任一上游模块抛异常被吞掉并记入 `errors`，任务包仍能产出部分
+    结果（不阻塞）。
+  - **报告渲染** `render_task_pack_report`：概览 / 分组统计 / 上游摘要 / 分组任务
+    表 / Tree Work ingest 模板 / 建议执行顺序 / 免责声明。
+  - **ingest 模板** `INGEST_TEMPLATE_MD`：完整 frontmatter + 章节（一句话总结 /
+    投资逻辑 / 风险提示 / 原始资料），`{today}` 占位符由报告填充。
+
+- `scripts/tree_work_task_pack.py`（`# [KB-012]`）：
+  - CLI：`--knowledge-root / --output / --json / --stdout`，新增 `--no-lint /
+    --no-backlog / --no-attention` 分别跳过对应上游信号。
+  - 退出码：任务包总能跑完（即使空库），仅在根目录不存在且 0 项时返回 1。
+
+- `tests/test_kb012_tree_work_task_pack.py`（**65 tests**，13 个 TestClass）：
+  - 数据类序列化 / 排序 / 空包；分组映射规则（lint rule → group、backlog action →
+    group、attention 阈值）；priority 合并与去重；lint/backlog/attention 各自的
+    collect 单元测试；整库 build（fixture/空库/缺根目录/跳过上游）；报告渲染
+    （含分组、ingest 模板、不含原文、不含强动作词）；CLI 子进程冒烟（markdown/json/
+    write/skip/missing-root）；只读安全性（mtime + 文件列表不变）；上游失败降级。
+
+- `docs/knowledge_reports/tree_work_task_pack-2026-07-05.md`：真实知识库任务包，
+    **362 个任务**（missing_symbol=20 / missing_thesis=49 / missing_risks=10 /
+    missing_sources=23 / needs_review_stale=34 / hot_but_thin=88 / ingest_new=138）。
+
+### 关键不变量
+
+- **只读**：仅用 `open(..., "r")` + `Path.iterdir`，复用 KB-002/KB-005/KB-007/KB-009
+  的只读解析；测试 `TestReadOnlySafety` 校验文件列表与大小不变。
+- **不输出原文**：任务项只有路径 / 动作 / 简短原因（≤300 字），不复制研报段落。
+- **不输出交易建议**：报告刻意避免 `立即买入/立即卖出/满仓/清仓/全仓/强烈推荐` 等
+  强动作词；测试 `test_report_no_strong_action_verbs` 校验。
+- **不调用 LLM / 不访问外网**：纯标准库 + 复用上游只读模块。
+- **可空库运行**：知识库缺失或空库时返回稳定空结构，报告仍能渲染。
+- **上游失败降级**：任一上游模块异常时不阻塞，记入 `errors` 并产出部分结果。
+- **资产分类**：非 A 股（HK/US/FUND/UNLISTED）不进入任务包，避免混资产类别。
+
+### 测试结果
+
+- `tests/test_kb012_tree_work_task_pack.py`：**65 passed**。
+- KB 回归：`test_kb001/002/005/007/008` **299 passed**（KB-009 有 1 个预存在
+  date-sensitive 失败 `test_different_institutions_consensus_not_suppressed`，
+  与 KB-012 无关，base commit 也失败）。
+
+### 风险与后续
+
+- 任务包只读不改 knowledge，Tree Work 实际补录仍需人工 / HR Agent 执行；后续可
+  考虑加 `--apply-skeleton` 自动生成 wiki 占位页（超出 KB-012 范围）。
+- `hot_but_thin` 阈值（score≥1.5、stale_ratio≥34%、theme≥6）目前是静态常量；
+  如需调参，建议独立任务（避免影响 KB-007/KB-009 计分口径）。
+
+---
+
 ## 2026-07-05 | KB-006 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
 
 - **执行者**：OpenCode
@@ -10845,3 +10935,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/KB-006-20260705-033743/
+
+## 2026-07-05 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-012 - Tree Work 研报补录任务包导出（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/KB-012-20260705-035317/
