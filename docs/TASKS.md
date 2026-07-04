@@ -4444,7 +4444,7 @@
 ### KB-006: 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
 - **描述**：提供只读 API/服务函数，让 investment-controller 在盘前/盘后 briefing 中引用 Tree Work 知识命中，而不是让它自己读文件或编造背景。
 - **优先级**：P2
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-006-20260705-033743
+- **状态**：done — commit 96970d8 [PASS_UNREVIEWED]-20260705-033743
 - **前置条件**：KB-003、IC-TA-004 完成。
 - **执行约束**：
   - 只读，不写 knowledge。
