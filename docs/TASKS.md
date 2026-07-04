@@ -4585,7 +4585,7 @@
 ### KB-011: 本地知识/研报关注度前端与 API 契约回归（P1）
 - **描述**：系统已经接入 `local_knowledge_summary`、`research_attention_score`、`research_attention_effective_score` 等字段，但需要确认 API schema、前端展示、空状态和负面信息不丢失。
 - **优先级**：P1
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-011-20260705-023929
+- **状态**：done — commit e75eef4 [PASS_UNREVIEWED]-20260705-023929
 - **前置条件**：KB-008、KB-009 完成。
 - **执行约束**：
   - 不新增模型调用。
