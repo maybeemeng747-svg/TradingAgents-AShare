@@ -1,0 +1,1448 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "AUTO-006"[90m in . · 17 matches[0m
+[0m✱ [0mGrep "AUTO-004|AUTO-005|AUTO-006"[90m in docs/TASKS.md · 12 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=4905, limit=60][0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=4315, limit=30][0m
+[0m→ [0mRead docs/task_runs/AUTO-006-20260707-032240
+[0m
+[0m$ [0mls scripts/ | head -50
+__pycache__
+audit_llm_config.py
+audit_local_knowledge.py
+audit_report_semantics.py
+auto_dev_loop.sh
+batch_analysis.py
+check_zai_quota.sh
+cleanup_test_db_pollution.py
+codegraph_preflight.py
+export_source_capability_matrix.py
+lint_local_knowledge.py
+measure_frontend_bundle.py
+preflight_check.sh
+query_local_knowledge.py
+run_db_hygiene_check.py
+run_fund_flow_source_probe.py
+run_health_check.py
+run_live_smoke.py
+run_mandate_daily_report.py
+run_research_attention.py
+run_research_report_smoke.py
+run_tradeflow_plan.py
+suggest_next_tasks.py
+summarize_auto_dev_runs.py
+tree_work_backlog.py
+tree_work_task_pack.py
+[0m
+[0m→ [0mRead scripts/auto_dev_loop.sh
+[0m
+[0m$ [0mls tests/ | grep -iE "auto|runtime_budget|preflight" | head -20
+test_auto004_runtime_budget.py
+test_auto005_db_hygiene_preflight.py
+test_auto_dev_loop_static.py
+test_m013_codegraph_preflight.py
+test_tf_obs_002_observe_auto_run.py
+[0m
+Let me look at existing tests for AUTO series tasks and the runtime budget implementation:
+[0m✱ [0mGrep "AUTO-004|runtime_budget|auto_dev"[90m in tests · 96 matches[0m
+[0m→ [0mRead scripts/summarize_auto_dev_runs.py
+[0m→ [0mRead scripts/summarize_auto_dev_runs.py[90m [offset=1357][0m
+[0m→ [0mRead tests/test_auto004_runtime_budget.py[90m [offset=1, limit=60][0m
+Let me look at the existing test structure briefly:
+[0m→ [0mRead tests/test_auto004_runtime_budget.py[90m [offset=280, limit=200][0m
+[0m
+[0m$ [0mls docs/task_runs/ | head -10 && echo "---" && ls docs/reviews/ 2>/dev/null | head -5
+AUTO-004-20260702-231123
+AUTO-005-20260707-021925
+AUTO-006-20260707-032240
+CODEGRAPH-002-20260614-014751
+DATA-001-20260601-221610
+DATA-002-20260602-005310
+DATA-003-20260602-010127
+DATA-004-20260602-011020
+DATA-005-20260602-021515
+DATA-006-20260602-030716
+---
+AUTO-004-20260702-round1.txt
+AUTO-005-20260707-round1.txt
+CODEGRAPH-002-20260614-round1.txt
+DATA-001-20260601-round1.txt
+DATA-002-20260602-round1.txt
+[0m
+[0m→ [0mRead docs/task_runs/AUTO-006-20260707-032240/task.md
+[0m
+[0m$ [0mgit status && echo "---" && git log --oneline -5
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 284 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/AUTO-006-20260707-032240/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+---
+f59857c docs: mark HY-001 done after auto run
+58c23f8 auto: HY-001 半年报 Tree Work 输出协议扩展与 lint 规则（P1） [AUTO-002]
+8a58462 docs: mark AUTO-005 done after auto run
+553366b auto: AUTO-005 自动开发前置检查接入 DB hygiene 与续航门禁（P1） [AUTO-002]
+1983899 docs: release HY-001~HY-008 + 5 ready tasks from 18:00 cron planning
+[0m
+[0m# [0mTodos
+[•] Add codex review watchdog timing + review-meta JSON output to scripts/auto_dev_loop.sh
+[ ] Extend scripts/summarize_auto_dev_runs.py to parse review-meta and surface AUTO-006 section in daily report
+[ ] Create tests/test_auto006_codex_review_watchdog.py covering PASS/FAIL/TIMEOUT scenarios
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with AUTO-006 changes
+[0m
+Now I have full context. Let me plan and implement AUTO-006.
+Now let me implement the watchdog in `auto_dev_loop.sh`. First, I'll add a helper function for writing review metadata, then wire it into the codex review section:
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -132,8 +132,62 @@
+         -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+         -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+ }
+ 
++# [AUTO-006] codex_review_watchdog
++# Persist a review-meta-roundN.json next to the codex-review-roundN.txt archive
++# so summarize_auto_dev_runs.py can surface review elapsed_ms, timed_out and
++# partial_output in the nightly report. Always emits valid JSON; never raises.
++write_review_meta() {
++    local out_file="$1"      # path to review-meta-roundN.json
++    local round="$2"         # round number
++    local started_epoch="$3" # codex review start epoch (seconds)
++    local finished_epoch="$4"
++    local timeout_seconds="$5"
++    local exit_code="$6"
++    local timed_out="$7"        # "true" / "false"
++    local review_skipped="$8"   # "true" / "false"
++    local review_file_path="$9" # path to the captured review output
++    local status="${10:-UNKNOWN}"   # PASS / FAIL / TIMEOUT / SKIPPED
++    local task_id="${TASK_ID:-unknown}"
++
++    local partial_bytes=0
++    local has_partial_output=false
++    if [ -f "$review_file_path" ]; then
++        partial_bytes=$(wc -c < "$review_file_path" 2>/dev/null | tr -d ' ' || echo 0)
++        if [ "${partial_bytes:-0}" -gt 0 ]; then
++            has_partial_output=true
++        fi
++    fi
++
++    local elapsed_ms=0
++    if [ -n "$started_epoch" ] && [ -n "$finished_epoch" ]; then
++        elapsed_ms=$(( (finished_epoch - started_epoch) * 1000 ))
++    fi
++
++    python3 - "$out_file" <<PYEOF || warn "[AUTO-006] failed to write review meta: $out_file"
++import json, os, sys
++path = sys.argv[1]
++data = {
++    "task_id": "$task_id",
++    "round": int("$round") if "$round".isdigit() else 0,
++    "started_at_epoch": int("$started_epoch") if "$started_epoch".lstrip("-").isdigit() else 0,
++    "finished_at_epoch": int("$finished_epoch") if "$finished_epoch".lstrip("-").isdigit() else 0,
++    "elapsed_ms": int("$elapsed_ms") if "$elapsed_ms".lstrip("-").isdigit() else 0,
++    "timeout_seconds": int("$timeout_seconds") if "$timeout_seconds".lstrip("-").isdigit() else 0,
++    "exit_code": int("$exit_code") if "$exit_code".lstrip("-").isdigit() else -1,
++    "timed_out": $timed_out,
++    "review_skipped": $review_skipped,
++    "has_partial_output": $has_partial_output,
++    "partial_output_bytes": int("$partial_bytes") if "$partial_bytes".lstrip("-").isdigit() else 0,
++    "status": "$status",
++}
++os.makedirs(os.path.dirname(path), exist_ok=True)
++with open(path, "w", encoding="utf-8") as f:
++    json.dump(data, f, ensure_ascii=False, indent=2)
++PYEOF
++}
++
+ cleanup() {
+     rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+     if [ "$HAVE_LOCK" = true ]; then
+         rm -rf "$LOCK_DIR" 2>/dev/null || true
+
+[0m
+Now let me wire the watchdog into the codex review block:
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -976,13 +976,19 @@
+ 
+ REVIEW_FILE=$(mktemp -t auto-dev-review.XXXXXX)
+ if [ "$CODEX_AVAILABLE" = true ]; then
+     log "Running Codex review..."
++    # [AUTO-006] codex_review_watchdog — record start/finish epoch so the
++    # nightly report can show review elapsed_ms, timed_out, and whether any
++    # partial output was captured before killpg.
++    CODEX_REVIEW_START_EPOCH=$(date +%s)
+     set +e
+     run_with_timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" codex review --uncommitted > "$REVIEW_FILE" 2>&1
+     CODEX_EXIT=$?
+     set -e
++    CODEX_REVIEW_END_EPOCH=$(date +%s)
+     log "Codex exit code: $CODEX_EXIT"
++    log "Codex review elapsed: $(( CODEX_REVIEW_END_EPOCH - CODEX_REVIEW_START_EPOCH ))s (timeout=${CODEX_REVIEW_TIMEOUT_SECONDS}s)"
+     if [ $CODEX_EXIT -ne 0 ]; then
+         REVIEW_ERR=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
+         if echo "$REVIEW_ERR" | grep -qiE "(auth|token|quota|usage[[:space:]_-]*limit|credits|rate.limit|401|403|429|unauthorized|billing)"; then
+             warn "Codex token/auth error — blocking commit"
+@@ -1006,8 +1012,33 @@
+ } > "$REVIEW_SAVE_PATH"
+ cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
+ log "Review saved: $REVIEW_SAVE_PATH"
+ 
++# [AUTO-006] codex_review_watchdog — persist review meta for the nightly
++# report regardless of outcome. Determine status here so the JSON stays a
++# single source of truth even when later branches flip RESULT_STATUS.
++CODEX_META_STATUS="UNKNOWN"
++if [ "$REVIEW_SKIPPED" = true ]; then
++    CODEX_META_STATUS="SKIPPED"
++elif [ "$CODEX_EXIT" -eq 124 ]; then
++    CODEX_META_STATUS="TIMEOUT"
++elif [ "$CODEX_EXIT" -eq 0 ]; then
++    CODEX_META_STATUS="PASS"
++else
++    CODEX_META_STATUS="FAIL"
++fi
++write_review_meta \
++    "$RUN_DIR/review-meta-round${ROUND}.json" \
++    "$ROUND" \
++    "${CODEX_REVIEW_START_EPOCH:-0}" \
++    "${CODEX_REVIEW_END_EPOCH:-0}" \
++    "$CODEX_REVIEW_TIMEOUT_SECONDS" \
++    "$CODEX_EXIT" \
++    "$([ "$CODEX_EXIT" -eq 124 ] && echo true || echo false)" \
++    "$REVIEW_SKIPPED" \
++    "$REVIEW_FILE" \
++    "$CODEX_META_STATUS"
++
+ # Review skipped (token unavailable) -> STOP, do not commit without review
+ # [2026-06-04] Hard rule: no commit without Codex review. No exceptions.
+ if [ "$REVIEW_SKIPPED" = true ]; then
+     err "Codex unavailable — cannot commit without review"
+
+[0m
+Now let me also enhance the timeout/FAIL branches to include explicit recovery notes for human review. First let me look at the current state:
+[0m→ [0mRead scripts/auto_dev_loop.sh[90m [offset=1015, limit=75][0m
+Now let me enhance the timeout/FAIL branches with explicit recovery context:
+[0m
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -1048,11 +1048,23 @@
+     break
+ fi
+ 
+ if [ $CODEX_EXIT -eq 124 ]; then
+-    LAST_FAILURE_REASON="Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s"
+-    ISSUES_LOG+=("[Round $ROUND] Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s")
++    # [AUTO-006] codex_review_watchdog — record partial-output metadata so
++    # the human recovery path knows whether the timeout produced any
++    # salvageable review text. We never treat a timeout as PASS; the
++    # batch stops here and the dirty tree + review archive stay in place
++    # for human/Codex follow-up.
++    local _partial_bytes=0
++    if [ -f "$REVIEW_FILE" ]; then
++        _partial_bytes=$(wc -c < "$REVIEW_FILE" 2>/dev/null | tr -d ' ' || echo 0)
++    fi
++    LAST_FAILURE_REASON="Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s (partial_output_bytes=${_partial_bytes})"
++    ISSUES_LOG+=("[Round $ROUND] Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s; partial_output_bytes=${_partial_bytes}; archive=$RUN_DIR/codex-review-round${ROUND}.txt")
+     err "Codex review timed out, stopping batch and leaving files for human review"
++    err "  Partial review archive: docs/task_runs/$RUN_ID/codex-review-round${ROUND}.txt"
++    err "  Review metadata:        docs/task_runs/$RUN_ID/review-meta-round${ROUND}.json"
++    err "  Tree intentionally left dirty for human inspection (no commit)."
+     RESULT_STATUS="NEEDS_HUMAN"
+     break
+ fi
+ 
+@@ -1060,10 +1072,12 @@
+ # issue. Stop the batch and leave the dirty tree for human/Codex recovery
+ # instead of burning OpenCode rounds on a non-code failure.
+ if [ $CODEX_EXIT -ne 0 ]; then
+     LAST_FAILURE_REASON="Codex review failed with exit ${CODEX_EXIT}"
+-    ISSUES_LOG+=("[Round $ROUND] Codex review failed (exit=$CODEX_EXIT)")
++    ISSUES_LOG+=("[Round $ROUND] Codex review failed (exit=$CODEX_EXIT); archive=$RUN_DIR/codex-review-round${ROUND}.txt")
+     err "Codex review failed (exit=${CODEX_EXIT}), stopping batch for human recovery"
++    err "  Review archive: docs/task_runs/$RUN_ID/codex-review-round${ROUND}.txt"
++    err "  Review metadata: docs/task_runs/$RUN_ID/review-meta-round${ROUND}.json"
+     RESULT_STATUS="NEEDS_HUMAN"
+     break
+ fi
+ 
+
+[0m
+Now let me verify the bash syntax is still valid:
+[0m$ [0mbash -n scripts/auto_dev_loop.sh && echo "SYNTAX OK"
+SYNTAX OK
+[0m
+Let me test the `write_review_meta` function in isolation to confirm it produces valid JSON:
+[0m$ [0msource <(sed -n '/^write_review_meta/,/^}/p' scripts/auto_dev_loop.sh) 2>/dev/null
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+echo "---"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK keys:', sorted(d.keys()))"
+rm -rf "$TMPDIR_TEST"
+zsh:4: command not found: write_review_meta
+cat: /var/folders/r9/2qykv_gx0_9fs2jb0zkccf8w0000gn/T/tmp.ty4kGrInEy/review-meta-round1.json: No such file or directory
+---
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json; d=json.load(open('/var/folders/r9/2qykv_gx0_9fs2jb0zkccf8w0000gn/T/tmp.ty4kGrInEy/review-meta-round1.json')); print('OK keys:', sorted(d.keys()))
+                             ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/var/folders/r9/2qykv_gx0_9fs2jb0zkccf8w0000gn/T/tmp.ty4kGrInEy/review-meta-round1.json'
+[0m
+[0m$ [0mcat > /tmp/test_meta.sh <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+warn() { echo "[warn] $*" >&2; }
+log()  { echo "[log] $*"; }
+
+# Pull the write_review_meta function from the real script
+eval "$(awk '/^write_review_meta\(\)/,/^}$/' scripts/auto_dev_loop.sh)"
+
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+echo "--- Output ---"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+echo "--- Validate ---"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK keys:', sorted(d.keys())); print('elapsed_ms:', d['elapsed_ms']); print('has_partial_output:', d['has_partial_output'])"
+rm -rf "$TMPDIR_TEST"
+OUTER
+bash /tmp/test_meta.sh
+/tmp/test_meta.sh: eval: line 51: syntax error: unexpected end of file
+[0m
+[0m$ [0mawk '/^write_review_meta\(\)/{flag=1} flag{print} /^}$/{if(flag){flag=0; exit}}' scripts/auto_dev_loop.sh | tail -3
+"partial_output_bytes": int("$partial_bytes") if "$partial_bytes".lstrip("-").isdigit() else 0,
+    "status": "$status",
+}
+[0m
+[0m$ [0mgrep -n "^}" scripts/auto_dev_loop.sh | head -10
+126:}
+134:}
+183:}
+188:}
+195:}
+215:}
+228:}
+266:}
+386:}
+501:}
+[0m
+[0m→ [0mRead scripts/auto_dev_loop.sh[90m [limit=10, offset=183][0m
+[0m
+[0m$ [0mcat > /tmp/test_meta.sh <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+warn() { echo "[warn] $*" >&2; }
+log()  { echo "[log] $*"; }
+
+# Extract function by line range
+eval "$(sed -n '128,188p' scripts/auto_dev_loop.sh)"
+
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+echo "--- Output ---"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+echo "--- Validate ---"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK keys:', sorted(d.keys())); print('elapsed_ms:', d['elapsed_ms']); print('has_partial_output:', d['has_partial_output'])"
+rm -rf "$TMPDIR_TEST"
+OUTER
+bash /tmp/test_meta.sh
+Traceback (most recent call last):
+  File "<stdin>", line 11, in <module>
+NameError: name 'false' is not defined. Did you mean: 'False'?
+[warn] [AUTO-006] failed to write review meta: /var/folders/r9/2qykv_gx0_9fs2jb0zkccf8w0000gn/T/tmp.YB5jtVi0Wu/review-meta-round1.json
+--- Output ---
+cat: /var/folders/r9/2qykv_gx0_9fs2jb0zkccf8w0000gn/T/tmp.YB5jtVi0Wu/review-meta-round1.json: No such file or directory
+[0m
+I need to fix the Python heredoc — bash booleans `true`/`false` aren't valid Python identifiers:
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -143,10 +143,10 @@
+     local started_epoch="$3" # codex review start epoch (seconds)
+     local finished_epoch="$4"
+     local timeout_seconds="$5"
+     local exit_code="$6"
+-    local timed_out="$7"        # "true" / "false"
+-    local review_skipped="$8"   # "true" / "false"
++    local timed_out="$7"        # "true" / "false" (bash literal)
++    local review_skipped="$8"   # "true" / "false" (bash literal)
+     local review_file_path="$9" # path to the captured review output
+     local status="${10:-UNKNOWN}"   # PASS / FAIL / TIMEOUT / SKIPPED
+     local task_id="${TASK_ID:-unknown}"
+ 
+@@ -163,8 +163,16 @@
+     if [ -n "$started_epoch" ] && [ -n "$finished_epoch" ]; then
+         elapsed_ms=$(( (finished_epoch - started_epoch) * 1000 ))
+     fi
+ 
++    # Translate bash true/false literals to Python True/False so the inline
++    # heredoc below produces valid JSON. Defaults to False on unexpected
++    # input to keep the JSON writable even when callers pass garbage.
++    local py_timed_out py_review_skipped py_has_partial
++    if [ "$timed_out" = "true" ]; then py_timed_out="True"; else py_timed_out="False"; fi
++    if [ "$review_skipped" = "true" ]; then py_review_skipped="True"; else py_review_skipped="False"; fi
++    if [ "$has_partial_output" = "true" ]; then py_has_partial="True"; else py_has_partial="False"; fi
++
+     python3 - "$out_file" <<PYEOF || warn "[AUTO-006] failed to write review meta: $out_file"
+ import json, os, sys
+ path = sys.argv[1]
+ data = {
+@@ -174,11 +182,11 @@
+     "finished_at_epoch": int("$finished_epoch") if "$finished_epoch".lstrip("-").isdigit() else 0,
+     "elapsed_ms": int("$elapsed_ms") if "$elapsed_ms".lstrip("-").isdigit() else 0,
+     "timeout_seconds": int("$timeout_seconds") if "$timeout_seconds".lstrip("-").isdigit() else 0,
+     "exit_code": int("$exit_code") if "$exit_code".lstrip("-").isdigit() else -1,
+-    "timed_out": $timed_out,
+-    "review_skipped": $review_skipped,
+-    "has_partial_output": $has_partial_output,
++    "timed_out": $py_timed_out,
++    "review_skipped": $py_review_skipped,
++    "has_partial_output": $py_has_partial,
+     "partial_output_bytes": int("$partial_bytes") if "$partial_bytes".lstrip("-").isdigit() else 0,
+     "status": "$status",
+ }
+ os.makedirs(os.path.dirname(path), exist_ok=True)
+
+[0m
+[0m$ [0mcat > /tmp/test_meta.sh <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+warn() { echo "[warn] $*" >&2; }
+log()  { echo "[log] $*"; }
+
+# Extract function by line range (now extended due to translation block)
+START=$(grep -n "^write_review_meta()" scripts/auto_dev_loop.sh | head -1 | cut -d: -f1)
+# Find the matching close brace by counting braces from START
+END=$(awk -v s="$START" 'NR>=s {open+=gsub(/\{/,"&"); close+=gsub(/\}/,"&"); if(NR>s && open==close){print NR; exit}}' scripts/auto_dev_loop.sh)
+eval "$(sed -n "${START},${END}p" scripts/auto_dev_loop.sh)"
+
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+echo "--- Output ---"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+echo "--- Validate ---"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK keys:', sorted(d.keys())); print('elapsed_ms:', d['elapsed_ms']); print('has_partial_output:', d['has_partial_output'])"
+
+echo "--- TIMEOUT case ---"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round2.json" "2" "1720000000" "1720001200" "1200" "124" "true" "false" "/nonexistent/review.txt" "TIMEOUT"
+cat "$TMPDIR_TEST/review-meta-round2.json"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round2.json')); print('OK; elapsed_ms:', d['elapsed_ms'], 'timed_out:', d['timed_out'], 'has_partial:', d['has_partial_output'])"
+
+rm -rf "$TMPDIR_TEST"
+OUTER
+bash /tmp/test_meta.sh
+awk: syntax error at source line 1
+ context is
+	NR>=s {open+=gsub(/\{/,"&"); >>>  close+= <<< 
+awk: illegal statement at source line 1
+awk: illegal statement at source line 1
+	missing )
+[0m
+[0m$ [0mcat > /tmp/test_meta.sh <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+warn() { echo "[warn] $*" >&2; }
+log()  { echo "[log] $*"; }
+
+# Extract function: from `write_review_meta()` to the first line that is exactly `}`
+START=$(grep -n "^write_review_meta()" scripts/auto_dev_loop.sh | head -1 | cut -d: -f1)
+# Find the standalone `}` line after START
+END=$(awk -v s="$START" 'NR>=s && $0=="}" {print NR; exit}' scripts/auto_dev_loop.sh)
+eval "$(sed -n "${START},${END}p" scripts/auto_dev_loop.sh)"
+
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+echo "--- Output ---"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+echo "--- Validate ---"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK keys:', sorted(d.keys())); print('elapsed_ms:', d['elapsed_ms']); print('has_partial_output:', d['has_partial_output'])"
+
+echo "--- TIMEOUT case ---"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round2.json" "2" "1720000000" "1720001200" "1200" "124" "true" "false" "/nonexistent/review.txt" "TIMEOUT"
+cat "$TMPDIR_TEST/review-meta-round2.json"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round2.json')); print('OK; elapsed_ms:', d['elapsed_ms'], 'timed_out:', d['timed_out'], 'has_partial:', d['has_partial_output'])"
+
+rm -rf "$TMPDIR_TEST"
+OUTER
+bash /tmp/test_meta.sh
+/tmp/test_meta.sh: eval: line 62: syntax error: unexpected end of file
+[0m
+[0m$ [0mcat > /tmp/test_meta.sh <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+warn() { echo "[warn] $*" >&2; }
+log()  { echo "[log] $*"; }
+
+# Extract function: from `write_review_meta()` to the first line that is exactly `}`
+START=$(grep -n "^write_review_meta()" scripts/auto_dev_loop.sh | head -1 | cut -d: -f1)
+END=$(awk -v s="$START" 'NR>=s && $0=="}" {print NR; exit}' scripts/auto_dev_loop.sh)
+sed -n "${START},${END}p" scripts/auto_dev_loop.sh > /tmp/_meta_fn.sh
+source /tmp/_meta_fn.sh
+
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+echo "--- Output ---"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+echo "--- Validate ---"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK keys:', sorted(d.keys())); print('elapsed_ms:', d['elapsed_ms']); print('has_partial_output:', d['has_partial_output'])"
+
+echo "--- TIMEOUT case ---"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round2.json" "2" "1720000000" "1720001200" "1200" "124" "true" "false" "/nonexistent/review.txt" "TIMEOUT"
+cat "$TMPDIR_TEST/review-meta-round2.json"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round2.json')); print('OK; elapsed_ms:', d['elapsed_ms'], 'timed_out:', d['timed_out'], 'has_partial:', d['has_partial_output'])"
+
+rm -rf "$TMPDIR_TEST" /tmp/_meta_fn.sh
+OUTER
+bash /tmp/test_meta.sh && rm /tmp/test_meta.sh
+/tmp/_meta_fn.sh: line 53: syntax error: unexpected end of file
+[0m
+[0m$ [0mSTART=$(grep -n "^write_review_meta()" scripts/auto_dev_loop.sh | head -1 | cut -d: -f1)
+END=$(awk -v s="$START" 'NR>=s && $0=="}" {print NR; exit}' scripts/auto_dev_loop.sh)
+echo "START=$START END=$END"
+sed -n "${START},${END}p" scripts/auto_dev_loop.sh | tail -5
+START=140 END=191
+    "review_skipped": $py_review_skipped,
+    "has_partial_output": $py_has_partial,
+    "partial_output_bytes": int("$partial_bytes") if "$partial_bytes".lstrip("-").isdigit() else 0,
+    "status": "$status",
+}
+[0m
+[0m$ [0mSTART=$(grep -n "^write_review_meta()" scripts/auto_dev_loop.sh | head -1 | cut -d: -f1)
+echo "START=$START"
+# Find first standalone `}` AFTER the PYEOF marker
+PYEOF_LINE=$(awk -v s="$START" 'NR>=s && $0=="PYEOF" {print NR; exit}' scripts/auto_dev_loop.sh)
+echo "PYEOF_LINE=$PYEOF_LINE"
+END=$(awk -v s="$PYEOF_LINE" 'NR>s && $0=="}" {print NR; exit}' scripts/auto_dev_loop.sh)
+echo "END=$END"
+sed -n "${START},${END}p" scripts/auto_dev_loop.sh > /tmp/_meta_fn.sh
+bash -n /tmp/_meta_fn.sh && echo "FUNCTION SYNTAX OK"
+START=140
+PYEOF_LINE=195
+END=196
+FUNCTION SYNTAX OK
+[0m
+[0m$ [0mcat > /tmp/test_meta.sh <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+warn() { echo "[warn] $*" >&2; }
+log()  { echo "[log] $*"; }
+
+START=$(grep -n "^write_review_meta()" scripts/auto_dev_loop.sh | head -1 | cut -d: -f1)
+PYEOF_LINE=$(awk -v s="$START" 'NR>=s && $0=="PYEOF" {print NR; exit}' scripts/auto_dev_loop.sh)
+END=$(awk -v s="$PYEOF_LINE" 'NR>s && $0=="}" {print NR; exit}' scripts/auto_dev_loop.sh)
+sed -n "${START},${END}p" scripts/auto_dev_loop.sh > /tmp/_meta_fn.sh
+source /tmp/_meta_fn.sh
+
+TMPDIR_TEST=$(mktemp -d)
+echo "partial review content" > "$TMPDIR_TEST/review.txt"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round1.json" "1" "1720000000" "1720000120" "1200" "0" "false" "false" "$TMPDIR_TEST/review.txt" "PASS"
+echo "--- PASS case output ---"
+cat "$TMPDIR_TEST/review-meta-round1.json"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round1.json')); print('OK; elapsed_ms:', d['elapsed_ms'], 'has_partial:', d['has_partial_output'])"
+echo
+echo "--- TIMEOUT case output ---"
+TASK_ID="AUTO-006-TEST" write_review_meta "$TMPDIR_TEST/review-meta-round2.json" "2" "1720000000" "1720001200" "1200" "124" "true" "false" "/nonexistent/review.txt" "TIMEOUT"
+cat "$TMPDIR_TEST/review-meta-round2.json"
+python3 -c "import json; d=json.load(open('$TMPDIR_TEST/review-meta-round2.json')); print('OK; elapsed_ms:', d['elapsed_ms'], 'timed_out:', d['timed_out'], 'has_partial:', d['has_partial_output'])"
+
+rm -rf "$TMPDIR_TEST" /tmp/_meta_fn.sh
+OUTER
+bash /tmp/test_meta.sh && rm /tmp/test_meta.sh
+--- PASS case output ---
+{
+  "task_id": "AUTO-006-TEST",
+  "round": 1,
+  "started_at_epoch": 1720000000,
+  "finished_at_epoch": 1720000120,
+  "elapsed_ms": 120000,
+  "timeout_seconds": 1200,
+  "exit_code": 0,
+  "timed_out": false,
+  "review_skipped": false,
+  "has_partial_output": true,
+  "partial_output_bytes": 23,
+  "status": "PASS"
+}OK; elapsed_ms: 120000 has_partial: True
+
+--- TIMEOUT case output ---
+{
+  "task_id": "AUTO-006-TEST",
+  "round": 2,
+  "started_at_epoch": 1720000000,
+  "finished_at_epoch": 1720001200,
+  "elapsed_ms": 1200000,
+  "timeout_seconds": 1200,
+  "exit_code": 124,
+  "timed_out": true,
+  "review_skipped": false,
+  "has_partial_output": false,
+  "partial_output_bytes": 0,
+  "status": "TIMEOUT"
+}OK; elapsed_ms: 1200000 timed_out: True has_partial: False
+[0m
+[0m# [0mTodos
+[✓] Add codex review watchdog timing + review-meta JSON output to scripts/auto_dev_loop.sh
+[•] Extend scripts/summarize_auto_dev_runs.py to parse review-meta and surface AUTO-006 section in daily report
+[ ] Create tests/test_auto006_codex_review_watchdog.py covering PASS/FAIL/TIMEOUT scenarios
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with AUTO-006 changes
+[0m
+The watchdog function works for both PASS and TIMEOUT cases. Now let me complete the bash script changes and move on to the summarize script:
+Now let me extend `summarize_auto_dev_runs.py` to parse the review-meta and surface it in the report. I'll add the AUTO-006 functions near AUTO-004/AUTO-005:
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -894,8 +894,376 @@
+ 
+     return "\n".join(lines)
+ 
+ 
++# [AUTO-006] codex_review_watchdog
++#
++# AUTO-006 surfaces Codex review elapsed_ms, timed_out flags and partial_output
++# metadata in the nightly report. The watchdog records a ``review-meta-roundN.json``
++# next to every codex-review-roundN.txt in docs/task_runs/<run>/, even when the
++# review times out or is skipped. This block aggregates those JSON files and
++# renders a compact section so operators can answer at a glance:
++#   - Did any review hit the watchdog?
++#   - How long did reviews actually take vs the configured timeout?
++#   - Was any partial output captured before killpg so the human can salvage it?
++#
++# Constraints honoured:
++#   - Read-only: only reads review-meta-round*.json from existing run archives.
++#   - Never marks a timeout as PASS — the JSON status is taken verbatim.
++#   - Never silently drops an unparseable meta file: it is reported as a parse
++#     failure so the underlying corruption does not hide a real timeout.
++
++
++_REVIEW_META_FILENAME_RE = re.compile(r"^review-meta-round(\d+)\.json$")
++
++
++def _safe_read_json(path: Path) -> Optional[dict[str, object]]:
++    """Read a JSON file, returning None on any read/parse failure."""
++    try:
++        return json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return None
++
++
++def parse_review_meta_for_run(run_dir: Path) -> list[dict[str, object]]:
++    """Parse all ``review-meta-roundN.json`` files in a single run directory.
++
++    Returns a list sorted by round number. Each entry augments the raw JSON
++    with ``run_id`` and ``meta_path`` so the report can reference the source.
++    Corrupt or missing files produce no entries (and never raise).
++    """
++    if not run_dir.exists():
++        return []
++
++    entries: list[dict[str, object]] = []
++    for f in sorted(run_dir.iterdir()):
++        m = _REVIEW_META_FILENAME_RE.match(f.name)
++        if not m:
++            continue
++        data = _safe_read_json(f)
++        if not isinstance(data, dict):
++            # Record the parse failure so the report can flag the corruption
++            # instead of silently hiding a possible timeout.
++            entries.append({
++                "run_id": run_dir.name,
++                "round": int(m.group(1)),
++                "meta_path": str(f),
++                "parse_error": True,
++            })
++            continue
++        data.setdefault("run_id", run_dir.name)
++        data.setdefault("meta_path", str(f))
++        data["parse_error"] = False
++        entries.append(data)
++
++    entries.sort(key=lambda d: int(d.get("round", 0) or 0))
++    return entries
++
++
++def collect_review_meta(
++    task_runs_dir: Path, target_date: Optional[str] = None
++) -> list[dict[str, object]]:
++    """Aggregate review-meta-roundN.json across all (or date-filtered) runs.
++
++    Each entry mirrors :func:`parse_review_meta_for_run` and additionally
++    carries ``task_id`` and ``priority`` when the corresponding run has a
++    parseable task.md.
++    """
++    if not task_runs_dir.exists():
++        return []
++
++    all_entries: list[dict[str, object]] = []
++    for d in sorted(task_runs_dir.iterdir()):
++        if not d.is_dir():
++            continue
++        # Date filter (mirror scan_task_runs' timestamp extraction)
++        if target_date:
++            parts = d.name.split("-")
++            date_part = None
++            for i, p in enumerate(parts):
++                if (
++                    re.match(r"^\d{8}$", p)
++                    and i + 1 < len(parts)
++                    and re.match(r"^\d{6}$", parts[i + 1])
++                ):
++                    date_part = f"{p[:4]}-{p[4:6]}-{p[6:8]}"
++                    break
++            if date_part != target_date:
++                continue
++
++        run_entries = parse_review_meta_for_run(d)
++        if not run_entries:
++            continue
++
++        # Annotate each entry with task_id / priority parsed from task.md so
++        # the report can join review timing back to the originating task.
++        task_meta = parse_task_md(d / "task.md")
++        task_id_raw = task_meta.get("task", "")
++        task_id = task_id_raw
++        m = re.match(r"^([A-Z]+-[\w-]+)\s*-\s*(.+)$", task_id_raw)
++        if m:
++            task_id = m.group(1).strip()
++        priority = task_meta.get("priority", "")
++
++        for entry in run_entries:
++            entry.setdefault("task_id", task_id)
++            entry.setdefault("priority", priority)
++            all_entries.append(entry)
++
++    return all_entries
++
++
++def summarize_review_meta(
++    entries: list[dict[str, object]],
++) -> dict[str, object]:
++    """Compute aggregate review-watchdog stats from raw meta entries.
++
++    Returns:
++      - count: total review entries
++      - pass_count / fail_count / timeout_count / skipped_count
++      - max_elapsed_ms / avg_elapsed_ms
++      - any_timed_out: bool
++      - any_partial_output: bool
++      - parse_errors: int — corrupt meta files that could not be decoded
++      - by_task: dict[task_id] -> {count, max_elapsed_ms, any_timed_out}
++    """
++    if not entries:
++        return {
++            "count": 0,
++            "pass_count": 0,
++            "fail_count": 0,
++            "timeout_count": 0,
++            "skipped_count": 0,
++            "max_elapsed_ms": 0,
++            "avg_elapsed_ms": 0.0,
++            "any_timed_out": False,
++            "any_partial_output": False,
++            "parse_errors": 0,
++            "by_task": {},
++        }
++
++    pass_c = 0
++    fail_c = 0
++    timeout_c = 0
++    skipped_c = 0
++    parse_errors = 0
++    elapsed_samples: list[int] = []
++    any_timeout = False
++    any_partial = False
++    by_task: dict[str, dict[str, object]] = {}
++
++    for e in entries:
++        if e.get("parse_error"):
++            parse_errors += 1
++            continue
++        status = str(e.get("status", "")).upper()
++        if status == "PASS":
++            pass_c += 1
++        elif status == "TIMEOUT":
++            timeout_c += 1
++            any_timeout = True
++        elif status == "SKIPPED":
++            skipped_c += 1
++        elif status == "FAIL":
++            fail_c += 1
++        if bool(e.get("has_partial_output", False)):
++            any_partial = True
++        elapsed = int(e.get("elapsed_ms", 0) or 0)
++        if elapsed > 0:
++            elapsed_samples.append(elapsed)
++        # Per-task aggregation
++        tid = str(e.get("task_id", "") or "?")
++        bucket = by_task.setdefault(tid, {
++            "count": 0,
++            "max_elapsed_ms": 0,
++            "any_timed_out": False,
++            "any_partial": False,
++            "statuses": [],
++        })
++        bucket["count"] = int(bucket["count"]) + 1  # type: ignore[operator]
++        if elapsed > int(bucket["max_elapsed_ms"] or 0):  # type: ignore[arg-type]
++            bucket["max_elapsed_ms"] = elapsed
++        if any_timeout and tid == str(e.get("task_id", "")):
++            bucket["any_timed_out"] = bool(bucket.get("any_timed_out")) or bool(
++                e.get("timed_out", False)
++            )
++        if bool(e.get("timed_out", False)):
++            bucket["any_timed_out"] = True  # type: ignore[assignment]
++        if bool(e.get("has_partial_output", False)):
++            bucket["any_partial"] = True  # type: ignore[assignment]
++        bucket["statuses"].append(status)  # type: ignore[union-attr]
++
++    max_elapsed = max(elapsed_samples) if elapsed_samples else 0
++    avg_elapsed = (
++        sum(elapsed_samples) / len(elapsed_samples) if elapsed_samples else 0.0
++    )
++
++    return {
++        "count": len(entries),
++        "pass_count": pass_c,
++        "fail_count": fail_c,
++        "timeout_count": timeout_c,
++        "skipped_count": skipped_c,
++        "max_elapsed_ms": max_elapsed,
++        "avg_elapsed_ms": avg_elapsed,
++        "any_timed_out": any_timeout,
++        "any_partial_output": any_partial,
++        "parse_errors": parse_errors,
++        "by_task": by_task,
++    }
++
++
++def _fmt_ms(ms: int | float) -> str:
++    """Render milliseconds as a compact human-readable duration."""
++    try:
++        ms_int = int(ms)
++    except (TypeError, ValueError):
++        return "0s"
++    if ms_int <= 0:
++        return "0s"
++    if ms_int < 1000:
++        return f"{ms_int}ms"
++    seconds = ms_int / 1000.0
++    if seconds < 60:
++        return f"{seconds:.1f}s"
++    minutes = seconds / 60.0
++    if minutes < 60:
++        return f"{minutes:.1f}m"
++    hours = minutes / 60.0
++    return f"{hours:.2f}h"
++
++
++def format_codex_review_watchdog_section(
++    entries: list[dict[str, object]],
++    summary: Optional[dict[str, object]] = None,
++) -> str:
++    """Render the AUTO-006 Codex review watchdog section for the nightly report.
++
++    The section is intentionally compact: one summary line, one table of
++    per-task rows, and (if any) a P0/P1 callout for timeouts or parse errors.
++    The block always renders even when ``entries`` is empty so operators can
++    confirm the watchdog is wired in.
++    """
++    if summary is None:
++        summary = summarize_review_meta(entries)
++
++    lines: list[str] = []
++    lines.append("## Codex Review 超时 watchdog（AUTO-006）")
++    lines.append("")
++
++    count = int(summary.get("count", 0))
++    if count == 0:
++        lines.append(
++            "> 本报告窗口内无 ``review-meta-roundN.json`` 记录：本次 cron 未触发"
++            " Codex review，或运行版本 predates AUTO-006。"
++        )
++        lines.append("")
++        return "\n".join(lines)
++
++    lines.append("### 总览")
++    lines.append("")
++    lines.append("| 维度 | 值 |")
++    lines.append("|------|------|")
++    lines.append(f"| Review 次数 | {count} |")
++    lines.append(f"| PASS | {summary.get('pass_count', 0)} |")
++    lines.append(f"| FAIL | {summary.get('fail_count', 0)} |")
++    lines.append(f"| TIMEOUT | {summary.get('timeout_count', 0)} |")
++    lines.append(f"| SKIPPED | {summary.get('skipped_count', 0)} |")
++    lines.append(
++        f"| 最大耗时 | {_fmt_ms(summary.get('max_elapsed_ms', 0))} "
++        f"({summary.get('max_elapsed_ms', 0)} ms)"
++    )
++    lines.append(
++        f"| 平均耗时 | {_fmt_ms(summary.get('avg_elapsed_ms', 0))} "
++        f"({summary.get('avg_elapsed_ms', 0):.0f} ms)"
++    )
++    lines.append(
++        f"| 是否出现超时 | {'是' if summary.get('any_timed_out') else '否'} |"
++    )
++    lines.append(
++        f"| 是否捕获部分输出 | {'是' if summary.get('any_partial_output') else '否'} |"
++    )
++    lines.append(f"| 解析失败 JSON | {summary.get('parse_errors', 0)} |")
++    lines.append("")
++
++    by_task = summary.get("by_task", {}) or {}
++    if by_task:
++        lines.append("### 按任务聚合")
++        lines.append("")
++        lines.append("| 任务ID | 次数 | 最大耗时 | 超时 | 部分输出 | 状态分布 |")
++        lines.append("|--------|------|----------|------|----------|----------|")
++        for tid in sorted(by_task.keys()):
++            b = by_task[tid] or {}
++            statuses = b.get("statuses", []) or []
++            # Compact status histogram: "PASS:2, TIMEOUT:1"
++            hist: dict[str, int] = {}
++            for s in statuses:
++                hist[s] = hist.get(s, 0) + 1
++            hist_str = ", ".join(f"{k}:{v}" for k, v in sorted(hist.items())) or "-"
++            lines.append(
++                f"| {tid} | {b.get('count', 0)} | "
++                f"{_fmt_ms(b.get('max_elapsed_ms', 0))} | "
++                f"{'是' if b.get('any_timed_out') else '否'} | "
++                f"{'是' if b.get('any_partial') else '否'} | "
++                f"{hist_str} |"
++            )
++        lines.append("")
++
++    # Per-entry detail (capped to avoid flooding the report)
++    lines.append("### 明细")
++    lines.append("")
++    lines.append(
++        "| 任务ID | Run | 轮次 | 状态 | 耗时 | 超时阈值 | 部分 | 退出码 |"
++    )
++    lines.append("|--------|-----|------|------|------|----------|------|--------|")
++    # Cap detail rows at 30 to keep the report scannable; remaining entries
++    # are still represented in the aggregate table above.
++    for e in entries[:30]:
++        if e.get("parse_error"):
++            lines.append(
++                f"| {e.get('task_id', '?')} | {e.get('run_id', '?')} | "
++                f"{e.get('round', '?')} | PARSE_ERROR | - | - | - | - |"
++            )
++            continue
++        timeout_s = e.get("timeout_seconds", 0)
++        timeout_str = (
++            f"{int(timeout_s)}s" if timeout_s else "-"
++        )
++        lines.append(
++            f"| {e.get('task_id', '?')} | {e.get('run_id', '?')} | "
++            f"{e.get('round', '?')} | {e.get('status', '?')} | "
++            f"{_fmt_ms(e.get('elapsed_ms', 0))} | {timeout_str} | "
++            f"{'是' if e.get('has_partial_output') else '否'} | "
++            f"{e.get('exit_code', '?')} |"
++        )
++    if len(entries) > 30:
++        lines.append(
++            f"| ... | (省略 {len(entries) - 30} 行，详见各 run archive) |"
++            " - | - | - | - | - | - |"
++        )
++    lines.append("")
++
++    # Callouts
++    callouts: list[str] = []
++    if summary.get("any_timed_out"):
++        callouts.append(
++            "> **P0**: 存在 Codex review 超时；该任务已被标记为 NEEDS_HUMAN，"
++            "未触发 commit。请检查对应 ``codex-review-roundN.txt`` 与 "
++            "``review-meta-roundN.json`` 决定是否补 review 或调高 "
++            "``AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS``。"
++        )
++    if summary.get("parse_errors", 0) > 0:
++        callouts.append(
++            f"> **P1**: {summary.get('parse_errors')} 个 ``review-meta-roundN.json`` "
++            "解析失败，可能是写入过程中进程被 kill。请检查对应 run archive。"
++        )
++    if callouts:
++        lines.extend(callouts)
++        lines.append("")
++
++    return "\n".join(lines)
++
++
+ # ── [V-002] nightly_acceptance_report: Test log parsing ──
+ 
+ def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
+     """Parse test result counts from trace files in a task run.
+
+[0m
+Now I need to add the `json` import (check if it's already imported) and wire the AUTO-006 section into `generate_report()` and the CLI `main()`:
+[0m✱ [0mGrep "^import|^from"[90m in scripts/summarize_auto_dev_runs.py · 10 matches[0m
+I need to add `json` import:
+[0m
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -34,8 +34,9 @@
+ 
+ from __future__ import annotations
+ 
+ import argparse
++import json
+ import os
+ import re
+ import subprocess
+ import sys
+
+[0m
+Now let me wire AUTO-006 section into `generate_report()` and `main()`:
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -1566,8 +1566,9 @@
+     endurance: Optional[dict[str, object]] = None,  # [V-011]
+     runtime_budget_section: Optional[str] = None,  # [AUTO-004]
+     low_endurance_proposal: Optional[str] = None,  # [AUTO-004]
+     db_hygiene_section: Optional[str] = None,  # [AUTO-005]
++    codex_review_watchdog_section: Optional[str] = None,  # [AUTO-006]
+ ) -> str:
+     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+ 
+     lines: list[str] = []
+
+[0m
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -1795,8 +1795,12 @@
+     # [AUTO-005] db_hygiene_preflight: DB hygiene + 续航门禁 consolidated block
+     if db_hygiene_section:
+         lines.append(db_hygiene_section)
+ 
++    # [AUTO-006] codex_review_watchdog: review elapsed_ms / timed_out / partial_output
++    if codex_review_watchdog_section:
++        lines.append(codex_review_watchdog_section)
++
+     return "\n".join(lines)
+ 
+ 
+ def main() -> None:
+
+[0m
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -1824,8 +1824,10 @@
+ parser.add_argument("--no-runtime-budget", action="store_true",  # [AUTO-004]
+                     help="Skip AUTO-004 runtime budget section")
+ parser.add_argument("--no-db-hygiene", action="store_true",  # [AUTO-005]
+                     help="Skip AUTO-005 DB hygiene + 续航门禁 section (default: on)")
++parser.add_argument("--no-codex-review-watchdog", action="store_true",  # [AUTO-006]
++                    help="Skip AUTO-006 Codex review watchdog section (default: on)")
+ parser.add_argument("--target-hours", type=float, default=_TARGET_ENDURANCE_HOURS,  # [AUTO-004]
+                     help=f"Nightly endurance target in hours (default {_TARGET_ENDURANCE_HOURS})")
+ parser.add_argument("--low-hours", type=float, default=_LOW_ENDURANCE_HOURS,  # [AUTO-004]
+                     help=f"Low-endurance threshold in hours (default {_LOW_ENDURANCE_HOURS})")
+
+[0m
+Now wire it into the CLI `main()`:
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -1907,15 +1907,27 @@
+ if not args.no_db_hygiene:
+     snapshot = collect_db_hygiene_snapshot()
+     db_hygiene_section = format_db_hygiene_section(snapshot)
+ 
++# [AUTO-006] codex_review_watchdog: aggregate review-meta-roundN.json from
++# the report window so operators can see review elapsed_ms, timed_out and
++# partial_output at a glance. Defaults to on.
++codex_review_watchdog_section: Optional[str] = None
++if not args.no_codex_review_watchdog:
++    review_meta_entries = collect_review_meta(task_runs_dir, target_date=target_date)
++    review_meta_summary = summarize_review_meta(review_meta_entries)
++    codex_review_watchdog_section = format_codex_review_watchdog_section(
++        review_meta_entries, review_meta_summary
++    )
++
+ report = generate_report(
+     runs, commits, reviews, target_date,
+     ready_queue=ready_queue, replay_results=replay_results,  # [V-002]
+     consistency_results=consistency_results, endurance=endurance,  # [V-011]
+     runtime_budget_section=runtime_budget_section,  # [AUTO-004]
+     low_endurance_proposal=low_endurance_proposal,  # [AUTO-004]
+     db_hygiene_section=db_hygiene_section,  # [AUTO-005]
++    codex_review_watchdog_section=codex_review_watchdog_section,  # [AUTO-006]
+ )
+ 
+ report = redact(report)  # [V-002] final redaction pass
+ 
+
+[0m
+Now update the description in the parser to mention AUTO-006:
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -1804,9 +1804,9 @@
+ 
+ 
+ def main() -> None:
+     parser = argparse.ArgumentParser(
+-        description="[M-002/V-002/V-011/AUTO-004/AUTO-005] Summarize auto dev runs into a daily report"
++        description="[M-002/V-002/V-011/AUTO-004/AUTO-005/AUTO-006] Summarize auto dev runs into a daily report"
+     )
+     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
+     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
+
+[0m
+Let me verify the script compiles and runs dry-run:
+[0m$ [0msource .venv/bin/activate && python3 -c "import scripts.summarize_auto_dev_runs as s; print('Module loaded'); print('AUTO-006 fns:', [n for n in dir(s) if 'review_meta' in n or 'review_watchdog' in n])"
+Module loaded
+AUTO-006 fns: ['collect_review_meta', 'format_codex_review_watchdog_section', 'parse_review_meta_for_run', 'summarize_review_meta']
+[0m
+[0m$ [0msource .venv/bin/activate && python3 scripts/summarize_auto_dev_runs.py --dry-run --date 2026-07-07 --no-db-hygiene 2>&1 | grep -A 30 "Codex Review 超时"
+## Codex Review 超时 watchdog（AUTO-006）
+
+> 本报告窗口内无 ``review-meta-roundN.json`` 记录：本次 cron 未触发 Codex review，或运行版本 predates AUTO-006。
+[0m
+Empty-state works. Now let me create a fixture-based test for the AUTO-006 section to verify the rendering. Let me first write a quick fixture to confirm:
+[0m$ [0msource .venv/bin/activate && python3 -c "
+from scripts.summarize_auto_dev_runs import format_codex_review_watchdog_section, summarize_review_meta
+entries = [
+    {'task_id': 'AUTO-006', 'run_id': 'AUTO-006-20260707-032240', 'round': 1, 'status': 'PASS', 'elapsed_ms': 45000, 'timeout_seconds': 1200, 'exit_code': 0, 'timed_out': False, 'has_partial_output': True, 'partial_output_bytes': 1500, 'meta_path': '/tmp/x.json', 'parse_error': False},
+    {'task_id': 'DATA-024', 'run_id': 'DATA-024-20260629-231953', 'round': 2, 'status': 'TIMEOUT', 'elapsed_ms': 1200000, 'timeout_seconds': 1200, 'exit_code': 124, 'timed_out': True, 'has_partial_output': True, 'partial_output_bytes': 800, 'meta_path': '/tmp/y.json', 'parse_error': False},
+]
+summary = summarize_review_meta(entries)
+print(format_codex_review_watchdog_section(entries, summary))
+"
+## Codex Review 超时 watchdog（AUTO-006）
+
+### 总览
+
+| 维度 | 值 |
+|------|------|
+| Review 次数 | 2 |
+| PASS | 1 |
+| FAIL | 0 |
+| TIMEOUT | 1 |
+| SKIPPED | 0 |
+| 最大耗时 | 20.0m (1200000 ms)
+| 平均耗时 | 10.4m (622500 ms)
+| 是否出现超时 | 是 |
+| 是否捕获部分输出 | 是 |
+| 解析失败 JSON | 0 |
+
+### 按任务聚合
+
+| 任务ID | 次数 | 最大耗时 | 超时 | 部分输出 | 状态分布 |
+|--------|------|----------|------|----------|----------|
+| AUTO-006 | 1 | 45.0s | 否 | 是 | PASS:1 |
+| DATA-024 | 1 | 20.0m | 是 | 是 | TIMEOUT:1 |
+
+### 明细
+
+| 任务ID | Run | 轮次 | 状态 | 耗时 | 超时阈值 | 部分 | 退出码 |
+|--------|-----|------|------|------|----------|------|--------|
+| AUTO-006 | AUTO-006-20260707-032240 | 1 | PASS | 45.0s | 1200s | 是 | 0 |
+| DATA-024 | DATA-024-20260629-231953 | 2 | TIMEOUT | 20.0m | 1200s | 是 | 124 |
+
+> **P0**: 存在 Codex review 超时；该任务已被标记为 NEEDS_HUMAN，未触发 commit。请检查对应 ``codex-review-roundN.txt`` 与 ``review-meta-roundN.json`` 决定是否补 review 或调高 ``AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS``。
+[0m
+[0m# [0mTodos
+[✓] Add codex review watchdog timing + review-meta JSON output to scripts/auto_dev_loop.sh
+[✓] Extend scripts/summarize_auto_dev_runs.py to parse review-meta and surface AUTO-006 section in daily report
+[•] Create tests/test_auto006_codex_review_watchdog.py covering PASS/FAIL/TIMEOUT scenarios
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with AUTO-006 changes
+[0m
+AUTO-006 section renders correctly with P0 callout for timeouts. Now let me write the test file:
+[0m← [0mWrite tests/test_auto006_codex_review_watchdog.py
+Wrote file successfully.
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -m pytest tests/test_auto006_codex_review_watchdog.py -q --tb=short 2>&1 | tail -60
+.....................................................                    [100%]
+53 passed in 0.35s
+[0m
+[0m# [0mTodos
+[✓] Add codex review watchdog timing + review-meta JSON output to scripts/auto_dev_loop.sh
+[✓] Extend scripts/summarize_auto_dev_runs.py to parse review-meta and surface AUTO-006 section in daily report
+[✓] Create tests/test_auto006_codex_review_watchdog.py covering PASS/FAIL/TIMEOUT scenarios
+[•] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with AUTO-006 changes
+[0m
+All 53 tests pass. Now let me run the related test suites to confirm no regressions:
+[0m$ [0msource .venv/bin/activate && python3 -m pytest tests/test_auto004_runtime_budget.py tests/test_auto005_db_hygiene_preflight.py tests/test_auto_dev_loop_static.py tests/test_m002_summarize_runs.py tests/test_v002_nightly_acceptance.py tests/test_v011_nightly_auto_dev_acceptance.py -q --tb=short 2>&1 | tail -25
+ERROR: file or directory not found: tests/test_v011_nightly_auto_dev_acceptance.py
+
+
+no tests ran in 0.00s
+[0m
+[0m$ [0mls tests/ | grep -iE "v002|v011|nightly" | head -10
+test_v002_nightly_acceptance.py
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -m pytest tests/test_auto004_runtime_budget.py tests/test_auto005_db_hygiene_preflight.py tests/test_auto_dev_loop_static.py tests/test_m002_summarize_runs.py tests/test_v002_nightly_acceptance.py tests/test_auto006_codex_review_watchdog.py -q --tb=short 2>&1 | tail -25
+........................................................................ [ 37%]
+........................................................................ [ 74%]
+.................................................                        [100%]
+193 passed in 23.00s
+[0m
+All 193 related tests pass. Let me also do a quick smoke test to make sure the broader test suite isn't broken by my changes (specifically the CLI changes to `summarize_auto_dev_runs.py`):
+[0m$ [0msource .venv/bin/activate && python3 -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short 2>&1 | tail -10
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 12.23s
+[0m
+Let me also verify the dry-run with the actual default task test commands works:
+[0m$ [0msource .venv/bin/activate && python3 scripts/summarize_auto_dev_runs.py --dry-run --date 2026-07-07 --no-db-hygiene --no-runtime-budget 2>&1 | head -50
+# 自动开发日报 — 2026-07-07
+
+> 生成时间: 2026-07-06 19:32 UTC  
+> 运行档案数: 3  
+> 提交数: 5  
+> Review 数: 2  
+> Ready 队列: 4 个任务  
+> 预计续航: 1.0h-2.3h  
+
+---
+
+> 生成时间: 2026-07-06 19:32 UTC  
+> 运行档案数: 3  
+> 提交数: 5  
+> Review 数: 2  
+
+> Ready 队列: 4 个任务  
+
+---
+
+## 总览
+
+| 指标 | 值 |
+|------|------|
+| 任务运行 | 3 |
+| PASS | 2 |
+| FAIL/NEEDS_HUMAN | 0 |
+| 其他 | 1 |
+| 提交 | 5 |
+
+## 任务运行详情
+
+### AUTO-005-20260707-021925
+
+- **任务**: AUTO-005 — 自动开发前置检查接入 DB hygiene 与续航门禁（P1）
+- **优先级**: P1
+- **最终状态**: PASS
+- **Git HEAD**: 1983899
+- **轮次**: 1
+- **开始时间**: 2026-07-07_02:19:25
+- **结束时间**: 2026-07-07_02:55:59
+- **测试命令**: `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short`
+- **Review**: docs/reviews/AUTO-005-20260707-round1.txt
+- **Trace 文件**: codegraph-context.txt, codegraph-impact.txt, codegraph-status.json, codex-review-round1.txt, opencode-round1.txt, prompt-round1.md, tests-round1.txt
+
+<details>
+<summary>summary.md</summary>
+
+```
+# Auto Dev Summary
+[0m
+[0m$ [0msource .venv/bin/activate && python3 scripts/summarize_auto_dev_runs.py --dry-run --date 2026-07-07 --no-db-hygiene --no-runtime-budget 2>&1 | grep -A 5 "AUTO-006"
+### AUTO-006-20260707-032240
+
+- **任务**: AUTO-006 — Codex review 超时 watchdog 与收口策略（P1）
+- **优先级**: P1
+- **最终状态**: CLAIMED
+- **Git HEAD**: f59857c
+- **轮次**: 0
+- **开始时间**: 2026-07-07_03:22:40
+--
+- **AUTO-006**: 无测试日志
+- **HY-001**: 122 passed, 0 failed, 0 skipped
+
+## Ready 队列
+
+| 任务ID | 标题 | 优先级 |
+--
+## Codex Review 超时 watchdog（AUTO-006）
+
+> 本报告窗口内无 ``review-meta-roundN.json`` 记录：本次 cron 未触发 Codex review，或运行版本 predates AUTO-006。
+[0m
+[0m# [0mTodos
+[✓] Add codex review watchdog timing + review-meta JSON output to scripts/auto_dev_loop.sh
+[✓] Extend scripts/summarize_auto_dev_runs.py to parse review-meta and surface AUTO-006 section in daily report
+[✓] Create tests/test_auto006_codex_review_watchdog.py covering PASS/FAIL/TIMEOUT scenarios
+[✓] Run tests and verify no regressions
+[•] Update docs/DEVLOG.md with AUTO-006 changes
+[0m
+Everything works as expected. Now let me update the DEVLOG and mark the task status:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,86 @@
+ # 修改日志
+ 
++## 2026-07-07 | AUTO-006 Codex review 超时 watchdog 与收口策略
++
++- **执行者**：OpenCode
++- **任务**：AUTO-006 — Codex review 超时 watchdog 与收口策略（P1）
++- **类型**：reliability / dev-tooling
++- **状态**：✅ 完成
++
++### 背景
++
++- 复杂文档/代码 review 可能超过 5 分钟；外层 timeout 先杀进程容易留下半成品、
++  锁文件和未归档 review。
++- AUTO-002 已有可配置的 `CODEX_REVIEW_TIMEOUT_SECONDS` 和 `run_with_timeout`
++  graceful terminate/killpg，但缺少：
++  - review 实际耗时的结构化记录（`elapsed_ms`、`timed_out`、`has_partial_output`）；
++  - 夜间日报对 review 健康度的可视化；
++  - 超时现场说明的标准化归档。
++
++### 改动文件
++
++- `scripts/auto_dev_loop.sh`：
++  - 新增 `write_review_meta()` 函数，写入 `docs/task_runs/<run>/review-meta-roundN.json`，
++    记录 round、started/finished_at_epoch、elapsed_ms、timeout_seconds、exit_code、
++    timed_out、review_skipped、has_partial_output、partial_output_bytes、status。
++  - codex review 调用前后包裹 `CODEX_REVIEW_START_EPOCH` / `CODEX_REVIEW_END_EPOCH`，
++    计算并打印 review 耗时（与 timeout 阈值并列）。
++  - 每次 review 完成后必写 `review-meta-roundN.json`（PASS / FAIL / TIMEOUT / SKIPPED
++    四类状态都覆盖），作为夜间日报与人工 review 的单一数据源。
++  - 超时分支（exit 124）输出 partial_output_bytes 与 archive 路径，显式说明
++    未 commit，把工作区留给人工。FAIL 分支同样引用 archive + meta 路径。
++- `scripts/summarize_auto_dev_runs.py`：
++  - 新增 `parse_review_meta_for_run` / `collect_review_meta` / `summarize_review_meta` /
++    `_fmt_ms` / `format_codex_review_watchdog_section` 共 5 个 AUTO-006 函数。
++  - `collect_review_meta` 支持按 target_date 过滤，自动从 task.md 补 task_id/priority；
++    parse_error 单独计数，避免静默漏掉真实超时。
++  - `format_codex_review_watchdog_section` 渲染总览、按任务聚合、明细三层表格；
++    超时出现 P0 提醒，JSON 解析失败出现 P1 提醒，全部引用 `AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS`
++    供运维决定是否调高阈值。
++  - `generate_report()` 新增 `codex_review_watchdog_section` 形参；`main()` 新增
++    `--no-codex-review-watchdog` flag（默认开）。
++- `tests/test_auto006_codex_review_watchdog.py`（新增）：
++  - 53 个测试覆盖 auto_dev_loop.sh 静态守卫、`write_review_meta` bash 助手（PASS /
++    TIMEOUT / 空文件三类）、`parse_review_meta_for_run` / `collect_review_meta` /
++    `summarize_review_meta` / `format_codex_review_watchdog_section` 行为、`generate_report`
++    集成、CLI 集成、收口策略（TIMEOUT 永远不能变 PASS）。
++
++### 关键逻辑
++
++1. **永不把超时当 PASS**：codex review 超时直接 `RESULT_STATUS="NEEDS_HUMAN"` 并
++   `break` 出 round 循环；外层 `FAILED_TASKS>0 break` 保证不会领取下一个任务。
++2. **partial output 不丢**：超时时即便 review 文件只有几百字节，也完整归档到
++   `codex-review-roundN.txt` + `review-meta-roundN.json`，并在 issue log 中显式
++   记录 `partial_output_bytes`。
++3. **日报可观测**：夜间日报新增 `## Codex Review 超时 watchdog（AUTO-006）` 区块，
++   展示 review 次数 / PASS / FAIL / TIMEOUT / SKIPPED / 最大耗时 / 平均耗时 /
++   是否捕获部分输出 / 解析失败 JSON，并按任务聚合 + 完整明细。
++4. **配置可调**：所有超时阈值沿用现有 `AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS`
++   环境变量（默认 1200s），cron / 手动触发都可覆盖，无需改代码。
++
++### 验收
++
++- `pytest tests/test_auto006_codex_review_watchdog.py -q`：53 passed。
++- AUTO/M/V 系列回归：`pytest tests/test_auto004_runtime_budget.py
++  tests/test_auto005_db_hygiene_preflight.py tests/test_auto_dev_loop_static.py
++  tests/test_m002_summarize_runs.py tests/test_v002_nightly_acceptance.py
++  tests/test_auto006_codex_review_watchdog.py -q`：193 passed。
++- 默认 smoke：`pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：
++  122 passed。
++- `python scripts/summarize_auto_dev_runs.py --dry-run --date 2026-07-07`：报告含
++  AUTO-006 区块，空状态文案正确。
++- `bash -n scripts/auto_dev_loop.sh`：脚本语法正确。
++
++### 安全约束
++
++- 不修改 `tradingagents/prompts/`。
++- 不写入生产 `tradingagents.db`。
++- 不触发 live LLM / Codex / OpenCode。
++- 不读、不打印、不提交任何 API key 明文。
++
++---
++
+ ## 2026-07-07 | HY-001 半年报 Tree Work 输出协议扩展与 lint 规则
+ 
+ - **执行者**：OpenCode
+ - **任务**：HY-001 — 半年报 Tree Work 输出协议扩展与 lint 规则（P1）
+
+[0m
+Now let me verify there are no other regressions I might have missed and check the final state of changes:
+[0m$ [0mgit status --short
+M docs/DEVLOG.md
+ M docs/TASKS.md
+ M scripts/auto_dev_loop.sh
+ M scripts/summarize_auto_dev_runs.py
+?? docs/task_runs/AUTO-006-20260707-032240/
+?? tests/test_auto006_codex_review_watchdog.py
+[0m
+[0m$ [0mgit diff --stat scripts/auto_dev_loop.sh scripts/summarize_auto_dev_runs.py
+scripts/auto_dev_loop.sh           | 113 ++++++++++-
+ scripts/summarize_auto_dev_runs.py | 390 ++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 499 insertions(+), 4 deletions(-)
+[0m
+[0m# [0mTodos
+[✓] Add codex review watchdog timing + review-meta JSON output to scripts/auto_dev_loop.sh
+[✓] Extend scripts/summarize_auto_dev_runs.py to parse review-meta and surface AUTO-006 section in daily report
+[✓] Create tests/test_auto006_codex_review_watchdog.py covering PASS/FAIL/TIMEOUT scenarios
+[✓] Run tests and verify no regressions
+[✓] Update docs/DEVLOG.md with AUTO-006 changes
+[0m
+AUTO-006 complete.
+
+## Files changed
+- `scripts/auto_dev_loop.sh` — added `write_review_meta()` helper; wrapped codex review call with `CODEX_REVIEW_START_EPOCH`/`END_EPOCH` timing; writes `review-meta-roundN.json` for every outcome (PASS/FAIL/TIMEOUT/SKIPPED); timeout branch now logs partial_output_bytes + archive paths and never continues.
+- `scripts/summarize_auto_dev_runs.py` — added 5 AUTO-006 functions (`parse_review_meta_for_run`, `collect_review_meta`, `summarize_review_meta`, `_fmt_ms`, `format_codex_review_watchdog_section`); wired into `generate_report()` and `main()` via new `--no-codex-review-watchdog` flag (default on).
+- `tests/test_auto006_codex_review_watchdog.py` (new) — 53 tests covering bash static guards, `write_review_meta` shell helper (PASS/TIMEOUT/empty), parsing, aggregation, rendering for all scenarios, CLI integration, and the closeout invariant (TIMEOUT never becomes PASS).
+- `docs/DEVLOG.md` — appended AUTO-006 entry.
+
+## Key logic
+- **Never treats timeout as PASS**: exit-124 branch sets `NEEDS_HUMAN` and `break`s; outer `FAILED_TASKS>0 break` halts batch pickup.
+- **Partial output preserved**: even on timeout the review file is archived to `codex-review-roundN.txt` and metadata to `review-meta-roundN.json` with `partial_output_bytes`.
+- **Daily report observability**: new `## Codex Review 超时 watchdog（AUTO-006）` section surfaces review count, PASS/FAIL/TIMEOUT/SKIPPED breakdown, max/avg elapsed, by-task aggregation, full detail table, and P0/P1 callouts.
+
+## Test results
+- `tests/test_auto006_codex_review_watchdog.py`: **53 passed**
+- AUTO/M/V regression suite (6 files): **193 passed**
+- Default smoke (`test_api_smoke.py` + `test_runtime_tier_contract.py`): **122 passed**
+- `bash -n scripts/auto_dev_loop.sh`: syntax OK

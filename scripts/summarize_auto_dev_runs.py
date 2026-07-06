@@ -35,6 +35,7 @@ Constraints:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -895,6 +896,374 @@ def format_db_hygiene_section(snapshot: Optional[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+# [AUTO-006] codex_review_watchdog
+#
+# AUTO-006 surfaces Codex review elapsed_ms, timed_out flags and partial_output
+# metadata in the nightly report. The watchdog records a ``review-meta-roundN.json``
+# next to every codex-review-roundN.txt in docs/task_runs/<run>/, even when the
+# review times out or is skipped. This block aggregates those JSON files and
+# renders a compact section so operators can answer at a glance:
+#   - Did any review hit the watchdog?
+#   - How long did reviews actually take vs the configured timeout?
+#   - Was any partial output captured before killpg so the human can salvage it?
+#
+# Constraints honoured:
+#   - Read-only: only reads review-meta-round*.json from existing run archives.
+#   - Never marks a timeout as PASS — the JSON status is taken verbatim.
+#   - Never silently drops an unparseable meta file: it is reported as a parse
+#     failure so the underlying corruption does not hide a real timeout.
+
+
+_REVIEW_META_FILENAME_RE = re.compile(r"^review-meta-round(\d+)\.json$")
+
+
+def _safe_read_json(path: Path) -> Optional[dict[str, object]]:
+    """Read a JSON file, returning None on any read/parse failure."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def parse_review_meta_for_run(run_dir: Path) -> list[dict[str, object]]:
+    """Parse all ``review-meta-roundN.json`` files in a single run directory.
+
+    Returns a list sorted by round number. Each entry augments the raw JSON
+    with ``run_id`` and ``meta_path`` so the report can reference the source.
+    Corrupt or missing files produce no entries (and never raise).
+    """
+    if not run_dir.exists():
+        return []
+
+    entries: list[dict[str, object]] = []
+    for f in sorted(run_dir.iterdir()):
+        m = _REVIEW_META_FILENAME_RE.match(f.name)
+        if not m:
+            continue
+        data = _safe_read_json(f)
+        if not isinstance(data, dict):
+            # Record the parse failure so the report can flag the corruption
+            # instead of silently hiding a possible timeout.
+            entries.append({
+                "run_id": run_dir.name,
+                "round": int(m.group(1)),
+                "meta_path": str(f),
+                "parse_error": True,
+            })
+            continue
+        data.setdefault("run_id", run_dir.name)
+        data.setdefault("meta_path", str(f))
+        data["parse_error"] = False
+        entries.append(data)
+
+    entries.sort(key=lambda d: int(d.get("round", 0) or 0))
+    return entries
+
+
+def collect_review_meta(
+    task_runs_dir: Path, target_date: Optional[str] = None
+) -> list[dict[str, object]]:
+    """Aggregate review-meta-roundN.json across all (or date-filtered) runs.
+
+    Each entry mirrors :func:`parse_review_meta_for_run` and additionally
+    carries ``task_id`` and ``priority`` when the corresponding run has a
+    parseable task.md.
+    """
+    if not task_runs_dir.exists():
+        return []
+
+    all_entries: list[dict[str, object]] = []
+    for d in sorted(task_runs_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        # Date filter (mirror scan_task_runs' timestamp extraction)
+        if target_date:
+            parts = d.name.split("-")
+            date_part = None
+            for i, p in enumerate(parts):
+                if (
+                    re.match(r"^\d{8}$", p)
+                    and i + 1 < len(parts)
+                    and re.match(r"^\d{6}$", parts[i + 1])
+                ):
+                    date_part = f"{p[:4]}-{p[4:6]}-{p[6:8]}"
+                    break
+            if date_part != target_date:
+                continue
+
+        run_entries = parse_review_meta_for_run(d)
+        if not run_entries:
+            continue
+
+        # Annotate each entry with task_id / priority parsed from task.md so
+        # the report can join review timing back to the originating task.
+        task_meta = parse_task_md(d / "task.md")
+        task_id_raw = task_meta.get("task", "")
+        task_id = task_id_raw
+        m = re.match(r"^([A-Z]+-[\w-]+)\s*-\s*(.+)$", task_id_raw)
+        if m:
+            task_id = m.group(1).strip()
+        priority = task_meta.get("priority", "")
+
+        for entry in run_entries:
+            entry.setdefault("task_id", task_id)
+            entry.setdefault("priority", priority)
+            all_entries.append(entry)
+
+    return all_entries
+
+
+def summarize_review_meta(
+    entries: list[dict[str, object]],
+) -> dict[str, object]:
+    """Compute aggregate review-watchdog stats from raw meta entries.
+
+    Returns:
+      - count: total review entries
+      - pass_count / fail_count / timeout_count / skipped_count
+      - max_elapsed_ms / avg_elapsed_ms
+      - any_timed_out: bool
+      - any_partial_output: bool
+      - parse_errors: int — corrupt meta files that could not be decoded
+      - by_task: dict[task_id] -> {count, max_elapsed_ms, any_timed_out}
+    """
+    if not entries:
+        return {
+            "count": 0,
+            "pass_count": 0,
+            "fail_count": 0,
+            "timeout_count": 0,
+            "skipped_count": 0,
+            "max_elapsed_ms": 0,
+            "avg_elapsed_ms": 0.0,
+            "any_timed_out": False,
+            "any_partial_output": False,
+            "parse_errors": 0,
+            "by_task": {},
+        }
+
+    pass_c = 0
+    fail_c = 0
+    timeout_c = 0
+    skipped_c = 0
+    parse_errors = 0
+    elapsed_samples: list[int] = []
+    any_timeout = False
+    any_partial = False
+    by_task: dict[str, dict[str, object]] = {}
+
+    for e in entries:
+        if e.get("parse_error"):
+            parse_errors += 1
+            continue
+        status = str(e.get("status", "")).upper()
+        if status == "PASS":
+            pass_c += 1
+        elif status == "TIMEOUT":
+            timeout_c += 1
+            any_timeout = True
+        elif status == "SKIPPED":
+            skipped_c += 1
+        elif status == "FAIL":
+            fail_c += 1
+        if bool(e.get("has_partial_output", False)):
+            any_partial = True
+        elapsed = int(e.get("elapsed_ms", 0) or 0)
+        if elapsed > 0:
+            elapsed_samples.append(elapsed)
+        # Per-task aggregation
+        tid = str(e.get("task_id", "") or "?")
+        bucket = by_task.setdefault(tid, {
+            "count": 0,
+            "max_elapsed_ms": 0,
+            "any_timed_out": False,
+            "any_partial": False,
+            "statuses": [],
+        })
+        bucket["count"] = int(bucket["count"]) + 1  # type: ignore[operator]
+        if elapsed > int(bucket["max_elapsed_ms"] or 0):  # type: ignore[arg-type]
+            bucket["max_elapsed_ms"] = elapsed
+        if any_timeout and tid == str(e.get("task_id", "")):
+            bucket["any_timed_out"] = bool(bucket.get("any_timed_out")) or bool(
+                e.get("timed_out", False)
+            )
+        if bool(e.get("timed_out", False)):
+            bucket["any_timed_out"] = True  # type: ignore[assignment]
+        if bool(e.get("has_partial_output", False)):
+            bucket["any_partial"] = True  # type: ignore[assignment]
+        bucket["statuses"].append(status)  # type: ignore[union-attr]
+
+    max_elapsed = max(elapsed_samples) if elapsed_samples else 0
+    avg_elapsed = (
+        sum(elapsed_samples) / len(elapsed_samples) if elapsed_samples else 0.0
+    )
+
+    return {
+        "count": len(entries),
+        "pass_count": pass_c,
+        "fail_count": fail_c,
+        "timeout_count": timeout_c,
+        "skipped_count": skipped_c,
+        "max_elapsed_ms": max_elapsed,
+        "avg_elapsed_ms": avg_elapsed,
+        "any_timed_out": any_timeout,
+        "any_partial_output": any_partial,
+        "parse_errors": parse_errors,
+        "by_task": by_task,
+    }
+
+
+def _fmt_ms(ms: int | float) -> str:
+    """Render milliseconds as a compact human-readable duration."""
+    try:
+        ms_int = int(ms)
+    except (TypeError, ValueError):
+        return "0s"
+    if ms_int <= 0:
+        return "0s"
+    if ms_int < 1000:
+        return f"{ms_int}ms"
+    seconds = ms_int / 1000.0
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes = seconds / 60.0
+    if minutes < 60:
+        return f"{minutes:.1f}m"
+    hours = minutes / 60.0
+    return f"{hours:.2f}h"
+
+
+def format_codex_review_watchdog_section(
+    entries: list[dict[str, object]],
+    summary: Optional[dict[str, object]] = None,
+) -> str:
+    """Render the AUTO-006 Codex review watchdog section for the nightly report.
+
+    The section is intentionally compact: one summary line, one table of
+    per-task rows, and (if any) a P0/P1 callout for timeouts or parse errors.
+    The block always renders even when ``entries`` is empty so operators can
+    confirm the watchdog is wired in.
+    """
+    if summary is None:
+        summary = summarize_review_meta(entries)
+
+    lines: list[str] = []
+    lines.append("## Codex Review 超时 watchdog（AUTO-006）")
+    lines.append("")
+
+    count = int(summary.get("count", 0))
+    if count == 0:
+        lines.append(
+            "> 本报告窗口内无 ``review-meta-roundN.json`` 记录：本次 cron 未触发"
+            " Codex review，或运行版本 predates AUTO-006。"
+        )
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append("### 总览")
+    lines.append("")
+    lines.append("| 维度 | 值 |")
+    lines.append("|------|------|")
+    lines.append(f"| Review 次数 | {count} |")
+    lines.append(f"| PASS | {summary.get('pass_count', 0)} |")
+    lines.append(f"| FAIL | {summary.get('fail_count', 0)} |")
+    lines.append(f"| TIMEOUT | {summary.get('timeout_count', 0)} |")
+    lines.append(f"| SKIPPED | {summary.get('skipped_count', 0)} |")
+    lines.append(
+        f"| 最大耗时 | {_fmt_ms(summary.get('max_elapsed_ms', 0))} "
+        f"({summary.get('max_elapsed_ms', 0)} ms)"
+    )
+    lines.append(
+        f"| 平均耗时 | {_fmt_ms(summary.get('avg_elapsed_ms', 0))} "
+        f"({summary.get('avg_elapsed_ms', 0):.0f} ms)"
+    )
+    lines.append(
+        f"| 是否出现超时 | {'是' if summary.get('any_timed_out') else '否'} |"
+    )
+    lines.append(
+        f"| 是否捕获部分输出 | {'是' if summary.get('any_partial_output') else '否'} |"
+    )
+    lines.append(f"| 解析失败 JSON | {summary.get('parse_errors', 0)} |")
+    lines.append("")
+
+    by_task = summary.get("by_task", {}) or {}
+    if by_task:
+        lines.append("### 按任务聚合")
+        lines.append("")
+        lines.append("| 任务ID | 次数 | 最大耗时 | 超时 | 部分输出 | 状态分布 |")
+        lines.append("|--------|------|----------|------|----------|----------|")
+        for tid in sorted(by_task.keys()):
+            b = by_task[tid] or {}
+            statuses = b.get("statuses", []) or []
+            # Compact status histogram: "PASS:2, TIMEOUT:1"
+            hist: dict[str, int] = {}
+            for s in statuses:
+                hist[s] = hist.get(s, 0) + 1
+            hist_str = ", ".join(f"{k}:{v}" for k, v in sorted(hist.items())) or "-"
+            lines.append(
+                f"| {tid} | {b.get('count', 0)} | "
+                f"{_fmt_ms(b.get('max_elapsed_ms', 0))} | "
+                f"{'是' if b.get('any_timed_out') else '否'} | "
+                f"{'是' if b.get('any_partial') else '否'} | "
+                f"{hist_str} |"
+            )
+        lines.append("")
+
+    # Per-entry detail (capped to avoid flooding the report)
+    lines.append("### 明细")
+    lines.append("")
+    lines.append(
+        "| 任务ID | Run | 轮次 | 状态 | 耗时 | 超时阈值 | 部分 | 退出码 |"
+    )
+    lines.append("|--------|-----|------|------|------|----------|------|--------|")
+    # Cap detail rows at 30 to keep the report scannable; remaining entries
+    # are still represented in the aggregate table above.
+    for e in entries[:30]:
+        if e.get("parse_error"):
+            lines.append(
+                f"| {e.get('task_id', '?')} | {e.get('run_id', '?')} | "
+                f"{e.get('round', '?')} | PARSE_ERROR | - | - | - | - |"
+            )
+            continue
+        timeout_s = e.get("timeout_seconds", 0)
+        timeout_str = (
+            f"{int(timeout_s)}s" if timeout_s else "-"
+        )
+        lines.append(
+            f"| {e.get('task_id', '?')} | {e.get('run_id', '?')} | "
+            f"{e.get('round', '?')} | {e.get('status', '?')} | "
+            f"{_fmt_ms(e.get('elapsed_ms', 0))} | {timeout_str} | "
+            f"{'是' if e.get('has_partial_output') else '否'} | "
+            f"{e.get('exit_code', '?')} |"
+        )
+    if len(entries) > 30:
+        lines.append(
+            f"| ... | (省略 {len(entries) - 30} 行，详见各 run archive) |"
+            " - | - | - | - | - | - |"
+        )
+    lines.append("")
+
+    # Callouts
+    callouts: list[str] = []
+    if summary.get("any_timed_out"):
+        callouts.append(
+            "> **P0**: 存在 Codex review 超时；该任务已被标记为 NEEDS_HUMAN，"
+            "未触发 commit。请检查对应 ``codex-review-roundN.txt`` 与 "
+            "``review-meta-roundN.json`` 决定是否补 review 或调高 "
+            "``AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS``。"
+        )
+    if summary.get("parse_errors", 0) > 0:
+        callouts.append(
+            f"> **P1**: {summary.get('parse_errors')} 个 ``review-meta-roundN.json`` "
+            "解析失败，可能是写入过程中进程被 kill。请检查对应 run archive。"
+        )
+    if callouts:
+        lines.extend(callouts)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── [V-002] nightly_acceptance_report: Test log parsing ──
 
 def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
@@ -1198,6 +1567,7 @@ def generate_report(
     runtime_budget_section: Optional[str] = None,  # [AUTO-004]
     low_endurance_proposal: Optional[str] = None,  # [AUTO-004]
     db_hygiene_section: Optional[str] = None,  # [AUTO-005]
+    codex_review_watchdog_section: Optional[str] = None,  # [AUTO-006]
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1426,12 +1796,16 @@ def generate_report(
     if db_hygiene_section:
         lines.append(db_hygiene_section)
 
+    # [AUTO-006] codex_review_watchdog: review elapsed_ms / timed_out / partial_output
+    if codex_review_watchdog_section:
+        lines.append(codex_review_watchdog_section)
+
     return "\n".join(lines)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="[M-002/V-002/V-011/AUTO-004/AUTO-005] Summarize auto dev runs into a daily report"
+        description="[M-002/V-002/V-011/AUTO-004/AUTO-005/AUTO-006] Summarize auto dev runs into a daily report"
     )
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
@@ -1451,6 +1825,8 @@ def main() -> None:
                         help="Skip AUTO-004 runtime budget section")
     parser.add_argument("--no-db-hygiene", action="store_true",  # [AUTO-005]
                         help="Skip AUTO-005 DB hygiene + 续航门禁 section (default: on)")
+    parser.add_argument("--no-codex-review-watchdog", action="store_true",  # [AUTO-006]
+                        help="Skip AUTO-006 Codex review watchdog section (default: on)")
     parser.add_argument("--target-hours", type=float, default=_TARGET_ENDURANCE_HOURS,  # [AUTO-004]
                         help=f"Nightly endurance target in hours (default {_TARGET_ENDURANCE_HOURS})")
     parser.add_argument("--low-hours", type=float, default=_LOW_ENDURANCE_HOURS,  # [AUTO-004]
@@ -1532,6 +1908,17 @@ def main() -> None:
         snapshot = collect_db_hygiene_snapshot()
         db_hygiene_section = format_db_hygiene_section(snapshot)
 
+    # [AUTO-006] codex_review_watchdog: aggregate review-meta-roundN.json from
+    # the report window so operators can see review elapsed_ms, timed_out and
+    # partial_output at a glance. Defaults to on.
+    codex_review_watchdog_section: Optional[str] = None
+    if not args.no_codex_review_watchdog:
+        review_meta_entries = collect_review_meta(task_runs_dir, target_date=target_date)
+        review_meta_summary = summarize_review_meta(review_meta_entries)
+        codex_review_watchdog_section = format_codex_review_watchdog_section(
+            review_meta_entries, review_meta_summary
+        )
+
     report = generate_report(
         runs, commits, reviews, target_date,
         ready_queue=ready_queue, replay_results=replay_results,  # [V-002]
@@ -1539,6 +1926,7 @@ def main() -> None:
         runtime_budget_section=runtime_budget_section,  # [AUTO-004]
         low_endurance_proposal=low_endurance_proposal,  # [AUTO-004]
         db_hygiene_section=db_hygiene_section,  # [AUTO-005]
+        codex_review_watchdog_section=codex_review_watchdog_section,  # [AUTO-006]
     )
 
     report = redact(report)  # [V-002] final redaction pass

@@ -1,5 +1,85 @@
 # 修改日志
 
+## 2026-07-07 | AUTO-006 Codex review 超时 watchdog 与收口策略
+
+- **执行者**：OpenCode
+- **任务**：AUTO-006 — Codex review 超时 watchdog 与收口策略（P1）
+- **类型**：reliability / dev-tooling
+- **状态**：✅ 完成
+
+### 背景
+
+- 复杂文档/代码 review 可能超过 5 分钟；外层 timeout 先杀进程容易留下半成品、
+  锁文件和未归档 review。
+- AUTO-002 已有可配置的 `CODEX_REVIEW_TIMEOUT_SECONDS` 和 `run_with_timeout`
+  graceful terminate/killpg，但缺少：
+  - review 实际耗时的结构化记录（`elapsed_ms`、`timed_out`、`has_partial_output`）；
+  - 夜间日报对 review 健康度的可视化；
+  - 超时现场说明的标准化归档。
+
+### 改动文件
+
+- `scripts/auto_dev_loop.sh`：
+  - 新增 `write_review_meta()` 函数，写入 `docs/task_runs/<run>/review-meta-roundN.json`，
+    记录 round、started/finished_at_epoch、elapsed_ms、timeout_seconds、exit_code、
+    timed_out、review_skipped、has_partial_output、partial_output_bytes、status。
+  - codex review 调用前后包裹 `CODEX_REVIEW_START_EPOCH` / `CODEX_REVIEW_END_EPOCH`，
+    计算并打印 review 耗时（与 timeout 阈值并列）。
+  - 每次 review 完成后必写 `review-meta-roundN.json`（PASS / FAIL / TIMEOUT / SKIPPED
+    四类状态都覆盖），作为夜间日报与人工 review 的单一数据源。
+  - 超时分支（exit 124）输出 partial_output_bytes 与 archive 路径，显式说明
+    未 commit，把工作区留给人工。FAIL 分支同样引用 archive + meta 路径。
+- `scripts/summarize_auto_dev_runs.py`：
+  - 新增 `parse_review_meta_for_run` / `collect_review_meta` / `summarize_review_meta` /
+    `_fmt_ms` / `format_codex_review_watchdog_section` 共 5 个 AUTO-006 函数。
+  - `collect_review_meta` 支持按 target_date 过滤，自动从 task.md 补 task_id/priority；
+    parse_error 单独计数，避免静默漏掉真实超时。
+  - `format_codex_review_watchdog_section` 渲染总览、按任务聚合、明细三层表格；
+    超时出现 P0 提醒，JSON 解析失败出现 P1 提醒，全部引用 `AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS`
+    供运维决定是否调高阈值。
+  - `generate_report()` 新增 `codex_review_watchdog_section` 形参；`main()` 新增
+    `--no-codex-review-watchdog` flag（默认开）。
+- `tests/test_auto006_codex_review_watchdog.py`（新增）：
+  - 53 个测试覆盖 auto_dev_loop.sh 静态守卫、`write_review_meta` bash 助手（PASS /
+    TIMEOUT / 空文件三类）、`parse_review_meta_for_run` / `collect_review_meta` /
+    `summarize_review_meta` / `format_codex_review_watchdog_section` 行为、`generate_report`
+    集成、CLI 集成、收口策略（TIMEOUT 永远不能变 PASS）。
+
+### 关键逻辑
+
+1. **永不把超时当 PASS**：codex review 超时直接 `RESULT_STATUS="NEEDS_HUMAN"` 并
+   `break` 出 round 循环；外层 `FAILED_TASKS>0 break` 保证不会领取下一个任务。
+2. **partial output 不丢**：超时时即便 review 文件只有几百字节，也完整归档到
+   `codex-review-roundN.txt` + `review-meta-roundN.json`，并在 issue log 中显式
+   记录 `partial_output_bytes`。
+3. **日报可观测**：夜间日报新增 `## Codex Review 超时 watchdog（AUTO-006）` 区块，
+   展示 review 次数 / PASS / FAIL / TIMEOUT / SKIPPED / 最大耗时 / 平均耗时 /
+   是否捕获部分输出 / 解析失败 JSON，并按任务聚合 + 完整明细。
+4. **配置可调**：所有超时阈值沿用现有 `AUTO_DEV_CODEX_REVIEW_TIMEOUT_SECONDS`
+   环境变量（默认 1200s），cron / 手动触发都可覆盖，无需改代码。
+
+### 验收
+
+- `pytest tests/test_auto006_codex_review_watchdog.py -q`：53 passed。
+- AUTO/M/V 系列回归：`pytest tests/test_auto004_runtime_budget.py
+  tests/test_auto005_db_hygiene_preflight.py tests/test_auto_dev_loop_static.py
+  tests/test_m002_summarize_runs.py tests/test_v002_nightly_acceptance.py
+  tests/test_auto006_codex_review_watchdog.py -q`：193 passed。
+- 默认 smoke：`pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：
+  122 passed。
+- `python scripts/summarize_auto_dev_runs.py --dry-run --date 2026-07-07`：报告含
+  AUTO-006 区块，空状态文案正确。
+- `bash -n scripts/auto_dev_loop.sh`：脚本语法正确。
+
+### 安全约束
+
+- 不修改 `tradingagents/prompts/`。
+- 不写入生产 `tradingagents.db`。
+- 不触发 live LLM / Codex / OpenCode。
+- 不读、不打印、不提交任何 API key 明文。
+
+---
+
 ## 2026-07-07 | HY-001 半年报 Tree Work 输出协议扩展与 lint 规则
 
 - **执行者**：OpenCode
@@ -11319,3 +11399,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-001-20260707-round1.txt
 - **Run archive**: docs/task_runs/HY-001-20260707-025559/
+
+## 2026-07-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: AUTO-006 - Codex review 超时 watchdog 与收口策略（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/AUTO-006-20260707-round1.txt
+- **Run archive**: docs/task_runs/AUTO-006-20260707-032240/

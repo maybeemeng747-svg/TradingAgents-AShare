@@ -133,6 +133,68 @@ redact_log() {
         -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
 }
 
+# [AUTO-006] codex_review_watchdog
+# Persist a review-meta-roundN.json next to the codex-review-roundN.txt archive
+# so summarize_auto_dev_runs.py can surface review elapsed_ms, timed_out and
+# partial_output in the nightly report. Always emits valid JSON; never raises.
+write_review_meta() {
+    local out_file="$1"      # path to review-meta-roundN.json
+    local round="$2"         # round number
+    local started_epoch="$3" # codex review start epoch (seconds)
+    local finished_epoch="$4"
+    local timeout_seconds="$5"
+    local exit_code="$6"
+    local timed_out="$7"        # "true" / "false" (bash literal)
+    local review_skipped="$8"   # "true" / "false" (bash literal)
+    local review_file_path="$9" # path to the captured review output
+    local status="${10:-UNKNOWN}"   # PASS / FAIL / TIMEOUT / SKIPPED
+    local task_id="${TASK_ID:-unknown}"
+
+    local partial_bytes=0
+    local has_partial_output=false
+    if [ -f "$review_file_path" ]; then
+        partial_bytes=$(wc -c < "$review_file_path" 2>/dev/null | tr -d ' ' || echo 0)
+        if [ "${partial_bytes:-0}" -gt 0 ]; then
+            has_partial_output=true
+        fi
+    fi
+
+    local elapsed_ms=0
+    if [ -n "$started_epoch" ] && [ -n "$finished_epoch" ]; then
+        elapsed_ms=$(( (finished_epoch - started_epoch) * 1000 ))
+    fi
+
+    # Translate bash true/false literals to Python True/False so the inline
+    # heredoc below produces valid JSON. Defaults to False on unexpected
+    # input to keep the JSON writable even when callers pass garbage.
+    local py_timed_out py_review_skipped py_has_partial
+    if [ "$timed_out" = "true" ]; then py_timed_out="True"; else py_timed_out="False"; fi
+    if [ "$review_skipped" = "true" ]; then py_review_skipped="True"; else py_review_skipped="False"; fi
+    if [ "$has_partial_output" = "true" ]; then py_has_partial="True"; else py_has_partial="False"; fi
+
+    python3 - "$out_file" <<PYEOF || warn "[AUTO-006] failed to write review meta: $out_file"
+import json, os, sys
+path = sys.argv[1]
+data = {
+    "task_id": "$task_id",
+    "round": int("$round") if "$round".isdigit() else 0,
+    "started_at_epoch": int("$started_epoch") if "$started_epoch".lstrip("-").isdigit() else 0,
+    "finished_at_epoch": int("$finished_epoch") if "$finished_epoch".lstrip("-").isdigit() else 0,
+    "elapsed_ms": int("$elapsed_ms") if "$elapsed_ms".lstrip("-").isdigit() else 0,
+    "timeout_seconds": int("$timeout_seconds") if "$timeout_seconds".lstrip("-").isdigit() else 0,
+    "exit_code": int("$exit_code") if "$exit_code".lstrip("-").isdigit() else -1,
+    "timed_out": $py_timed_out,
+    "review_skipped": $py_review_skipped,
+    "has_partial_output": $py_has_partial,
+    "partial_output_bytes": int("$partial_bytes") if "$partial_bytes".lstrip("-").isdigit() else 0,
+    "status": "$status",
+}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PYEOF
+}
+
 cleanup() {
     rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
     if [ "$HAVE_LOCK" = true ]; then
@@ -923,11 +985,17 @@ FIX_EOF
     REVIEW_FILE=$(mktemp -t auto-dev-review.XXXXXX)
     if [ "$CODEX_AVAILABLE" = true ]; then
         log "Running Codex review..."
+        # [AUTO-006] codex_review_watchdog — record start/finish epoch so the
+        # nightly report can show review elapsed_ms, timed_out, and whether any
+        # partial output was captured before killpg.
+        CODEX_REVIEW_START_EPOCH=$(date +%s)
         set +e
         run_with_timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" codex review --uncommitted > "$REVIEW_FILE" 2>&1
         CODEX_EXIT=$?
         set -e
+        CODEX_REVIEW_END_EPOCH=$(date +%s)
         log "Codex exit code: $CODEX_EXIT"
+        log "Codex review elapsed: $(( CODEX_REVIEW_END_EPOCH - CODEX_REVIEW_START_EPOCH ))s (timeout=${CODEX_REVIEW_TIMEOUT_SECONDS}s)"
         if [ $CODEX_EXIT -ne 0 ]; then
             REVIEW_ERR=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
             if echo "$REVIEW_ERR" | grep -qiE "(auth|token|quota|usage[[:space:]_-]*limit|credits|rate.limit|401|403|429|unauthorized|billing)"; then
@@ -953,6 +1021,31 @@ FIX_EOF
     cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
     log "Review saved: $REVIEW_SAVE_PATH"
 
+    # [AUTO-006] codex_review_watchdog — persist review meta for the nightly
+    # report regardless of outcome. Determine status here so the JSON stays a
+    # single source of truth even when later branches flip RESULT_STATUS.
+    CODEX_META_STATUS="UNKNOWN"
+    if [ "$REVIEW_SKIPPED" = true ]; then
+        CODEX_META_STATUS="SKIPPED"
+    elif [ "$CODEX_EXIT" -eq 124 ]; then
+        CODEX_META_STATUS="TIMEOUT"
+    elif [ "$CODEX_EXIT" -eq 0 ]; then
+        CODEX_META_STATUS="PASS"
+    else
+        CODEX_META_STATUS="FAIL"
+    fi
+    write_review_meta \
+        "$RUN_DIR/review-meta-round${ROUND}.json" \
+        "$ROUND" \
+        "${CODEX_REVIEW_START_EPOCH:-0}" \
+        "${CODEX_REVIEW_END_EPOCH:-0}" \
+        "$CODEX_REVIEW_TIMEOUT_SECONDS" \
+        "$CODEX_EXIT" \
+        "$([ "$CODEX_EXIT" -eq 124 ] && echo true || echo false)" \
+        "$REVIEW_SKIPPED" \
+        "$REVIEW_FILE" \
+        "$CODEX_META_STATUS"
+
     # Review skipped (token unavailable) -> STOP, do not commit without review
     # [2026-06-04] Hard rule: no commit without Codex review. No exceptions.
     if [ "$REVIEW_SKIPPED" = true ]; then
@@ -964,9 +1057,21 @@ FIX_EOF
     fi
 
     if [ $CODEX_EXIT -eq 124 ]; then
-        LAST_FAILURE_REASON="Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s"
-        ISSUES_LOG+=("[Round $ROUND] Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s")
+        # [AUTO-006] codex_review_watchdog — record partial-output metadata so
+        # the human recovery path knows whether the timeout produced any
+        # salvageable review text. We never treat a timeout as PASS; the
+        # batch stops here and the dirty tree + review archive stay in place
+        # for human/Codex follow-up.
+        local _partial_bytes=0
+        if [ -f "$REVIEW_FILE" ]; then
+            _partial_bytes=$(wc -c < "$REVIEW_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+        fi
+        LAST_FAILURE_REASON="Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s (partial_output_bytes=${_partial_bytes})"
+        ISSUES_LOG+=("[Round $ROUND] Codex review timed out after ${CODEX_REVIEW_TIMEOUT_SECONDS}s; partial_output_bytes=${_partial_bytes}; archive=$RUN_DIR/codex-review-round${ROUND}.txt")
         err "Codex review timed out, stopping batch and leaving files for human review"
+        err "  Partial review archive: docs/task_runs/$RUN_ID/codex-review-round${ROUND}.txt"
+        err "  Review metadata:        docs/task_runs/$RUN_ID/review-meta-round${ROUND}.json"
+        err "  Tree intentionally left dirty for human inspection (no commit)."
         RESULT_STATUS="NEEDS_HUMAN"
         break
     fi
@@ -976,8 +1081,10 @@ FIX_EOF
     # instead of burning OpenCode rounds on a non-code failure.
     if [ $CODEX_EXIT -ne 0 ]; then
         LAST_FAILURE_REASON="Codex review failed with exit ${CODEX_EXIT}"
-        ISSUES_LOG+=("[Round $ROUND] Codex review failed (exit=$CODEX_EXIT)")
+        ISSUES_LOG+=("[Round $ROUND] Codex review failed (exit=$CODEX_EXIT); archive=$RUN_DIR/codex-review-round${ROUND}.txt")
         err "Codex review failed (exit=${CODEX_EXIT}), stopping batch for human recovery"
+        err "  Review archive: docs/task_runs/$RUN_ID/codex-review-round${ROUND}.txt"
+        err "  Review metadata: docs/task_runs/$RUN_ID/review-meta-round${ROUND}.json"
         RESULT_STATUS="NEEDS_HUMAN"
         break
     fi
