@@ -4748,7 +4748,7 @@
 ### HY-001: 半年报 Tree Work 输出协议扩展与 lint 规则（P1）
 - **描述**：在现有 `docs/local_knowledge_contract.md` 基础上扩展半年报/中报消化协议，让 Tree Work 产出的半年报页面能被 TA 稳定消费。
 - **优先级**：P1
-- **状态**：done — OpenCode 产出 HY-001-20260707-025559；新增 9 个 frontmatter 字段 + 7 条 HYF lint 规则 + Tree Work ingest 模板；71 tests passed（KB-002 通用契约 52 tests 无回归，全量 8453 passed）。
+- **状态**：done -- commit 58c23f8
 - **前置条件**：KB-002、KB-012 完成。
 - **背景**：半年报季将带来大量公司事实数据。TA 不能只读“研报观点”，必须能区分财报事实、管理层表述、券商观点和二级市场演绎。
 - **执行约束**：
