@@ -4910,7 +4910,7 @@
 ### AUTO-006: Codex review 超时 watchdog 与收口策略（P1）
 - **描述**：修复自动开发中 Codex review 过长或卡住时的收口策略，避免 review 进程本身阻塞后续任务或留下锁/脏状态。
 - **优先级**：P1
-- **状态**：in_progress — claimed AUTO-006-20260707-032240
+- **状态**：done -- commit f06793e
 - **前置条件**：AUTO-004 完成。
 - **背景**：复杂文档/代码 review 可能超过 5 分钟；如果外层 timeout 先杀进程，容易留下半成品、锁文件和未归档 review。
 - **执行约束**：
