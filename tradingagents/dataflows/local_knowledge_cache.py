@@ -551,12 +551,17 @@ def load_cache_from_disk(
         }
 
     pages_raw = raw.get("pages")
-    if isinstance(pages_raw, dict):
-        cache.pages = {
-            str(k): CachedPageData.from_dict(v)
-            for k, v in pages_raw.items()
-            if isinstance(v, dict)
-        }
+    if not isinstance(pages_raw, dict):
+        return None, "缓存缺少 pages 字段（将重建）"
+    cache.pages = {
+        str(k): CachedPageData.from_dict(v)
+        for k, v in pages_raw.items()
+        if isinstance(v, dict)
+    }
+    missing_pages = sorted(set(cache.manifest) - set(cache.pages))
+    if missing_pages:
+        sample = ", ".join(missing_pages[:3])
+        return None, f"缓存 pages 不完整（缺少 {len(missing_pages)} 页：{sample}）"
 
     return cache, None
 

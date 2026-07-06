@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-07-06 | PASS_UNREVIEWED 批次补审与 P2 收口
+
+- **执行者**：Codex
+- **类型**：review/fix
+- **状态**：✅ 完成
+
+### 背景
+
+- 2026-07-05 自动开发批次中，Codex review 因 usage limit 不可用，多个任务以
+  `[PASS_UNREVIEWED]` 形式被提交。
+- 2026-07-06 使用 `codex review --base a61e0eb` 对该批次做范围补审。
+- review 实际配置：`model=gpt-5.5`、`provider=openai`、`reasoning effort=xhigh`。
+
+### Review 发现
+
+1. IC local-knowledge bucket 会把无命中/失败 lookup digest 计入 items，导致
+   普通无命中或失败场景误报为 stale。
+2. local-knowledge cache 接受 manifest 存在但 `pages` 缺失/不完整的坏缓存，
+   可能长期返回 NORMAL_NO_DATA。
+3. `/v1/db-hygiene` 未鉴权，暴露内部 DB 路径和污染统计。
+
+### 修复
+
+- `api/services/local_knowledge_context_service.py`
+  - 普通无命中不再计入 `items`。
+  - FAILED lookup 在空命中过滤前记录，整体 bucket 返回 `data_status=failed`。
+  - theme-only FAILED lookup 同样返回 `data_status=failed`，不再误报 missing。
+  - 新增 `failed_symbol_count`。
+- `tradingagents/dataflows/local_knowledge_cache.py`
+  - load cache 时校验 `pages` 必须存在且覆盖 manifest；否则触发重建。
+- `api/main.py`
+  - `/v1/db-hygiene` 增加只读鉴权依赖：允许 JWT / API Token，但 API Token
+    校验不更新 `last_used_at`，保持接口零写入。
+- `api/services/token_service.py`
+  - 新增 `verify_token_readonly()`，供严格只读端点复用。
+- 测试补充：
+  - KB-006：无命中不算 stale、失败 lookup 返回 failed。
+  - KB-010：缺失/不完整 pages 触发重建。
+  - API smoke：db hygiene 未授权拒绝、授权通过、API Token 调用不更新
+    `last_used_at`。
+
+### 验证
+
+- `pytest tests/test_kb006_local_knowledge_context_api.py -q`：68 passed。
+- `pytest tests/test_kb010_local_knowledge_cache.py -q`：55 passed。
+- `pytest tests/test_api_smoke.py tests/test_data026_db_hygiene.py tests/test_kb006_local_knowledge_context_api.py tests/test_kb010_local_knowledge_cache.py -q --tb=short`：192 passed。
+- `codex review --uncommitted`：无 correctness issue。
+
+---
+
 ## 2026-07-05 | V-013 Tree Work → TA → TradeFlow → investment-controller 知识链路端到端验收（P2）
 
 - **执行者**：OpenCode

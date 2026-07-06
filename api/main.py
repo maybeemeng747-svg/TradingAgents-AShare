@@ -1271,8 +1271,9 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
 
 
 class RequireUser:
-    def __init__(self, allow_api_token: bool = True):
+    def __init__(self, allow_api_token: bool = True, update_api_token_usage: bool = True):
         self.allow_api_token = allow_api_token
+        self.update_api_token_usage = update_api_token_usage
 
     def __call__(
         self,
@@ -1299,7 +1300,10 @@ class RequireUser:
 
             # 2. 尝试 API Token (仅在允许时)
             if self.allow_api_token and token.startswith(token_service.TOKEN_PREFIX):
-                user = token_service.verify_token(db, token)
+                if self.update_api_token_usage:
+                    user = token_service.verify_token(db, token)
+                else:
+                    user = token_service.verify_token_readonly(db, token)
                 if user and user.is_active:
                     db.expunge(user)
                     return user
@@ -1311,6 +1315,10 @@ class RequireUser:
 # 快捷依赖定义
 _require_api_user = RequireUser(allow_api_token=True)    # 允许 API Token
 _require_web_user = RequireUser(allow_api_token=False)   # 仅限网页登录
+_require_readonly_api_user = RequireUser(
+    allow_api_token=True,
+    update_api_token_usage=False,
+)  # 允许 API Token，但认证过程不写 last_used_at
 
 
 def _optional_user(
@@ -2838,7 +2846,9 @@ def healthz() -> Dict[str, str]:
 # Never mutates the DB, never triggers TA/LLM, never prints keys. Used by ops
 # dashboards and AUTO-005 preflight to decide whether human cleanup is needed.
 @app.get("/v1/db-hygiene")
-def db_hygiene() -> Dict[str, Any]:
+def db_hygiene(
+    current_user: UserDB = Depends(_require_readonly_api_user),
+) -> Dict[str, Any]:
     from api.services.db_hygiene_service import run_db_hygiene_check
 
     return run_db_hygiene_check().to_dict()

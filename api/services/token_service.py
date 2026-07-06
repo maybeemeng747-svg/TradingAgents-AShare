@@ -103,3 +103,24 @@ def verify_token(db: Session, token_str: str) -> Optional[UserDB]:
 
     # Get user
     return db.query(UserDB).filter(UserDB.id == token_row.user_id).first()
+
+
+def verify_token_readonly(db: Session, token_str: str) -> Optional[UserDB]:
+    """Verify a token without mutating usage metadata.
+
+    Used by endpoints with a strict read-only contract, where even updating
+    ``last_used_at`` would violate the caller's expectation.
+    """
+    if not token_str.startswith(TOKEN_PREFIX):
+        return None
+
+    token_hash = _hash_token(token_str)
+    token_row = db.query(UserTokenDB).filter(
+        UserTokenDB.token == token_hash,
+        UserTokenDB.is_active == True
+    ).first()
+
+    if not token_row:
+        return None
+
+    return db.query(UserDB).filter(UserDB.id == token_row.user_id).first()

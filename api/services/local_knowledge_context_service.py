@@ -561,6 +561,7 @@ def collect_local_knowledge_hits(
     items: List[Dict[str, Any]] = []
     fresh_symbols = 0
     stale_symbols = 0
+    failed_symbols = 0
     seen_symbols: set[str] = set()
     errors: List[str] = []
 
@@ -579,10 +580,15 @@ def collect_local_knowledge_hits(
             )
         except Exception as exc:  # pragma: no cover - defensive
             errors.append(f"{symbol}: lookup failed: {type(exc).__name__}")
+            failed_symbols += 1
             continue
         if not payload.get("hits") and payload.get("data_status") == DATA_STATUS_FAILED:
             errors.append(f"{symbol}: query returned FAILED")
+            failed_symbols += 1
+            continue
         digest = _hit_digest(symbol, payload)
+        if digest["hit_count"] <= 0:
+            continue
         items.append(digest)
         if digest["has_fresh_hit"]:
             fresh_symbols += 1
@@ -614,11 +620,18 @@ def collect_local_knowledge_hits(
     theme_has_any = bool(
         theme_query_payload and int(theme_query_payload.get("hit_count") or 0) > 0
     )
+    theme_failed = bool(
+        theme_query_payload and theme_query_payload.get("data_status") == DATA_STATUS_FAILED
+    )
+    if theme_failed:
+        errors.append("theme query returned FAILED")
     any_hit = bool(items) or theme_has_any
     if fresh_symbols or theme_has_fresh:
         data_status = DATA_STATUS_FRESH
     elif any_hit:
         data_status = DATA_STATUS_STALE
+    elif failed_symbols or theme_failed or errors:
+        data_status = DATA_STATUS_FAILED
     else:
         data_status = DATA_STATUS_MISSING
 
@@ -634,6 +647,7 @@ def collect_local_knowledge_hits(
         "theme_count": len(clean_themes),
         "fresh_symbol_count": fresh_symbols,
         "stale_symbol_count": stale_symbols,
+        "failed_symbol_count": failed_symbols,
         "items": items,
         "theme_query": _slim_theme_query(theme_query_payload) if theme_query_payload else None,
         "errors": errors[:5],

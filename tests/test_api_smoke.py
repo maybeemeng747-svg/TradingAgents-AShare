@@ -17,7 +17,8 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from api.database import ImportedPortfolioPositionDB, get_db_ctx
+from api.database import ImportedPortfolioPositionDB, UserTokenDB, get_db_ctx
+from api.services import token_service
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +283,40 @@ class TestOpenAPISchema:
         client = _get_client()
         r = client.get("/v1/config/model-catalog")
         assert r.status_code in (401, 403)
+
+    def test_db_hygiene_requires_auth(self):
+        client = _get_client()
+        r = client.get("/v1/db-hygiene")
+        assert r.status_code in (401, 403)
+
+    def test_db_hygiene_allows_api_user(self):
+        client = _get_client()
+        token = _auth_unique(client)
+        r = client.get("/v1/db-hygiene", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert "all_green" in r.json()
+
+    def test_db_hygiene_api_token_does_not_update_last_used_at(self):
+        client = _get_client()
+        jwt = _auth_unique(client)
+        from api.services import auth_service
+
+        user_id = str(auth_service.decode_access_token(jwt)["sub"])
+        with get_db_ctx() as db:
+            created = token_service.create_token(db, user_id, "db-hygiene-readonly")
+            token_id = created["id"]
+            api_token = created["token"]
+            token_row = db.query(UserTokenDB).filter(UserTokenDB.id == token_id).first()
+            assert token_row is not None
+            assert token_row.last_used_at is None
+
+        r = client.get("/v1/db-hygiene", headers={"Authorization": f"Bearer {api_token}"})
+        assert r.status_code == 200
+
+        with get_db_ctx() as db:
+            token_row = db.query(UserTokenDB).filter(UserTokenDB.id == token_id).first()
+            assert token_row is not None
+            assert token_row.last_used_at is None
 
 
 class TestRuntimeConfigWarmup:

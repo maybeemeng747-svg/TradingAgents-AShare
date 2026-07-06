@@ -621,6 +621,30 @@ class TestCollectLocalKnowledgeHits:
         assert bucket["symbol_count"] == 0
         assert bucket["items"] == []
 
+    def test_no_hit_symbol_does_not_count_as_stale_item(self, fixture_kb):
+        bucket = collect_local_knowledge_hits(
+            symbols=["999999.SH"],
+            knowledge_root=str(fixture_kb),
+            disabled=False,
+        )
+        assert bucket["data_status"] == DATA_STATUS_MISSING
+        assert bucket["symbol_count"] == 0
+        assert bucket["items"] == []
+        assert bucket["fresh_symbol_count"] == 0
+        assert bucket["stale_symbol_count"] == 0
+
+    def test_failed_symbol_lookup_sets_bucket_failed(self, tmp_path):
+        bucket = collect_local_knowledge_hits(
+            symbols=["603296.SH"],
+            knowledge_root=str(tmp_path / "missing-kb"),
+            disabled=False,
+        )
+        assert bucket["data_status"] == DATA_STATUS_FAILED
+        assert bucket["symbol_count"] == 0
+        assert bucket["items"] == []
+        assert bucket["failed_symbol_count"] == 1
+        assert bucket["errors"]
+
     def test_disabled_returns_skipped(self, fixture_kb):
         bucket = collect_local_knowledge_hits(
             symbols=["603296"],
@@ -656,6 +680,17 @@ class TestCollectLocalKnowledgeHits:
         )
         assert bucket["data_status"] == DATA_STATUS_FRESH
         assert bucket["theme_query"] is not None
+
+    def test_failed_theme_only_lookup_sets_bucket_failed(self, tmp_path):
+        bucket = collect_local_knowledge_hits(
+            symbols=[],
+            themes=["低空经济"],
+            knowledge_root=str(tmp_path / "missing-kb"),
+            disabled=False,
+        )
+        assert bucket["data_status"] == DATA_STATUS_FAILED
+        assert bucket["theme_query"]["data_status"] == DATA_STATUS_FAILED
+        assert bucket["errors"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

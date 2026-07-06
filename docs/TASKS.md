@@ -166,11 +166,11 @@
 140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），依赖 KB-007 ✓）。
 141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `scripts/query_local_knowledge.py` 缓存参数 + `tests/test_kb010_local_knowledge_cache.py`（53 tests），依赖 KB-003/KB-007/KB-009 ✓）。
 142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，done — OpenCode 产出 `frontend/src/utils/knowledgeContract.ts` + `tests/test_kb011_knowledge_contract_ui.py`（14 tests）+ `frontend/src/utils/kb011KnowledgeContract.test.ts`（26 tests），修复 `ReportResponse` setattr/serialize 静默丢失 + 观察仓 KB schema 缺失 + 前端 research_attention 类型与渲染缺口，依赖 KB-008/KB-009 ✓）。
-143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，ready，依赖 DB 污染治理脚本 ✓）。
+143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，done — commit dfc4460，2026-07-06 范围补审通过并完成 P2 补修，依赖 DB 污染治理脚本 ✓）。
 144. `AUTO-005`：自动开发 preflight 接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
  145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
  146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
-147. `KB-012`：Tree Work 研报补录任务包导出（P2，ready，依赖 KB-002/KB-005/KB-007 ✓）。
+147. `KB-012`：Tree Work 研报补录任务包导出（P2，done — commit 53cebbc，2026-07-06 范围补审通过，依赖 KB-002/KB-005/KB-007 ✓）。
   148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
 
 ### 数据源治理候选队列
@@ -2630,7 +2630,7 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：done — commit f97c6f6 [PASS_UNREVIEWED]
+- **状态**：done — commit f97c6f6；2026-07-06 范围补审通过
 - **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成 ✓。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
@@ -4444,7 +4444,7 @@
 ### KB-006: 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
 - **描述**：提供只读 API/服务函数，让 investment-controller 在盘前/盘后 briefing 中引用 Tree Work 知识命中，而不是让它自己读文件或编造背景。
 - **优先级**：P2
-- **状态**：done — commit 96970d8 [PASS_UNREVIEWED]-20260705-033743
+- **状态**：done — commit 96970d8；2026-07-06 范围补审通过并完成 P2 补修
 - **前置条件**：KB-003、IC-TA-004 完成。
 - **执行约束**：
   - 只读，不写 knowledge。
@@ -4469,7 +4469,7 @@
     `assert_no_strong_action_verbs` 扩展）
   - `api/main.py`（`GET /v1/knowledge/local/search` 端点）
   - `api/runtime_tier.py`（`local_knowledge_search` 注册为 FAST_RADAR）
-  - `tests/test_kb006_local_knowledge_context_api.py`（65 tests）
+  - `tests/test_kb006_local_knowledge_context_api.py`（68 tests）
 
 ### KB-007: 多研报重复提及因子 Research Attention Score（P1）
 - **描述**：统计 Tree Work `wiki/investment/` 中每只股票被多少篇研报/评分表/主题页重复提及，形成“研报关注度/主题交叉度”因子，用于候选发现和中线研究优先级。
@@ -4575,7 +4575,7 @@
 ### KB-010: 本地知识索引缓存与 freshness manifest（P1）
 - **描述**：为 `local_knowledge_provider` / `research_attention` 增加轻量索引缓存和 freshness manifest，减少每次查询全量扫描 `~/Documents/knowledge` 的成本，并明确知识库是否过期。
 - **优先级**：P1
-- **状态**：done — commit f97c6f6 [PASS_UNREVIEWED]
+- **状态**：done — commit f97c6f6；2026-07-06 范围补审通过并完成 P2 补修
 - **前置条件**：KB-003、KB-007、KB-009 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge`，不得修改 knowledge 文件。
@@ -4595,7 +4595,7 @@
 ### KB-011: 本地知识/研报关注度前端与 API 契约回归（P1）
 - **描述**：系统已经接入 `local_knowledge_summary`、`research_attention_score`、`research_attention_effective_score` 等字段，但需要确认 API schema、前端展示、空状态和负面信息不丢失。
 - **优先级**：P1
-- **状态**：done — commit e75eef4 [PASS_UNREVIEWED]-20260705-023929
+- **状态**：done — commit e75eef4；2026-07-06 范围补审通过
 - **前置条件**：KB-008、KB-009 完成。
 - **执行约束**：
   - 不新增模型调用。
@@ -4615,7 +4615,7 @@
 ### DATA-026: 生产库测试污染健康检查与 scheduler 启动告警（P1）
 - **描述**：把本次 `@test.com` 数据库污染治理固化为运行时健康检查，防止生产库再次积累测试用户、测试定时任务或测试报告。
 - **优先级**：P1
-- **状态**：done — commit dfc4460 [PASS_UNREVIEWED]-20260705-030754
+- **状态**：done — commit dfc4460；2026-07-06 范围补审通过并完成 P2 补修
 - **前置条件**：`scripts/cleanup_test_db_pollution.py` 已存在。
 - **执行约束**：
   - 默认只读，不自动删除生产数据。
@@ -4655,7 +4655,7 @@
 ### REPORT-UX-004: 本地知识补充区块历史报告回放验收（P1）
 - **描述**：用历史报告样本回放验证"本地知识补充/研报关注度/数据不足观察原因"三者不会互相污染，避免本地知识被误当成行情事实或最终动作依据。
 - **优先级**：P1
-- **状态**：done — commit c0de17e [PASS_UNREVIEWED]-20260705-031930
+- **状态**：done — commit c0de17e；2026-07-06 范围补审通过
 - **前置条件**：KB-003、KB-008、REPORT-UX-003 完成。
 - **执行约束**：
   - 不重跑 live TA。
@@ -4675,7 +4675,7 @@
 ### TF-KB-001: TradeFlow 本地知识分校准回放与弱候选防提升（P1）
 - **描述**：验证 KB-004/KB-009 接入后，TradeFlow 不会因为本地知识命中把技术弱、数据弱或过热候选错误提升为主候选。
 - **优先级**：P1
-- **状态**：done — commit 2ae32df [PASS_UNREVIEWED]-20260705-032741
+- **状态**：done — commit 2ae32df；2026-07-06 范围补审通过
 - **前置条件**：KB-004、KB-009 完成。
 - **执行约束**：
   - 本地知识分只能作为解释和排序辅助，不得单独触发候选入池。
@@ -4695,7 +4695,7 @@
 ### KB-012: Tree Work 研报补录任务包导出（P2）
 - **描述**：把 KB-002 lint、KB-005 backlog、KB-007/009 关注度结果整理成可直接发给 Tree Work 的补录任务包，帮助后续研报消化更符合 TA 消费要求。
 - **优先级**：P2
-- **状态**：done — commit 53cebbc [PASS_UNREVIEWED]-20260705-035317
+- **状态**：done — commit 53cebbc；2026-07-06 范围补审通过
 - **前置条件**：KB-002、KB-005、KB-007 完成。
 - **执行约束**：
   - 只生成任务包，不修改 knowledge。
@@ -4715,7 +4715,7 @@
 ### V-013: Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2）
 - **描述**：端到端验收本地知识链路：Tree Work wiki 被 TA raw_evidence 读取，报告展示补充区块，TradeFlow 候选显示知识分，investment-controller context 只读引用。
 - **优先级**：P2
-- **状态**：done — commit 72c20de [PASS_UNREVIEWED]-20260705-040318
+- **状态**：done — commit 72c20de；2026-07-06 范围补审通过
 - **前置条件**：KB-006、TF-KB-001 完成。
 - **执行约束**：
   - 使用 fixture / dry-run，不调用 live LLM。

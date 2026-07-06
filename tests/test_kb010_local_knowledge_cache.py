@@ -419,6 +419,37 @@ class TestCacheFallback:
         assert cache.freshness_status == FRESHNESS_STALE
         assert len(cache.pages) == 4
 
+    def test_missing_pages_section_triggers_rebuild(
+        self, fixture_kb: Path, tmp_path: Path
+    ):
+        cache_path = str(tmp_path / "c.json")
+        get_or_build_cache(str(fixture_kb), cache_path=cache_path)
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        raw.pop("pages", None)
+        with open(cache_path, "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+        cache = get_or_build_cache(str(fixture_kb), cache_path=cache_path)
+        assert cache.freshness_status == FRESHNESS_STALE
+        assert len(cache.pages) == 4
+        assert any("pages" in e for e in cache.errors)
+
+    def test_incomplete_pages_section_triggers_rebuild(
+        self, fixture_kb: Path, tmp_path: Path
+    ):
+        cache_path = str(tmp_path / "c.json")
+        get_or_build_cache(str(fixture_kb), cache_path=cache_path)
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        first_key = next(iter(raw["pages"]))
+        raw["pages"].pop(first_key)
+        with open(cache_path, "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+        cache = get_or_build_cache(str(fixture_kb), cache_path=cache_path)
+        assert cache.freshness_status == FRESHNESS_STALE
+        assert len(cache.pages) == 4
+        assert any("pages 不完整" in e for e in cache.errors)
+
     def test_load_missing_disk_cache_returns_none(self, tmp_path: Path):
         cache, err = load_cache_from_disk(str(tmp_path / "absent.json"))
         assert cache is None
