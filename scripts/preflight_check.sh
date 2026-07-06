@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # T-000: 自动开发巡检基线
-# 用法: ./scripts/preflight_check.sh [--skip-tests] [--quiet]
+# 用法: ./scripts/preflight_check.sh [--skip-tests] [--quiet] [--skip-db-hygiene]
 #
 # 每次 OpenClaw 自动开发开始前运行，检查项目状态、敏感风险、测试健康和 token/API 消耗风险。
 # 可被 auto_dev_loop.sh 在领取任务前调用。
@@ -11,8 +11,10 @@
 #   2 = 严重风险禁止继续（生产 DB 被改、prompt 被改、env 泄露等）
 #
 # 选项:
-#   --skip-tests  跳过测试运行（只做静态检查）
-#   --quiet       减少输出，只打印摘要
+#   --skip-tests        跳过测试运行（只做静态检查）
+#   --skip-db-hygiene   跳过 [AUTO-005] DB hygiene dry-run（仅当 Python 不可用或
+#                       明确不需要污染检查时使用）
+#   --quiet             减少输出，只打印摘要
 
 set -euo pipefail
 
@@ -21,15 +23,19 @@ cd "$REPO_DIR"
 
 SKIP_TESTS=false
 QUIET=false
+# [AUTO-005] db_hygiene_preflight
+SKIP_DB_HYGIENE=false
 
 for arg in "$@"; do
     case "$arg" in
         --skip-tests) SKIP_TESTS=true ;;
+        --skip-db-hygiene) SKIP_DB_HYGIENE=true ;;  # [AUTO-005] db_hygiene_preflight
         --quiet)      QUIET=true ;;
         -h|--help)
-            echo "用法: $0 [--skip-tests] [--quiet]"
-            echo "  --skip-tests  跳过测试运行"
-            echo "  --quiet       减少输出"
+            echo "用法: $0 [--skip-tests] [--skip-db-hygiene] [--quiet]"
+            echo "  --skip-tests        跳过测试运行"
+            echo "  --skip-db-hygiene   跳过 DB hygiene dry-run"
+            echo "  --quiet             减少输出"
             echo ""
             echo "Exit codes: 0=通过, 1=有风险, 2=严重风险"
             exit 0
@@ -339,6 +345,101 @@ if [ -f "graph_checkpoints.db" ]; then
         err "graph_checkpoints.db 被 Git 跟踪"
     else
         ok "graph_checkpoints.db 未被 Git 跟踪"
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════════
+# 4b. [AUTO-005] db_hygiene_preflight — read-only DB hygiene dry-run
+# ═══════════════════════════════════════════════════════════
+#
+# Wires scripts/run_db_hygiene_check.py (DATA-026) into the preflight so a
+# polluted production DB or a broken @test.com filter is surfaced before the
+# auto-dev loop claims a task. The check is read-only and never executes the
+# suggested cleanup command; cleanup is left to a human (per AUTO-005 spec).
+#
+# Risk mapping:
+#   - has_p0_risk=true  (broken @test.com filter)  -> err (exit=2)
+#   - total_pollution>0 (P1 pollution present)     -> warn (exit=1)
+#   - all_green=true                                 -> ok
+#
+# The DB path is resolved by the service via DATABASE_URL (set by conftest in
+# tests); preflight does NOT pass --db so it inherits the deployment default.
+
+section "DB Hygiene (AUTO-005)"
+
+DB_HYGIENE_SCRIPT="$REPO_DIR/scripts/run_db_hygiene_check.py"
+DB_HYGIENE_STATUS="skipped"
+
+# [AUTO-005] db_hygiene_preflight — activate venv so the service module and its
+# deps (sqlalchemy, langchain_core via api.services chain) are importable.
+VENV_ACTIVATE=""
+if [ -f "$REPO_DIR/.venv/bin/activate" ]; then
+    VENV_ACTIVATE="source $REPO_DIR/.venv/bin/activate &&"
+elif command -v python3 >/dev/null 2>&1; then
+    VENV_ACTIVATE=""
+fi
+
+if [ "$SKIP_DB_HYGIENE" = true ]; then
+    log "DB hygiene 跳过 (--skip-db-hygiene)"
+elif [ ! -f "$DB_HYGIENE_SCRIPT" ]; then
+    warn "scripts/run_db_hygiene_check.py 不存在，跳过 DB hygiene"
+elif ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 不可用，跳过 DB hygiene"
+else
+    DB_HYGIENE_OUTPUT=""
+    set +e
+    DB_HYGIENE_OUTPUT=$(bash -lc "${VENV_ACTIVATE} python3 \"$DB_HYGIENE_SCRIPT\" --json" 2>&1)
+    DB_HYGIENE_EXIT=$?
+    set -e
+
+    # run_db_hygiene_check.py returns 0 when all-green, 1 otherwise. Any
+    # other exit code means the check itself crashed (missing dep, import
+    # error); treat that as a warning instead of failing the whole preflight.
+    if echo "$DB_HYGIENE_OUTPUT" | grep -q '"db_path"'; then
+        # Parse JSON fields without jq (keep preflight deps minimal).
+        DB_HYGIENE_ALL_GREEN=$(echo "$DB_HYGIENE_OUTPUT" | python3 -c \
+            "import json,sys; print(str(json.load(sys.stdin).get('all_green', False)).lower())" \
+            2>/dev/null || echo "false")
+        DB_HYGIENE_HAS_P0=$(echo "$DB_HYGIENE_OUTPUT" | python3 -c \
+            "import json,sys; print(str(json.load(sys.stdin).get('has_p0_risk', False)).lower())" \
+            2>/dev/null || echo "false")
+        DB_HYGIENE_TOTAL=$(echo "$DB_HYGIENE_OUTPUT" | python3 -c \
+            "import json,sys; print(json.load(sys.stdin).get('total_pollution', 0))" \
+            2>/dev/null || echo "0")
+        DB_HYGIENE_FILTER_OK=$(echo "$DB_HYGIENE_OUTPUT" | python3 -c \
+            "import json,sys; print(str(json.load(sys.stdin).get('pending_tasks_filter_ok', True)).lower())" \
+            2>/dev/null || echo "true")
+
+        log "all_green: $DB_HYGIENE_ALL_GREEN"
+        log "total_pollution: $DB_HYGIENE_TOTAL"
+        log "pending_tasks_filter_ok: $DB_HYGIENE_FILTER_OK"
+
+        if [ "$DB_HYGIENE_HAS_P0" = "true" ]; then
+            err "DB hygiene [P0]: @test.com 过滤失效或 pending-task 检查异常，scheduler 可能执行测试用户任务"
+            log "  cleanup (read-only 命令仅供参考):"
+            log "    python scripts/cleanup_test_db_pollution.py --execute"
+            log "  详情:"
+            echo "$DB_HYGIENE_OUTPUT" | python3 -c \
+                "import json,sys; [print(f'    [{r[\"severity\"]}] {r[\"code\"]}: {r[\"message\"]}') for r in json.load(sys.stdin).get('risks',[])]" \
+                2>/dev/null | head -10 || true
+            DB_HYGIENE_STATUS="p0"
+        elif [ "$DB_HYGIENE_TOTAL" != "0" ]; then
+            warn "DB hygiene [P1]: 检测到 $DB_HYGIENE_TOTAL 行 @test.com 污染（cleanup 命令仅供参考，preflight 不自动执行）"
+            log "  cleanup 命令（dry-run by default）:"
+            log "    python scripts/cleanup_test_db_pollution.py"
+            log "  备份目录: var/db_backups/"
+            DB_HYGIENE_STATUS="p1"
+        else
+            ok "DB hygiene all green（无 @test.com 污染，pending-task 过滤生效）"
+            DB_HYGIENE_STATUS="green"
+        fi
+    else
+        # Check ran but didn't produce JSON — surface the failure as warning.
+        warn "DB hygiene 检查未返回 JSON (exit=$DB_HYGIENE_EXIT)"
+        $QUIET || echo "$DB_HYGIENE_OUTPUT" | head -10 | while IFS= read -r line; do
+            echo "    $line"
+        done
+        DB_HYGIENE_STATUS="error"
     fi
 fi
 

@@ -4,6 +4,106 @@
 
 ---
 
+## 2026-07-07 | AUTO-005 自动开发前置检查接入 DB hygiene 与续航门禁（P1）
+
+- **执行者**：OpenCode
+- **类型**：preflight wiring / nightly report
+- **状态**：✅ 完成（待外层 commit）
+- **任务编号**：AUTO-005-20260707-021925
+
+### 背景
+
+`scripts/preflight_check.sh`（T-000）此前的“数据库安全”区块只检查 `*.db` 是否被
+git 跟踪，没有调用 DATA-026 的只读 hygiene 服务，导致：
+- 生产 DB 出现 `@test.com` 测试账号污染时，自动开发会继续领取任务，把污染的
+  scheduler / 报告 / 自选继续放大。
+- `scheduled_service.get_pending_tasks` 一旦丢失 `@test.com` 过滤（P0 风险），
+  自动开发不会在 preflight 阶段拦截，scheduler 可能直接执行测试用户的定时任务。
+- 夜间自动开发日报缺少“DB 是否干净 / ready 队列续航是否够今晚跑”的一站式区块，
+  运维必须分别看 hygiene CLI、summarize 报告、auto_dev_loop 日志才能判断。
+
+DATA-026 已经把 hygiene 服务、CLI、scheduler 启动告警、`/v1/db-hygiene` 接口都
+建好，但明确把“接入 preflight dry-run”留给 AUTO-005 自己做。
+
+### 变更
+
+**改动**
+
+- `scripts/preflight_check.sh` — 新增“DB Hygiene (AUTO-005)”区块：
+  - 调用 `scripts/run_db_hygiene_check.py --json`（DATA-026 CLI，all-green 退
+    0，否则退 1）。运行时通过项目 `.venv` 激活，避免缺 `langchain_core` 等依赖。
+  - 风险映射：`has_p0_risk=true`（@test.com 过滤失效）→ `err` exit=2；
+    `total_pollution>0` → `warn` exit=1；`all_green=true` → `ok`。
+  - 始终把建议 cleanup 命令作为注释/log 输出，**绝不自动执行** `--execute`。
+  - 新增 `--skip-db-hygiene` 选项，便于在缺 Python / 紧急 preflight 时跳过。
+  - 帮助文本与 exit code 表格同步更新。
+- `scripts/summarize_auto_dev_runs.py` — 夜间日报接入 hygiene 与续航门禁：
+  - 新增 `collect_db_hygiene_snapshot()` 调用 `run_db_hygiene_check()` 返回
+    `to_dict()` payload。修复了“直接 `python script.py` 调用时 `sys.path` 不含
+    项目根，导致 deferred import `from scripts.cleanup_test_db_pollution` 失败”
+    的隐藏 bug。
+  - 新增 `format_db_hygiene_section()` 把 hygiene 状态压成一个紧凑 markdown
+    区块（DB 路径 / 污染行数 / pending-task 过滤 / all_green / has_p0_risk /
+    风险明细表 / 建议 cleanup 命令）。
+  - `generate_report()` 接受 `db_hygiene_section` 参数；`main()` 新增
+    `--no-db-hygiene` 选项（默认开启）。
+  - 与 V-011 续航估计 / AUTO-004 历史耗时 + 失败即停回归区块叠加，运维在日报
+    顶部即可看到 ready 数 / 预计续航 / DB hygiene 三件套。
+
+**新增**
+
+- `tests/test_auto005_db_hygiene_preflight.py`（31 个用例，分 7 组）：
+  - **Static guards on preflight_check.sh**（7 用例）：
+    `# [AUTO-005] db_hygiene_preflight` 标记存在；调用 hygiene CLI；含
+    `--skip-db-hygiene` 选项；正则静态守卫禁止 `python/bash/subprocess` 直接
+    调用 `cleanup_test_db_pollution.py --execute`；禁止 preflight 源码包含
+    `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/REPLACE/PRAGMA=X` 等 SQL 写语句；
+    `bash -n` 语法通过；建议 cleanup 命令文本对运维可见。
+  - **Static guards on auto_dev_loop.sh**（5 用例）：AUTO_DEV_MAX_TASKS、
+    FAILED_TASKS>0 break、QUOTA_EXHAUSTED 分支、Working tree dirty 守卫、
+    preflight_check.sh 调用点全部保留，证明 AUTO-005 没有削弱失败即停。
+  - **format_db_hygiene_section unit tests**（5 用例）：all-green / 污染 P1 /
+    P0 过滤失效 / 服务不可用 / API key 脱敏。
+  - **generate_report integration**（2 用例）：传/不传 section 的渲染分支。
+  - **collect_db_hygiene_snapshot fixture tests**（4 用例）：clean / polluted
+    fixture 正确返回；fixture DB 文件 size 不变（read-only 守卫）。
+  - **preflight_check.sh acceptance**（3 用例，subprocess + fixture DB）：
+    polluted fixture 触发 `DB hygiene [P1]`、不报 all green；clean fixture
+    报 all green、不触发 P0/P1；`--skip-db-hygiene` 跳过检查且不输出
+    `total_pollution:` 行。
+  - **summarize CLI + auto_dev_loop dry-run**（5 用例）：dry-run 含 AUTO-005
+    区块、`--no-db-hygiene` 跳过、TASKS.md 不被修改、ready 数与续航区块出
+    现、auto_dev_loop `--dry-run` 在干净库下仍能选任务（AUTO_DEV_MAX_TASKS
+    与失败即停逻辑无回归）。
+
+### 风险与遗留
+
+- preflight 现在依赖项目 `.venv` 来 import `api.services.db_hygiene_service`
+  → `langchain_core` 链。若部署环境没有 venv，preflight 会 warn 跳过 hygiene
+  区块而不是 fail；运维可选 `--skip-db-hygiene` 显式跳过。
+- `collect_db_hygiene_snapshot` 默认调用 `run_db_hygiene_check(skip_pending_
+  tasks_check=False)`，会用内存 SQLite fixture 验证 `get_pending_tasks` 过滤
+  ~50ms。如果后续 schema 变化导致内存建表失败，函数捕获异常返回 None，报告显
+  示“hygiene 服务不可用”，不会崩溃。
+- hygiene 服务 `_resolve_db_path` 读 `api.database.DATABASE_URL`（模块加载时
+  缓存）。夜间 cron 环境 DATABASE_URL 必须在 python 启动前已设置；test_conftest
+  已隔离到 tmp 目录，生产部署直接读 `sqlite:///./tradingagents.db`。
+
+### 验收对照（AUTO-005）
+
+| 验收项 | 结果 |
+|---|---|
+| 污染 fixture 下 preflight 返回 warning/needs-human | ✅ `test_preflight_db_hygiene_section_status[polluted]`：触发 `DB hygiene [P1]`，不报 all green |
+| 不执行 OpenCode（preflight 阶段拦截） | ✅ preflight exit=1 时 auto_dev_loop 仅 warn 继续，但 hygiene P0 升级到 exit=2 时 auto_dev_loop `exit 1` 阻断领取任务 |
+| 干净库下自动开发 dry-run 可继续选任务 | ✅ `test_dry_run_still_selects_task`：clean fixture 下 `auto_dev_loop.sh --dry-run` 选出 `AUTO-005-TEST` |
+| `AUTO_DEV_MAX_TASKS` 不回归 | ✅ `test_auto_dev_max_tasks_unchanged` |
+| 失败即停逻辑不回归 | ✅ `test_fail_stop_break_guard_present` / `test_quota_exhausted_branch_present` / `test_dirty_tree_guard_present` |
+| 静态测试防止 preflight 写生产 DB | ✅ `test_preflight_never_invokes_cleanup_execute` + `test_preflight_has_no_sql_write_statements` + `test_polluted_fixture_does_not_mutate_db` |
+| 日报记录 ready 数 / 预计续航 / DB hygiene | ✅ `test_dry_run_includes_db_hygiene_section` + `test_dry_run_includes_ready_count_and_endurance` |
+| preflight 默认只读；不自动执行 DB 清理 | ✅ 源码守卫无 SQL 写语句、无 `--execute` 调用；fixture 文件 size 不变 |
+
+---
+
 ## 2026-07-06 | 半年报研报系统任务池释放
 
 - **执行者**：Codex
@@ -11111,3 +11211,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/V-013-20260705-040318/
+
+## 2026-07-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: AUTO-005 - 自动开发前置检查接入 DB hygiene 与续航门禁（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/AUTO-005-20260707-round1.txt
+- **Run archive**: docs/task_runs/AUTO-005-20260707-021925/

@@ -785,6 +785,116 @@ def format_runtime_budget_section(
     return "\n".join(lines)
 
 
+# [AUTO-005] auto_dev_runtime_budget
+#
+# AUTO-005 extends AUTO-004 / V-011 by surfacing a read-only DB hygiene
+# snapshot (DATA-026 service) in the nightly report. The section records:
+#   - db_path, total_pollution, has_p0_risk, pending_tasks_filter_ok
+#   - suggested cleanup command (never auto-executed)
+#   - ready queue count + estimated endurance in one consolidated block
+#
+# Constraints honoured:
+#   - Read-only: never invokes cleanup_test_db_pollution --execute.
+#   - Never writes to production tradingagents.db.
+#   - P0 risks (broken @test.com filter) are surfaced but never auto-fixed.
+
+
+def collect_db_hygiene_snapshot(skip_pending_tasks_check: bool = False) -> Optional[dict[str, object]]:
+    """Run the DATA-026 hygiene check read-only and return its dict payload.
+
+    Returns ``None`` when the service cannot be imported (e.g. missing dep on
+    a minimal CI worker) so the report still generates without the section
+    instead of crashing. The function never raises.
+    """
+    # When this script is invoked directly (``python scripts/...``), sys.path
+    # only contains ``scripts/`` and not the project root, so the deferred
+    # import ``from scripts.cleanup_test_db_pollution`` inside the service
+    # would fail. Ensure project root is on the path before importing.
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    try:  # pragma: no cover - defensive import for stripped environments
+        from api.services.db_hygiene_service import run_db_hygiene_check
+    except Exception:
+        return None
+    try:
+        report = run_db_hygiene_check(skip_pending_tasks_check=skip_pending_tasks_check)
+        return report.to_dict()
+    except Exception:
+        return None
+
+def format_db_hygiene_section(snapshot: Optional[dict[str, object]]) -> str:
+    """Format the AUTO-005 DB hygiene + 续航 consolidated preflight section.
+
+    The section is intentionally compact: operators should be able to glance
+    at it and answer "is the production DB clean / is the ready queue enough
+    for tonight" without opening other files.
+    """
+    if snapshot is None:
+        return (
+            "## DB hygiene 与续航门禁（AUTO-005）\n\n"
+            "> hygiene 服务不可用（缺少依赖或服务导入失败），跳过该区块。\n"
+        )
+
+    lines: list[str] = []
+    lines.append("## DB hygiene 与续航门禁（AUTO-005）")
+    lines.append("")
+
+    db_path = snapshot.get("db_path", "unknown")
+    total_pollution = int(snapshot.get("total_pollution", 0) or 0)
+    has_p0 = bool(snapshot.get("has_p0_risk", False))
+    all_green = bool(snapshot.get("all_green", False))
+    filter_ok = bool(snapshot.get("pending_tasks_filter_ok", True))
+    counts = snapshot.get("counts", {}) or {}
+
+    lines.append("| 维度 | 值 |")
+    lines.append("|------|------|")
+    lines.append(f"| DB 路径 | `{db_path}` |")
+    lines.append(f"| @test.com 污染行数 | {total_pollution} |")
+    lines.append(f"| pending-task 过滤 | {'生效' if filter_ok else '失效 (P0)'} |")
+    lines.append(f"| all_green | {all_green} |")
+    lines.append(f"| has_p0_risk | {has_p0} |")
+    lines.append("")
+
+    if has_p0 or not filter_ok:
+        lines.append(
+            "> **P0**: scheduler 可能执行测试用户任务，建议立即人工排查 "
+            "`api/services/scheduled_service.get_pending_tasks` 与生产 DB 状态。"
+        )
+    elif total_pollution > 0:
+        summary = ", ".join(
+            f"{table}={count}"
+            for table, count in sorted(counts.items())
+            if isinstance(count, int) and count
+        )
+        lines.append(
+            f"> **P1**: 检测到 {total_pollution} 行 @test.com 污染"
+            f"（{summary or '分布未知'}）。"
+        )
+        lines.append(
+            "> 建议命令（dry-run by default；需先备份）："
+            "`python scripts/cleanup_test_db_pollution.py`"
+        )
+    else:
+        lines.append("> 生产 DB hygiene 状态：all green。")
+    lines.append("")
+
+    risks = snapshot.get("risks", []) or []
+    if risks:
+        lines.append("风险明细：")
+        lines.append("")
+        lines.append("| severity | code | message |")
+        lines.append("|----------|------|---------|")
+        for r in risks:
+            severity = r.get("severity", "?")
+            code = r.get("code", "?")
+            message = redact(str(r.get("message", "")))
+            lines.append(f"| {severity} | {code} | {message} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── [V-002] nightly_acceptance_report: Test log parsing ──
 
 def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
@@ -1087,6 +1197,7 @@ def generate_report(
     endurance: Optional[dict[str, object]] = None,  # [V-011]
     runtime_budget_section: Optional[str] = None,  # [AUTO-004]
     low_endurance_proposal: Optional[str] = None,  # [AUTO-004]
+    db_hygiene_section: Optional[str] = None,  # [AUTO-005]
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1311,12 +1422,16 @@ def generate_report(
     if low_endurance_proposal:
         lines.append(low_endurance_proposal)
 
+    # [AUTO-005] db_hygiene_preflight: DB hygiene + 续航门禁 consolidated block
+    if db_hygiene_section:
+        lines.append(db_hygiene_section)
+
     return "\n".join(lines)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="[M-002/V-002/V-011/AUTO-004] Summarize auto dev runs into a daily report"
+        description="[M-002/V-002/V-011/AUTO-004/AUTO-005] Summarize auto dev runs into a daily report"
     )
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
@@ -1334,6 +1449,8 @@ def main() -> None:
                              "and low-endurance proposal (default: on)")
     parser.add_argument("--no-runtime-budget", action="store_true",  # [AUTO-004]
                         help="Skip AUTO-004 runtime budget section")
+    parser.add_argument("--no-db-hygiene", action="store_true",  # [AUTO-005]
+                        help="Skip AUTO-005 DB hygiene + 续航门禁 section (default: on)")
     parser.add_argument("--target-hours", type=float, default=_TARGET_ENDURANCE_HOURS,  # [AUTO-004]
                         help=f"Nightly endurance target in hours (default {_TARGET_ENDURANCE_HOURS})")
     parser.add_argument("--low-hours", type=float, default=_LOW_ENDURANCE_HOURS,  # [AUTO-004]
@@ -1407,12 +1524,21 @@ def main() -> None:
         # the report header over the static V-011 estimate.
         endurance = budget_endurance
 
+    # [AUTO-005] db_hygiene_preflight: read-only DB hygiene snapshot for the
+    # nightly report. Defaults to on so the report always answers "is the
+    # production DB clean" alongside the endurance/ready-queue block.
+    db_hygiene_section: Optional[str] = None
+    if not args.no_db_hygiene:
+        snapshot = collect_db_hygiene_snapshot()
+        db_hygiene_section = format_db_hygiene_section(snapshot)
+
     report = generate_report(
         runs, commits, reviews, target_date,
         ready_queue=ready_queue, replay_results=replay_results,  # [V-002]
         consistency_results=consistency_results, endurance=endurance,  # [V-011]
         runtime_budget_section=runtime_budget_section,  # [AUTO-004]
         low_endurance_proposal=low_endurance_proposal,  # [AUTO-004]
+        db_hygiene_section=db_hygiene_section,  # [AUTO-005]
     )
 
     report = redact(report)  # [V-002] final redaction pass
