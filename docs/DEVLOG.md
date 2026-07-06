@@ -1,5 +1,89 @@
 # 修改日志
 
+## 2026-07-07 | HY-001 半年报 Tree Work 输出协议扩展与 lint 规则
+
+- **执行者**：OpenCode
+- **任务**：HY-001 — 半年报 Tree Work 输出协议扩展与 lint 规则（P1）
+- **类型**：feature / contract
+- **状态**：✅ 完成
+
+### 背景
+
+- 半年报季将带来大量公司事实数据。TA 不能只读“研报观点”，必须能区分财报事实、
+  管理层表述、券商观点和二级市场演绎。
+- KB-002（investment wiki 输出协议 lint）已完成，但通用契约只覆盖“公司/评分表”
+  两类页面，没有财报专用字段；KB-012（Tree Work 任务包导出）也已完成，可作为
+  HY-001 完成后下一步（HY-002）的承载层。
+- HY-001 是 HY-002~HY-008 的协议前置，定义半年报页的稳定输出契约。
+
+### 改动文件
+
+- `docs/local_knowledge_contract.md` — 新增 §10 半年报/财报扩展契约：
+  - 9 个 frontmatter 字段（`financial_period` / `disclosure_date` / `source_type` /
+    `financial_facts` / `segment_facts` / `management_commentary` /
+    `forward_guidance` / `risk_factors` / `source_links`）；
+  - `source_type` 取值表（事实类：`exchange_filing` / `fact_table` /
+    `management_commentary`；观点类：`broker_report` / `media`）；
+  - 7 条 HYF lint 规则表 + Tree Work ingest 模板（可直接照抄）。
+- `tradingagents/dataflows/local_knowledge_lint.py` — 新增半年报扩展 lint：
+  - `HALF_YEAR_REPORT_TYPES` / `SOURCE_TYPE_FACT_VALUES` /
+    `SOURCE_TYPE_OPINION_VALUES` / `_PERIOD_PATTERNS` / `_DATE_RE` 常量；
+  - `_is_half_year_report` / `_is_valid_financial_period` /
+    `_is_valid_disclosure_date` / `_normalize_source_type_list` 校验助手；
+  - `_check_half_year_report`：对 `report_type ∈ {财报分析, 半年报, 中报}` 的页面
+    追加 HYF-001~007 规则（缺报告期/缺代码=error；缺披露日/缺source_type/
+    缺事实/缺风险=warning；source_type 全为券商/媒体=warning 观点冒充事实）；
+  - `PageLintResult` 增加 `is_half_year_report` / `half_year_period` /
+    `half_year_opinion_only`；`KnowledgeLintResult` 增加 `pages_half_year` /
+    `pages_half_year_period_missing` / `pages_half_year_opinion_only` /
+    `pages_half_year_facts_missing`；报告渲染含 half_year_pages 概览行 + 缺口清单。
+- `tests/test_hy001_half_year_contract.py` — 新增 71 个测试（HY-001 全覆盖）：
+  触发判定 / 字段格式 / 单页 HYF 规则 / `_check_half_year_report` 直接调用 /
+  整库聚合 / 报告渲染 / 只读安全 / 契约文档存在 / CLI 子进程冒烟。
+- `docs/knowledge_reports/local_knowledge_lint-2026-07-07.md` — lint dry-run 报告：
+  76 篇 investment wiki 全量扫描，识别 4 个 `report_type=财报分析` 页面，全部缺
+  `financial_period / disclosure_date / source_type / financial_facts / risk_factors`
+  五个 HY 字段；无观点冒充事实命中；报告未修改知识库。
+
+### 设计要点
+
+- **追加层而非替换层**：HYF 规则在通用 KB-002 规则（FMR/SEC/SYM/TBL/STALE/EVID）
+  之后追加，财报页同时跑两套；通用规则不变，HY-001 完全向后兼容。
+- **事实/观点分层**：`source_type` 取值表把 `broker_report` / `media` 明确归为
+  “观点类”，禁止冒充事实；HYF-007 检测“全是观点类”时给出 warning，TA 命中后标
+  `OPINION_AS_FACT`，不进入 HY-005 事实反证。
+- **格式校验宽容**：`disclosure_date` 不校验真实日历日（避免 2/30 边界把整页 lint
+  打挂）；`financial_period` 用正则白名单（YYYYH1 / YYYY中报 / FYxxQ<n> 等）。
+- **readiness 影响**：HYF-001/HYF-002 为 error，财报页缺报告期或缺代码 → readiness
+  至少压到 medium；HYF-003~007 为 warning，缺事实字段降置信度但不阻塞。
+- **只读安全**：lint 仅用 `open(..., "r")` + `Path.iterdir`，dry-run 跑两次幂等；
+  报告只含路径/字段/规则/修复建议，不含正文段落。
+
+### 验证
+
+| 验证项 | 结果 |
+|--------|------|
+| HY-001 新增测试 | ✅ `pytest tests/test_hy001_half_year_contract.py` — 71 passed |
+| KB-002 通用契约无回归 | ✅ `pytest tests/test_kb002_local_knowledge_lint.py` — 52 passed |
+| KB 系列全量无回归 | ✅ KB-001~KB-011 + KB-013 candidate + tree_work 共 1420 passed |
+| 全量测试套件无回归 | ✅ 8453 passed / 17 skipped（仅 1 个 KB-009 日期敏感 pre-existing 失败） |
+| lint dry-run 不修改知识库 | ✅ 跑两次 size 快照一致，无新增文件 |
+| 报告不含正文段落 | ✅ `test_report_no_long_original_text` 通过 |
+| 真实知识库 dry-run | ✅ 识别 4 个财报页全部缺 HY 字段，HY-002 可直接接任务包生成 |
+| 契约文档存在并含全部字段/规则 | ✅ `test_doc_mentions_all_hyf_fields` / `test_doc_mentions_all_hyf_rules` / `test_doc_has_ingest_template` |
+
+### 后续影响
+
+- 解锁 HY-002（半年报资料优先队列与 Tree Work 补录任务包）：4 个财报页可作为
+  首批补录目标，HY-002 用 `pages_half_year_period_missing` / `pages_half_year_facts_missing`
+  作为补录字段清单。
+- 解锁 HY-003（半年报事实表本地索引 provider）：可按 `financial_period + symbols`
+  建表，`financial_facts` / `segment_facts` 作为事实来源。
+- 解锁 HY-005（旧研报观点 vs 半年报事实反证）：`source_type` 取值表与 HYF-007
+  标记机制可直接复用，事实反证只对 `SOURCE_TYPE_FACT_VALUES` 来源触发。
+
+---
+
 > 每次代码修改后必须更新此文件，保持连续性。
 
 ---
@@ -11223,3 +11307,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/AUTO-005-20260707-round1.txt
 - **Run archive**: docs/task_runs/AUTO-005-20260707-021925/
+
+## 2026-07-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-001 - 半年报 Tree Work 输出协议扩展与 lint 规则（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-001-20260707-round1.txt
+- **Run archive**: docs/task_runs/HY-001-20260707-025559/

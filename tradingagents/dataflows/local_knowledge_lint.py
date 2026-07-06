@@ -1,4 +1,5 @@
 # [KB-002] local_knowledge_contract
+# [HY-001] half_year_contract
 """investment wiki 输出协议 lint：TA 可消费字段检查。
 
 在 KB-001 只读**审计**（库存/健康概览）之上，本模块定义 Tree Work investment
@@ -29,6 +30,15 @@ wiki 的**稳定输出契约**，并对每篇页面做规则化 lint，产出可
   3. 正文必含章节：一句话总结/核心观点、投资逻辑/核心观点、风险提示、原始资料/关联研报。
   4. 公司评分表必须保留表头：公司|代码|核心业务|板块|利好度|共识度|预计启动|期待周期。
   5. 未验证/扫描失败内容必须显式标记“待补充/低置信”。
+
+HY-001 半年报/财报扩展（详见 ``docs/local_knowledge_contract.md`` §10）：
+  - 对 ``report_type ∈ {财报分析, 半年报, 中报}`` 的页面追加 7 条 HYF lint 规则。
+  - 新增字段：``financial_period / disclosure_date / source_type / financial_facts /
+     segment_facts / management_commentary / forward_guidance / risk_factors /
+     source_links``。
+  - 区分财报事实 / 管理层表述 / 券商观点 / 媒体观点（``source_type`` 取值表）。
+  - HYF-007 检测“券商/媒体观点冒充事实”：``source_type`` 全是 ``broker_report`` /
+    ``media`` 时给出 warning，TA 命中后标 ``OPINION_AS_FACT``，不进入事实反证（HY-005）。
 
 使用示例::
 
@@ -123,6 +133,48 @@ _TABLE_HEADER_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 
+# ── HY-001 半年报/财报扩展常量 ───────────────────────────────────────
+
+# [HY-001] half_year_contract
+# 触发半年报扩展 lint 的 report_type 取值；任一命中即视为财报页。
+# 任务原文：「为 ``report_type=财报分析/半年报/中报`` 的页面增加专门规则」。
+HALF_YEAR_REPORT_TYPES: Tuple[str, ...] = (
+    "财报分析",
+    "半年报",
+    "中报",
+)
+
+# 合法的 source_type 取值（半结构化白名单，lint 时只警告“全是观点”不警告“未识别”）。
+# 事实类：交易所公告 / 数据表；公司口径：管理层表述；观点类：券商 / 媒体。
+SOURCE_TYPE_FACT_VALUES: Tuple[str, ...] = (
+    "exchange_filing",
+    "fact_table",
+    "management_commentary",  # 公司自述视作半事实：能进入事实反证，但需打公司口径标
+)
+SOURCE_TYPE_OPINION_VALUES: Tuple[str, ...] = (
+    "broker_report",
+    "media",
+)
+SOURCE_TYPE_ALL_VALUES: Tuple[str, ...] = SOURCE_TYPE_FACT_VALUES + SOURCE_TYPE_OPINION_VALUES
+
+# financial_period 合法格式：YYYYH1 / YYYYH2 / YYYY中报 / YYYY年报 / YYYY一季报 /
+# YYYY三季报 / FYxxQ<n>。lint 接受任一即可，不强制大小写。
+_PERIOD_PATTERNS: Tuple[re.Pattern, ...] = (
+    re.compile(r"^\d{4}H[12]$"),
+    re.compile(r"^\d{4}半年报$"),
+    re.compile(r"^\d{4}中报$"),
+    re.compile(r"^\d{4}年报$"),
+    re.compile(r"^\d{4}一季报$"),
+    re.compile(r"^\d{4}三季报$"),
+    re.compile(r"^\d{4}Q[1-4]$"),
+    re.compile(r"^FY\d{2,4}Q[1-4]$", re.IGNORECASE),
+    re.compile(r"^FY\d{2,4}H[12]$", re.IGNORECASE),
+)
+
+# disclosure_date：接受 ``YYYY-MM-DD`` / ``YYYY/MM/DD`` / ``YYYYMMDD``。
+_DATE_RE = re.compile(r"^\d{4}[-/]?\d{2}[-/]?\d{2}$")
+
+
 # ── 数据类 ────────────────────────────────────────────────────────────
 
 
@@ -164,6 +216,10 @@ class PageLintResult:
     is_low_confidence: bool = False
     has_symbols: bool = False
     has_themes: bool = False
+    # [HY-001] half_year_contract — 财报页扩展状态
+    is_half_year_report: bool = False
+    half_year_period: Optional[str] = None
+    half_year_opinion_only: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -180,6 +236,10 @@ class PageLintResult:
             "is_low_confidence": self.is_low_confidence,
             "has_symbols": self.has_symbols,
             "has_themes": self.has_themes,
+            # HY-001 扩展字段
+            "is_half_year_report": self.is_half_year_report,
+            "half_year_period": self.half_year_period,
+            "half_year_opinion_only": self.half_year_opinion_only,
         }
 
 
@@ -206,6 +266,11 @@ class KnowledgeLintResult:
     index_missing_pages: List[str] = field(default_factory=list)
     top_fix_priorities: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    # [HY-001] half_year_contract — 财报页扩展聚合
+    pages_half_year: List[str] = field(default_factory=list)
+    pages_half_year_period_missing: List[str] = field(default_factory=list)
+    pages_half_year_opinion_only: List[str] = field(default_factory=list)
+    pages_half_year_facts_missing: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -228,6 +293,11 @@ class KnowledgeLintResult:
             "index_missing_pages": list(self.index_missing_pages),
             "top_fix_priorities": list(self.top_fix_priorities),
             "errors": list(self.errors),
+            # HY-001 扩展字段
+            "pages_half_year": list(self.pages_half_year),
+            "pages_half_year_period_missing": list(self.pages_half_year_period_missing),
+            "pages_half_year_opinion_only": list(self.pages_half_year_opinion_only),
+            "pages_half_year_facts_missing": list(self.pages_half_year_facts_missing),
         }
 
 
@@ -464,6 +534,175 @@ def _check_stale_and_confidence(
     return is_stale, is_low_conf
 
 
+# ── HY-001 半年报/财报扩展 lint ──────────────────────────────────────
+
+
+def _is_half_year_report(frontmatter: Dict[str, Any]) -> bool:
+    """[HY-001] 判断页面是否触发半年报/财报扩展 lint。
+
+    触发条件：``report_type ∈ {财报分析, 半年报, 中报}``。
+    其余 report_type（公司点评/行业/数据表/...）**不**触发 HYF 规则，
+    避免普通公司页被误判为财报页。
+    """
+    report_type = _safe_str(frontmatter.get("report_type")) or ""
+    return report_type in HALF_YEAR_REPORT_TYPES
+
+
+def _is_valid_financial_period(value: Optional[str]) -> bool:
+    """[HY-001] 校验 ``financial_period`` 格式。
+
+    接受：``2025H1`` / ``2025H2`` / ``2025中报`` / ``2025年报`` /
+    ``2025一季报`` / ``2025三季报`` / ``2025Q1`` / ``FY26Q1`` / ``FY26H1``。
+    其他格式（如 ``2025`` / ``上半年`` / ``最新``）视为不合法。
+    """
+    if not value:
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    return any(p.match(text) for p in _PERIOD_PATTERNS)
+
+
+def _is_valid_disclosure_date(value: Optional[str]) -> bool:
+    """[HY-001] 校验 ``disclosure_date`` 是否为合法日期格式。
+
+    接受 ``YYYY-MM-DD`` / ``YYYY/MM/DD`` / ``YYYYMMDD``；不校验真实日历日
+    （避免 2/30 这种边界把整页 lint 打挂，TA 侧只用它判断“是否有披露日”）。
+    """
+    if not value:
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    return bool(_DATE_RE.match(text))
+
+
+def _normalize_source_type_list(value: Any) -> List[str]:
+    """[HY-001] 把 frontmatter ``source_type`` 字段归一为小写字符串列表。
+
+    接受 list / 单字符串 / 逗号分隔字符串。``None`` 或空 → ``[]``。
+    例：``[Exchange_Filing, broker_report]`` → ``["exchange_filing", "broker_report"]``。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [s.strip() for s in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        items = [str(s).strip() for s in value]
+    else:
+        return []
+    return [s.lower() for s in items if s]
+
+
+def _check_half_year_report(
+    frontmatter: Dict[str, Any],
+    has_symbols: bool,
+    findings: List[LintFinding],
+) -> Tuple[bool, Optional[str], bool]:
+    """[HY-001] 对财报/半年报/中报页跑 7 条 HYF 规则。
+
+    返回 ``(is_half_year_report, half_year_period, half_year_opinion_only)``。
+    非财报页直接返回 ``(False, None, False)`` 不报任何 finding。
+    """
+    if not _is_half_year_report(frontmatter):
+        return False, None, False
+
+    # HYF-001：financial_period 缺失/格式不合法（error）
+    period_raw = _safe_str(frontmatter.get("financial_period"))
+    period_text = period_raw or ""
+    if not period_text or not _is_valid_financial_period(period_text):
+        _add(
+            findings,
+            "HYF-001",
+            SEVERITY_ERROR,
+            f"财报/半年报页缺合法 ``financial_period``（当前: {period_text or '缺失'}）",
+            "补 ``financial_period: 2025H1`` / ``FY26Q1`` / ``2025中报`` / "
+            "``2025年报`` 之一；TA 据此判断是否最新、是否过期。",
+            field_name="financial_period",
+        )
+        period_text = None  # 统一：缺失/非法都视为 None
+
+    # HYF-002：symbols 缺失（error）。财报页必为单/多公司，缺代码无法建事实表。
+    if not has_symbols:
+        _add(
+            findings,
+            "HYF-002",
+            SEVERITY_ERROR,
+            "财报/半年报页缺 ``symbols``",
+            "补 ``symbols: [\"603296.SH 华勤技术\"]``；HY-003 事实索引按 symbol 建表。",
+            field_name="symbols",
+        )
+
+    # HYF-003：disclosure_date 缺失/格式不合法（warning）
+    disclosure = _safe_str(frontmatter.get("disclosure_date"))
+    if not disclosure or not _is_valid_disclosure_date(disclosure):
+        _add(
+            findings,
+            "HYF-003",
+            SEVERITY_WARNING,
+            f"财报/半年报页缺合法 ``disclosure_date``（当前: {disclosure or '缺失'}）",
+            "补 ``disclosure_date: 2026-08-30``（交易所披露日）；"
+            "缺失则 TA 标 ``disclosure_unknown``。",
+            field_name="disclosure_date",
+        )
+
+    # HYF-004：source_type 缺失（warning）
+    source_types = _normalize_source_type_list(frontmatter.get("source_type"))
+    if not source_types:
+        _add(
+            findings,
+            "HYF-004",
+            SEVERITY_WARNING,
+            "财报/半年报页缺 ``source_type`` 字段",
+            "补 ``source_type: [exchange_filing, fact_table, management_commentary]``，"
+            "区分事实/公司口径/券商观点；详见 ``docs/local_knowledge_contract.md`` §10.1。",
+            field_name="source_type",
+        )
+
+    # HYF-005：financial_facts 缺失（warning）
+    if not _is_nonempty_field(frontmatter.get("financial_facts")):
+        _add(
+            findings,
+            "HYF-005",
+            SEVERITY_WARNING,
+            "财报/半年报页缺 ``financial_facts``（无可机读事实）",
+            "补 ``financial_facts: [营收 150亿 (+30%), 毛利率 25%]``，"
+            "HY-003 据此建事实表、HY-005 据此反证旧研报观点。",
+            field_name="financial_facts",
+        )
+
+    # HYF-006：risk_factors 缺失（warning，与 ## 风险提示 章节互补）
+    if not _is_nonempty_field(frontmatter.get("risk_factors")):
+        _add(
+            findings,
+            "HYF-006",
+            SEVERITY_WARNING,
+            "财报/半年报页缺 ``risk_factors`` 结构化风险清单",
+            "补 ``risk_factors: [客户集中度, 汇率]``；与正文 ``## 风险提示`` 互补，"
+            "TA 在 HY-005 反证时按字段抽取。",
+            field_name="risk_factors",
+        )
+
+    # HYF-007：source_type 全是 broker_report/media（观点冒充事实）→ warning
+    opinion_only = bool(source_types) and all(
+        s in SOURCE_TYPE_OPINION_VALUES for s in source_types
+    )
+    if opinion_only:
+        _add(
+            findings,
+            "HYF-007",
+            SEVERITY_WARNING,
+            f"财报/半年报页 ``source_type={source_types}`` 全为券商/媒体观点，"
+            "存在观点冒充事实风险",
+            "至少补一个事实类来源（``exchange_filing`` / ``fact_table`` / "
+            "``management_commentary``）；或在 ``report_type`` 改回 ``公司点评``。"
+            "TA 命中后标 ``OPINION_AS_FACT``，不进入 HY-005 事实反证。",
+            field_name="source_type",
+        )
+
+    return True, period_text, opinion_only
+
+
 def _compute_readiness(
     error_count: int,
     warning_count: int,
@@ -516,6 +755,12 @@ def lint_single_page(rel_path: str, abs_path: Path) -> PageLintResult:
     is_todo = _check_todo_marker(body, title, abs_path.name, findings)
     is_stale, is_low_conf = _check_stale_and_confidence(frontmatter, findings)
 
+    # [HY-001] half_year_contract — 财报/半年报/中报页追加 7 条 HYF 规则。
+    # 放在通用规则之后，便于报告里“通用规则 → HYF 扩展”顺序阅读。
+    is_hy, hy_period, hy_opinion_only = _check_half_year_report(
+        frontmatter, has_symbols, findings
+    )
+
     error_count = sum(1 for f in findings if f.severity == SEVERITY_ERROR)
     warning_count = sum(1 for f in findings if f.severity == SEVERITY_WARNING)
     info_count = sum(1 for f in findings if f.severity == SEVERITY_INFO)
@@ -536,6 +781,10 @@ def lint_single_page(rel_path: str, abs_path: Path) -> PageLintResult:
         is_low_confidence=is_low_conf,
         has_symbols=has_symbols,
         has_themes=has_themes,
+        # HY-001 扩展字段
+        is_half_year_report=is_hy,
+        half_year_period=hy_period,
+        half_year_opinion_only=hy_opinion_only,
     )
 
 
@@ -703,6 +952,15 @@ def _collect_lint_gaps(result: KnowledgeLintResult) -> None:
             result.pages_stale.append(page.rel_path)
         if page.is_to_be_supplemented:
             result.pages_to_be_supplemented.append(page.rel_path)
+        # [HY-001] half_year_contract — 财报页扩展聚合
+        if page.is_half_year_report:
+            result.pages_half_year.append(page.rel_path)
+            if "HYF-001" in finding_rules:
+                result.pages_half_year_period_missing.append(page.rel_path)
+            if "HYF-005" in finding_rules:
+                result.pages_half_year_facts_missing.append(page.rel_path)
+            if page.half_year_opinion_only:
+                result.pages_half_year_opinion_only.append(page.rel_path)
 
 
 # ── 报告渲染 ─────────────────────────────────────────────────────────
@@ -716,7 +974,7 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
     )
     lines.append("")
     lines.append(
-        "> [KB-002] local_knowledge_contract — 只读 lint，不修改知识库；"
+        "> [KB-002 / HY-001] local_knowledge_contract — 只读 lint，不修改知识库；"
         "低分页面只降低置信度，不阻塞 TA。契约见 ``docs/local_knowledge_contract.md``。"
     )
     lines.append("")
@@ -741,6 +999,14 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
         f"({rd.get('high', 0) / total:.0%}) / "
         f"medium **{rd.get('medium', 0)}** / low **{rd.get('low', 0)}**"
     )
+    # [HY-001] half_year_contract — 财报页概览行
+    if result.pages_half_year:
+        lines.append(
+            f"- half_year_pages: **{len(result.pages_half_year)}** "
+            f"（缺报告期 {len(result.pages_half_year_period_missing)} / "
+            f"缺事实 {len(result.pages_half_year_facts_missing)} / "
+            f"观点冒充事实 {len(result.pages_half_year_opinion_only)}）"
+        )
     if result.errors:
         lines.append("")
         lines.append(f"- ⚠️ lint 错误 ({len(result.errors)}):")
@@ -793,6 +1059,22 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
     _emit_gap_list(lines, "显式待补充 (TODO-001)", result.pages_to_be_supplemented)
     _emit_gap_list(lines, "low readiness（需回 Tree Work 补字段）", result.pages_low_readiness)
     _emit_gap_list(lines, "index.md 未引用", result.index_missing_pages)
+    # [HY-001] half_year_contract — 财报页扩展缺口清单
+    _emit_gap_list(
+        lines,
+        "财报/半年报页缺 financial_period (HYF-001)",
+        result.pages_half_year_period_missing,
+    )
+    _emit_gap_list(
+        lines,
+        "财报/半年报页缺 financial_facts (HYF-005)",
+        result.pages_half_year_facts_missing,
+    )
+    _emit_gap_list(
+        lines,
+        "财报/半年报页 source_type 全为券商/媒体观点 (HYF-007)",
+        result.pages_half_year_opinion_only,
+    )
 
     # 5. Top 修复优先级
     lines.append("## 5. Top 修复优先级（按影响面排序）")
@@ -846,6 +1128,14 @@ _RULE_DESCRIPTIONS: Dict[str, Tuple[str, str]] = {
     "STALE-001": (SEVERITY_WARNING, "stale_risk=高"),
     "STALE-002": (SEVERITY_WARNING, "valid_until 已过期"),
     "EVID-001": (SEVERITY_INFO, "evidence_level=C 低置信"),
+    # [HY-001] half_year_contract — 财报页扩展规则
+    "HYF-001": (SEVERITY_ERROR, "财报/半年报页缺合法 financial_period"),
+    "HYF-002": (SEVERITY_ERROR, "财报/半年报页缺 symbols"),
+    "HYF-003": (SEVERITY_WARNING, "财报/半年报页缺合法 disclosure_date"),
+    "HYF-004": (SEVERITY_WARNING, "财报/半年报页缺 source_type"),
+    "HYF-005": (SEVERITY_WARNING, "财报/半年报页缺 financial_facts"),
+    "HYF-006": (SEVERITY_WARNING, "财报/半年报页缺 risk_factors"),
+    "HYF-007": (SEVERITY_WARNING, "source_type 全为券商/媒体观点（观点冒充事实）"),
 }
 
 

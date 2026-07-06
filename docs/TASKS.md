@@ -172,7 +172,7 @@
  146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
 147. `KB-012`：Tree Work 研报补录任务包导出（P2，done — commit 53cebbc，2026-07-06 范围补审通过，依赖 KB-002/KB-005/KB-007 ✓）。
   148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
-149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，ready，依赖 KB-002/KB-012 ✓）。
+149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，done，依赖 KB-002/KB-012 ✓）。
 150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，blocked — 等 HY-001 完成）。
 151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，blocked — 等 HY-001 完成）。
 152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，blocked — 等 HY-003 完成）。
@@ -4748,7 +4748,7 @@
 ### HY-001: 半年报 Tree Work 输出协议扩展与 lint 规则（P1）
 - **描述**：在现有 `docs/local_knowledge_contract.md` 基础上扩展半年报/中报消化协议，让 Tree Work 产出的半年报页面能被 TA 稳定消费。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — OpenCode 产出 HY-001-20260707-025559；新增 9 个 frontmatter 字段 + 7 条 HYF lint 规则 + Tree Work ingest 模板；71 tests passed（KB-002 通用契约 52 tests 无回归，全量 8453 passed）。
 - **前置条件**：KB-002、KB-012 完成。
 - **背景**：半年报季将带来大量公司事实数据。TA 不能只读“研报观点”，必须能区分财报事实、管理层表述、券商观点和二级市场演绎。
 - **执行约束**：

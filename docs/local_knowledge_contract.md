@@ -1,10 +1,10 @@
-# [KB-002] investment wiki 输出协议契约（TA 可消费字段标准）
+# [KB-002 / HY-001] investment wiki 输出协议契约（TA 可消费字段标准）
 
-> **版本**：`kb-002-v1`
+> **版本**：`kb-002-v1`（含 HY-001 半年报扩展）
 > **维护方**：TradingAgents-AShare（TA 侧）／执行方：Tree Work / HR Agent
-> **前置**：KB-001 `local_knowledge_audit`（只读审计）已完成。
+> **前置**：KB-001 `local_knowledge_audit`（只读审计）已完成；KB-012 Tree Work 任务包导出已完成。
 > **相关代码**：`tradingagents/dataflows/local_knowledge_lint.py`、`scripts/lint_local_knowledge.py`
-> **最后更新**：2026-07-01
+> **最后更新**：2026-07-07
 
 ---
 
@@ -188,8 +188,156 @@ print(render_lint_report(result))
 
 ---
 
-## 10. 变更记录
+## 10. 半年报 / 财报分析扩展契约（HY-001）
+
+> **触发条件**：`report_type ∈ {财报分析, 半年报, 中报}` 的页面（含港股/美股中报页），自动进入半年报扩展 lint。普通公司点评/行业/评分表页**不**触发本节规则。
+> **目的**：让 Tree Work 消化的财报页能稳定区分 **财报事实 / 管理层表述 / 券商观点 / 二级市场演绎**，避免 TA 把“券商观点”当成“公司事实”。
+
+### 10.1 半年报扩展 frontmatter 字段
+
+| 字段 | 必填 | 类型 | 取值 / 示例 | TA 用途 |
+|------|------|------|-------------|---------|
+| `financial_period` | ✅ error | string | `2025H1` / `2025中报` / `2025年报` / `FY26Q1` | 报告期唯一标识；TA 据此判断是否最新、是否过期 |
+| `disclosure_date` | ⚠️ warning | date `YYYY-MM-DD` | `2026-08-30` | 交易所披露日；缺失则 TA 标 `disclosure_unknown` |
+| `source_type` | ⚠️ warning | 非空 list，至少含一个“事实类”来源 | `[exchange_filing, management_commentary]` | 标注每个事实/观点的来源类型，见下表 |
+| `financial_facts` | ⚠️ warning | 非空 list | `[营收 150亿 (+30%), 毛利率 25% (-2pp)]` | 结构化财务事实；TA/HY-003 据此反证研报观点 |
+| `segment_facts` | optional | list | `[服务器营收 80亿 (+50%)]` | 分业务/分产品事实 |
+| `management_commentary` | optional | list | `[管理层上调全年AI收入指引]` | 管理层口径；与事实分开存 |
+| `forward_guidance` | optional | list | `[下半年CapEx同比+50%]` | 公司前瞻指引；属“半事实”，单独存 |
+| `risk_factors` | ⚠️ warning | 非空 list | `[汇率风险, 客户集中度]` | 结构化风险清单；与正文 `## 风险提示` 章节互补 |
+| `source_links` | optional | list | `[巨潮资讯 <url>, 交易所公告 <url>]` | 公告/披露原文链接，便于追溯 |
+
+**`financial_period` 格式约定**（任一即可）：
+- `YYYYH1` / `YYYYH2`（如 `2025H1`）
+- `YYYY中报` / `YYYY年报` / `YYYY一季报` / `YYYY三季报`
+- `FY<YY>Q<N>`（如 `FY26Q1`，对应美股/港股财年口径）
+
+**`source_type` 取值表**：
+
+| 取值 | 类别 | 说明 |
+|------|------|------|
+| `exchange_filing` | 事实类 | 交易所公告、定期报告披露原文 |
+| `fact_table` | 事实类 | 数据表/统计表（营收、毛利率等可验证数字） |
+| `management_commentary` | 公司口径 | 管理层电话会/业绩说明会/经营讨论（公司自述） |
+| `broker_report` | 券商观点 | 卖方研报观点（**不得作为事实**） |
+| `media` | 媒体观点 | 媒体报道/二手解读（**不得作为事实**） |
+
+### 10.2 半年报页面正文必含章节（在 KB-002 通用章节之外）
+
+半年报页**仍需**满足第 3 节通用章节（一句话总结/风险提示/原始资料）。除此之外：
+- 推荐章节 `## 核心数据` / `## 关键财务指标`（结构化事实区）。
+- 推荐章节 `## 管理层表述` / `## 经营讨论`（与事实分开）。
+- 推荐章节 `## 前瞻指引`（forward_guidance 章节化版）。
+- 若页面只有券商观点而无公告/事实：在 frontmatter `source_type` 显式声明 `broker_report`，并在正文章节标题加 `券商观点` 字样，**不得**用“营收/利润”等事实性章节名。
+
+### 10.3 半年报扩展 lint 规则
+
+| rule_id | 严重度 | 触发条件 | 默认修复建议 |
+|---------|--------|----------|--------------|
+| `HYF-001` | error | 半年报/财报页缺 `financial_period` 或格式不合法 | 补 `financial_period: 2025H1` / `FY26Q1` / `2025中报` |
+| `HYF-002` | error | 半年报/财报页缺 `symbols`（含 `report_type=财报分析` 但 symbols 为空） | 补 `symbols: ["603296.SH 华勤技术"]` |
+| `HYF-003` | warning | 半年报/财报页缺 `disclosure_date` 或日期格式不合法 | 补 `disclosure_date: 2026-08-30` |
+| `HYF-004` | warning | 半年报/财报页缺 `source_type` | 补 `source_type: [exchange_filing, fact_table]` |
+| `HYF-005` | warning | 半年报/财报页缺 `financial_facts`（无可机读事实） | 补 `financial_facts: [营收 150亿 (+30%)]`，HY-003 据此反证 |
+| `HYF-006` | warning | 半年报/财报页缺 `risk_factors`（结构化风险） | 补 `risk_factors: [客户集中度, 汇率]`，与 `## 风险提示` 互补 |
+| `HYF-007` | warning | 半年报/财报页 `source_type` 全是 `broker_report`/`media`（券商/媒体观点冒充事实） | 至少补一个 `exchange_filing` / `fact_table` / `management_commentary`；或在 `report_type` 改回 `公司点评` |
+
+> **判级原则**：HYF-001/HYF-002 为 error（缺报告期或缺代码，HY-003 事实索引无法建表）；HYF-003~006 为 warning（事实缺失降低置信度但不阻塞）；HYF-007 为 warning（观点/事实混用是最常见错误，TA 命中后标 `OPINION_AS_FACT`，不直接加分）。
+
+### 10.4 Tree Work 半年报 ingest 模板（可直接照抄）
+
+> 复制此模板填字段，Tree Work 每篇半年报/中报页都应满足 HY-001 契约。
+
+```markdown
+---
+title: <公司简称><代码>-<报告期>财报
+created: 2026-08-30
+updated: 2026-08-30
+sources:
+  - "[[../../raw/2026-08-30-<券商>-<公司>-2025H1.md|<券商>-<公司>-2025H1]]"
+tags: [<公司简称>, 财报, 2025H1]
+related: [[investment/<公司简称>公司分析]]
+symbols: ["603296.SH 华勤技术"]
+themes: [AI服务器]
+industry_chain_roles: [AI服务器ODM]
+report_type: 半年报
+evidence_level: A
+valid_until: 2027-08-31
+source_quality: 高
+stale_risk: 低
+# ── HY-001 半年报扩展字段 ──
+financial_period: 2025H1
+disclosure_date: 2026-08-30
+source_type: [exchange_filing, fact_table, management_commentary]
+financial_facts:
+  - 营收 150.2亿 (+30.1% YoY)
+  - 归母净利 18.5亿 (+45.0% YoY)
+  - 毛利率 25.3% (+1.2pp YoY)
+  - 经营性现金流 22.1亿 (+18%)
+segment_facts:
+  - AI服务器营收 80亿 (+50% YoY)，占总营收 53%
+  - 消费电子营收 50亿 (-5% YoY)
+management_commentary:
+  - 管理层上调全年AI收入指引至 +60%
+forward_guidance:
+  - 下半年CapEx同比+50%，扩产AI服务器
+risk_factors: [客户集中度, 美元汇率, AI需求波动]
+source_links:
+  - 巨潮资讯 <公告URL>
+  - 交易所披露 <URL>
+---
+
+# <公司简称>（<代码>）— <报告期>财报
+
+## 一句话总结
+
+<1-2 句：本次报告期最关键的事实变化，不带“强烈看好”等观点词。>
+
+## 核心数据
+
+| 指标 | <报告期> | 同比 |
+|------|----------|------|
+| 营收 | 150.2亿 | +30.1% |
+| 归母净利 | 18.5亿 | +45.0% |
+| 毛利率 | 25.3% | +1.2pp |
+
+## 分业务事实
+
+- AI服务器：营收 80亿（+50%），占总营收 53%
+- 消费电子：营收 50亿（-5%）
+
+## 管理层表述
+
+- 上调全年AI收入指引至 +60%
+
+## 前瞻指引
+
+- 下半年CapEx同比+50%，扩产AI服务器
+
+## 风险提示
+
+- 客户集中度：前五大客户占比 >70%
+- 美元汇率波动
+- AI需求不及预期
+
+## 原始资料 / 公告链接
+
+- 巨潮资讯：<公告URL>
+- 关联研报：[[../../raw/2026-08-30-<券商>-<公司>-2025H1.md|<券商>]]
+```
+
+### 10.5 半年报 lint 与 KB-002 通用 lint 的关系
+
+- 半年报页**同时**跑通用规则（FMR/SEC/SYM/STALE）和 HYF 规则；通用规则先跑，HYF 规则在通用之后追加。
+- HYF-001 / HYF-002 计入 `error_count`，会影响 `machine_readiness`：财报页缺报告期或缺代码 → readiness 至多为 `medium`；若同时缺 4+ 字段 → `low`。
+- HYF-007 命中时 readiness 不强制降到 low，但 TA 在 KB-003/HY-003 接入时会给该页 `OPINION_AS_FACT` 标记，**不进入事实反证**（HY-005），只作为观点源。
+- 待补充页（`is_to_be_supplemented=True`）仍按 KB-002 规则一律 `low`，HYF 规则照常报但不重复降级。
+
+---
+
+## 11. 变更记录
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | `kb-002-v1` | 2026-07-01 | 首版契约：定义必填/推荐字段、必含章节、评分表表头、待补充标记、readiness 评分、12 条 lint 规则。 |
+| `kb-002-v1 + HY-001` | 2026-07-07 | HY-001 半年报/财报扩展：新增 9 个 frontmatter 字段、source_type 取值表、7 条 HYF lint 规则、Tree Work ingest 模板。通用规则不变，HYF 规则为追加层。 |
