@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-04
+> 最后更新：2026-07-06
 
 ---
 
@@ -167,11 +167,24 @@
 141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `scripts/query_local_knowledge.py` 缓存参数 + `tests/test_kb010_local_knowledge_cache.py`（53 tests），依赖 KB-003/KB-007/KB-009 ✓）。
 142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，done — OpenCode 产出 `frontend/src/utils/knowledgeContract.ts` + `tests/test_kb011_knowledge_contract_ui.py`（14 tests）+ `frontend/src/utils/kb011KnowledgeContract.test.ts`（26 tests），修复 `ReportResponse` setattr/serialize 静默丢失 + 观察仓 KB schema 缺失 + 前端 research_attention 类型与渲染缺口，依赖 KB-008/KB-009 ✓）。
 143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，done — commit dfc4460，2026-07-06 范围补审通过并完成 P2 补修，依赖 DB 污染治理脚本 ✓）。
-144. `AUTO-005`：自动开发 preflight 接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
+144. `AUTO-005`：自动开发前置检查接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
  145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
  146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
 147. `KB-012`：Tree Work 研报补录任务包导出（P2，done — commit 53cebbc，2026-07-06 范围补审通过，依赖 KB-002/KB-005/KB-007 ✓）。
   148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
+149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，ready，依赖 KB-002/KB-012 ✓）。
+150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，blocked — 等 HY-001 完成）。
+151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，blocked — 等 HY-001 完成）。
+152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，blocked — 等 HY-003 完成）。
+153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，blocked — 等 HY-003 完成）。
+154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，blocked — 等 HY-003 完成）。
+155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，blocked — 等 HY-004 完成）。
+156. `HY-008`：半年报知识链路端到端回放验收（P2，blocked — 等 HY-004/HY-005/HY-006/HY-007 完成）。
+157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，ready，依赖 AUTO-004 ✓）。
+158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，ready，依赖 KB-002/KB-012 ✓）。
+159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，ready，依赖 DATA-025/KB-002 ✓）。
+160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，ready，依赖 DATA-023/DATA-025 ✓）。
+161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready，依赖 REPORT-UX-004/KB-003 ✓）。
 
 ### 数据源治理候选队列
 
@@ -4632,7 +4645,7 @@
   - scheduler 不会因 warning 触发 TA/LLM。
 - **代码标注要求**：`# [DATA-026] db_hygiene_check`
 
-### AUTO-005: 自动开发 preflight 接入 DB hygiene 与续航门禁（P1）
+### AUTO-005: 自动开发前置检查接入 DB hygiene 与续航门禁（P1）
 - **描述**：自动开发开始前应检查生产 DB 是否有测试污染、ready 队列是否足够续航、工作区是否干净；异常时停止或写明 NEEDS_HUMAN，避免夜间空转或继续污染。
 - **优先级**：P1
 - **状态**：ready
@@ -4731,6 +4744,269 @@
   - 输出报告能回答：命中哪些知识、是否过期、如何影响研究优先级、是否改变交易动作。
   - 无强买卖词新增。
 - **代码标注要求**：`# [V-013] knowledge_e2e_acceptance`
+
+### HY-001: 半年报 Tree Work 输出协议扩展与 lint 规则（P1）
+- **描述**：在现有 `docs/local_knowledge_contract.md` 基础上扩展半年报/中报消化协议，让 Tree Work 产出的半年报页面能被 TA 稳定消费。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-002、KB-012 完成。
+- **背景**：半年报季将带来大量公司事实数据。TA 不能只读“研报观点”，必须能区分财报事实、管理层表述、券商观点和二级市场演绎。
+- **执行约束**：
+  - 不改写 `~/Documents/knowledge/` 原文。
+  - 不复制长篇财报/研报正文。
+  - 不把券商观点写成事实；字段必须标注来源类型。
+  - 不调用 live LLM。
+- **实现要点**：
+  1. 扩展本地知识契约，新增 `financial_period`、`disclosure_date`、`source_type`、`financial_facts`、`segment_facts`、`management_commentary`、`forward_guidance`、`risk_factors`、`source_links` 等半年报字段。
+  2. 在 `local_knowledge_lint.py` 增加半年报页面 lint：日期、代码、事实字段、来源类型、风险提示缺失检测。
+  3. 为 `report_type=财报分析/半年报/中报` 的页面增加专门规则，缺关键事实时输出 warning/error。
+  4. 更新 `docs/local_knowledge_contract.md`，给 Tree Work 一份可直接照抄的半年报 ingest 模板。
+- **验收方式**：
+  - 新增单元测试覆盖合格半年报页面、缺代码、缺报告期、事实/观点混用、缺风险提示。
+  - lint 对当前知识库 dry-run 可执行，不修改知识库。
+  - 输出文档能直接发给 Tree Work 执行。
+- **代码标注要求**：`# [HY-001] half_year_contract`
+
+### HY-002: 半年报资料优先队列与 Tree Work 补录任务包（P1）
+- **描述**：基于持仓、观察仓、TradeFlow 候选、研报关注度和知识过期状态，生成 Tree Work 半年报补录优先队列。
+- **优先级**：P1
+- **状态**：blocked — 等 HY-001 完成
+- **前置条件**：HY-001、KB-005、KB-012 完成。
+- **执行约束**：
+  - 只读 TA 数据库和 `~/Documents/knowledge/`。
+  - 不抓取付费研报正文。
+  - 不输出交易建议，只输出“需要补录什么资料”。
+- **实现要点**：
+  1. 新增脚本/模块生成 `docs/knowledge_reports/half_year_tree_work_tasks-YYYY-MM-DD.md`。
+  2. 优先级排序：已持仓 > 观察仓 > 昊天主候选 > TradeFlow 主候选 > 研报关注度高但知识过期。
+  3. 每条任务包含 symbol/name、为什么需要补录、缺哪些 HY-001 字段、建议来源类型。
+  4. 对已有 wiki 页面输出“补字段”而不是重复新建。
+- **验收方式**：
+  - fixture 覆盖持仓、观察仓、候选池、知识缺失、知识过期五类。
+  - 生成报告不含长原文，不含强买卖词。
+  - 输出可被 OpenClaw/Tree Work 直接复制执行。
+- **代码标注要求**：`# [HY-002] half_year_task_pack`
+
+### HY-003: 半年报事实表本地索引与只读查询 provider（P1）
+- **描述**：从 Tree Work 已消化的半年报 wiki 中抽取结构化事实表，提供 TA/TradeFlow 可复用的只读查询接口。
+- **优先级**：P1
+- **状态**：blocked — 等 HY-001 完成
+- **前置条件**：HY-001、KB-010 完成。
+- **执行约束**：
+  - 只读本地知识库，不写生产 DB。
+  - 仅抽取摘要字段和数值事实，不输出长原文。
+  - 字段来源必须保留页面路径、来源类型和报告期。
+- **实现要点**：
+  1. 新增 `half_year_knowledge_provider` 或在 `local_knowledge_provider` 中增加半年报 facts 查询。
+  2. 输出结构至少包含：报告期、披露日期、营收/利润/毛利率/现金流、分业务事实、管理层表述、风险、来源路径、stale 状态。
+  3. 接入 KB-010 cache/freshness，避免每次全量扫描。
+  4. 对缺字段、过期、事实冲突输出 `data_status`，不得假装可用。
+- **验收方式**：
+  - fixture 覆盖有事实、无半年报、过期、字段冲突、缓存损坏重建。
+  - 查询结果可 JSON 序列化。
+  - 不影响现有 local knowledge 普通查询。
+- **代码标注要求**：`# [HY-003] half_year_facts_provider`
+
+### HY-004: TA 报告接入“半年报事实对照”区块（P1）
+- **描述**：TA 分析报告中新增“半年报事实对照”区块，把 Tree Work 半年报事实作为背景证据展示，但不越权改变强动作门禁。
+- **优先级**：P1
+- **状态**：blocked — 等 HY-003 完成
+- **前置条件**：HY-003、KB-003、REPORT-UX-004 完成。
+- **执行约束**：
+  - 本地知识只能作为背景补充，不得替代行情/资金/公告原文。
+  - 数据不足时只能提示缺口，不能把缺口包装成结论。
+  - 不改 prompts。
+- **实现要点**：
+  1. 在 report service attach 链路中追加 `half_year_facts_summary`、`half_year_facts_block`、`half_year_facts_status`。
+  2. 区块明确分为：事实、管理层表述、待验证事项、风险。
+  3. 与 `data_blockers`/`wait_reason_codes` 解耦，避免“知识命中”覆盖“数据不足观察”。
+  4. 前端/接口字段保持向后兼容。
+- **验收方式**：
+  - 历史报告回放验证：有半年报事实时只增加区块，不改变原 decision/action_label。
+  - 无半年报事实时显示缺口，不误判 failed。
+  - 数据不足报告仍保留原缺口原因。
+- **代码标注要求**：`# [HY-004] half_year_report_block`
+
+### HY-005: 旧研报观点 vs 半年报事实反证检测（P1）
+- **描述**：检测 Tree Work 旧研报/评分表中的核心观点是否被最新半年报事实支持、削弱或打脸，形成“反证提醒”。
+- **优先级**：P1
+- **状态**：blocked — 等 HY-003 完成
+- **前置条件**：HY-003、KB-007、KB-009 完成。
+- **执行约束**：
+  - 不做投资结论，只做证据一致性标注。
+  - 不调用 live LLM。
+  - 不把单一指标变化扩大成“逻辑破坏”，必须输出证据等级。
+- **实现要点**：
+  1. 设计 `thesis_check_status`: `supported` / `weakened` / `contradicted` / `insufficient_data`。
+  2. 对营收、利润、现金流、毛利率、分业务进展、风险暴露做基础规则校验。
+  3. 输出 `contradiction_flags` 和 `needs_tree_work_review`。
+  4. 与 KB-007 research attention 结合：关注度高但事实反证强的股票优先提醒。
+- **验收方式**：
+  - fixture 覆盖支持、削弱、打脸、缺数据四类。
+  - 报告不出现强买卖词。
+  - 反证提醒能进入 HY-004 区块或本地知识摘要。
+- **代码标注要求**：`# [HY-005] thesis_fact_check`
+
+### HY-006: TradeFlow/昊天候选接入半年报因子与降权规则（P1）
+- **描述**：让昊天左侧候选和 TradeFlow 候选展示半年报事实摘要，并在半年报事实明显削弱逻辑时降低候选优先级。
+- **优先级**：P1
+- **状态**：blocked — 等 HY-003 完成
+- **前置条件**：HY-003、H-017、KB-004 完成。
+- **执行约束**：
+  - 半年报知识不能单独把弱候选提升为主候选。
+  - 只允许降权/解释/研究优先级调整；强买卖仍由现有门禁决定。
+  - 数据缺失不得惩罚过度，只标 `needs_research_review`。
+- **实现要点**：
+  1. 候选详情增加 `half_year_fact_score`、`half_year_fact_summary`、`half_year_risk_flags`。
+  2. 对 `contradicted/weakened` 输出降权原因。
+  3. 对 HY-003 有 fresh facts 的候选，提高“研究优先级”但不直接改变 action tier。
+  4. 前端显示简短摘要和“需 Tree Work 复核”标签。
+- **验收方式**：
+  - 强知识 + 弱技术不能升主候选。
+  - 半年报反证强时候选优先级下降。
+  - 无半年报数据时只提示缺口。
+- **代码标注要求**：`# [HY-006] tradeflow_half_year_factor`
+
+### HY-007: investment-controller 半年报 briefing payload 与去噪规则（P2）
+- **描述**：让 investment-controller 的盘前/盘后 briefing 能读取半年报事实摘要和反证提醒，但只做调度提醒，不替 TA 下结论。
+- **优先级**：P2
+- **状态**：blocked — 等 HY-004 完成
+- **前置条件**：HY-004、IC-TA-004、KB-006 完成。
+- **执行约束**：
+  - 不直接输出补仓/清仓等动作。
+  - P2/P3 仅进入日报；P0/P1 才触发盘中提醒。
+  - 同一 symbol 同一事实 24 小时内去重。
+- **实现要点**：
+  1. IC context 增加 `half_year_facts` bucket。
+  2. briefing payload 增加“半年报事实更新/反证提醒/需要 TA 复核”三类。
+  3. 缺数据只记录，不推送噪音。
+  4. 与观察仓/持仓优先级联动。
+- **验收方式**：
+  - fixture 覆盖持仓、观察仓、候选池三类。
+  - 去噪规则生效。
+  - payload 不包含长原文和强动作词。
+- **代码标注要求**：`# [HY-007] controller_half_year_briefing`
+
+### HY-008: 半年报知识链路端到端回放验收（P2）
+- **描述**：端到端验收 Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → investment-controller briefing 的整条链路。
+- **优先级**：P2
+- **状态**：blocked — 等 HY-004/HY-005/HY-006/HY-007 完成
+- **前置条件**：HY-004、HY-005、HY-006、HY-007 完成。
+- **执行约束**：
+  - fixture/dry-run，禁止 live LLM。
+  - 不写生产数据库。
+  - 重点检查字段、来源、状态、去噪和不越权。
+- **实现要点**：
+  1. 构造 4 个场景：事实支持、事实削弱、事实打脸、无半年报。
+  2. 验证 TA 报告区块、TradeFlow 候选字段、IC briefing payload 一致。
+  3. 生成 `docs/knowledge_reports/half_year_e2e_acceptance-YYYY-MM-DD.md`。
+  4. 回归验证本地知识不会覆盖数据不足原因和最终动作语义。
+- **验收方式**：
+  - 新增端到端测试通过。
+  - 验收报告能回答：事实是什么、来源在哪里、旧逻辑是否被支持/削弱、是否需要 Tree Work/TA 复核。
+  - 无强动作词新增。
+- **代码标注要求**：`# [HY-008] half_year_e2e_acceptance`
+
+### AUTO-006: Codex review 超时 watchdog 与收口策略（P1）
+- **描述**：修复自动开发中 Codex review 过长或卡住时的收口策略，避免 review 进程本身阻塞后续任务或留下锁/脏状态。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：AUTO-004 完成。
+- **背景**：复杂文档/代码 review 可能超过 5 分钟；如果外层 timeout 先杀进程，容易留下半成品、锁文件和未归档 review。
+- **执行约束**：
+  - 不降低“commit 前必须 review”的硬规则。
+  - 不把超时 review 当 PASS。
+  - 不吞掉 review 输出；必须归档到 `docs/reviews/`。
+- **实现要点**：
+  1. 为 `codex review --uncommitted` 增加可配置超时与 graceful terminate/killpg。
+  2. 超时时任务标记 `NEEDS_HUMAN`，并恢复/保留现场说明，不继续下一个任务。
+  3. 自动开发日报展示 review 耗时、是否超时、是否已有 partial output。
+  4. 增加 shell/python 测试或 dry-run fixture，覆盖 review timeout、正常 PASS、FAIL 三类。
+- **验收方式**：
+  - 模拟 review 超时不会 commit。
+  - 模拟 review PASS 才能进入 commit。
+  - 锁文件与 task_runs/reviews 归档完整。
+- **代码标注要求**：`# [AUTO-006] codex_review_watchdog`
+
+### KB-013: 半年报 fixture 样本集与契约回放基线（P1）
+- **描述**：为 HY 系列准备不依赖真实知识库变动的半年报 fixture 样本，提前固定字段、状态和失败路径。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-002、KB-012 完成。
+- **执行约束**：
+  - 不修改 `~/Documents/knowledge/`。
+  - fixture 不包含长篇研报/财报原文。
+  - 不调用 live LLM。
+- **实现要点**：
+  1. 新增 fixture 页面/字符串：合格半年报、缺报告期、事实/观点混用、过期、旧观点被削弱。
+  2. 将 fixture 接入 KB-002 lint 或新增专用测试 helper。
+  3. 输出一份 `docs/knowledge_reports/half_year_fixture_baseline.md`，说明未来 HY 任务可复用的样本。
+  4. 统一 symbol/name/source_type/financial_period 的字段命名。
+- **验收方式**：
+  - fixture 测试可独立运行。
+  - 不依赖真实知识库内容。
+  - 可被 HY-001/HY-003/HY-005 后续任务复用。
+- **代码标注要求**：`# [KB-013] half_year_fixture_baseline`
+
+### KB-014: 研报/财报来源可信度分层与 citation policy（P1）
+- **描述**：建立本地知识和 TA 报告引用来源的可信度分层，明确公告/财报原文、券商研报、媒体观点、用户笔记的使用边界。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-025、KB-002 完成。
+- **执行约束**：
+  - 不抓取新研报正文。
+  - 不把“来源可信度”直接转成交易动作。
+  - 不改 prompts。
+- **实现要点**：
+  1. 定义 `source_quality_tier`: `original_filing` / `official_notice` / `broker_research` / `media` / `user_note` / `unknown`。
+  2. 在 local knowledge lint/provider 中识别或透传来源层级。
+  3. 输出 citation policy 文档：哪些能作为事实、哪些只能作为观点/线索。
+  4. 对缺来源或来源弱的页面降低 confidence/attention，而不是直接过滤。
+- **验收方式**：
+  - fixture 覆盖五类来源。
+  - 报告/摘要中能显示来源层级。
+  - 弱来源不会被当作公告/财报事实。
+- **代码标注要求**：`# [KB-014] citation_policy`
+
+### DATA-027: 免费研报/公告/半年报源 smoke 扩展与失败归因（P2）
+- **描述**：在 DATA-025 基础上扩展免费源 smoke，覆盖研报元数据、公告/半年报披露、接口空结果和失败原因归因。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：DATA-023、DATA-025 完成。
+- **执行约束**：
+  - 默认 fixture/dry-run，不做大批量抓取。
+  - 不下载或提交 PDF 正文。
+  - 不把无研报当失败；必须区分 NORMAL_NO_DATA 和 FAILED。
+- **实现要点**：
+  1. 扩展 `research_report_sources` 或新增 smoke 脚本，覆盖 Eastmoney/AKShare 研报元数据与公告披露入口。
+  2. 输出 vendor、endpoint、字段、限制、失败类型。
+  3. 生成 `docs/data_source_reports/research-source-smoke-YYYY-MM-DD.md`。
+  4. 与 DATA-023 能力矩阵字段保持一致。
+- **验收方式**：
+  - fixture 覆盖有数据、无数据、接口失败、字段缺失。
+  - smoke 报告不含正文，只含元数据与状态。
+  - 不触发 live LLM。
+- **代码标注要求**：`# [DATA-027] research_source_smoke`
+
+### REPORT-UX-005: 本地知识补充不覆盖动作语义的扩展回放（P2）
+- **描述**：扩展 REPORT-UX-004 的回放范围，验证本地知识/研报关注度/未来半年报事实不会把最终动作重新压成笼统“观察”。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：REPORT-UX-004、KB-003 完成。
+- **执行约束**：
+  - 不改 prompts。
+  - 不调用 live LLM。
+  - 不写生产 DB。
+- **实现要点**：
+  1. 增加 action semantics fixture：WAIT/ENTER/HOLD/REDUCE/EXIT 各一类。
+  2. 叠加 local_knowledge/research_attention/half_year_facts mock 字段，验证语义不被覆盖。
+  3. 对“数据不足观察”要求输出原因码，不允许只剩笼统 action_label。
+  4. 生成简短回放报告。
+- **验收方式**：
+  - 新增回放测试通过。
+  - 本地知识强命中不会把 ENTER/HOLD/REDUCE 覆写成 WAIT。
+  - 数据不足时有明确 wait_reason_codes。
+- **代码标注要求**：`# [REPORT-UX-005] knowledge_action_semantics_replay`
 
 ## B. 待办
 
