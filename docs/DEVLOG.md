@@ -1,5 +1,76 @@
 # 修改日志
 
+## 2026-07-07 | KB-013 半年报 fixture 样本集与契约回放基线
+
+- **执行者**：OpenCode
+- **任务**：KB-013 — 半年报 fixture 样本集与契约回放基线（P1）
+- **类型**：feature / test-infrastructure
+- **状态**：✅ 完成
+
+### 背景
+
+- HY 系列任务（HY-001~HY-008）需要一个不依赖真实知识库的半年报样本基线，提前
+  固定字段、状态和失败路径，避免每个 HY 任务各自构造 inline 字符串或读取
+  `~/Documents/knowledge`。
+- KB-002（investment wiki lint）与 HY-001（半年报输出协议扩展）已完成，字段契约
+  已稳定；KB-012（Tree Work 任务包导出）也已完成。KB-013 把已稳定的契约沉淀为
+  可复用的共享样本集。
+
+### 改动文件
+
+- `tests/half_year_fixtures.py`（新增，`# [KB-013] half_year_fixture_baseline`）—
+  共享半年报 fixture 模块：
+  - 6 个样本（5 个业务场景 + 1 个控制组）：`qualified` / `missing_period` /
+    `fact_opinion_mix` / `expired` / `weakened_old_opinion` / `non_financial_control`；
+  - `HalfYearFixtureSpec` dataclass：每个样本预先固定 KB-002 + HY-001 lint 的预期
+    结果（readiness / HYF error / HYF warning / STALE / opinion_only / period）；
+  - `FIXTURE_SPECS` / `FIXTURES_BY_NAME` 索引；`build_half_year_fixture_kb()` 微型
+    知识库构造 helper（支持 `include=` 子集写入与 `with_index` 开关）；
+  - 字段命名规约常量（`SYMBOL_FORMAT` / `SOURCE_TYPE_*` / `FINANCIAL_PERIOD_*`）
+    直接从 `local_knowledge_lint` 导入取值表，保证与契约同源。
+- `tests/test_kb013_half_year_fixture_baseline.py`（新增，103 tests）— 独立测试套件：
+  字段命名规约 / fixture 内容静态检查（无强动作词、无长篇正文）/ 单页 lint 黄金基线
+  回放（参数化覆盖每个 spec 的 readiness + HYF + STALE + opinion_only + period）/
+  关键场景语义级断言 / 整库聚合 / fixture 自治与只读安全 / 可复用性元数据。
+- `docs/knowledge_reports/half_year_fixture_baseline.md`（新增）— 基线说明文档：
+  字段命名规约表、样本清单与语义、复用方式、与 HY-001 inline fixture 的互补关系、
+  后续扩展建议。
+
+### 设计要点
+
+- **第一份共享 KB fixture 模块**：此前 KB 系列测试各自维护 inline 字符串与重复的
+  `_write()` helper；KB-013 沉淀出 `tests/half_year_fixtures.py`，HY-003/005/008 可
+  直接 `from tests.half_year_fixtures import ...` 复用。
+- **单点失败隔离**：每个“失败路径”样本（缺报告期 / 过期）只暴露其目标规则，其余
+  KB-002 + HY-001 字段全部齐全（含非空 `related` 与全部推荐字段），使 lint 回放
+  基线可解释、不漂移。
+- **净贡献场景**：`expired`（STALE-002 与 HYF 规则的交互，HY-001 未覆盖）、
+  `weakened_old_opinion`（早期券商观点被更新财报事实削弱，HY-005 事实反证的数据种子
+  ——当前 lint 通过，HY-005 将基于本样本检测矛盾）。
+- **6 个不同 symbol**：000977.SZ / 603296.SH / 002415.SZ / 600519.SH / 300750.SZ /
+  000001.SZ，为 HY-003 provider 多 symbol 查询提供区分度。
+- **不触红线**：不修改 `~/Documents/knowledge/`、不含长篇正文、不调 live LLM、不改
+  prompts、不写生产 DB；测试只在 `tmp_path` 下运行。
+
+### 验证
+
+| 验证项 | 结果 |
+|--------|------|
+| KB-013 新增测试 | ✅ `pytest tests/test_kb013_half_year_fixture_baseline.py` — 103 passed |
+| HY-001 + KB-002 无回归 | ✅ 三套合计 226 passed |
+| 不依赖真实知识库 | ✅ `test_does_not_touch_real_knowledge` / `test_runs_without_home_env` 通过 |
+| 只读幂等 | ✅ `test_readonly_idempotent` 跑两次 lint，文件 size 快照一致 |
+| 每个样本可独立写入 | ✅ `test_include_all_individual` 逐个写入 lint 无 errors |
+| 无强动作词 / 无长篇正文 | ✅ 参数化静态检查全部通过 |
+
+### 后续影响
+
+- 解锁 HY-002~HY-008 直接复用本样本集，无需再各自造数据。
+- `weakened_old_opinion` 成为 HY-005（旧研报观点 vs 半年报事实反证检测）的黄金回放
+  种子；`expired` 成为 HY-003/004 STALE 降权处理的回放种子。
+- 后续可扩展港股/美股中报、多 symbol 产业链页、`deprecated:true` 归档样本（见基线
+  文档 §7，不在 KB-013 范围）。
+
 ## 2026-07-07 | AUTO-006 Codex review 超时 watchdog 与收口策略
 
 - **执行者**：OpenCode
@@ -11411,3 +11482,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/AUTO-006-20260707-round1.txt
 - **Run archive**: docs/task_runs/AUTO-006-20260707-032240/
+
+## 2026-07-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-013 - 半年报 fixture 样本集与契约回放基线（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/KB-013-20260707-033547/

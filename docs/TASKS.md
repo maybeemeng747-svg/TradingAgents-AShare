@@ -181,7 +181,7 @@
 155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，blocked — 等 HY-004 完成）。
 156. `HY-008`：半年报知识链路端到端回放验收（P2，blocked — 等 HY-004/HY-005/HY-006/HY-007 完成）。
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，ready，依赖 AUTO-004 ✓）。
-158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，ready，依赖 KB-002/KB-012 ✓）。
+158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，ready，依赖 DATA-025/KB-002 ✓）。
 160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，ready，依赖 DATA-023/DATA-025 ✓）。
 161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready，依赖 REPORT-UX-004/KB-003 ✓）。
@@ -4931,7 +4931,7 @@
 ### KB-013: 半年报 fixture 样本集与契约回放基线（P1）
 - **描述**：为 HY 系列准备不依赖真实知识库变动的半年报 fixture 样本，提前固定字段、状态和失败路径。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-013-20260707-033547
 - **前置条件**：KB-002、KB-012 完成。
 - **执行约束**：
   - 不修改 `~/Documents/knowledge/`。
