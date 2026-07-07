@@ -4931,7 +4931,7 @@
 ### KB-013: 半年报 fixture 样本集与契约回放基线（P1）
 - **描述**：为 HY 系列准备不依赖真实知识库变动的半年报 fixture 样本，提前固定字段、状态和失败路径。
 - **优先级**：P1
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-013-20260707-033547
+- **状态**：done [PASS_UNREVIEWED]
 - **前置条件**：KB-002、KB-012 完成。
 - **执行约束**：
   - 不修改 `~/Documents/knowledge/`。
