@@ -475,7 +475,7 @@
 ### PLAYBOOK-001: 上车—在车上—下车战法字段契约与状态枚举（P1）
 - **描述**：建立战法生命周期字段契约，统一跟踪看板、观察仓、TA 报告和 investment-controller 可读取的阶段/仓位字段。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed PLAYBOOK-001-20260710-031247
 - **前置条件**：TRACK-001、TRACK-003、DECISION-004 完成。
 - **执行约束**：
   - 不调用 live LLM。
