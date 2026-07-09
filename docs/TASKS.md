@@ -183,7 +183,7 @@
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，ready，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
-160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，ready，依赖 DATA-023/DATA-025 ✓）。
+160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，done — 101 tests passed，依赖 DATA-023/DATA-025 ✓）。
 161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready，依赖 REPORT-UX-004/KB-003 ✓）。
 162. `PLAYBOOK-001`：上车—在车上—下车战法字段契约与状态枚举（P1，ready，依赖 TRACK-001/TRACK-003/DECISION-004 ✓）。
 163. `PLAYBOOK-002`：计划仓位上限与上车三笔法规则引擎（P1，blocked — 等 PLAYBOOK-001 完成）。
@@ -5117,7 +5117,7 @@
 ### DATA-027: 免费研报/公告/半年报源 smoke 扩展与失败归因（P2）
 - **描述**：在 DATA-025 基础上扩展免费源 smoke，覆盖研报元数据、公告/半年报披露、接口空结果和失败原因归因。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 101 tests passed，依赖 DATA-023/DATA-025 ✓
 - **前置条件**：DATA-023、DATA-025 完成。
 - **执行约束**：
   - 默认 fixture/dry-run，不做大批量抓取。
