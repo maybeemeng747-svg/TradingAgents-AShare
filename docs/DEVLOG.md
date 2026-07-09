@@ -1,5 +1,174 @@
 # 修改日志
 
+## 2026-07-08 | PLAYBOOK 上车—在车上—下车战法任务线
+
+- **执行者**：Codex
+- **任务**：将用户提供的“上车—在车上—下车”战法规范沉淀为 TA 系统契约和自动开发任务线
+- **类型**：planning / contract
+- **状态**：✅ 已写入任务池，待 OpenCode 领取实现
+
+### 背景
+
+- 跟踪看板已经具备持仓、观察仓、今日指引和盘后复盘基础能力，但还缺少统一的
+  “一只票现在到底处于观察、试错、确认、进攻、持有、风控还是退出”的生命周期语言。
+- 用户希望系统不要简单因为下跌提示补仓、因为上涨提示追高，而是先判断仓位阶段、
+  证据强度和加减仓边界。
+
+### 改动文件
+
+- `docs/trade_playbook_lifecycle.md`（新增）—
+  固化“上车—在车上—下车”战法契约：
+  - 生命周期阶段：`observe / trial / confirm / attack / hold / risk / exit`
+  - 计划仓位上限与上车三笔法
+  - 核心仓 / 机动仓 / 防守仓拆分
+  - 赚钱下车 vs 证伪下车
+  - 卖飞追回规则
+  - 跟踪看板字段契约与 TA 输出契约
+  - 禁止跌了就补、涨了就追等安全约束
+- `docs/TASKS.md`（修改）—
+  新增 PLAYBOOK-001~006：
+  - PLAYBOOK-001：字段契约与状态枚举（ready）
+  - PLAYBOOK-002：计划仓位上限与三笔法规则引擎（blocked）
+  - PLAYBOOK-003：持仓拆分与核心/机动/防守规则（blocked）
+  - PLAYBOOK-004：TA 报告动作语义接入（blocked）
+  - PLAYBOOK-005：跟踪看板前端展示与观察仓导入映射（blocked）
+  - PLAYBOOK-006：回放验收与利通电子样例 fixture（blocked）
+
+### 设计原则
+
+1. **先契约，后实现**：本轮不直接改交易逻辑，先把字段、阶段、动作边界和验收标准钉住。
+2. **只释放第一步**：只有 PLAYBOOK-001 为 ready，后续任务都依赖前置完成，避免自动开发一次性大改。
+3. **不绕过既有风控**：PLAYBOOK 只细化动作语义，不绕过 DECISION、Buy/Risk Level、强动作门禁和数据完整度门禁。
+4. **反口号化**：所有“补仓/追涨/减仓”都必须绑定阶段、证据和 reason code。
+
+### 风险点
+
+- 本轮工作区包含 KB-014 未提交改动；PLAYBOOK 只新增任务契约，不直接改交易逻辑。
+- Codex review 对 KB-014 额外打回来源分层与弱来源排序边界：
+  CIT-003 聚合、官方来源 tier、未知 sources、未知 `source_type` 升权、CIT-002 覆盖范围、
+  券商年报点评误升权、证券报媒体误分层、opaque source 兜底过度、显式券商/监管来源被
+  `新闻` 泛词误降级、显式媒体机构被 `研报/研究报告` 泛词误升为券商研报、弱来源 company
+  页在截断前挤掉 fresh 可信页。均已补回归测试后再统一提交。
+
+## 2026-07-07 | KB-014 研报/财报来源可信度分层与 citation policy
+
+- **执行者**：OpenCode
+- **任务**：KB-014 — 研报/财报来源可信度分层与 citation policy（P1）
+- **类型**：feature / contract
+- **状态**：✅ 完成
+
+### 背景
+
+- KB-001~KB-013 已建立本地知识库只读审计、契约 lint、raw_evidence 接入、TradeFlow
+  命中分、缓存、半年报 fixture 基线等链路，但缺少**来源可信度分层**：券商观点、
+  媒体报道、用户笔记可能被无差别地当作"事实"进入 raw_evidence 与候选加分。
+- HY-001 的 `source_type` 取值表与 HYF-007（全是观点）已经具备事实/观点区分能力，
+  KB-014 在此之上建立完整的 6 类 `source_quality_tier` 分层，并定义明确的使用边界
+  （citation policy）：哪些能作为事实、哪些只能作为观点/线索。
+
+### 改动文件
+
+- `tradingagents/dataflows/citation_policy.py`（新增，`# [KB-014] citation_policy`）—
+  核心模块：
+  - 6 类 tier：`original_filing` / `official_notice` / `broker_research` / `media` /
+    `user_note` / `unknown`；
+  - `classify_source_quality_tier(frontmatter)` 根据 `source_type` / `sources` /
+    `report_type` 三类信号按优先级分类（取最高可信度）；
+  - `compute_tier_confidence_weight(tier, readiness, ...)` 综合 tier × readiness ×
+    stale/low 计算软权重（0.0~1.0）；
+  - `apply_tier_to_confidence(base_confidence, assessment)` 把 broker/media/
+    user_note/unknown 的 confidence 软降级（high→medium→low）；
+  - `render_citation_summary` / `render_tier_table` 报告渲染（无强动作词）；
+  - 自带 `SOURCE_TYPE_FACT_VALUES` / `SOURCE_TYPE_OPINION_VALUES` /
+    `HALF_YEAR_REPORT_TYPES` / `_normalize_source_type_list`，**不**依赖
+    `local_knowledge_lint`（避免循环导入）。
+- `tradingagents/dataflows/local_knowledge_lint.py`（修改）—
+  - `PageLintResult` 新增 `source_quality_tier` / `citation_assessment` 字段；
+  - `KnowledgeLintResult` 新增 `pages_weak_source` / `pages_broker_only` /
+    `pages_opinion_as_fact` / `tier_counts` 聚合字段；
+  - 新增 3 条 CIT- lint 规则：
+    - `CIT-001`（warning）：缺来源字段 → tier=unknown；
+    - `CIT-002`（info）：财报页 tier 为券商/媒体/笔记 → 观点冒充事实风险；
+    - `CIT-003`（info）：tier 为 media/user_note/unknown → 弱来源；
+  - lint 报告渲染新增来源层级概览与缺口清单；
+  - CIT 规则不强制降 `machine_readiness`（弱来源只软降权，不"过滤"）。
+- `tradingagents/dataflows/local_knowledge_provider.py`（修改）—
+  - `LocalKnowledgeMatch` 新增 `source_quality_tier` / `citation_confidence_weight`
+    字段（默认 1.0 中性，保持向后兼容）；
+  - `_build_match` 调用 `classify_source_quality_tier` 评估 tier，并通过
+    `apply_tier_to_confidence` 把 confidence 软降级；
+  - 修复 `_aggregate_result` 中 `for...else` 的 pre-existing bug（medium 命中
+    未 break，导致 result.confidence 误降为 low）；
+  - KB-004 `_page_score` 再乘 `citation_confidence_weight`，让券商观点/媒体/笔记
+    的贡献低于公告原文；
+  - `compute_local_knowledge_score` 的 `matched_pages_brief` 透传 tier 字段；
+  - `render_local_knowledge_block` 在每条摘要末尾显示 `来源:<tier>`。
+- `tradingagents/dataflows/local_knowledge_cache.py`（修改）—
+  - `_cached_page_to_match` 在缓存路径同样评估 tier（与全量扫描语义等价），
+    保证缓存命中与未命中产出**语义等价**的 tier 字段。
+- `tests/test_kb014_citation_policy.py`（新增，89 tests）— 完整测试套件：
+  - 10 个 `TestClassifyTier`：覆盖五类来源分类 + mixed source_type + 边界；
+  - 8 个 `TestComputeWeight`：tier × readiness × stale/low 组合；
+  - 7 个 `TestApplyTierToConfidence`：每种 tier 的软降级；
+  - 6 个 `TestRenderFunctions`：渲染与无强动作词断言；
+  - 9 个 `TestLintCitationIntegration`：CIT-001/002/003 规则触发与不阻塞 readiness；
+  - 3 个 `TestLintAggregation`：整库 tier_counts / pages_weak_source 聚合；
+  - 7 个 `TestProviderIntegration`：tier 透传 + 弱来源不被过滤；
+  - 6 个 `TestKb004ScoreIntegration`：_page_score 软调节与 filing > media 分数对比；
+  - 2 个 `TestSafetyConstraints`：只读安全 + 无强动作词；
+  - 1 个 `TestHy001FixtureIntegration`：半年报 fixture 集的 tier 分类基线。
+- `docs/citation_policy.md`（新增）— 政策文档：6 类 tier 取值表、分类信号优先级、
+  CIT- lint 规则、confidence/score 软调节公式、使用边界（事实/观点/背景三类）、
+  与现有契约（KB-001~KB-013 / HY-001~HY-005 / DECISION-001）的关系。
+
+### 设计要点
+
+1. **第一性原理**：用户问题是"券商观点不应等同公司事实"。最小事实集合 = 公告/
+   财报原文 + 监管文件 + 公司管理层口径。其余一律只能作观点/线索，软降权而非过滤。
+2. **剃刀定律**：复用 KB-001 frontmatter 解析与 HY-001 `source_type` 取值表，
+   不引入新的解析路径；CIT- 规则追加在 HYF 之后，不改变通用规则行为。
+3. **不阻塞 TA**：CIT-001 是 warning，CIT-002/CIT-003 是 info；弱来源页面只软降权，
+   不强制降 `machine_readiness`，仍在 `matched_pages` 中可见。
+4. **不改 prompts / 不抓新研报 / 不直接转交易动作**：tier 只影响 confidence /
+   score，强动作门禁（DECISION-001）完全不变。
+5. **缓存语义等价**：缓存路径与全量扫描产出**相同**的 tier 字段，不引入分叉。
+
+### 风险点与已修复
+
+- **pre-existing bug**：`_aggregate_result` 的 `for...else` 在 medium 命中时不 break，
+  导致 result.confidence 被误降为 low。KB-014 引入的 tier 软降级首次暴露该问题
+  （broker_research × high → medium 后被 for...else 吞掉）。已修复为显式 best 变量。
+- **循环导入**：`citation_policy` 最初 import 自 `local_knowledge_lint`，lint 又
+  import citation_policy → ImportError。已拆分：citation_policy 自带 source_type
+  取值表与归一化逻辑，不依赖 lint。
+- **report_type 兜底过度升权**：早期实现把 `report_type=半年报 + sources 非空`
+  一律升为 original_filing，会误把"半年报 + 券商研报"判为事实。已收敛为仅在
+  `sources/source_type 都未识别出 tier` 时兜底升权。
+- **`_safe_str(list)`**：`_safe_str` 对 list 返回 None，导致 has_any_source 误判。
+  已显式判断 list / str 类型。
+- **Codex review 补修（2026-07-08）**：
+  - opaque sources（如纯 URL / 本地 PDF 路径）不再默认判为 `broker_research`，保持
+    `unknown` 以允许 `report_type` 财报/公告兜底；
+  - `CIT-003`（media / user_note / unknown 弱来源）纳入 `pages_weak_source` 聚合；
+  - `source_type=official_notice` 与证监会/监管函等官方来源产出 `official_notice`
+    tier，而不是混入 `original_filing`。
+
+### 测试结果
+
+- KB-014 新增测试：91 passed / 0 failed
+- KB-014 相关组合回归：581 passed / 0 failed
+- KB/HY/V013 系列：1075 passed / 0 failed（deselect kb009 已知 date-sensitive 失败）
+- 完整 KB+HY+V-013 知识链路：878 passed / 0 failed
+- tradeflow/h004/h015：85 passed / 0 failed
+
+### 依赖
+
+- 前置：DATA-025 ✓（研报源目录）、KB-002 ✓（lint 契约）
+- 后续受益：HY-005 事实反证（`is_fact_usable` 区分事实/观点）、HY-006 TradeFlow
+  候选降权、REPORT-UX-005（本地知识不覆盖动作语义扩展回放）
+
+---
+
 ## 2026-07-07 | KB-013 半年报 fixture 样本集与契约回放基线
 
 - **执行者**：OpenCode
@@ -11491,3 +11660,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/KB-013-20260707-033547/
+
+## 2026-07-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-014 - 研报/财报来源可信度分层与 citation policy（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/KB-014-20260707-090658/

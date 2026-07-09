@@ -68,6 +68,15 @@ from tradingagents.dataflows.local_knowledge_lint import (
     HIGH_STALE_RISK_VALUES,
     LOW_CONFIDENCE_EVIDENCE_LEVELS,
 )
+from tradingagents.dataflows.citation_policy import (  # [KB-014] citation_policy
+    TIER_MEDIA,
+    TIER_UNKNOWN,
+    TIER_USER_NOTE,
+    CitationAssessment,
+    apply_tier_to_confidence,
+    classify_source_quality_tier,
+    compute_tier_confidence_weight,
+)
 
 
 # ── 常量 ──────────────────────────────────────────────────────────────
@@ -132,6 +141,12 @@ class LocalKnowledgeMatch:
     is_to_be_supplemented: bool = False
     matched_by: List[str] = field(default_factory=list)
     confidence: str = "low"
+    # [KB-014] citation_policy — 来源可信度分层
+    # 默认 1.0（中性）保持向后兼容：直接构造 LocalKnowledgeMatch 的旧调用方
+    # 不会被意外降权；只有经过 _build_match / 缓存路径的真实命中才会写入
+    # compute_tier_confidence_weight 计算出的实际权重。
+    source_quality_tier: str = TIER_UNKNOWN
+    citation_confidence_weight: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -151,6 +166,9 @@ class LocalKnowledgeMatch:
             "is_to_be_supplemented": self.is_to_be_supplemented,
             "matched_by": list(self.matched_by),
             "confidence": self.confidence,
+            # KB-014 来源可信度分层
+            "source_quality_tier": self.source_quality_tier,
+            "citation_confidence_weight": self.citation_confidence_weight,
         }
 
     @classmethod
@@ -172,6 +190,13 @@ class LocalKnowledgeMatch:
             is_to_be_supplemented=bool(data.get("is_to_be_supplemented") or False),
             matched_by=list(data.get("matched_by") or []),
             confidence=str(data.get("confidence") or "low"),
+            # KB-014 来源可信度分层
+            source_quality_tier=str(data.get("source_quality_tier") or TIER_UNKNOWN),
+            citation_confidence_weight=float(
+                data.get("citation_confidence_weight")
+                if data.get("citation_confidence_weight") is not None
+                else 1.0
+            ),
         )
 
 
@@ -559,6 +584,18 @@ def _build_match(
         page_audit.machine_readiness, is_stale, is_low_conf, is_todo
     )
 
+    # [KB-014] citation_policy — 评估来源可信度分层并据此软降级 confidence。
+    # tier 只影响 confidence / 权重，不直接过滤命中页（弱来源仍保留在 matched_pages）。
+    citation = classify_source_quality_tier(frontmatter)
+    tier_weight = compute_tier_confidence_weight(
+        citation.tier,
+        page_audit.machine_readiness,
+        is_stale=is_stale,
+        is_low_confidence=is_low_conf,
+        is_to_be_supplemented=is_todo,
+    )
+    adjusted_confidence = apply_tier_to_confidence(confidence, citation)
+
     return LocalKnowledgeMatch(
         rel_path=rel_path,
         title=page_audit.title or abs_path.stem,
@@ -575,7 +612,10 @@ def _build_match(
         is_low_confidence=is_low_conf,
         is_to_be_supplemented=is_todo,
         matched_by=matched_by,
-        confidence=confidence,
+        confidence=adjusted_confidence,
+        # KB-014 来源可信度分层
+        source_quality_tier=citation.tier,
+        citation_confidence_weight=tier_weight,
     )
 
 
@@ -616,16 +656,27 @@ def _page_matches(
     return matched
 
 
-def _rank_key(match: LocalKnowledgeMatch) -> Tuple[int, int, str]:
-    """排序键：(page_type_rank, readiness_rank, rel_path)。升序，取前 N。"""
+def _rank_key(match: LocalKnowledgeMatch) -> Tuple[int, int, int, str]:
+    """排序键：(evidence_bucket, page_type_rank, readiness_rank, rel_path)。
+
+    weak/stale/low 命中仍保留，但必须在截断前排到 fresh 可信命中之后，
+    避免弱来源 company 页挤掉 fresh industry/summary 页。
+    """
     type_rank = _PAGE_TYPE_RANK.get(match.page_type, 99)
     readiness_rank = {"high": 0, "medium": 1, "low": 2}.get(
         match.machine_readiness, 3
     )
-    # stale/low 排到后面。
-    if match.is_stale or match.is_low_confidence or match.is_to_be_supplemented:
+    evidence_bucket = 0
+    # stale/low/weak source 排到后面。
+    if (
+        match.is_stale
+        or match.is_low_confidence
+        or match.is_to_be_supplemented
+        or _is_weak_citation_match(match)
+    ):
+        evidence_bucket = 1
         readiness_rank = max(readiness_rank, 2)
-    return (type_rank, readiness_rank, match.rel_path)
+    return (evidence_bucket, type_rank, readiness_rank, match.rel_path)
 
 
 # ── 主查询逻辑 ────────────────────────────────────────────────────────
@@ -791,31 +842,43 @@ def _aggregate_result(result: LocalKnowledgeQueryResult) -> None:
     upd_list = [m.updated_at for m in matches if m.updated_at]
     result.updated_at = max(upd_list) if upd_list else None
 
-    # 状态机：是否有非 stale/low 命中？
+    # 状态机：是否有非 stale/low/weak 命中？
     has_fresh = any(
-        not (m.is_stale or m.is_low_confidence or m.is_to_be_supplemented)
+        not (
+            m.is_stale
+            or m.is_low_confidence
+            or m.is_to_be_supplemented
+            or _is_weak_citation_match(m)
+        )
         for m in matches
     )
     has_only_stale = all(
-        m.is_stale and not m.is_low_confidence and not m.is_to_be_supplemented
+        m.is_stale
+        and not m.is_low_confidence
+        and not m.is_to_be_supplemented
+        and not _is_weak_citation_match(m)
         for m in matches
     )
     has_only_low = all(
-        (m.is_low_confidence or m.is_to_be_supplemented) and not m.is_stale
+        (m.is_low_confidence or m.is_to_be_supplemented or _is_weak_citation_match(m))
+        and not m.is_stale
         for m in matches
     )
 
     if has_fresh:
         result.status = STATUS_HAS_DATA
         # confidence 取最高命中页。
+        # [KB-014] citation_policy — apply_tier_to_confidence 可能把 high 降为
+        # medium/low（broker/media/user_note/unknown）。此处需正确识别"最高命中"
+        # 而不被 for...else 误判为 low。
+        best = "low"
         for m in matches:
             if m.confidence == "high":
-                result.confidence = "high"
+                best = "high"
                 break
-            if m.confidence == "medium":
-                result.confidence = "medium"
-        else:
-            result.confidence = "low"
+            if m.confidence == "medium" and best == "low":
+                best = "medium"
+        result.confidence = best
     elif has_only_stale:
         result.status = STATUS_STALE
         result.confidence = "low"
@@ -869,7 +932,9 @@ def render_local_knowledge_block(result: LocalKnowledgeQueryResult) -> str:
             stale_tag = " · STALE" if m.is_stale else ""
             low_tag = " · LOW_CONFIDENCE" if m.is_low_confidence else ""
             todo_tag = " · 待补充" if m.is_to_be_supplemented else ""
-            tag_suffix = confidence_tag + stale_tag + low_tag + todo_tag
+            # [KB-014] citation_policy — 显示来源层级
+            tier_tag = f" · 来源:{m.source_quality_tier}" if m.source_quality_tier else ""
+            tag_suffix = confidence_tag + stale_tag + low_tag + todo_tag + tier_tag
             lines.append(f"**{idx}. {m.title}**{tag_suffix}")
             lines.append("")
             if m.summary:
@@ -1012,11 +1077,36 @@ _PAGE_SCORE_WEIGHTS = {
 _LOCAL_KNOWLEDGE_SCORE_MAX = 3.0
 
 
+_WEAK_SOURCE_TIERS = {TIER_MEDIA, TIER_USER_NOTE, TIER_UNKNOWN}
+
+
+def _is_weak_citation_match(match: LocalKnowledgeMatch) -> bool:
+    """弱来源页不参与 fresh hit / 正向命中分，但仍保留展示。"""
+    tier = getattr(match, "source_quality_tier", TIER_UNKNOWN)
+    weight = getattr(match, "citation_confidence_weight", 1.0)
+    if tier not in _WEAK_SOURCE_TIERS:
+        return False
+    return isinstance(weight, (int, float)) and float(weight) < 1.0
+
+
 def _page_score(match: LocalKnowledgeMatch) -> float:
-    """单页命中分：fresh + confidence 决定，过期/低置信/待补充一律 0。"""
+    """单页命中分：fresh + confidence 决定，过期/低置信/待补充一律 0。
+
+    [KB-014] citation_policy — 再乘以 ``citation_confidence_weight`` 软调节，
+    让券商观点贡献低于公告/财报原文；media/user_note/unknown 等弱来源
+    保留在命中列表，但不进入 fresh hit / 正向命中分。
+    """
     if match.is_stale or match.is_low_confidence or match.is_to_be_supplemented:
         return 0.0
-    return _PAGE_SCORE_WEIGHTS.get(match.confidence, 0.0)
+    if _is_weak_citation_match(match):
+        return 0.0
+    base = _PAGE_SCORE_WEIGHTS.get(match.confidence, 0.0)
+    weight = (
+        match.citation_confidence_weight
+        if isinstance(match.citation_confidence_weight, (int, float))
+        else 1.0
+    )
+    return round(base * max(0.0, min(1.0, float(weight))), 4)
 
 
 def compute_local_knowledge_score(
@@ -1029,7 +1119,8 @@ def compute_local_knowledge_score(
       - ``knowledge_hit_count``：命中页总数（含 stale / low）。
       - ``fresh_hit_count``：fresh 命中页数。
       - ``stale_hit_count``：仅 stale 命中页数。
-      - ``low_confidence_hit_count``：低置信/待补充命中页数。
+      - ``low_confidence_hit_count``：低置信/待补充/弱来源命中页数。
+      - ``weak_source_hit_count``：弱来源命中页数（media/user_note/unknown）。
       - ``has_hit``：是否有任何 fresh 命中。
       - ``status``：透传查询状态（``HAS_DATA`` / ``NORMAL_NO_DATA`` / …）。
       - ``confidence``：透传 ``result.confidence``。
@@ -1054,6 +1145,7 @@ def compute_local_knowledge_score(
         "fresh_hit_count": 0,
         "stale_hit_count": 0,
         "low_confidence_hit_count": 0,
+        "weak_source_hit_count": 0,
         "has_hit": False,
         "status": STATUS_NORMAL_NO_DATA,
         "confidence": "low",
@@ -1083,13 +1175,19 @@ def compute_local_knowledge_score(
     fresh_count = 0
     stale_count = 0
     low_count = 0
+    weak_source_count = 0
     total_score = 0.0
     briefs: List[Dict[str, Any]] = []
     for m in matched:
-        if m.is_stale and not (m.is_low_confidence or m.is_to_be_supplemented):
+        is_weak_source = _is_weak_citation_match(m)
+        if m.is_stale and not (
+            m.is_low_confidence or m.is_to_be_supplemented or is_weak_source
+        ):
             stale_count += 1
-        elif m.is_low_confidence or m.is_to_be_supplemented:
+        elif m.is_low_confidence or m.is_to_be_supplemented or is_weak_source:
             low_count += 1
+            if is_weak_source:
+                weak_source_count += 1
         else:
             fresh_count += 1
         total_score += _page_score(m)
@@ -1100,10 +1198,15 @@ def compute_local_knowledge_score(
             "updated_at": m.updated_at,
             "confidence": m.confidence,
             "is_stale": m.is_stale,
-            "is_low_confidence": m.is_low_confidence,
+            # 前端旧逻辑只识别 low/stale；弱来源也按低置信展示，避免当强正面。
+            "is_low_confidence": m.is_low_confidence or is_weak_source,
             "is_to_be_supplemented": m.is_to_be_supplemented,
+            "is_weak_source": is_weak_source,
             "summary_snippet": (m.summary or "")[:_SUMMARY_MAX_CHARS],
             "matched_by": list(m.matched_by),
+            # [KB-014] citation_policy — 透传来源层级
+            "source_quality_tier": m.source_quality_tier,
+            "citation_confidence_weight": m.citation_confidence_weight,
         })
 
     score = min(total_score, _LOCAL_KNOWLEDGE_SCORE_MAX)
@@ -1116,6 +1219,7 @@ def compute_local_knowledge_score(
         fresh_count=fresh_count,
         stale_count=stale_count,
         low_count=low_count,
+        weak_source_count=weak_source_count,
         has_hit=has_hit,
         status=result.status,
         themes=result.themes,
@@ -1128,6 +1232,7 @@ def compute_local_knowledge_score(
         "fresh_hit_count": fresh_count,
         "stale_hit_count": stale_count,
         "low_confidence_hit_count": low_count,
+        "weak_source_hit_count": weak_source_count,
         "has_hit": has_hit,
         "status": result.status,
         "confidence": result.confidence,
@@ -1147,6 +1252,7 @@ def _render_local_knowledge_summary(
     fresh_count: int,
     stale_count: int,
     low_count: int,
+    weak_source_count: int,
     has_hit: bool,
     status: str,
     themes: List[str],
@@ -1160,20 +1266,19 @@ def _render_local_knowledge_summary(
     if not has_hit:
         if status == STATUS_FAILED:
             return "本地知识查询失败，不参与命中分计算。"
-        if stale_count and not low_count:
+        if stale_count or low_count or weak_source_count:
+            non_weak_low_count = max(low_count - weak_source_count, 0)
+            parts: List[str] = []
+            if stale_count:
+                parts.append(f"{stale_count} 条过期页")
+            if weak_source_count:
+                parts.append(f"{weak_source_count} 条弱来源页")
+            if non_weak_low_count:
+                parts.append(f"{non_weak_low_count} 条低置信/待补充页")
+            qualifier = "不参与命中分计算" if stale_count else "仅作线索/参考"
             return (
-                f"本地知识仅命中 {stale_count} 条过期页，需更新；"
+                f"本地知识仅命中 {'、'.join(parts)}，{qualifier}；"
                 f"命中分 0.00。"
-            )
-        if low_count and not stale_count:
-            return (
-                f"本地知识仅命中 {low_count} 条低置信/待补充页，仅供参考；"
-                f"命中分 0.00。"
-            )
-        if stale_count and low_count:
-            return (
-                f"本地知识命中 {stale_count + low_count} 条过期/低置信页，"
-                f"不参与命中分计算。"
             )
         return ""
 
@@ -1185,6 +1290,8 @@ def _render_local_knowledge_summary(
         parts.append(f"过期 {stale_count} 条需更新")
     if low_count:
         parts.append(f"低置信 {low_count} 条仅供参考")
+    if weak_source_count:
+        parts.append(f"弱来源 {weak_source_count} 条仅作线索")
     text = "；".join(parts) + "。"
     if risks:
         text += " 风险提示：" + "、".join(risks[:2])

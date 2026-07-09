@@ -35,6 +35,11 @@ from tests.test_kb007_research_attention import (
     _US_TODO_PAGE,
 )
 from tradingagents.dataflows.local_knowledge_audit import INVESTMENT_SUBDIR
+from tradingagents.dataflows.citation_policy import (
+    TIER_MEDIA,
+    TIER_ORIGINAL_FILING,
+    TIER_USER_NOTE,
+)
 from tradingagents.dataflows.local_knowledge_provider import (
     LocalKnowledgeMatch,
     LocalKnowledgeQueryResult,
@@ -116,6 +121,8 @@ def _match(
     themes: list[str] | None = None,
     updated_at: str = "2026-06-30",
     rel_path: str = "wiki/investment/x.md",
+    source_quality_tier: str = TIER_ORIGINAL_FILING,
+    citation_confidence_weight: float = 1.0,
 ) -> LocalKnowledgeMatch:
     return LocalKnowledgeMatch(
         rel_path=rel_path,
@@ -134,6 +141,8 @@ def _match(
         is_to_be_supplemented=is_to_be_supplemented,
         matched_by=["symbol"],
         confidence=confidence,
+        source_quality_tier=source_quality_tier,
+        citation_confidence_weight=citation_confidence_weight,
     )
 
 
@@ -258,6 +267,62 @@ class TestStaleAndLowConfidenceDoNotBoost:
         assert s["local_knowledge_score"] == 0.0
         assert s["has_hit"] is False
         assert "查询失败" in s["local_knowledge_summary"]
+
+    def test_weak_source_pages_do_not_count_as_fresh_hit(self):
+        m = _match(
+            confidence="high",
+            source_quality_tier=TIER_MEDIA,
+            citation_confidence_weight=0.3,
+        )
+        result = _result(STATUS_HAS_DATA, [m])
+        s = compute_local_knowledge_score(result)
+        assert s["local_knowledge_score"] == 0.0
+        assert s["knowledge_hit_count"] == 1
+        assert s["fresh_hit_count"] == 0
+        assert s["low_confidence_hit_count"] == 1
+        assert s["weak_source_hit_count"] == 1
+        assert s["has_hit"] is False
+        assert s["matched_pages_brief"][0]["is_low_confidence"] is True
+        assert s["matched_pages_brief"][0]["is_weak_source"] is True
+        assert "弱来源" in s["local_knowledge_summary"]
+
+    def test_mixed_weak_and_low_confidence_summary_reports_both(self):
+        weak = _match(
+            confidence="high",
+            source_quality_tier=TIER_MEDIA,
+            citation_confidence_weight=0.3,
+        )
+        low = _match(
+            confidence="low",
+            is_low_confidence=True,
+            source_quality_tier=TIER_ORIGINAL_FILING,
+            citation_confidence_weight=1.0,
+        )
+        result = _result(STATUS_LOW_CONFIDENCE, [weak, low])
+
+        s = compute_local_knowledge_score(result)
+
+        assert s["knowledge_hit_count"] == 2
+        assert s["fresh_hit_count"] == 0
+        assert s["low_confidence_hit_count"] == 2
+        assert s["weak_source_hit_count"] == 1
+        assert "1 条弱来源页" in s["local_knowledge_summary"]
+        assert "1 条低置信/待补充页" in s["local_knowledge_summary"]
+
+    def test_weak_only_summary_keeps_tree_work_research_needed(self):
+        m = _match(
+            confidence="high",
+            source_quality_tier=TIER_USER_NOTE,
+            citation_confidence_weight=0.2,
+        )
+        s = compute_local_knowledge_score(_result(STATUS_HAS_DATA, [m]))
+        assert s["has_hit"] is False
+        assert needs_tree_work_research(
+            candidate_type="POLICY_AMBUSH",
+            mandate_topic="低空经济",
+            mandate_score=5.0,
+            knowledge_summary=s,
+        ) is True
 
 
 # ── 3. summary 内容 / 风险 / 主题字段 ───────────────────────────────

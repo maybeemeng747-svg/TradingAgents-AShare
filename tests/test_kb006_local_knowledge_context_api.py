@@ -81,12 +81,18 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _assert_weak_source_count_shape(payload: Dict[str, Any], expected: int = 0) -> None:
+    assert payload["weak_source_hit_count"] == expected
+    assert payload["score"]["weak_source_hit_count"] == expected
+
+
 _COMPANY_PAGE = """---
 title: 华勤技术603296-超节点进入出货周期
 created: 2026-05-25
 updated: 2026-06-29
 sources:
   - "[[../../raw/x.md|中邮证券-华勤技术超节点]]"
+source_type: [broker_report]
 tags: [华勤技术, 超节点, AI服务器]
 symbols: ["603296.SH 华勤技术"]
 themes: [AI服务器, 超节点, 液冷散热]
@@ -292,9 +298,11 @@ class TestSearchHappyPath:
         assert payload["hit_count"] >= 1
         assert payload["has_fresh_hit"] is True
         assert payload["fresh_hit_count"] >= 1
+        assert "weak_source_hit_count" in payload
         # KB-004 score digest present.
         score = payload["score"]
         assert "local_knowledge_score" in score
+        assert "weak_source_hit_count" in score
         assert score["has_hit"] is True
         # Hits carry slim fields.
         hit = payload["hits"][0]
@@ -410,6 +418,57 @@ class TestSlimOutputContract:
         )
         assert len(payload["summary_lines"]) <= 3
 
+    def test_weak_source_flags_propagate_to_hits(self, tmp_path):
+        inv = tmp_path / INVESTMENT_SUBDIR
+        _write(
+            inv / "media-weak-source.md",
+            """---
+title: 媒体报道弱来源
+created: 2026-01-01
+updated: 2026-01-01
+sources:
+  - 财联社报道
+tags: [AI]
+related: []
+symbols: ["600002.SH 某公司"]
+themes: [AI]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 低
+stale_risk: 低
+---
+# 媒体报道弱来源
+
+## 一句话总结
+
+媒体报道只作为线索。
+
+## 投资逻辑
+
+- 线索待验证。
+
+## 风险提示
+
+- 来源弱。
+""",
+        )
+
+        payload = search_local_knowledge(
+            symbol="600002",
+            knowledge_root=str(tmp_path),
+            include_runtime_meta=False,
+        )
+
+        assert payload["fresh_hit_count"] == 0
+        assert payload["low_confidence_hit_count"] == 1
+        _assert_weak_source_count_shape(payload, expected=1)
+        hit = payload["hits"][0]
+        assert hit["is_weak_source"] is True
+        assert hit["is_low_confidence"] is True
+        assert hit["source_quality_tier"] == "media"
+        assert hit["citation_confidence_weight"] < 1.0
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. search_local_knowledge — partition isolation
@@ -453,6 +512,7 @@ class TestStatusMapping:
         assert payload["hit_count"] == 0
         assert payload["has_fresh_hit"] is False
         assert payload["errors"]
+        _assert_weak_source_count_shape(payload)
 
     def test_no_match_returns_missing(self, fixture_kb):
         payload = search_local_knowledge(
@@ -462,6 +522,7 @@ class TestStatusMapping:
         )
         assert payload["data_status"] == DATA_STATUS_MISSING
         assert payload["hit_count"] == 0
+        _assert_weak_source_count_shape(payload)
 
     def test_root_missing_returns_failed(self, tmp_path):
         bogus = str(tmp_path / "does_not_exist")
@@ -473,6 +534,7 @@ class TestStatusMapping:
         # KB-003 returns FAILED when root doesn't exist.
         assert payload["data_status"] == DATA_STATUS_FAILED
         assert payload["hit_count"] == 0
+        _assert_weak_source_count_shape(payload)
 
     def test_only_stale_hit_returns_stale(self, fixture_kb):
         payload = search_local_knowledge(
@@ -513,6 +575,7 @@ class TestDisableBehaviour:
         assert payload["hit_count"] == 0
         assert payload["errors"]
         assert payload["knowledge_root"] == ""
+        _assert_weak_source_count_shape(payload)
 
     def test_disabled_env_returns_skipped(self, fixture_kb, monkeypatch):
         monkeypatch.setenv("KNOWLEDGE_CONTEXT_DISABLED", "1")

@@ -73,6 +73,7 @@ evidence_level: A
 valid_until: 2099-12-31
 source_quality: 高
 stale_risk: 低
+source_type: [broker_report]
 ---
 
 # 华勤技术（603296）

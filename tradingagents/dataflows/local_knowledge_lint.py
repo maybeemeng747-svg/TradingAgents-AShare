@@ -80,6 +80,15 @@ from tradingagents.dataflows.local_knowledge_audit import (
     _split_frontmatter,
     classify_page_type,
 )
+from tradingagents.dataflows.citation_policy import (  # [KB-014] citation_policy
+    TIER_BROKER_RESEARCH,
+    TIER_MEDIA,
+    TIER_ORIGINAL_FILING,
+    TIER_UNKNOWN,
+    TIER_USER_NOTE,
+    CitationAssessment,
+    classify_source_quality_tier,
+)
 
 
 # ── 契约常量 ─────────────────────────────────────────────────────────
@@ -150,12 +159,20 @@ SOURCE_TYPE_FACT_VALUES: Tuple[str, ...] = (
     "exchange_filing",
     "fact_table",
     "management_commentary",  # 公司自述视作半事实：能进入事实反证，但需打公司口径标
+    "official_notice",
+    "regulatory_notice",
 )
 SOURCE_TYPE_OPINION_VALUES: Tuple[str, ...] = (
     "broker_report",
     "media",
 )
 SOURCE_TYPE_ALL_VALUES: Tuple[str, ...] = SOURCE_TYPE_FACT_VALUES + SOURCE_TYPE_OPINION_VALUES
+FILING_REPORT_TYPES: Tuple[str, ...] = HALF_YEAR_REPORT_TYPES + (
+    "年报",
+    "一季报",
+    "三季报",
+    "公告",
+)
 
 # financial_period 合法格式：YYYYH1 / YYYYH2 / YYYY中报 / YYYY年报 / YYYY一季报 /
 # YYYY三季报 / FYxxQ<n>。lint 接受任一即可，不强制大小写。
@@ -220,6 +237,9 @@ class PageLintResult:
     is_half_year_report: bool = False
     half_year_period: Optional[str] = None
     half_year_opinion_only: bool = False
+    # [KB-014] citation_policy — 来源可信度分层
+    source_quality_tier: str = TIER_UNKNOWN
+    citation_assessment: Optional[CitationAssessment] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -240,6 +260,13 @@ class PageLintResult:
             "is_half_year_report": self.is_half_year_report,
             "half_year_period": self.half_year_period,
             "half_year_opinion_only": self.half_year_opinion_only,
+            # KB-014 来源可信度分层
+            "source_quality_tier": self.source_quality_tier,
+            "citation_assessment": (
+                self.citation_assessment.to_dict()
+                if self.citation_assessment is not None
+                else None
+            ),
         }
 
 
@@ -271,6 +298,11 @@ class KnowledgeLintResult:
     pages_half_year_period_missing: List[str] = field(default_factory=list)
     pages_half_year_opinion_only: List[str] = field(default_factory=list)
     pages_half_year_facts_missing: List[str] = field(default_factory=list)
+    # [KB-014] citation_policy — 来源可信度分层聚合
+    pages_weak_source: List[str] = field(default_factory=list)
+    pages_broker_only: List[str] = field(default_factory=list)
+    pages_opinion_as_fact: List[str] = field(default_factory=list)
+    tier_counts: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -298,6 +330,11 @@ class KnowledgeLintResult:
             "pages_half_year_period_missing": list(self.pages_half_year_period_missing),
             "pages_half_year_opinion_only": list(self.pages_half_year_opinion_only),
             "pages_half_year_facts_missing": list(self.pages_half_year_facts_missing),
+            # KB-014 来源可信度分层
+            "pages_weak_source": list(self.pages_weak_source),
+            "pages_broker_only": list(self.pages_broker_only),
+            "pages_opinion_as_fact": list(self.pages_opinion_as_fact),
+            "tier_counts": dict(self.tier_counts),
         }
 
 
@@ -703,6 +740,65 @@ def _check_half_year_report(
     return True, period_text, opinion_only
 
 
+# ── KB-014 来源可信度分层 lint ────────────────────────────────────────
+
+
+def _check_citation_policy(
+    frontmatter: Dict[str, Any],
+    page_type: str,
+    findings: List[LintFinding],
+) -> CitationAssessment:
+    """[KB-014] citation_policy — 评估单页来源可信度分层并产出 CIT- findings。
+
+    规则：
+      - CIT-001（warning）：``source_quality_tier=unknown``（来源字段全缺或无法识别）。
+      - CIT-002（info）：tier 为 ``broker_research`` / ``media`` / ``user_note``
+        且 report_type 偏向财报/公告披露类（观点冒充事实风险提示）。
+      - CIT-003（info）：tier 为 ``media`` / ``user_note`` / ``unknown``
+        （弱来源，TA 标 WEAK_SOURCE，不计入 readiness 惩罚）。
+
+    不会把 tier 直接转成 error，避免弱来源页面被"过滤"——只降权，不阻塞。
+    """
+    assessment = classify_source_quality_tier(frontmatter)
+
+    if assessment.tier == TIER_UNKNOWN:
+        _add(
+            findings,
+            "CIT-001",
+            SEVERITY_WARNING,
+            "页面缺来源字段（``sources`` / ``source_type`` 均空且无公告关键词）",
+            "在 frontmatter 补 ``source_type: [exchange_filing]`` 或 "
+            "``sources: [巨潮资讯 <公告URL>]``；TA 据此评估可信度。",
+        )
+
+    report_type = _safe_str(frontmatter.get("report_type")) or ""
+    if (
+        assessment.tier in (TIER_BROKER_RESEARCH, TIER_MEDIA, TIER_USER_NOTE)
+        and report_type in FILING_REPORT_TYPES
+    ):
+        _add(
+            findings,
+            "CIT-002",
+            SEVERITY_INFO,
+            f"report_type={report_type} 但 tier={assessment.tier}，"
+            "观点冒充事实风险（不阻塞，但 TA 标 OPINION_AS_FACT）",
+            "补 ``source_type: [exchange_filing, fact_table]`` 升级为 original_filing，"
+            "或把 ``report_type`` 改回 ``公司点评``。",
+            field_name="source_type",
+        )
+
+    if assessment.tier in (TIER_MEDIA, TIER_USER_NOTE, TIER_UNKNOWN):
+        _add(
+            findings,
+            "CIT-003",
+            SEVERITY_INFO,
+            f"tier={assessment.tier}，弱来源（仅作背景/线索）",
+            "TA 标 WEAK_SOURCE，不进入候选加分；建议补公告/研报链接后升级。",
+        )
+
+    return assessment
+
+
 def _compute_readiness(
     error_count: int,
     warning_count: int,
@@ -761,6 +857,12 @@ def lint_single_page(rel_path: str, abs_path: Path) -> PageLintResult:
         frontmatter, has_symbols, findings
     )
 
+    # [KB-014] citation_policy — 来源可信度分层评估（追加在 HYF 之后）。
+    # 不论是否为财报页都跑：所有 investment wiki 都需要标注 tier。
+    citation_assessment = _check_citation_policy(
+        frontmatter, page_type, findings
+    )
+
     error_count = sum(1 for f in findings if f.severity == SEVERITY_ERROR)
     warning_count = sum(1 for f in findings if f.severity == SEVERITY_WARNING)
     info_count = sum(1 for f in findings if f.severity == SEVERITY_INFO)
@@ -785,6 +887,9 @@ def lint_single_page(rel_path: str, abs_path: Path) -> PageLintResult:
         is_half_year_report=is_hy,
         half_year_period=hy_period,
         half_year_opinion_only=hy_opinion_only,
+        # KB-014 来源可信度分层
+        source_quality_tier=citation_assessment.tier,
+        citation_assessment=citation_assessment,
     )
 
 
@@ -961,6 +1066,17 @@ def _collect_lint_gaps(result: KnowledgeLintResult) -> None:
                 result.pages_half_year_facts_missing.append(page.rel_path)
             if page.half_year_opinion_only:
                 result.pages_half_year_opinion_only.append(page.rel_path)
+        # [KB-014] citation_policy — 来源可信度分层聚合
+        tier = page.source_quality_tier or TIER_UNKNOWN
+        result.tier_counts[tier] = result.tier_counts.get(tier, 0) + 1
+        if "CIT-001" in finding_rules or "CIT-003" in finding_rules:
+            result.pages_weak_source.append(page.rel_path)
+        if "CIT-002" in finding_rules:
+            result.pages_opinion_as_fact.append(page.rel_path)
+        if tier in (TIER_BROKER_RESEARCH,) and "CIT-002" not in finding_rules:
+            # broker_research 但未触发 CIT-002（非财报页）—— 仍标记为 broker_only，
+            # 方便前端 / 报告展示"该页只引用了券商观点"。
+            result.pages_broker_only.append(page.rel_path)
 
 
 # ── 报告渲染 ─────────────────────────────────────────────────────────
@@ -1006,6 +1122,25 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
             f"（缺报告期 {len(result.pages_half_year_period_missing)} / "
             f"缺事实 {len(result.pages_half_year_facts_missing)} / "
             f"观点冒充事实 {len(result.pages_half_year_opinion_only)}）"
+        )
+    # [KB-014] citation_policy — 来源可信度分层概览
+    if result.tier_counts:
+        tier_summary = " / ".join(
+            f"{t} {result.tier_counts.get(t, 0)}"
+            for t in (
+                "original_filing",
+                "official_notice",
+                "broker_research",
+                "media",
+                "user_note",
+                "unknown",
+            )
+            if result.tier_counts.get(t, 0) > 0
+        )
+        lines.append(
+            f"- citation_tier: {tier_summary} "
+            f"（弱来源 {len(result.pages_weak_source)} / "
+            f"观点冒充事实 {len(result.pages_opinion_as_fact)}）"
         )
     if result.errors:
         lines.append("")
@@ -1075,6 +1210,17 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
         "财报/半年报页 source_type 全为券商/媒体观点 (HYF-007)",
         result.pages_half_year_opinion_only,
     )
+    # [KB-014] citation_policy — 来源可信度分层缺口清单
+    _emit_gap_list(
+        lines,
+        "弱来源页面 (CIT-001/CIT-003：缺来源或仅媒体/笔记/unknown)",
+        result.pages_weak_source,
+    )
+    _emit_gap_list(
+        lines,
+        "财报页 tier 为券商/媒体/笔记 (CIT-002 / 观点冒充事实风险)",
+        result.pages_opinion_as_fact,
+    )
 
     # 5. Top 修复优先级
     lines.append("## 5. Top 修复优先级（按影响面排序）")
@@ -1136,6 +1282,10 @@ _RULE_DESCRIPTIONS: Dict[str, Tuple[str, str]] = {
     "HYF-005": (SEVERITY_WARNING, "财报/半年报页缺 financial_facts"),
     "HYF-006": (SEVERITY_WARNING, "财报/半年报页缺 risk_factors"),
     "HYF-007": (SEVERITY_WARNING, "source_type 全为券商/媒体观点（观点冒充事实）"),
+    # [KB-014] citation_policy — 来源可信度分层规则
+    "CIT-001": (SEVERITY_WARNING, "页面缺来源字段（unknown tier）"),
+    "CIT-002": (SEVERITY_INFO, "财报页 tier 为券商/媒体/笔记（观点冒充事实风险）"),
+    "CIT-003": (SEVERITY_INFO, "tier 为 media/user_note/unknown（弱来源）"),
 }
 
 

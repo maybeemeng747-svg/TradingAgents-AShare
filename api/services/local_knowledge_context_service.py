@@ -38,6 +38,11 @@ from typing import Any, Dict, List, Optional, Sequence
 from tradingagents.dataflows.local_knowledge_audit import (
     default_knowledge_root,
 )
+from tradingagents.dataflows.citation_policy import (
+    TIER_MEDIA,
+    TIER_UNKNOWN,
+    TIER_USER_NOTE,
+)
 from tradingagents.dataflows.local_knowledge_provider import (
     STATUS_FAILED,
     STATUS_HAS_DATA,
@@ -90,6 +95,7 @@ _SUMMARY_SNIPPET_MAX_CHARS = 200
 _MAX_RISKS_PER_HIT = 5
 _MAX_THEMES_PER_QUERY = 10
 _MAX_HITS_PER_CONTEXT_BUCKET = 20
+_WEAK_SOURCE_TIERS = {TIER_MEDIA, TIER_USER_NOTE, TIER_UNKNOWN}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -167,6 +173,15 @@ def _data_status_for_disabled() -> str:
     return DATA_STATUS_SKIPPED
 
 
+def _is_weak_source_hit(match_dict: Dict[str, Any]) -> bool:
+    """Return True for media/user-note/unknown evidence with sub-1.0 weight."""
+    tier = str(match_dict.get("source_quality_tier") or "")
+    weight = match_dict.get("citation_confidence_weight", 1.0)
+    if tier not in _WEAK_SOURCE_TIERS:
+        return False
+    return isinstance(weight, (int, float)) and float(weight) < 1.0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Slim result shaping — no full page body ever leaves this module
 # ──────────────────────────────────────────────────────────────────────────────
@@ -183,6 +198,8 @@ def _slim_match(match_dict: Dict[str, Any]) -> Dict[str, Any]:
     summary = str(match_dict.get("summary") or "")
     if len(summary) > _SUMMARY_SNIPPET_MAX_CHARS:
         summary = summary[: _SUMMARY_SNIPPET_MAX_CHARS].rstrip() + "…"
+    is_weak_source = _is_weak_source_hit(match_dict)
+    source_quality_tier = str(match_dict.get("source_quality_tier") or "")
     return {
         "rel_path": str(match_dict.get("rel_path") or ""),
         "title": str(match_dict.get("title") or ""),
@@ -195,8 +212,12 @@ def _slim_match(match_dict: Dict[str, Any]) -> Dict[str, Any]:
         "confidence": str(match_dict.get("confidence") or "low"),
         "machine_readiness": str(match_dict.get("machine_readiness") or "low"),
         "is_stale": bool(match_dict.get("is_stale") or False),
-        "is_low_confidence": bool(match_dict.get("is_low_confidence") or False),
+        "is_low_confidence": bool(match_dict.get("is_low_confidence") or False)
+        or is_weak_source,
         "is_to_be_supplemented": bool(match_dict.get("is_to_be_supplemented") or False),
+        "is_weak_source": is_weak_source,
+        "source_quality_tier": source_quality_tier,
+        "citation_confidence_weight": match_dict.get("citation_confidence_weight"),
         "matched_by": list(match_dict.get("matched_by") or []),
     }
 
@@ -221,20 +242,11 @@ def _shape_query_result(
     data_status = _map_query_status_to_data_status(result.status)
     slim_hits = [_slim_match(m.to_dict()) for m in result.matched_pages]
 
-    fresh_count = sum(
-        1 for m in result.matched_pages
-        if not (m.is_stale or m.is_low_confidence or m.is_to_be_supplemented)
-    )
-    stale_count = sum(
-        1 for m in result.matched_pages
-        if m.is_stale and not (m.is_low_confidence or m.is_to_be_supplemented)
-    )
-    low_count = sum(
-        1 for m in result.matched_pages
-        if m.is_low_confidence or m.is_to_be_supplemented
-    )
-
     score_digest = compute_local_knowledge_score(result)
+    fresh_count = int(score_digest.get("fresh_hit_count") or 0)
+    stale_count = int(score_digest.get("stale_hit_count") or 0)
+    low_count = int(score_digest.get("low_confidence_hit_count") or 0)
+    weak_source_count = int(score_digest.get("weak_source_hit_count") or 0)
 
     if notes is not None and result.errors:
         notes.append(
@@ -254,6 +266,7 @@ def _shape_query_result(
         "fresh_hit_count": fresh_count,
         "stale_hit_count": stale_count,
         "low_confidence_hit_count": low_count,
+        "weak_source_hit_count": weak_source_count,
         "has_fresh_hit": fresh_count > 0,
         "themes": list(result.themes)[:_MAX_THEMES_PER_QUERY],
         "summary_lines": list(result.summary)[:3],
@@ -268,6 +281,7 @@ def _shape_query_result(
             "fresh_hit_count": score_digest["fresh_hit_count"],
             "stale_hit_count": score_digest["stale_hit_count"],
             "low_confidence_hit_count": score_digest["low_confidence_hit_count"],
+            "weak_source_hit_count": score_digest.get("weak_source_hit_count", 0),
             "has_hit": score_digest["has_hit"],
             "local_knowledge_summary": score_digest["local_knowledge_summary"],
         },
@@ -304,6 +318,7 @@ def _empty_payload(
         "fresh_hit_count": 0,
         "stale_hit_count": 0,
         "low_confidence_hit_count": 0,
+        "weak_source_hit_count": 0,
         "has_fresh_hit": False,
         "themes": [],
         "summary_lines": [],
@@ -317,6 +332,7 @@ def _empty_payload(
             "fresh_hit_count": 0,
             "stale_hit_count": 0,
             "low_confidence_hit_count": 0,
+            "weak_source_hit_count": 0,
             "has_hit": False,
             "local_knowledge_summary": "",
         },
@@ -492,6 +508,7 @@ def _hit_digest(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         "fresh_hit_count": int(payload.get("fresh_hit_count") or 0),
         "stale_hit_count": int(payload.get("stale_hit_count") or 0),
         "low_confidence_hit_count": int(payload.get("low_confidence_hit_count") or 0),
+        "weak_source_hit_count": int(payload.get("weak_source_hit_count") or 0),
         "data_status": payload.get("data_status"),
         "confidence": payload.get("confidence"),
         "updated_at": payload.get("updated_at"),
@@ -506,6 +523,9 @@ def _hit_digest(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "is_stale": h.get("is_stale"),
                 "is_low_confidence": h.get("is_low_confidence"),
                 "is_to_be_supplemented": h.get("is_to_be_supplemented"),
+                "is_weak_source": h.get("is_weak_source"),
+                "source_quality_tier": h.get("source_quality_tier"),
+                "citation_confidence_weight": h.get("citation_confidence_weight"),
             }
             for h in hits[:3]
         ],
@@ -663,6 +683,7 @@ def _slim_theme_query(payload: Dict[str, Any]) -> Dict[str, Any]:
         "fresh_hit_count": int(payload.get("fresh_hit_count") or 0),
         "stale_hit_count": int(payload.get("stale_hit_count") or 0),
         "low_confidence_hit_count": int(payload.get("low_confidence_hit_count") or 0),
+        "weak_source_hit_count": int(payload.get("weak_source_hit_count") or 0),
         "has_fresh_hit": bool(payload.get("has_fresh_hit")),
         "themes": list(payload.get("themes") or [])[:_MAX_THEMES_PER_QUERY],
         "summary_lines": list(payload.get("summary_lines") or [])[:2],
@@ -672,6 +693,9 @@ def _slim_theme_query(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "title": h.get("title"),
                 "updated_at": h.get("updated_at"),
                 "confidence": h.get("confidence"),
+                "is_weak_source": h.get("is_weak_source"),
+                "source_quality_tier": h.get("source_quality_tier"),
+                "citation_confidence_weight": h.get("citation_confidence_weight"),
             }
             for h in (payload.get("hits") or [])[:3]
         ],

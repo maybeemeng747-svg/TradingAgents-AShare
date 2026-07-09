@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-06
+> 最后更新：2026-07-08
 
 ---
 
@@ -182,9 +182,15 @@
 156. `HY-008`：半年报知识链路端到端回放验收（P2，blocked — 等 HY-004/HY-005/HY-006/HY-007 完成）。
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，ready，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
-159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，ready，依赖 DATA-025/KB-002 ✓）。
+159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
 160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，ready，依赖 DATA-023/DATA-025 ✓）。
 161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready，依赖 REPORT-UX-004/KB-003 ✓）。
+162. `PLAYBOOK-001`：上车—在车上—下车战法字段契约与状态枚举（P1，ready，依赖 TRACK-001/TRACK-003/DECISION-004 ✓）。
+163. `PLAYBOOK-002`：计划仓位上限与上车三笔法规则引擎（P1，blocked — 等 PLAYBOOK-001 完成）。
+164. `PLAYBOOK-003`：持仓拆分与机动仓/核心仓/防守仓规则引擎（P1，blocked — 等 PLAYBOOK-001/PLAYBOOK-002 完成）。
+165. `PLAYBOOK-004`：TA 报告动作语义接入战法阶段与仓位建议（P1，blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成）。
+166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
+167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
 
 ### 数据源治理候选队列
 
@@ -458,6 +464,146 @@
   - investment-controller context 可读。
   - 生成 `docs/tracking_board_v2_acceptance.md`。
 - **代码标注要求**：`# [TRACK-007] tracking_board_acceptance`
+
+---
+
+## PLAYBOOK. 上车—在车上—下车战法任务池（2026-07-08 新增）
+
+> 目标：把“观察、试错、确认、进攻、持有、风控、退出”变成跟踪看板和 TA 报告的统一生命周期语言。系统不直接替用户下单，只负责把仓位阶段、证据强度、加减仓边界讲清楚。
+> 参考契约：`docs/trade_playbook_lifecycle.md`。
+
+### PLAYBOOK-001: 上车—在车上—下车战法字段契约与状态枚举（P1）
+- **描述**：建立战法生命周期字段契约，统一跟踪看板、观察仓、TA 报告和 investment-controller 可读取的阶段/仓位字段。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TRACK-001、TRACK-003、DECISION-004 完成。
+- **执行约束**：
+  - 不调用 live LLM。
+  - 不改 `tradingagents/prompts/`。
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不改变现有 `decision` / `execution_action` 向后兼容字段。
+- **实现要点**：
+  1. 新增或扩展只读 schema/dataclass，定义：
+     - `playbook_stage`: `observe / trial / confirm / attack / hold / risk / exit`
+     - `industry_evidence_score` / `earnings_validation_score` / `fund_confirmation_score` / `risk_pressure_score`
+     - `planned_max_position_pct` / `current_position_pct`
+     - `trial_lot_status` / `confirm_lot_status` / `attack_lot_status`
+     - `core_position_qty` / `tactical_position_qty` / `defensive_cash_required_pct`
+     - `allow_add` / `allow_replenish` / `allow_chase`
+     - `add_trigger` / `reduce_trigger` / `exit_trigger`
+  2. 字段优先采用派生/可选方式接入，不强制旧数据迁移。
+  3. 输出 `docs/trade_playbook_lifecycle.md` 字段与代码 schema 的映射表。
+  4. observation item 与 TA report response 至少能承载这些字段的可选占位。
+- **验收方式**：
+  - 新增 schema/serialization 测试，旧报告和旧观察仓数据不报错。
+  - 缺字段时返回空/默认值，不把未知阶段误判为 `hold`。
+  - `git diff --check` 通过。
+- **代码标注要求**：`# [PLAYBOOK-001] lifecycle_contract`
+
+### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+- **描述**：把“计划最大仓位 + 试错仓/确认仓/进攻仓”写成可测试规则，禁止系统因为下跌简单提示补仓。
+- **优先级**：P1
+- **状态**：blocked — 等 PLAYBOOK-001 完成
+- **前置条件**：PLAYBOOK-001 完成。
+- **执行约束**：
+  - 不自动下单，不输出“立即买入/重仓买入”等强动作。
+  - 不调 live LLM。
+  - 不改 prompts。
+- **实现要点**：
+  1. 新增规则函数：按标的类型给出默认计划仓位上限（ETF、主板龙头、题材弹性股、业绩未验证、高波动传闻票、单票绝对上限）。
+  2. 新增三笔法判断：
+     - `trial_lot`: 投资假设清晰、非极端高位、板块未退潮、亏损可控、仓位小。
+     - `confirm_lot`: 产业/业绩/资金三类证据至少两类增强。
+     - `attack_lot`: 确认后出现回踩企稳或突破站稳。
+  3. 若当前仓位已超过计划仓位，强制 `allow_add=False`。
+  4. 第一次大跌、跌停封死、放量破位、板块退潮时，`allow_replenish=False`。
+- **验收方式**：
+  - fixture 覆盖：可试错、不可试错、可加确认仓、不可加确认仓、回踩进攻、突破进攻、跌停不补。
+  - “跌了/便宜/回调”单独出现不能触发补仓。
+  - 资金/业绩/产业证据不足时不得进入确认仓。
+- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+
+### PLAYBOOK-003: 持仓拆分与机动仓/核心仓/防守仓规则引擎（P1）
+- **描述**：持仓后不再把仓位看成一坨，统一拆成核心仓、机动仓、防守仓，并定义高抛低吸和证伪减仓边界。
+- **优先级**：P1
+- **状态**：blocked — 等 PLAYBOOK-001/PLAYBOOK-002 完成
+- **前置条件**：PLAYBOOK-001、PLAYBOOK-002 完成。
+- **执行约束**：
+  - 不修改真实持仓数量。
+  - 不生成交易委托。
+  - 不改 prompts。
+- **实现要点**：
+  1. 持仓拆分默认：核心仓 50%、机动仓 30%、防守现金 20%，允许用户配置覆盖。
+  2. 盈利 15%—20%、30%、50%+、极端亢奋分别给出机动仓处理建议。
+  3. 风险分层：轻度风险减机动仓，中度风险减到核心仓，重度证伪允许核心仓退出。
+  4. 满仓/现金不足时提示缺乏防守仓，不适合继续加仓。
+  5. 卖飞追回规则：站稳新平台 2—3 天且板块同步走强，追回不超过卖出机动仓一半。
+- **验收方式**：
+  - 已持仓样本能返回 core/tactical/defensive 三类数量或比例。
+  - 赚钱下车与证伪下车输出不同 reason code。
+  - 连续跌停/重大利空场景不得输出补仓。
+- **代码标注要求**：`# [PLAYBOOK-003] position_bucket_rules`
+
+### PLAYBOOK-004: TA 报告动作语义接入战法阶段与仓位建议（P1）
+- **描述**：把 PLAYBOOK 阶段和仓位建议接入 TA 报告的结构化输出，使最终结论不再只有 HOLD/WAIT/观察。
+- **优先级**：P1
+- **状态**：blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成
+- **前置条件**：PLAYBOOK-002、PLAYBOOK-003、DECISION-004 完成。
+- **执行约束**：
+  - 不改 prompts。
+  - 不绕过现有 Buy Level / Risk Level / 强动作门禁。
+  - 数据不足时不得输出强动作。
+- **实现要点**：
+  1. `StructuredReport` / API response 可选透传 `playbook_stage`、四项评分、仓位建议、触发条件。
+  2. 对 `execution_action` 增加更细的 user-facing `playbook_action_label`：
+     - 观察、试错仓、加确认仓、加进攻仓、持有、减机动仓、减到核心仓、证伪退出。
+  3. “数据不足观察”必须带 reason codes，不允许只剩笼统观察。
+  4. 本地知识/研报关注度只影响证据评分，不直接覆盖动作语义。
+- **验收方式**：
+  - 回放 WAIT/ENTER/HOLD/REDUCE/EXIT 五类报告，新字段不破坏旧字段。
+  - 未持仓 + 只满足试错条件：只能输出试错仓/观察，不能输出重仓。
+  - 已持仓 + 逻辑证伪：可输出减机动仓/减到核心仓/证伪退出。
+- **代码标注要求**：`# [PLAYBOOK-004] report_playbook_semantics`
+
+### PLAYBOOK-005: 跟踪看板战法字段前端展示与观察仓导入映射（P2）
+- **描述**：在跟踪看板和观察仓展示阶段、三笔仓状态、核心/机动/防守拆分和下一步触发条件。
+- **优先级**：P2
+- **状态**：blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成
+- **前置条件**：PLAYBOOK-001、PLAYBOOK-004、TRACK-003 完成。
+- **执行约束**：
+  - 不在前端制造强买卖词。
+  - 字段缺失时使用空状态，不显示误导性默认值。
+  - 保持移动端可读。
+- **实现要点**：
+  1. 跟踪看板新增战法阶段 badge 与证据评分小面板。
+  2. 观察仓导入支持可选字段：计划仓位、阶段、触发条件、投资假设。
+  3. 已持仓卡片展示核心仓/机动仓/防守仓估算。
+  4. 今日指引按 playbook reason code 聚合。
+- **验收方式**：
+  - 前端类型检查通过。
+  - 旧数据字段缺失不崩溃。
+  - 截图/手册说明能回答“这只票现在是观察、试错、确认还是风控”。
+- **代码标注要求**：`# [PLAYBOOK-005] playbook_dashboard_ui`
+
+### PLAYBOOK-006: 战法回放验收与利通电子样例 fixture（P2）
+- **描述**：用历史报告和利通电子示例回放验证战法不会变成“跌了就补/涨了就追”的自动化口号。
+- **优先级**：P2
+- **状态**：blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成
+- **前置条件**：PLAYBOOK-004、PLAYBOOK-005 完成。
+- **执行约束**：
+  - 不调用 live LLM。
+  - fixture 不写入生产 DB。
+  - 不包含用户隐私资金明细。
+- **实现要点**：
+  1. 新增 fixture：观察、试错、确认、进攻、持有、风控、退出各一例。
+  2. 利通电子样例覆盖：仓位过重、跌停风险、半年报验证、反抽无力先减机动仓。
+  3. 检查赚钱下车与证伪下车 reason code 不混用。
+  4. 生成 `docs/playbook_acceptance.md`。
+- **验收方式**：
+  - 所有 fixture 回放通过。
+  - 跌停/第一次大跌场景 `allow_replenish=False`。
+  - 证据增强场景才允许确认仓/进攻仓。
+- **代码标注要求**：`# [PLAYBOOK-006] playbook_replay_acceptance`
 
 ---
 
@@ -4951,7 +5097,7 @@
 ### KB-014: 研报/财报来源可信度分层与 citation policy（P1）
 - **描述**：建立本地知识和 TA 报告引用来源的可信度分层，明确公告/财报原文、券商研报、媒体观点、用户笔记的使用边界。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — Codex review 补修完成，91 KB-014 tests + 581 KB 组合回归通过
 - **前置条件**：DATA-025、KB-002 完成。
 - **执行约束**：
   - 不抓取新研报正文。

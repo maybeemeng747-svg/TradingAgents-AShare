@@ -705,6 +705,23 @@ def _cached_page_to_match(
     else:
         confidence = "low"
 
+    # [KB-014] citation_policy — 缓存路径同样评估来源层级，与全量扫描语义等价。
+    from tradingagents.dataflows.citation_policy import (
+        apply_tier_to_confidence,
+        classify_source_quality_tier,
+        compute_tier_confidence_weight,
+    )
+
+    citation = classify_source_quality_tier(frontmatter)
+    tier_weight = compute_tier_confidence_weight(
+        citation.tier,
+        page.machine_readiness,
+        is_stale=is_stale,
+        is_low_confidence=is_low_conf,
+        is_to_be_supplemented=is_todo,
+    )
+    adjusted_confidence = apply_tier_to_confidence(confidence, citation)
+
     return LocalKnowledgeMatch(
         rel_path=page.rel_path,
         title=page.title,
@@ -721,7 +738,10 @@ def _cached_page_to_match(
         is_low_confidence=is_low_conf,
         is_to_be_supplemented=is_todo,
         matched_by=list(matched_by),
-        confidence=confidence,
+        confidence=adjusted_confidence,
+        # KB-014 来源可信度分层
+        source_quality_tier=citation.tier,
+        citation_confidence_weight=tier_weight,
     )
 
 
