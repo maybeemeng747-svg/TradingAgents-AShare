@@ -11719,3 +11719,17 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/DATA-027-20260710-round1.txt
 - **Run archive**: docs/task_runs/DATA-027-20260710-031402/
+
+## 2026-07-10 | Codex 收口与任务池释放
+
+- **DATA-027 P2 review follow-up**: commit `4e7f5d3` 修复 `field_missing` / `schema_change` 被当成可用或正常空数据的问题。
+  - `FIELD_MISSING` / `SCHEMA_CHANGE` 现在映射为 `FAILED`。
+  - live smoke 中这两类结构问题会让 `has_failures=True`、`all_passed=False`。
+  - Sample Records 只渲染 `OK + HAS_DATA` 样本，避免空壳记录出现在“有数据”区。
+  - Codex review 通过；`tests/test_data027_research_source_smoke.py` 103 passed。
+- **Task pool release**:
+  - 修正 `AUTO-005` / `AUTO-006` 顶部队列为 done，避免自动开发重复领取。
+  - 修正 `DATA-027` 顶部和详情为 `559e95b + 4e7f5d3`、103 tests passed。
+  - 释放 `HY-002` / `HY-003` 为 ready，继续半年报资料优先队列和半年报事实 provider 主线。
+  - 重置 `PLAYBOOK-001` 为 ready；前次 run 只生成 preflight/context，没有代码产出。
+  - 新增研报系统后续任务 `KB-015` / `KB-016` / `KB-017`，围绕研报观点事实分离、多研报分歧矩阵、citation fact audit。

@@ -167,23 +167,23 @@
 141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `scripts/query_local_knowledge.py` 缓存参数 + `tests/test_kb010_local_knowledge_cache.py`（53 tests），依赖 KB-003/KB-007/KB-009 ✓）。
 142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，done — OpenCode 产出 `frontend/src/utils/knowledgeContract.ts` + `tests/test_kb011_knowledge_contract_ui.py`（14 tests）+ `frontend/src/utils/kb011KnowledgeContract.test.ts`（26 tests），修复 `ReportResponse` setattr/serialize 静默丢失 + 观察仓 KB schema 缺失 + 前端 research_attention 类型与渲染缺口，依赖 KB-008/KB-009 ✓）。
 143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，done — commit dfc4460，2026-07-06 范围补审通过并完成 P2 补修，依赖 DB 污染治理脚本 ✓）。
-144. `AUTO-005`：自动开发前置检查接入 DB hygiene 与续航门禁（P1，ready，依赖 AUTO-004/DATA-026 ✓）。
+144. `AUTO-005`：自动开发前置检查接入 DB hygiene 与续航门禁（P1，done — commit 553366b + 8a58462，依赖 AUTO-004/DATA-026 ✓）。
  145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
  146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
 147. `KB-012`：Tree Work 研报补录任务包导出（P2，done — commit 53cebbc，2026-07-06 范围补审通过，依赖 KB-002/KB-005/KB-007 ✓）。
   148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
 149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，done，依赖 KB-002/KB-012 ✓）。
-150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，blocked — 等 HY-001 完成）。
-151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，blocked — 等 HY-001 完成）。
+150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，ready，依赖 HY-001/KB-005/KB-012 ✓）。
+151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，ready，依赖 HY-001/KB-010 ✓）。
 152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，blocked — 等 HY-003 完成）。
 153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，blocked — 等 HY-003 完成）。
 154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，blocked — 等 HY-003 完成）。
 155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，blocked — 等 HY-004 完成）。
 156. `HY-008`：半年报知识链路端到端回放验收（P2，blocked — 等 HY-004/HY-005/HY-006/HY-007 完成）。
-157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，ready，依赖 AUTO-004 ✓）。
+157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，done — commit f06793e + b638dca，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
-160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，done — 101 tests passed，依赖 DATA-023/DATA-025 ✓）。
+160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，done — commit 559e95b + 4e7f5d3，103 tests passed，依赖 DATA-023/DATA-025 ✓）。
 161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready，依赖 REPORT-UX-004/KB-003 ✓）。
 162. `PLAYBOOK-001`：上车—在车上—下车战法字段契约与状态枚举（P1，ready，依赖 TRACK-001/TRACK-003/DECISION-004 ✓）。
 163. `PLAYBOOK-002`：计划仓位上限与上车三笔法规则引擎（P1，blocked — 等 PLAYBOOK-001 完成）。
@@ -191,6 +191,9 @@
 165. `PLAYBOOK-004`：TA 报告动作语义接入战法阶段与仓位建议（P1，blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成）。
 166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
 167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
+168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，ready，依赖 KB-014/KB-003/HY-001 ✓）。
+169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，blocked — 等 KB-015 完成）。
+170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，blocked — 等 KB-015/HY-003 完成）。
 
 ### 数据源治理候选队列
 
@@ -475,7 +478,7 @@
 ### PLAYBOOK-001: 上车—在车上—下车战法字段契约与状态枚举（P1）
 - **描述**：建立战法生命周期字段契约，统一跟踪看板、观察仓、TA 报告和 investment-controller 可读取的阶段/仓位字段。
 - **优先级**：P1
-- **状态**：in_progress — claimed PLAYBOOK-001-20260710-031247
+- **状态**：ready — 上次运行仅生成 preflight/context，未产出代码；允许重新领取
 - **前置条件**：TRACK-001、TRACK-003、DECISION-004 完成。
 - **执行约束**：
   - 不调用 live LLM。
@@ -4916,7 +4919,7 @@
 ### HY-002: 半年报资料优先队列与 Tree Work 补录任务包（P1）
 - **描述**：基于持仓、观察仓、TradeFlow 候选、研报关注度和知识过期状态，生成 Tree Work 半年报补录优先队列。
 - **优先级**：P1
-- **状态**：blocked — 等 HY-001 完成
+- **状态**：ready
 - **前置条件**：HY-001、KB-005、KB-012 完成。
 - **执行约束**：
   - 只读 TA 数据库和 `~/Documents/knowledge/`。
@@ -4936,7 +4939,7 @@
 ### HY-003: 半年报事实表本地索引与只读查询 provider（P1）
 - **描述**：从 Tree Work 已消化的半年报 wiki 中抽取结构化事实表，提供 TA/TradeFlow 可复用的只读查询接口。
 - **优先级**：P1
-- **状态**：blocked — 等 HY-001 完成
+- **状态**：ready
 - **前置条件**：HY-001、KB-010 完成。
 - **执行约束**：
   - 只读本地知识库，不写生产 DB。
@@ -5117,7 +5120,7 @@
 ### DATA-027: 免费研报/公告/半年报源 smoke 扩展与失败归因（P2）
 - **描述**：在 DATA-025 基础上扩展免费源 smoke，覆盖研报元数据、公告/半年报披露、接口空结果和失败原因归因。
 - **优先级**：P2
-- **状态**：done -- commit 559e95b
+- **状态**：done — commit 559e95b + 4e7f5d3；Codex review 通过，103 tests passed
 - **前置条件**：DATA-023、DATA-025 完成。
 - **执行约束**：
   - 默认 fixture/dry-run，不做大批量抓取。
@@ -5149,10 +5152,73 @@
   3. 对“数据不足观察”要求输出原因码，不允许只剩笼统 action_label。
   4. 生成简短回放报告。
 - **验收方式**：
-  - 新增回放测试通过。
-  - 本地知识强命中不会把 ENTER/HOLD/REDUCE 覆写成 WAIT。
-  - 数据不足时有明确 wait_reason_codes。
+- 新增回放测试通过。
+- 本地知识强命中不会把 ENTER/HOLD/REDUCE 覆写成 WAIT。
+- 数据不足时有明确 wait_reason_codes。
 - **代码标注要求**：`# [REPORT-UX-005] knowledge_action_semantics_replay`
+
+### KB-015: 研报观点事实分离与 TA 可消费摘要索引（P1）
+- **描述**：把 Tree Work 已消化研报中的“观点、事实、预测、风险、待验证事项”拆成 TA 可消费的结构化摘要，避免研报观点被误当成公告/财报事实。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-014、KB-003、HY-001 完成。
+- **执行约束**：
+  - 只读 `~/Documents/knowledge/`，不得修改知识库。
+  - 不抓取新研报正文，不复制长篇原文。
+  - 不把券商观点直接转成交易动作。
+  - 不调用 live LLM。
+- **实现要点**：
+  1. 新增只读 provider 或索引 helper，输出每篇 investment wiki 的 `research_claims`、`reported_facts`、`forecast_items`、`risk_items`、`verification_needs`。
+  2. 每条记录必须带 `symbol/name/source_path/source_quality_tier/report_date/stale_status`。
+  3. 根据 KB-014 citation policy 标注 `claim_type`: `fact / opinion / forecast / risk / unknown`。
+  4. 输出 `docs/knowledge_reports/research_fact_opinion_index-YYYY-MM-DD.md`，只展示摘要和路径，不展示长正文。
+  5. 与 KB-010 cache/freshness 兼容，索引损坏时可重建。
+- **验收方式**：
+  - fixture 覆盖事实、观点、预测、风险、缺来源五类。
+  - 真实知识库 dry-run 可执行，不写入 production DB。
+  - 输出结果可 JSON 序列化，并可被 TA/TradeFlow 后续任务复用。
+  - 弱来源/过期来源只降置信，不覆盖动作语义。
+- **代码标注要求**：`# [KB-015] research_fact_opinion_index`
+
+### KB-016: 多研报一致性/分歧矩阵与关注度去重回放（P1）
+- **描述**：当多份研报涉及同一只股票时，聚合它们的一致性、分歧点、过期风险和重复覆盖度，形成“研报共识/分歧矩阵”。
+- **优先级**：P1
+- **状态**：blocked — 等 KB-015 完成
+- **前置条件**：KB-015、KB-007、KB-009 完成。
+- **执行约束**：
+  - 不把“多份研报提及”直接等同于买入信号。
+  - 不复制研报正文。
+  - 不调用 live LLM。
+- **实现要点**：
+  1. 按 symbol 聚合近 3/6/12 个月研报观点，输出 `consensus_score`、`disagreement_score`、`attention_count_effective`。
+  2. 对同机构重复报告、同标题重复导入、过期观点做去重/衰减。
+  3. 分歧矩阵至少包含：业绩预测分歧、产业链角色分歧、风险判断分歧、估值假设分歧。
+  4. 输出 `needs_fact_check=True` 的候选，交给 HY-003/HY-005 做事实反证。
+- **验收方式**：
+  - fixture 覆盖一致看多、一致看空、观点分裂、重复报告、过期报告。
+  - 多研报高关注只能提高研究优先级，不能绕过 TradeFlow/TA 门禁。
+  - 生成报告不包含强买卖词。
+- **代码标注要求**：`# [KB-016] research_consensus_matrix`
+
+### KB-017: 研报观点 vs 公告/半年报事实 citation 审计（P1）
+- **描述**：用 KB-015 的研报观点结构和 HY-003 的半年报事实表做交叉审计，标记“已被事实支持/削弱/打脸/仍待验证”的观点。
+- **优先级**：P1
+- **状态**：blocked — 等 KB-015/HY-003 完成
+- **前置条件**：KB-015、HY-003、KB-014 完成。
+- **执行约束**：
+  - 只做证据一致性审计，不输出交易动作。
+  - 缺半年报事实时不得强行判定观点错误。
+  - 不改 prompts，不调用 live LLM。
+- **实现要点**：
+  1. 定义 `citation_audit_status`: `supported / weakened / contradicted / pending / insufficient_data`。
+  2. 事实源优先级按 KB-014：公告/财报原文 > 官方公告 > 券商研报 > 媒体/用户笔记。
+  3. 对营收、利润、现金流、毛利率、分业务进展、风险暴露做基础规则匹配。
+  4. 输出可进入 TA 报告“本地知识补充/半年报事实对照”的 `audit_summary`。
+- **验收方式**：
+  - fixture 覆盖支持、削弱、打脸、待验证、缺事实五类。
+  - 弱来源不得覆盖强来源。
+  - TA 报告动作语义不被 audit 直接覆写。
+- **代码标注要求**：`# [KB-017] citation_fact_audit`
 
 ## B. 待办
 
