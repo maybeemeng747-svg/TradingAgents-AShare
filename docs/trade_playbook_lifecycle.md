@@ -228,3 +228,75 @@ notes
 - 所有减仓必须说明是机动仓减仓、风控减仓还是证伪退出。
 - 数据不足时只能输出观察或等待确认，不得输出强动作。
 - 本契约不绕过现有 DECISION / Buy Level / Risk Level / 强动作门禁。
+
+## 11. 字段与代码 schema 映射表（PLAYBOOK-001）
+
+> 代码实现：`tradingagents/tradeflow/playbook_contract.py`（`# [PLAYBOOK-001] lifecycle_contract`）
+
+### 11.1 阶段枚举
+
+| 文档字段 | 代码常量 | 合法值 | 中文标签 |
+| --- | --- | --- | --- |
+| `playbook_stage` | `STAGE_OBSERVE` 等 | `observe / trial / confirm / attack / hold / risk / exit` | 观察 / 试错仓 / 确认仓 / 进攻仓 / 持有 / 风控 / 退出 |
+
+- `normalize_playbook_stage()` 对无法识别的值返回 `None`，**绝不回退到 `hold`**。
+- `is_valid_playbook_stage(None)` → `False`。
+
+### 11.2 三笔法 lot_status 枚举
+
+| 文档字段 | 代码常量集合 | 合法值 |
+| --- | --- | --- |
+| `trial_lot_status` | `TRIAL_LOT_STATUSES` | `none / built / failed / succeeded` |
+| `confirm_lot_status` | `CONFIRM_LOT_STATUSES` | `none / eligible / added / cancelled` |
+| `attack_lot_status` | `ATTACK_LOT_STATUSES` | `none / pullback / breakout / added / retreat` |
+
+### 11.3 PlaybookContract 字段映射
+
+| 文档字段（§8） | PlaybookContract 属性 | 类型 | 默认 |
+| --- | --- | --- | --- |
+| `playbook_stage` | `playbook_stage` | `Optional[str]` | `None` |
+| `industry_evidence_score` | `industry_evidence_score` | `Optional[float]` (0-5) | `None` |
+| `earnings_validation_score` | `earnings_validation_score` | `Optional[float]` (0-5) | `None` |
+| `fund_confirmation_score` | `fund_confirmation_score` | `Optional[float]` (0-5) | `None` |
+| `risk_pressure_score` | `risk_pressure_score` | `Optional[float]` (0-5) | `None` |
+| `planned_max_position_pct` | `planned_max_position_pct` | `Optional[float]` (0-100) | `None` |
+| `current_position_pct` | `current_position_pct` | `Optional[float]` (0-100) | `None` |
+| `unrealized_pnl_pct` | `unrealized_pnl_pct` | `Optional[float]`（有限数值） | `None` |
+| `trial_lot_status` | `trial_lot_status` | `Optional[str]` | `None` |
+| `confirm_lot_status` | `confirm_lot_status` | `Optional[str]` | `None` |
+| `attack_lot_status` | `attack_lot_status` | `Optional[str]` | `None` |
+| `core_position_qty` | `core_position_qty` | `Optional[int]` | `None` |
+| `tactical_position_qty` | `tactical_position_qty` | `Optional[int]` | `None` |
+| `defensive_cash_required_pct` | `defensive_cash_required_pct` | `Optional[float]` (0-100) | `None` |
+| `allow_add` | `allow_add` | `Optional[bool]` | `None` |
+| `allow_replenish` | `allow_replenish` | `Optional[bool]` | `None` |
+| `allow_chase` | `allow_chase` | `Optional[bool]` | `None` |
+| `add_trigger` | `add_trigger` | `Optional[str]` | `None` |
+| `reduce_trigger` | `reduce_trigger` | `Optional[str]` | `None` |
+| `exit_trigger` | `exit_trigger` | `Optional[str]` | `None` |
+| `investment_thesis` | `investment_thesis` | `Optional[str]` | `None` |
+| `last_operation` | `last_operation` | `Optional[str]` | `None` |
+| `next_action` | `next_action` | `Optional[str]` | `None` |
+| `notes` | `notes` | `Optional[str]` | `None` |
+| — | `stage_updated_at` | `Optional[str]` | `None` |
+
+### 11.4 接入点与持久化
+
+| 消费方 | 代码位置 | 新增字段 |
+| --- | --- | --- |
+| 观察仓读写 | `api/tradeflow_schemas.py` + `api/services/tradeflow_service.py` | `playbook_stage: Optional[str]`、`playbook_contract: Dict`；写入 TradeFlow SQLite 的 `playbook_stage` / `playbook_contract_json` |
+| TA 报告响应 | `api/main.py` `ReportResponse` | `playbook_stage: Optional[str]`、`playbook_summary: Dict` |
+
+> 观察仓写入已接通：旧 SQLite 会在 `init_db()` 时自动补列；请求中的阶段和契约会先归一化、校验安全词，再写入 JSON。报告契约暂存于 `result_data`，详情/创建响应会从中镜像；历史列表保持轻量摘要契约，不读取大段 `result_data`。
+
+### 11.5 序列化 / 安全助手
+
+| 函数 | 用途 |
+| --- | --- |
+| `playbook_contract_from_dict(data)` | 从 dict 安全构建（忽略未知键、clamp 评分/仓位、归一化阶段） |
+| `playbook_contract_to_dict(contract)` | 序列化为 JSON-safe dict（保留 None） |
+| `merge_playbook_contract_into_dict(target, contract)` | 只合并非 None 字段到 target dict |
+| `playbook_contract_is_empty(contract)` | 全字段为 None → True |
+| `playbook_contract_summary(contract)` | 精简摘要（阶段 + 评分 + 仓位 + lot_status） |
+| `normalize_playbook_stage(value)` | 归一化阶段，未知 → None（不回退 hold） |
+| `validate_playbook_contract_safety(contract)` | 检查文本字段无强动作词 |

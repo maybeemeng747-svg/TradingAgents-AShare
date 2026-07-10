@@ -4107,6 +4107,44 @@ def _parse_observation_json_field(raw: Any, default: Any) -> Any:
         return default
 
 
+def _normalize_observation_playbook(
+    playbook_stage: Optional[str] = None,
+    playbook_contract: Optional[dict[str, Any]] = None,
+    *,
+    base_contract: Optional[dict[str, Any]] = None,
+    strict: bool = True,
+) -> tuple[str, str, dict[str, Any]]:
+    """Normalize the optional playbook payload before persistence."""
+    from tradingagents.tradeflow.playbook_contract import (
+        playbook_contract_from_dict,
+        playbook_contract_is_empty,
+        playbook_contract_to_dict,
+        validate_playbook_contract_safety,
+    )
+
+    payload = dict(base_contract or {})
+    if playbook_contract is not None:
+        if not isinstance(playbook_contract, dict):
+            raise ValueError("playbook_contract 必须为对象")
+        payload.update(playbook_contract)
+    if playbook_stage is not None:
+        payload["playbook_stage"] = playbook_stage
+
+    contract = playbook_contract_from_dict(payload)
+    if not validate_playbook_contract_safety(contract):
+        if not strict:
+            return "", "{}", {}
+        raise ValueError("playbook_contract 包含禁止的强动作词")
+    if playbook_contract_is_empty(contract):
+        return "", "{}", {}
+    normalized = playbook_contract_to_dict(contract)
+    return (
+        contract.playbook_stage or "",
+        json.dumps(normalized, ensure_ascii=False),
+        normalized,
+    )
+
+
 def _row_to_observation_item(row: sqlite3.Row) -> dict:
     """Convert a tradeflow_observation_items row to a dict.
 
@@ -4136,6 +4174,14 @@ def _row_to_observation_item(row: sqlite3.Row) -> dict:
     source_history = _parse_observation_json_field(
         _rget(row, "source_history_json", "[]"), []
     )
+    stored_playbook = _parse_observation_json_field(
+        _rget(row, "playbook_contract_json", "{}"), {}
+    )
+    playbook_stage, _, normalized_playbook = _normalize_observation_playbook(
+        playbook_stage=_rget(row, "playbook_stage", "") or None,
+        playbook_contract=stored_playbook if isinstance(stored_playbook, dict) else {},
+        strict=False,
+    )
     score_val = _num("score")
 
     return {
@@ -4161,6 +4207,8 @@ def _row_to_observation_item(row: sqlite3.Row) -> dict:
         "action_label": _rget(row, "action_label", "") or "",
         "research_direction": _rget(row, "research_direction", "") or "",
         "source_history": source_history if isinstance(source_history, list) else [],
+        "playbook_stage": playbook_stage or None,
+        "playbook_contract": normalized_playbook,
         # [KB-011] knowledge_contract_ui — empty defaults; enrichment fills
         # them in via ``_enrich_observation_items_with_knowledge`` so the
         # raw row reader never needs to know about KB columns.
@@ -4312,6 +4360,8 @@ def create_observation_item(
     action_label: str = "",  # [TRACK-006] add_to_observation
     research_direction: str = "",  # [TRACK-006] add_to_observation
     source_history: list[dict] | None = None,  # [TRACK-006] add_to_observation
+    playbook_stage: Optional[str] = None,  # [PLAYBOOK-001] lifecycle_contract
+    playbook_contract: Optional[dict[str, Any]] = None,  # [PLAYBOOK-001]
     tf_db_path: str = "",
 ) -> dict:
     """Create a new observation warehouse item.
@@ -4340,6 +4390,11 @@ def create_observation_item(
         score_f = float(score)
     except (TypeError, ValueError):
         score_f = 0.0
+
+    playbook_stage_db, playbook_json, _ = _normalize_observation_playbook(
+        playbook_stage=playbook_stage,
+        playbook_contract=playbook_contract,
+    )
 
     # [TRACK-006] add_to_observation — serialize provenance lists defensively
     import json as _json
@@ -4370,11 +4425,11 @@ def create_observation_item(
             """
             INSERT INTO tradeflow_observation_items
                 (symbol, name, status, entry_low, entry_high, trigger_price,
-                 invalid_price, horizon, source, reason, priority, notes,
-                 created_at, updated_at, last_reviewed_at,
-                 strategy_tags_json, score, action_label, research_direction,
-                 source_history_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                invalid_price, horizon, source, reason, priority, notes,
+                created_at, updated_at, last_reviewed_at,
+                strategy_tags_json, score, action_label, research_direction,
+                source_history_json, playbook_stage, playbook_contract_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 norm_symbol, resolved_name, status,
@@ -4382,7 +4437,7 @@ def create_observation_item(
                 horizon, source, reason, priority_i, notes,
                 now, now, now,
                 tags_json, score_f, action_label, research_direction,
-                history_json,
+                history_json, playbook_stage_db, playbook_json,
             ),
         )
         conn.commit()
@@ -4423,6 +4478,8 @@ def update_observation_item(
     action_label: Optional[str] = None,
     research_direction: Optional[str] = None,
     append_source_history: Optional[list[dict]] = None,
+    playbook_stage: Optional[str] = None,  # [PLAYBOOK-001] lifecycle_contract
+    playbook_contract: Optional[dict[str, Any]] = None,  # [PLAYBOOK-001]
     tf_db_path: str = "",
 ) -> dict:
     """Partially update an observation item. Only provided fields are changed.
@@ -4501,6 +4558,14 @@ def update_observation_item(
             updates["action_label"] = action_label
         if research_direction is not None:
             updates["research_direction"] = research_direction
+        if playbook_stage is not None or playbook_contract is not None:
+            stored_stage, stored_json, _ = _normalize_observation_playbook(
+                playbook_stage=playbook_stage,
+                playbook_contract=playbook_contract,
+                base_contract=current.get("playbook_contract") or {},
+            )
+            updates["playbook_stage"] = stored_stage
+            updates["playbook_contract_json"] = stored_json
         if append_source_history:
             import json as _json
             merged = list(current.get("source_history") or [])
@@ -4622,12 +4687,21 @@ def bulk_upsert_observation_items(
                     payload["score"] = 0.0
                 payload["action_label"] = raw.get("action_label", "") or ""
                 payload["research_direction"] = raw.get("research_direction", "") or ""
+                has_playbook_input = (
+                    raw.get("playbook_stage") is not None
+                    or bool(raw.get("playbook_contract"))
+                )
 
                 existing = conn.execute(
-                    "SELECT id, notes FROM tradeflow_observation_items WHERE symbol = ?",
+                    "SELECT id, notes, playbook_stage, playbook_contract_json "
+                    "FROM tradeflow_observation_items WHERE symbol = ?",
                     (symbol,),
                 ).fetchone()
                 if existing is None:
+                    playbook_stage_db, playbook_json, _ = _normalize_observation_playbook(
+                        playbook_stage=raw.get("playbook_stage"),
+                        playbook_contract=raw.get("playbook_contract"),
+                    )
                     conn.execute(
                         """
                         INSERT INTO tradeflow_observation_items
@@ -4635,8 +4709,8 @@ def bulk_upsert_observation_items(
                              invalid_price, horizon, source, reason, priority, notes,
                              created_at, updated_at, last_reviewed_at,
                              strategy_tags_json, score, action_label, research_direction,
-                             source_history_json)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             source_history_json, playbook_stage, playbook_contract_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             symbol, payload["name"], payload["status"],
@@ -4646,7 +4720,7 @@ def bulk_upsert_observation_items(
                             payload["priority"], payload["notes"], now, now, now,
                             payload["strategy_tags_json"], payload["score"],
                             payload["action_label"], payload["research_direction"],
-                            "[]",
+                            "[]", playbook_stage_db, playbook_json,
                         ),
                     )
                     created.append(symbol)
@@ -4666,12 +4740,26 @@ def bulk_upsert_observation_items(
                     else:
                         final_notes = existing_notes
 
+                    if has_playbook_input:
+                        existing_contract = _parse_observation_json_field(
+                            existing["playbook_contract_json"], {}
+                        )
+                        playbook_stage_db, playbook_json, _ = _normalize_observation_playbook(
+                            playbook_stage=raw.get("playbook_stage"),
+                            playbook_contract=raw.get("playbook_contract"),
+                            base_contract=existing_contract if isinstance(existing_contract, dict) else {},
+                        )
+                    else:
+                        playbook_stage_db = existing["playbook_stage"] or ""
+                        playbook_json = existing["playbook_contract_json"] or "{}"
+
                     set_parts = [
                         "name = ?", "status = ?", "entry_low = ?", "entry_high = ?",
                         "trigger_price = ?", "invalid_price = ?", "horizon = ?",
                         "source = ?", "reason = ?", "priority = ?", "notes = ?",
                         "strategy_tags_json = ?", "score = ?",
                         "action_label = ?", "research_direction = ?",
+                        "playbook_stage = ?", "playbook_contract_json = ?",
                         "updated_at = ?",
                     ]
                     params = [
@@ -4680,7 +4768,8 @@ def bulk_upsert_observation_items(
                         payload["invalid_price"], payload["horizon"], payload["source"],
                         payload["reason"], payload["priority"], final_notes,
                         payload["strategy_tags_json"], payload["score"],
-                        payload["action_label"], payload["research_direction"], now,
+                        payload["action_label"], payload["research_direction"],
+                        playbook_stage_db, playbook_json, now,
                         existing["id"],
                     ]
                     conn.execute(

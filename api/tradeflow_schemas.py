@@ -945,6 +945,12 @@ class ObservationItemResponse(BaseModel):
     needs_tree_work_research: bool = False
     knowledge_influence_explain: List[str] = Field(default_factory=list)  # [TF-KB-001] knowledge_score_calibration
     knowledge_influence_detail: Dict[str, Any] = Field(default_factory=dict)  # [TF-KB-001] knowledge_score_calibration
+    # [PLAYBOOK-001] lifecycle_contract — optional playbook stage + contract
+    # dict. Populated best-effort by upstream services; defaults to None/empty
+    # so old observation items are unaffected. Unknown stages are never coerced
+    # to "hold" (see playbook_contract.normalize_playbook_stage).
+    playbook_stage: Optional[str] = None
+    playbook_contract: Dict[str, Any] = Field(default_factory=dict)
 
 
 # [TRACK-001] observation_warehouse
@@ -974,6 +980,9 @@ class ObservationItemCreateRequest(BaseModel):
     score: float = 0.0
     action_label: str = ""
     research_direction: str = ""
+    # [PLAYBOOK-001] lifecycle_contract — persisted in TradeFlow DB.
+    playbook_stage: Optional[str] = None
+    playbook_contract: Dict[str, Any] = Field(default_factory=dict)
 
 
 # [TRACK-001] observation_warehouse
@@ -995,6 +1004,9 @@ class ObservationItemUpdateRequest(BaseModel):
     score: Optional[float] = None
     action_label: Optional[str] = None
     research_direction: Optional[str] = None
+    # [PLAYBOOK-001] lifecycle_contract — partial update, stored as JSON.
+    playbook_stage: Optional[str] = None
+    playbook_contract: Optional[Dict[str, Any]] = None
 
 
 # [TRACK-001] observation_warehouse
@@ -1023,6 +1035,9 @@ class ObservationBulkUpsertItem(BaseModel):
     action_label: str = ""
     research_direction: str = ""
     force_overwrite_notes: bool = False
+    # [PLAYBOOK-001] lifecycle_contract — bulk upsert persistence.
+    playbook_stage: Optional[str] = None
+    playbook_contract: Dict[str, Any] = Field(default_factory=dict)
 
 
 # [TRACK-001] observation_warehouse

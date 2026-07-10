@@ -1,5 +1,108 @@
 # 修改日志
 
+## 2026-07-10 | PLAYBOOK-001 上车—在车上—下车战法字段契约与状态枚举
+
+- **执行者**：OpenCode
+- **任务**：PLAYBOOK-001 — 上车—在车上—下车战法字段契约与状态枚举（P1）
+- **类型**：feature / contract
+- **状态**：✅ API 读写闭环补齐，Codex review PASS；待本轮提交
+
+### 背景
+
+- 跟踪看板已具备持仓、观察仓、今日指引和盘后复盘能力，但缺少统一的"一只票
+  现在处于观察/试错/确认/进攻/持有/风控/退出哪个阶段"的生命周期语言。
+- PLAYBOOK-001 是 PLAYBOOK-002~006 的字段前置，定义稳定的阶段枚举、证据评分、
+  仓位字段和触发条件契约，供跟踪看板、观察仓、TA 报告和 investment-controller
+  共用。
+
+### 改动文件
+
+- `tradingagents/tradeflow/playbook_contract.py`（新增，`# [PLAYBOOK-001] lifecycle_contract`）—
+  核心契约模块（纯标准库，无 DB / 无网络 / 无 LLM）：
+  - **7 阶段枚举**：`observe / trial / confirm / attack / hold / risk / exit`
+    + 中文标签表。
+  - **三笔法 lot_status 枚举**：trial（none/built/failed/succeeded）、
+    confirm（none/eligible/added/cancelled）、attack（none/pullback/breakout/
+    added/retreat）。
+  - **PlaybookContract dataclass**（25 字段）：阶段、4 项证据评分（0-5）、
+    仓位百分比与数量、三笔法状态、操作许可布尔、触发条件文本、补充字段。
+  - **安全助手**：
+    - `normalize_playbook_stage()` — 未知阶段返回 None，**绝不回退 hold**；
+    - `playbook_contract_from_dict()` — 安全构建（忽略未知键、clamp 评分/仓位、
+      归一化阶段/布尔/lot_status，脏数据不抛异常）；
+    - `playbook_contract_to_dict()` / `merge_playbook_contract_into_dict()` /
+      `playbook_contract_is_empty()` / `playbook_contract_summary()`；
+    - `validate_playbook_contract_safety()` — 检查文本字段无强动作词。
+- `api/tradeflow_schemas.py`（修改）—
+  - `ObservationItemResponse` 新增 `playbook_stage: Optional[str]` +
+    `playbook_contract: Dict`（默认 None/空）；
+  - `ObservationItemCreateRequest` / `ObservationItemUpdateRequest` / 批量写入新增
+    `playbook_stage` + `playbook_contract`，并通过 TradeFlow SQLite 列持久化。
+- `api/main.py`（修改）— `ReportCreateRequest` 接收契约，`ReportResponse` 新增 `playbook_stage: Optional[str]` +
+  `playbook_summary: Optional[Dict]`（默认 None）。
+- `docs/trade_playbook_lifecycle.md`（修改）— 新增 §11 字段与代码 schema 映射表
+  （阶段枚举 / lot_status 枚举 / PlaybookContract 字段映射 / 接入点 / 序列化助手）。
+- `tests/test_playbook001_lifecycle_contract.py`（新增，当前 122 tests）— 完整测试套件：
+  - 阶段枚举 / lot_status 枚举 / dataclass 默认值与字段覆盖；
+  - `normalize_playbook_stage` 未知阶段绝不回退 hold（最硬安全约束）；
+  - `from_dict` 安全构建（脏数据 / clamp / 未知键 / 旧数据兼容）；
+  - `to_dict` / `merge` / `is_empty` / `summary` / `stage_label`；
+  - 安全约束（强动作词检测）；
+  - API schema 集成（ObservationItemResponse / ReportResponse / Create / Update）；
+  - 端到端流程 + 向后兼容回归 + 文档映射表存在性。
+- `docs/TASKS.md`（修改）— PLAYBOOK-001 标记为 done；PLAYBOOK-002 继续战略暂停。
+
+### 设计要点
+
+1. **第一性原理**：用户问题是"系统不应该因为跌了就提示补仓"。最小事实集合 =
+   统一的阶段 + 证据评分 + 仓位边界。PLAYBOOK-001 只钉住字段契约，不写规则。
+2. **剃刀定律**：纯标准库 dataclass，不引入 Pydantic 依赖到 tradeflow 包；
+   复用 observation_state_engine 的字符串常量 + 纯函数模式。
+3. **最硬安全约束**：`normalize_playbook_stage("unknown")` → `None`，不是
+   `"hold"`。旧数据 / 脏数据不会被误判为"已持有"。
+4. **全部可选 / 派生接入**：所有新字段默认 None/空，不强制旧数据迁移；旧报告
+   和旧观察仓数据不报错。
+5. **不绕过动作语义**：playbook_stage 只描述阶段，不覆盖 decision /
+   execution_action / Buy Level / Risk Level / 强动作门禁。
+
+### 验收对照
+
+| 验收项 | 结果 |
+|---|---|
+| 新增 schema/serialization 测试 | ✅ 122 passed |
+| 旧报告和旧观察仓数据不报错 | ✅ `TestBackwardCompat` 3 tests |
+| 缺字段返回空/默认值 | ✅ `TestPlaybookContractDefaults` + `TestIsEmpty` |
+| 不把未知阶段误判为 hold | ✅ `TestNormalizePlaybookStage.test_unknown_returns_none_NOT_hold` |
+| `git diff --check` 通过 | ✅ exit 0 |
+| TRACK/DECISION/API 回归 | ✅ 270 + 148 = 418 passed |
+
+### 测试结果
+
+- `pytest tests/test_playbook001_lifecycle_contract.py` — **122 passed**
+- 回归：TRACK-001/002/004/006/008/009 + DECISION + dashboard + API smoke + V-006 —
+  **418 passed**
+
+### 依赖
+
+- 前置：TRACK-001 ✓、TRACK-003 ✓、DECISION-004 ✓
+- 后续受益：PLAYBOOK-002（三笔法规则引擎）、PLAYBOOK-003（持仓拆分）、
+  PLAYBOOK-004（TA 报告接入）、PLAYBOOK-005（前端展示）、PLAYBOOK-006（回放验收）
+
+### P2 收口记录
+
+- 观察仓创建/更新/批量写入已接入 `playbook_stage` / `playbook_contract`，旧数据库由 `init_db()` 自动补列。
+- 报告创建把规范化契约写入 `result_data`，详情和创建响应镜像 `playbook_stage` / `playbook_summary`；列表接口使用轻量摘要响应，避免 N+1。
+- 之前 Codex review 发现的字段丢失与列表性能问题已修复；最终 Codex review 已通过，不解锁 PLAYBOOK-002。
+
+### 最终审核
+
+- **Codex review**：PASS，无 P0/P1/P2 correctness findings。
+- **定向回归**：304 passed（PLAYBOOK/观察仓/API/决策/报告相关测试）。
+- **静态检查**：`git diff --check`、目标模块 `py_compile` 均通过。
+- **边界结论**：脏的历史 playbook JSON 在读取时安全降级为空契约；写入仍拒绝强动作文本；报告列表继续使用轻量摘要响应，避免为展示契约触发 N+1 查询。
+
+---
+
 ## 2026-07-10 | DATA-027 免费研报/公告/半年报源 smoke 扩展与失败归因
 
 - **执行者**：OpenCode
@@ -11733,3 +11836,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
   - 释放 `HY-002` / `HY-003` 为 ready，继续半年报资料优先队列和半年报事实 provider 主线。
   - 重置 `PLAYBOOK-001` 为 ready；前次 run 只生成 preflight/context，没有代码产出。
   - 新增研报系统后续任务 `KB-015` / `KB-016` / `KB-017`，围绕研报观点事实分离、多研报分歧矩阵、citation fact audit。
+
+## 2026-07-10 | AUTO-002 Auto Dev Loop
+
+- **Task**: PLAYBOOK-001 - 上车—在车上—下车战法字段契约与状态枚举（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/PLAYBOOK-001-20260710-123455/

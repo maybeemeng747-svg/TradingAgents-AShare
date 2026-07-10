@@ -192,6 +192,48 @@ def _raw_evidence_for_data_blockers(result_data: Optional[Dict[str, Any]]) -> Op
     return None
 
 
+def attach_report_playbook_contract(
+    result_data: Optional[Dict[str, Any]],
+    *,
+    playbook_stage: Optional[str] = None,
+    playbook_contract: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Normalize and persist the optional playbook payload in result_data."""
+    if not isinstance(result_data, dict):
+        if playbook_stage is None and not playbook_contract:
+            return result_data
+        result_data = {}
+
+    from tradingagents.tradeflow.playbook_contract import (
+        playbook_contract_from_dict,
+        playbook_contract_is_empty,
+        playbook_contract_summary,
+        playbook_contract_to_dict,
+        validate_playbook_contract_safety,
+    )
+
+    existing = result_data.get("playbook_contract")
+    if not isinstance(existing, dict):
+        existing = result_data.get("playbook_summary")
+    payload = dict(existing) if isinstance(existing, dict) else {}
+    if isinstance(playbook_contract, dict):
+        payload.update(playbook_contract)
+    if playbook_stage is not None:
+        payload["playbook_stage"] = playbook_stage
+
+    contract = playbook_contract_from_dict(payload)
+    if not validate_playbook_contract_safety(contract):
+        raise ValueError("playbook_contract 包含禁止的强动作词")
+    if playbook_contract_is_empty(contract):
+        return result_data
+
+    enriched = dict(result_data)
+    enriched["playbook_stage"] = contract.playbook_stage
+    enriched["playbook_contract"] = playbook_contract_to_dict(contract)
+    enriched["playbook_summary"] = playbook_contract_summary(contract)
+    return enriched
+
+
 def attach_report_data_blockers(result_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Attach field-level data blockers to report result_data.
 
@@ -809,8 +851,15 @@ def create_report(
     target_price_override: Optional[float] = None,
     stop_loss_override: Optional[float] = None,
     report_id: Optional[str] = None,  # If provided, update existing
+    playbook_stage: Optional[str] = None,  # [PLAYBOOK-001]
+    playbook_contract: Optional[Dict[str, Any]] = None,  # [PLAYBOOK-001]
 ) -> ReportDB:
     """Create or finalize a report."""
+    result_data = attach_report_playbook_contract(
+        result_data,
+        playbook_stage=playbook_stage,
+        playbook_contract=playbook_contract,
+    )
     result_data = attach_report_data_blockers(result_data)
     resolved = resolve_report_fields(
         result_data=result_data,

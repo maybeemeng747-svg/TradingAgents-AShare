@@ -818,6 +818,10 @@ class ReportCreateRequest(BaseModel):
     trade_date: str = Field(..., description="交易日期 YYYY-MM-DD")
     decision: Optional[str] = Field(None, description="交易决策")
     result_data: Optional[Dict[str, Any]] = Field(None, description="完整分析结果")
+    # [PLAYBOOK-001] lifecycle_contract — persisted inside result_data until
+    # report-specific columns are introduced.
+    playbook_stage: Optional[str] = None
+    playbook_contract: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ReportResponse(BaseModel):
@@ -861,6 +865,12 @@ class ReportResponse(BaseModel):
     knowledge_theme_count: Optional[int] = None
     research_attention_summary: Optional[str] = None
     research_attention_block: Optional[str] = None
+    # [PLAYBOOK-001] lifecycle_contract — optional playbook stage + summary
+    # dict for TA report passthrough. Populated best-effort from result_data
+    # by report_service; defaults to None/empty so old reports are unaffected.
+    # Unknown stages are never coerced to "hold".
+    playbook_stage: Optional[str] = None
+    playbook_summary: Optional[Dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 
@@ -884,9 +894,58 @@ class ReportDetailResponse(ReportResponse):
     result_data: Optional[Dict[str, Any]]
 
 
+class ReportSummaryResponse(BaseModel):
+    """Lightweight report row returned by summary/list endpoints.
+
+    Summary queries deliberately defer ``result_data``.  Keep lifecycle fields
+    on detail responses until they have a persisted storage column, instead of
+    turning a history list into an N+1 detail fetch.
+    """
+
+    id: str
+    user_id: Optional[str]
+    symbol: str
+    name: Optional[str] = None
+    trade_date: str
+    status: Literal["pending", "running", "completed", "failed"] = "completed"
+    error: Optional[str] = None
+    decision: Optional[str]
+    direction: Optional[str]
+    research_direction: Optional[str] = None
+    execution_action: Optional[str] = None
+    action_label: Optional[str] = None
+    confidence: Optional[int]
+    target_price: Optional[float]
+    stop_loss_price: Optional[float]
+    risk_items: Optional[List[Dict[str, Any]]] = None
+    key_metrics: Optional[List[Dict[str, Any]]] = None
+    analyst_traces: Optional[List[Dict[str, Any]]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    waiting_ahead_count: Optional[int] = None
+    scheduled_running_count: Optional[int] = None
+    scheduled_concurrency_limit: Optional[int] = None
+    data_blockers: Optional[List[Dict[str, Any]]] = None
+    data_blocker_summary: Optional[Dict[str, Any]] = None
+    wait_reason_codes: Optional[List[str]] = None
+    wait_reason_labels: Optional[Dict[str, str]] = None
+    local_knowledge_block: Optional[str] = None
+    local_knowledge_summary: Optional[Dict[str, Any]] = None
+    research_attention_score: Optional[float] = None
+    knowledge_theme_count: Optional[int] = None
+    research_attention_summary: Optional[str] = None
+    research_attention_block: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+    @field_serializer("created_at", "updated_at", when_used="json")
+    def serialize_report_datetimes(self, value: Optional[datetime]) -> Optional[str]:
+        return _serialize_datetime_utc(value)
+
+
 class ReportListResponse(BaseModel):
     total: int
-    reports: List[ReportResponse]
+    reports: List[ReportSummaryResponse]
 
 
 class ReportBatchDeleteRequest(BaseModel):
@@ -903,13 +962,13 @@ class LatestReportsBySymbolsRequest(BaseModel):
 
 
 class LatestReportsBySymbolsResponse(BaseModel):
-    reports: List[ReportResponse]
+    reports: List[ReportSummaryResponse]
 
 
 class PortfolioOverviewResponse(BaseModel):
     watchlist: List[dict]
     scheduled: List[dict]
-    latest_reports: List[ReportResponse]
+    latest_reports: List[ReportSummaryResponse]
     portfolio_import: Optional[dict] = None
 
 
@@ -3711,6 +3770,32 @@ def _attach_report_data_blockers_for_response(report: Any) -> Any:
     # can render the "本地知识补充" section without digging into result_data.
     result_data = getattr(report, "result_data", None)
     if isinstance(result_data, dict):
+        # [PLAYBOOK-001] lifecycle_contract — mirror optional report fields
+        # from result_data; ReportDB intentionally has no migration yet.
+        # Normalize both fields before exposing them. Older/manual rows may
+        # contain arbitrary values, and the response contract must never make
+        # an invalid lifecycle stage look like a valid one.
+        from tradingagents.tradeflow.playbook_contract import (
+            normalize_playbook_stage,
+            playbook_contract_from_dict,
+            playbook_contract_summary,
+        )
+
+        raw_contract = result_data.get("playbook_contract")
+        raw_summary = result_data.get("playbook_summary")
+        summary_source = (
+            raw_contract
+            if isinstance(raw_contract, dict)
+            else raw_summary
+            if isinstance(raw_summary, dict)
+            else result_data
+        )
+        normalized_contract = playbook_contract_from_dict(summary_source)
+        top_level_stage = normalize_playbook_stage(result_data.get("playbook_stage"))
+        if top_level_stage is not None:
+            normalized_contract.playbook_stage = top_level_stage
+        setattr(report, "playbook_stage", normalized_contract.playbook_stage)
+        setattr(report, "playbook_summary", playbook_contract_summary(normalized_contract))
         setattr(report, "data_blockers", result_data.get("data_blockers"))
         setattr(report, "data_blocker_summary", result_data.get("data_blocker_summary"))
         setattr(
@@ -3816,6 +3901,8 @@ def create_report_endpoint(
         trade_date=request.trade_date,
         decision=request.decision,
         result_data=request.result_data,
+        playbook_stage=request.playbook_stage,
+        playbook_contract=request.playbook_contract,
         user_id=current_user.id,
     )
     _attach_report_data_blockers_for_response(report)
@@ -5940,6 +6027,12 @@ def tradeflow_observation_item_create(request: ObservationItemCreateRequest):
         reason=request.reason,
         priority=request.priority,
         notes=request.notes,
+        strategy_tags=request.strategy_tags,
+        score=request.score,
+        action_label=request.action_label,
+        research_direction=request.research_direction,
+        playbook_stage=request.playbook_stage,
+        playbook_contract=request.playbook_contract,
     )
 
 
@@ -5962,6 +6055,12 @@ def tradeflow_observation_item_update(
         priority=request.priority,
         notes=request.notes,
         touch_last_reviewed=request.touch_last_reviewed,
+        strategy_tags=request.strategy_tags,
+        score=request.score,
+        action_label=request.action_label,
+        research_direction=request.research_direction,
+        playbook_stage=request.playbook_stage,
+        playbook_contract=request.playbook_contract,
     )
 
 

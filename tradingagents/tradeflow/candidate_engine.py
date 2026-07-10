@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS tradeflow_observation_items (
     action_label TEXT DEFAULT '',
     research_direction TEXT DEFAULT '',
     source_history_json TEXT DEFAULT '[]',
+    playbook_stage TEXT DEFAULT '',
+    playbook_contract_json TEXT DEFAULT '{}',
     UNIQUE(symbol)
 );
 """
@@ -570,6 +572,8 @@ def init_db(db_path: str) -> None:
         ("action_label", "TEXT DEFAULT ''"),
         ("research_direction", "TEXT DEFAULT ''"),
         ("source_history_json", "TEXT DEFAULT '[]'"),
+        ("playbook_stage", "TEXT DEFAULT ''"),
+        ("playbook_contract_json", "TEXT DEFAULT '{}'"),
     ]:
         try:
             conn.execute(

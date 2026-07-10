@@ -127,6 +127,7 @@ class TestObservationDBSchema:
             "entry_low", "entry_high", "trigger_price", "invalid_price",
             "horizon", "source", "reason", "priority", "notes",
             "created_at", "updated_at", "last_reviewed_at",
+            "playbook_stage", "playbook_contract_json",
         }
         assert expected.issubset(cols), f"Missing columns: {expected - cols}"
 
@@ -172,6 +173,47 @@ class TestObservationListEmpty:
 # ── Create Tests ─────────────────────────────────────────────────────────
 
 class TestCreateObservationItem:
+
+    def test_create_and_read_playbook_contract(self, tmp_db):
+        result = create_observation_item(
+            symbol="601689.SH",
+            playbook_stage="trial",
+            playbook_contract={
+                "industry_evidence_score": 4,
+                "planned_max_position_pct": 12,
+                "trial_lot_status": "built",
+            },
+            tf_db_path=tmp_db,
+        )
+        assert result["status"] == "ok"
+        assert result["item"]["playbook_stage"] == "trial"
+        assert result["item"]["playbook_contract"]["industry_evidence_score"] == 4.0
+        listed = get_observation_items(tf_db_path=tmp_db)["items"][0]
+        assert listed["playbook_contract"]["trial_lot_status"] == "built"
+
+    def test_create_rejects_forbidden_playbook_action_text(self, tmp_db):
+        with pytest.raises(ValueError):
+            create_observation_item(
+                symbol="601689.SH",
+                playbook_stage="trial",
+                playbook_contract={"next_action": "立即清仓"},
+                tf_db_path=tmp_db,
+            )
+
+    def test_read_drops_dirty_playbook_without_breaking_list(self, tmp_db):
+        create_observation_item(symbol="601689.SH", tf_db_path=tmp_db)
+        conn = sqlite3.connect(tmp_db)
+        conn.execute(
+            "UPDATE tradeflow_observation_items SET playbook_stage=?, playbook_contract_json=?",
+            ("trial", '{"next_action": "立即清仓"}'),
+        )
+        conn.commit()
+        conn.close()
+
+        listing = get_observation_items(tf_db_path=tmp_db)
+        assert listing["status"] == "ok"
+        assert listing["items"][0]["playbook_stage"] is None
+        assert listing["items"][0]["playbook_contract"] == {}
 
     def test_create_basic(self, tmp_db):
         result = create_observation_item(
@@ -319,6 +361,22 @@ class TestBoundaryValues:
 # ── Update Tests ─────────────────────────────────────────────────────────
 
 class TestUpdateObservationItem:
+
+    def test_update_playbook_contract_preserves_existing_fields(self, db_with_items):
+        item_id = get_observation_items(tf_db_path=db_with_items)["items"][0]["id"]
+        update_observation_item(
+            item_id,
+            playbook_stage="confirm",
+            playbook_contract={"industry_evidence_score": 5},
+            tf_db_path=db_with_items,
+        )
+        item = next(
+            item for item in get_observation_items(tf_db_path=db_with_items)["items"]
+            if item["id"] == item_id
+        )
+        assert item["playbook_stage"] == "confirm"
+        assert item["playbook_contract"]["industry_evidence_score"] == 5.0
+
 
     def test_partial_update_status(self, db_with_items):
         listing = get_observation_items(tf_db_path=db_with_items)
@@ -488,6 +546,24 @@ class TestBulkUpsert:
         assert by_symbol["601689.SH"]["priority"] == 9
         assert by_symbol["601689.SH"]["reason"] == "更新理由"
         assert by_symbol["002353.SZ"]["entry_low"] == 34.0
+
+    def test_bulk_upsert_persists_playbook_contract(self, tmp_db):
+        result = bulk_upsert_observation_items(
+            [{
+                "symbol": "601689.SH",
+                "playbook_stage": "observe",
+                "playbook_contract": {
+                    "risk_pressure_score": 2,
+                    "allow_add": False,
+                },
+            }],
+            tf_db_path=tmp_db,
+        )
+        assert result["created_count"] == 1
+        item = get_observation_items(tf_db_path=tmp_db)["items"][0]
+        assert item["playbook_stage"] == "observe"
+        assert item["playbook_contract"]["risk_pressure_score"] == 2.0
+        assert item["playbook_contract"]["allow_add"] is False
 
     def test_bulk_upsert_empty_list(self, tmp_db):
         result = bulk_upsert_observation_items([], tf_db_path=tmp_db)
