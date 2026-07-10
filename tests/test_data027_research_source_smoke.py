@@ -415,13 +415,22 @@ class TestFixtureDryRun:
         fm = [r for r in report.results
               if r.fixture_id == "FIELD_MISSING"][0]
         assert fm.error_type == ResearchSourceErrorType.FIELD_MISSING
+        assert fm.status == ResearchSourceStatus.FAILED
 
     def test_field_missing_not_failed(self):
-        """验收: 字段缺失不应被判 FAILED (区别于接口失败)."""
+        """验收: 字段缺失归因不同于网络失败, 但数据健康状态必须失败."""
         report = run_research_source_smoke()
         fm = [r for r in report.results
               if r.fixture_id == "FIELD_MISSING"][0]
         assert fm.error_type != ResearchSourceErrorType.NETWORK_ERROR
+        assert fm.status == ResearchSourceStatus.FAILED
+
+    def test_schema_change_status_failed(self):
+        report = run_research_source_smoke()
+        sc = [r for r in report.results
+              if r.fixture_id == "SCHEMA_CHANGE"][0]
+        assert sc.error_type == ResearchSourceErrorType.SCHEMA_CHANGE
+        assert sc.status == ResearchSourceStatus.FAILED
 
     def test_required_classes_all_covered(self):
         report = run_research_source_smoke()
@@ -544,6 +553,23 @@ class TestLiveSmokeMockedFetch:
             )
         r = report.results[0]
         assert r.error_type == ResearchSourceErrorType.FIELD_MISSING
+        assert r.status == ResearchSourceStatus.FAILED
+        assert report.summary["has_failures"] is True
+        assert report.summary["all_passed"] is False
+
+    def test_live_schema_change(self):
+        df_mock = _make_df_mock(PROBE_FIXTURES["SCHEMA_CHANGE"]["rows"])
+        with patch.dict(os.environ, {_LIVE_ENV: "1"}):
+            report = run_research_source_smoke(
+                symbols=["600519.SH"],
+                live_smoke=True,
+                fetch_fn=lambda sym: df_mock,
+            )
+        r = report.results[0]
+        assert r.error_type == ResearchSourceErrorType.SCHEMA_CHANGE
+        assert r.status == ResearchSourceStatus.FAILED
+        assert report.summary["has_failures"] is True
+        assert report.summary["all_passed"] is False
 
 
 # ── Status semantics ────────────────────────────────────────────────────
@@ -560,6 +586,8 @@ class TestStatusSemantics:
         assert m[ResearchSourceErrorType.OK] == "HAS_DATA"
         assert m[ResearchSourceErrorType.NO_DATA] == "NORMAL_NO_DATA"
         assert m[ResearchSourceErrorType.NETWORK_ERROR] == "FAILED"
+        assert m[ResearchSourceErrorType.FIELD_MISSING] == "FAILED"
+        assert m[ResearchSourceErrorType.SCHEMA_CHANGE] == "FAILED"
 
     def test_failed_does_not_become_no_data(self):
         """验收: 接口失败必须 FAILED, 不能被误判成 NORMAL_NO_DATA."""
@@ -602,12 +630,14 @@ class TestRenderReport:
         md = render_research_source_smoke_report(report)
         assert "## 失败归因说明" in md
         assert "field_missing" in md
+        assert "既不是 FAILED 也不是 NORMAL_NO_DATA" not in md
 
     def test_contains_sample_records(self):
         report = run_research_source_smoke()
         md = render_research_source_smoke_report(report)
         assert "## Sample Records" in md
         assert "中信证券" in md
+        assert "| - | - | - | - | - | - |" not in md
 
     def test_contains_fixture_coverage(self):
         report = run_research_source_smoke()

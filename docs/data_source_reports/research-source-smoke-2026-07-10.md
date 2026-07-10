@@ -3,7 +3,7 @@
 > [DATA-027] research_source_smoke. 在 DATA-025 基础上扩展免费源 smoke, 覆盖研报元数据 / 公告披露 / 半年报披露三类入口, 并增加失败归因 (网络失败 / 限流 / 字段缺失 / 结构变更 / 正常无数据).
 
 - **Date**: 2026-07-10
-- **Run at**: 2026-07-10 03:24:20
+- **Run at**: 2026-07-10 03:42:46
 - **Mode**: `fixture`
 - **Env gated**: n/a (fixture dry-run)
 - **Symbols**: fixture
@@ -67,9 +67,9 @@
 | Metric | Value |
 |--------|-------|
 | Total probes | 9 |
-| HAS_DATA | 4 |
-| NORMAL_NO_DATA | 3 |
-| FAILED | 2 |
+| HAS_DATA | 3 |
+| NORMAL_NO_DATA | 2 |
+| FAILED | 4 |
 | SKIPPED | 0 |
 | Total records parsed | 9 |
 | Required attribution covered | field_missing, network_error, no_data, rate_limited |
@@ -107,8 +107,8 @@
 | 600519.SH | half_year_report | `cninfo_half_year_report` | cn_astock | fixture | NORMAL_NO_DATA | `no_data` | 0 | NORMAL_NO_DATA_HALF_YEAR | 非半年报披露季, CNInfo 半年报入口正常返回空 (属正常无数据) |
 | 000001.SZ | research_report | `eastmoney_research_report_em` | cn_akshare | fixture | FAILED | `network_error` | 0 | FAILED | AKShare / 东财接口失败 (ConnectionError / 超时) |
 | 000001.SZ | announcement | `eastmoney_announcement` | cn_astock | fixture | FAILED | `rate_limited` | 0 | RATE_LIMITED | 东财公告接口 429 限流 — 退避后重试或切 fallback |
-| 600519.SH | research_report | `eastmoney_research_report_em` | cn_akshare | fixture | HAS_DATA | `field_missing` | 2 | FIELD_MISSING | 接口返回行但关键契约字段 (标题/日期) 为空 — 字段缺失 |
-| 000001.SZ | announcement | `eastmoney_announcement` | cn_astock | fixture | NORMAL_NO_DATA | `schema_change` | 2 | SCHEMA_CHANGE | 接口列名/结构变更, 解析后字段全空 |
+| 600519.SH | research_report | `eastmoney_research_report_em` | cn_akshare | fixture | FAILED | `field_missing` | 2 | FIELD_MISSING | 接口返回行但关键契约字段 (标题/日期) 为空 — 字段缺失 |
+| 000001.SZ | announcement | `eastmoney_announcement` | cn_astock | fixture | FAILED | `schema_change` | 2 | SCHEMA_CHANGE | 接口列名/结构变更, 解析后字段全空 |
 
 ## Sample Records (有数据)
 
@@ -133,20 +133,6 @@
 | 日期 | 标题 | 机构/主体 | 类型 | 评级 | PDF 链接 |
 |------|------|-----------|------|------|----------|
 | 2026-08-28 | 利通电子2026年半年度报告 | - | 半年度报告 | - | - |
-
-### 600519.SH — research_report — 2 records
-
-| 日期 | 标题 | 机构/主体 | 类型 | 评级 | PDF 链接 |
-|------|------|-----------|------|------|----------|
-| - | - | - | - | - | - |
-| - | - | - | - | - | - |
-
-### 000001.SZ — announcement — 2 records
-
-| 日期 | 标题 | 机构/主体 | 类型 | 评级 | PDF 链接 |
-|------|------|-----------|------|------|----------|
-| - | - | - | - | - | - |
-| - | - | - | - | - | - |
 
 ## Fixture Coverage
 
@@ -173,12 +159,12 @@ DATA-027 把 DATA-025 的 3 类粗粒度 fixture 升级为失败归因分类器 
 | `ok` | 正常 | `HAS_DATA` |
 | `network_error` | 网络/接口失败 | `FAILED` |
 | `rate_limited` | 限流 | `FAILED` |
-| `field_missing` | 字段缺失 | `HAS_DATA` |
-| `schema_change` | 接口结构变更 | `NORMAL_NO_DATA` |
+| `field_missing` | 字段缺失 | `FAILED` |
+| `schema_change` | 接口结构变更 | `FAILED` |
 | `no_data` | 正常无数据 | `NORMAL_NO_DATA` |
 | `unknown` | 未知 | `FAILED` |
 
-- **字段缺失 (field_missing)**: 接口返回了行但关键契约字段 (标题/日期) 全空, 既不是 FAILED 也不是 NORMAL_NO_DATA — 需单独标记, 防止空壳数据被当 HAS_DATA.
+- **字段缺失 (field_missing)**: 接口返回了行但关键契约字段 (标题/日期) 全空, 需单独标记为 FAILED, 防止空壳数据被当 HAS_DATA.
 - **正常无数据 (no_data)** 与 **接口失败 (network_error)** 严格区分: 无研报/无公告是正常, 接口崩溃才是失败.
 
 ## 边界声明

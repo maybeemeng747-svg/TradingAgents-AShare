@@ -146,8 +146,8 @@ class ResearchSourceErrorType:
         OK: ResearchSourceStatus.HAS_DATA,
         NETWORK_ERROR: ResearchSourceStatus.FAILED,
         RATE_LIMITED: ResearchSourceStatus.FAILED,
-        FIELD_MISSING: ResearchSourceStatus.HAS_DATA,
-        SCHEMA_CHANGE: ResearchSourceStatus.NORMAL_NO_DATA,
+        FIELD_MISSING: ResearchSourceStatus.FAILED,
+        SCHEMA_CHANGE: ResearchSourceStatus.FAILED,
         NO_DATA: ResearchSourceStatus.NORMAL_NO_DATA,
         UNKNOWN: ResearchSourceStatus.FAILED,
     }
@@ -386,7 +386,7 @@ class ResearchSourceProbeReport:
 # 行结构 (中文列名), 解析器面对的是真实字段而不是测试专用 shortcut.
 #
 # FIELD_MISSING 是 DATA-027 新增场景: 接口返回了行但关键契约字段 (标题/日期)
-# 为空 — 这既不是 FAILED 也不是 NORMAL_NO_DATA, 必须单独归因.
+# 为空 — 必须单独归因为 FAILED, 防止空壳数据被当 HAS_DATA.
 
 PROBE_FIXTURES: Dict[str, Dict[str, Any]] = {
     "HAS_DATA": {
@@ -873,6 +873,8 @@ def _compute_summary(
         and r.error_type in (
             ResearchSourceErrorType.NETWORK_ERROR,
             ResearchSourceErrorType.RATE_LIMITED,
+            ResearchSourceErrorType.FIELD_MISSING,
+            ResearchSourceErrorType.SCHEMA_CHANGE,
             ResearchSourceErrorType.UNKNOWN,
         )
     ]
@@ -1129,7 +1131,12 @@ def render_research_source_smoke_report(
     lines.append("")
 
     # ── 样本记录 (HAS_DATA) ──
-    has_data_results = [r for r in report.results if r.sample_records]
+    has_data_results = [
+        r for r in report.results
+        if r.sample_records
+        and r.status == ResearchSourceStatus.HAS_DATA
+        and r.error_type == ResearchSourceErrorType.OK
+    ]
     if has_data_results:
         lines.append("## Sample Records (有数据)")
         lines.append("")
@@ -1198,7 +1205,7 @@ def render_research_source_smoke_report(
     lines.append("")
     lines.append(
         "- **字段缺失 (field_missing)**: 接口返回了行但关键契约字段 (标题/日期) 全空, "
-        "既不是 FAILED 也不是 NORMAL_NO_DATA — 需单独标记, 防止空壳数据被当 HAS_DATA."
+        "需单独标记为 FAILED, 防止空壳数据被当 HAS_DATA."
     )
     lines.append(
         "- **正常无数据 (no_data)** 与 **接口失败 (network_error)** 严格区分: "

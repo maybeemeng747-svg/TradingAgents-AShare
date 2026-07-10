@@ -5,7 +5,7 @@
 - **执行者**：OpenCode
 - **任务**：DATA-027 — 免费研报/公告/半年报源 smoke 扩展与失败归因（P2）
 - **类型**：data-source / smoke / failure-attribution
-- **状态**：✅ 实现完成，101 tests passed
+- **状态**：✅ 实现完成，Codex review P2 补修后 103 tests passed
 
 ### 背景
 
@@ -23,18 +23,19 @@
   - `run_research_source_smoke()` / `render_research_source_smoke_report()` / `save_research_source_smoke_report()`。
   - `build_capability_matrix_overlay()`：只读 overlay，不改 DATA-023 matrix items。
 - `scripts/run_research_source_smoke.py`（新增）— CLI，fixture dry-run 默认，live-smoke 双重门禁。
-- `tests/test_data027_research_source_smoke.py`（新增）— 101 tests，覆盖目录契约 / 失败归因分类器 / 3 类 source_type 解析 / fixture dry-run / live gating / 报告渲染 / overlay / DATA-025·DATA-011 边界 / CLI / 验收。
+- `tests/test_data027_research_source_smoke.py`（新增）— 103 tests，覆盖目录契约 / 失败归因分类器 / 3 类 source_type 解析 / fixture dry-run / live gating / 报告渲染 / overlay / DATA-025·DATA-011 边界 / CLI / 验收。
 - `docs/data_source_reports/research-source-smoke-2026-07-10.md`（生成）— fixture dry-run 报告。
 
 ### 设计原则
 
 1. **不修改 DATA-025 / DATA-023**：独立新模块，不触碰 DATA-025 的 3 类 fixture 和 DATA-023 的 matrix items。
-2. **字段缺失单独归因**：接口返回行但关键契约字段（标题/日期）全空时，既不是 FAILED 也不是 NORMAL_NO_DATA，必须单独标记 `field_missing`，防止空壳数据被当 HAS_DATA。
+2. **字段缺失单独归因**：接口返回行但关键契约字段（标题/日期）全空时，必须单独标记 `field_missing`，并降级为 `FAILED`，防止空壳数据被当 HAS_DATA。
 3. **NORMAL_NO_DATA 与 FAILED 严格区分**：无研报/无公告是正常，接口崩溃才是失败。
+4. **Codex review P2 补修**：`field_missing` / `schema_change` 不再映射为绿色状态；live-smoke 遇到这两类契约回归会失败退出；报告样本区只展示 `ok + HAS_DATA` 的可用元数据。
 
 ### 测试结果
 
-- `pytest tests/test_data027_research_source_smoke.py` — 101 passed
+- `pytest tests/test_data027_research_source_smoke.py` — 103 passed
 - 回归：DATA-024/025（150 passed）+ capability_matrix/catalog（104 passed）+ API smoke/runtime_tier（122 passed）
 
 ## 2026-07-08 | PLAYBOOK 上车—在车上—下车战法任务线
