@@ -4929,7 +4929,7 @@
 ### HY-002: 半年报资料优先队列与 Tree Work 补录任务包（P1）
 - **描述**：基于持仓、观察仓、TradeFlow 候选、研报关注度和知识过期状态，生成 Tree Work 半年报补录优先队列。
 - **优先级**：P1
-- **状态**：done — OpenCode 产出 `tradingagents/dataflows/half_year_task_pack.py` + `scripts/half_year_task_pack.py` + `tests/test_hy002_half_year_task_pack.py`（60 tests）+ `docs/knowledge_reports/half_year_tree_work_tasks-2026-07-11.md`，依赖 HY-001/KB-005/KB-012 ✓
+- **状态**：done -- commit 9b84bf1
 - **前置条件**：HY-001、KB-005、KB-012 完成。
 - **执行约束**：
   - 只读 TA 数据库和 `~/Documents/knowledge/`。
