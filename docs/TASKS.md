@@ -5170,7 +5170,7 @@
 ### KB-015: 研报观点事实分离与 TA 可消费摘要索引（P1）
 - **描述**：把 Tree Work 已消化研报中的“观点、事实、预测、风险、待验证事项”拆成 TA 可消费的结构化摘要，避免研报观点被误当成公告/财报事实。
 - **优先级**：P1
-- **状态**：done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py`（54 tests passed）
+- **状态**：done -- commit d3ecc0f
 - **前置条件**：KB-014、KB-003、HY-001 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge/`，不得修改知识库。
