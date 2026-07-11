@@ -149,6 +149,7 @@ def _context_data_status(context: dict[str, Any]) -> dict[str, Any]:
         "recent_report_data_blockers": (
             _bucket_status(context, "recent_report_data_blockers")
         ),
+        "half_year_facts": (_bucket_status(context, "half_year_facts")),  # [HY-007]
     }
 
 

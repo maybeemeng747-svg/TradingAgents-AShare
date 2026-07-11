@@ -5040,7 +5040,7 @@
 ### HY-007: investment-controller 半年报 briefing payload 与去噪规则（P2）
 - **描述**：让 investment-controller 的盘前/盘后 briefing 能读取半年报事实摘要和反证提醒，但只做调度提醒，不替 TA 下结论。
 - **优先级**：P2
-- **状态**：ready — 批次内依赖 HY-004；若前置失败，自动循环必须停止
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/HY-007-20260712-005434
 - **前置条件**：HY-004、IC-TA-004、KB-006 完成。
 - **执行约束**：
   - 不直接输出补仓/清仓等动作。

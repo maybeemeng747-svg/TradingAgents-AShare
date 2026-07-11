@@ -1,6 +1,7 @@
 # [IC-TA-001] investment_controller_context
 # [IC-TA-002] controller_context_tradeflow_report
 # [KB-006] local_knowledge_context_api
+# [HY-007] controller_half_year_briefing
 """Read-only context pack for the investment-controller.
 
 Aggregates the stable buckets that the investment-controller (the external
@@ -36,6 +37,16 @@ KB-006 (local knowledge hits):
                                     ``KNOWLEDGE_CONTEXT_DISABLED`` env. Used as
                                     a research-priority hint only — never
                                     changes the strong-action gate.
+
+HY-007 (half-year facts briefing):
+    10. half_year_facts           - Per-symbol half-year report (半年报) fact
+                                    digest built on HY-003/005/006. Surfaces
+                                    fresh-fact updates, thesis-rebuttal
+                                    alerts and needs-TA-review flags to the
+                                    briefing payload. Read-only, no LLM, no
+                                    long original text. Disabled alongside
+                                    local knowledge via
+                                    ``KNOWLEDGE_CONTEXT_DISABLED``.
 
 Design contract (see docs/TASKS.md IC-TA-001):
 
@@ -166,6 +177,16 @@ def get_investment_controller_context(
         notes=notes,
     )
 
+    # --- Bucket 10 (HY-007): half-year facts briefing digest ---
+    half_year_facts = _collect_half_year_facts(
+        as_of,
+        holdings=holdings,
+        observation=observation,
+        candidates=candidates,
+        mandate_report=mandate_report,
+        notes=notes,
+    )
+
     # --- Controller hints (IC-TA-002): soft scheduling hints ---
     controller_hints = _build_controller_hints(
         as_of,
@@ -174,6 +195,7 @@ def get_investment_controller_context(
         mandate_report=mandate_report,
         report_blockers=report_blockers,
         local_knowledge_hits=local_knowledge_hits,  # [KB-006]
+        half_year_facts=half_year_facts,  # [HY-007]
         notes=notes,
     )
 
@@ -193,6 +215,7 @@ def get_investment_controller_context(
         "mandate_daily_report": mandate_report,  # [IC-TA-002]
         "recent_report_data_blockers": report_blockers,  # [IC-TA-002]
         "local_knowledge_hits": local_knowledge_hits,  # [KB-006]
+        "half_year_facts": half_year_facts,  # [HY-007]
         "controller_hints": controller_hints,  # [IC-TA-002]
         "notes": notes,
         "runtime_tier_meta": _tradeflow_meta("investment_controller_context"),
@@ -928,6 +951,364 @@ def _collect_local_knowledge_hits(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Bucket 10 (HY-007): half-year facts briefing digest
+# ──────────────────────────────────────────────────────────────────────────────
+
+# [HY-007] controller_half_year_briefing
+#
+# 把 HY-003 半年报事实表、HY-005 观点-事实反证、HY-006 因子分聚合到一个
+# IC-friendly bucket，让 investment-controller 的盘前/盘后 briefing 能看到
+# "哪只票有半年报更新、哪只票的投资逻辑被事实打脸、哪只票需要 TA 复核"。
+#
+# 设计契约（对齐 docs/TASKS.md HY-007）：
+#   - 只读：不写 DB / 不调 LLM / 不访问外网 / 不抛异常。
+#   - 不输出长原文：所有文本字段来自上游 pre-clipped 字段（HY-003 raw 120、
+#     HY-006 summary 200、HY-005 inline 单行）。
+#   - 缺数据只记录不推送：FAILED/无 knowledge_root 时退化为稳定空结构
+#     （data_status=skipped/failed），不让"无半年报"刷屏。
+#   - 不下交易结论：bucket 只承载事实摘要与软提醒，不强买卖词；与动作语义
+#     门禁解耦。
+#   - 与 KB-006 共享 disable 开关：KNOWLEDGE_CONTEXT_DISABLED=1 同时关掉本地
+#     知识与半年报 bucket，避免半套知识链路。
+
+# 控制符号数量上限，保持 FAST_RADAR 时延预算（HY-003 按符号扫描文件）。
+_HALF_YEAR_SYMBOL_CAP = 10
+# 单个 origin 类别最多贡献的 symbol 数（避免某一类淹没其他类）。
+_HALF_YEAR_PER_ORIGIN_CAP = 6
+# 每个符号透出的 risk_preview / downgrade_reasons 上限。
+_HALF_YEAR_RISK_PREVIEW_LIMIT = 3
+_HALF_YEAR_DOWNGRADE_PREVIEW_LIMIT = 3
+# fact_summary_text / thesis_inline 裁剪上限（防御性，正常已 pre-clipped）。
+_HALF_YEAR_TEXT_CLIP = 200
+
+
+def _empty_half_year_bucket(as_of: str, data_status: str) -> dict[str, Any]:
+    """Stable empty shape for the half_year_facts bucket."""
+    return {
+        "source": "half_year_facts_context",
+        "as_of": as_of,
+        "data_status": data_status,
+        "knowledge_root": "",
+        "symbol_count": 0,
+        "fresh_fact_count": 0,
+        "contradicted_count": 0,
+        "weakened_count": 0,
+        "needs_review_count": 0,
+        "items": [],
+        "errors": [],
+        "read_only": True,
+    }
+
+
+def _half_year_status_token(status: Any, data_status: Any) -> str:
+    """把 HY-003 (status, data_status) 映射为简短 filter token.
+
+    与 report_service._half_year_status_to_short 同口径，但本模块避免在
+    热路径里 import report_service（service 层互相依赖会让测试难以隔离）。
+    NO_DATA 表示"知识库扫过但没命中半年报页"（gap），与 FAILED（基础设施
+    故障）严格区分。
+    """
+    s = str(status or "")
+    ds = str(data_status or "")
+    if s in ("FAILED", "failed"):
+        return "FAILED"
+    if s in ("NORMAL_NO_DATA", "normal_no_data"):
+        return "NO_DATA"
+    if s in ("STALE", "stale"):
+        return "STALE"
+    if s in ("LOW_CONFIDENCE", "low_confidence"):
+        return "LOW_CONFIDENCE"
+    if ds == "conflict" or ds == "DATA_CONFLICT":
+        return "CONFLICT"
+    if s in ("HAS_DATA", "has_data"):
+        return "HAS_FACTS"
+    return "NO_DATA"
+
+
+def _half_year_item_origin(symbol: str, origins: dict[str, str]) -> str:
+    """Resolve which origin bucket first surfaced a symbol."""
+    return origins.get(symbol, "unknown")
+
+
+def _build_half_year_symbol_universe(
+    *,
+    holdings: dict[str, Any],
+    observation: dict[str, Any],
+    candidates: dict[str, Any],
+    mandate_report: dict[str, Any],
+) -> tuple[list[str], dict[str, str]]:
+    """Build the (symbol, origin) universe for the half-year lookup.
+
+    Priority: holdings > observation > candidates > mandate. Caps total at
+    ``_HALF_YEAR_SYMBOL_CAP`` and per-origin at
+    ``_HALF_YEAR_PER_ORIGIN_CAP`` to stay inside FAST_RADAR.
+    """
+    seen: set[str] = set()
+    symbols: list[str] = []
+    origins: dict[str, str] = {}
+
+    def _add(symbol: Any, origin: str) -> None:
+        if len(symbols) >= _HALF_YEAR_SYMBOL_CAP:
+            return
+        # 每个 origin 最多贡献固定数量，避免某类淹没其他。
+        origin_count = sum(1 for s in symbols if origins.get(s) == origin)
+        if origin_count >= _HALF_YEAR_PER_ORIGIN_CAP:
+            return
+        sym = str(symbol or "").strip()
+        if not sym or sym in seen:
+            return
+        seen.add(sym)
+        symbols.append(sym)
+        origins[sym] = origin
+
+    for item in holdings.get("items", []) or []:
+        _add(item.get("symbol"), "holdings")
+    for item in observation.get("items", []) or []:
+        _add(item.get("symbol"), "observation_warehouse")
+    for item in (candidates.get("items", []) or [])[:6]:
+        _add(item.get("symbol"), "tradeflow_candidates")
+    if mandate_report.get("data_status") == DATA_STATUS_FRESH:
+        for item in mandate_report.get("main_candidates", []) or []:
+            _add(item.get("symbol"), "mandate_daily_report")
+    return symbols, origins
+
+
+def _collect_half_year_facts(
+    as_of: str,
+    *,
+    holdings: dict[str, Any],
+    observation: dict[str, Any],
+    candidates: dict[str, Any],
+    mandate_report: dict[str, Any],
+    notes: list[str],
+) -> dict[str, Any]:
+    """[HY-007] Per-symbol half-year fact + rebuttal + needs-review digest.
+
+    For each symbol in holdings ∪ observation ∪ candidates ∪ mandate main
+    candidates (capped), runs a read-only HY-003 query; when fresh facts are
+    available, additionally runs HY-005 thesis check and HY-006 factor score.
+    The bucket degrades to ``data_status=skipped`` when the knowledge context
+    is disabled, ``failed`` on lookup exception, ``missing`` when no symbol
+    has any half-year data.
+    """
+    try:
+        from api.services.local_knowledge_context_service import (
+            is_local_knowledge_disabled,
+            resolve_knowledge_root,
+        )
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("[hy-007] local_knowledge_context_service import failed: %s", exc)
+        return _empty_half_year_bucket(as_of, DATA_STATUS_FAILED)
+
+    if is_local_knowledge_disabled():
+        notes.append("half_year_facts: disabled by config")
+        bucket = _empty_half_year_bucket(as_of, DATA_STATUS_SKIPPED)
+        bucket["errors"] = ["half_year_facts disabled by config"]
+        return bucket
+
+    knowledge_root = resolve_knowledge_root() or ""
+    if not knowledge_root:
+        notes.append("half_year_facts: knowledge_root empty, skipped")
+        return _empty_half_year_bucket(as_of, DATA_STATUS_SKIPPED)
+
+    symbols, origins = _build_half_year_symbol_universe(
+        holdings=holdings,
+        observation=observation,
+        candidates=candidates,
+        mandate_report=mandate_report,
+    )
+    if not symbols:
+        notes.append("half_year_facts: no symbols to query")
+        bucket = _empty_half_year_bucket(as_of, DATA_STATUS_SKIPPED)
+        bucket["errors"] = ["no symbols to query"]
+        return bucket
+
+    try:
+        from tradingagents.dataflows.half_year_facts_provider import (
+            query_half_year_facts as _hy003_query,
+        )
+        from tradingagents.dataflows.half_year_factor_score import (
+            compute_half_year_factor_score as _hy006_score,
+        )
+        from tradingagents.dataflows.research_fact_opinion_index import (
+            build_research_fact_opinion_index as _kb015_build,
+        )
+        from tradingagents.dataflows.thesis_fact_check import (
+            check_thesis_against_facts as _hy005_check,
+            render_thesis_check_inline as _hy005_inline,
+        )
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("[hy-007] HY-003/005/006 import failed: %s", exc)
+        return _empty_half_year_bucket(as_of, DATA_STATUS_FAILED)
+
+    # 持仓/观察仓优先于候选池：把 symbol 与 name 都记下，便于 HY-003 命中。
+    name_lookup: dict[str, str] = {}
+    for pool in (holdings, observation, candidates):
+        for item in pool.get("items", []) or []:
+            sym = str(item.get("symbol") or "").strip()
+            nm = str(item.get("name") or "").strip()
+            if sym and nm and sym not in name_lookup:
+                name_lookup[sym] = nm
+    if mandate_report.get("data_status") == DATA_STATUS_FRESH:
+        for item in mandate_report.get("main_candidates", []) or []:
+            sym = str(item.get("symbol") or "").strip()
+            nm = str(item.get("name") or "").strip()
+            if sym and nm and sym not in name_lookup:
+                name_lookup[sym] = nm
+
+    items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    fresh_count = 0
+    contradicted_count = 0
+    weakened_count = 0
+    needs_review_count = 0
+
+    for symbol in symbols:
+        name = name_lookup.get(symbol, "")
+        try:
+            facts_result = _hy003_query(
+                knowledge_root, symbol=symbol, name=name or None
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            errors.append(f"{symbol}: HY-003 query failed: {type(exc).__name__}")
+            continue
+
+        # 把 (status, data_status) 映射成 IC-friendly token。
+        facts_status = _half_year_status_token(
+            getattr(facts_result, "status", None),
+            getattr(facts_result, "data_status", None),
+        )
+
+        thesis_result = None
+        # 只在事实可用时跑 HY-005（与 HY-006 _enrich 一致），避免无谓的
+        # KB-015 索引构建。FAILED/NO_DATA/STALE 都不触发反证。
+        if facts_result is not None and facts_status == "HAS_FACTS":
+            try:
+                opinion_index = _kb015_build(
+                    knowledge_root, symbol=symbol, name=name or None
+                )
+                thesis_result = _hy005_check(
+                    opinion_index, facts_result,
+                    symbol=symbol, name=name or "",
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                errors.append(
+                    f"{symbol}: HY-005 thesis check failed: {type(exc).__name__}"
+                )
+                thesis_result = None
+
+        try:
+            score_dict = _hy006_score(facts_result, thesis_result)
+        except Exception as exc:  # pragma: no cover - defensive
+            errors.append(f"{symbol}: HY-006 score failed: {type(exc).__name__}")
+            continue
+
+        thesis_status = str(score_dict.get("thesis_check_status") or "")
+        thesis_inline = ""
+        if thesis_result is not None:
+            try:
+                thesis_inline = _hy005_inline(thesis_result) or ""
+            except Exception:  # pragma: no cover - defensive
+                thesis_inline = ""
+
+        # 只把"有事实"或"有反证提醒"或"需要 TA 复核"的标的纳入 items；
+        # 纯 NO_DATA/FAILED 不进 items（避免"没有半年报"变成噪音）。
+        has_fresh = bool(score_dict.get("has_fresh_facts"))
+        needs_tree_review = bool(getattr(thesis_result, "needs_tree_work_review", False))
+        priority_reminder = bool(getattr(thesis_result, "priority_reminder", False))
+        needs_research_review = bool(score_dict.get("needs_research_review"))
+        is_rebuttal = thesis_status in ("contradicted", "weakened")
+        is_needs_review = needs_tree_review or needs_research_review
+        if not (has_fresh or is_rebuttal or is_needs_review):
+            continue
+
+        if has_fresh:
+            fresh_count += 1
+        if thesis_status == "contradicted":
+            contradicted_count += 1
+        elif thesis_status == "weakened":
+            weakened_count += 1
+        if is_needs_review:
+            needs_review_count += 1
+
+        risk_preview = [
+            str(r)[:80]
+            for r in (score_dict.get("half_year_risk_flags") or [])
+            if r
+        ][:_HALF_YEAR_RISK_PREVIEW_LIMIT]
+        downgrade_preview = [
+            str(r)[:_HALF_YEAR_DOWNGRADE_PREVIEW_LIMIT * 20]
+            for r in (score_dict.get("downgrade_reasons") or [])
+            if r
+        ][:_HALF_YEAR_DOWNGRADE_PREVIEW_LIMIT]
+        # 防御性裁剪（上游已 pre-clip，但 hybrid 输入可能超出）。
+        fact_summary_text = str(score_dict.get("half_year_fact_summary") or "")[:_HALF_YEAR_TEXT_CLIP]
+        thesis_inline = thesis_inline[:_HALF_YEAR_TEXT_CLIP]
+
+        items.append({
+            "symbol": symbol,
+            "name": name,
+            "origin": _half_year_item_origin(symbol, origins),
+            "facts_status": facts_status,
+            "latest_period": score_dict.get("fact_period") or "",
+            "latest_disclosure_date": getattr(facts_result, "latest_disclosure_date", None) or "",
+            "data_status": (
+                DATA_STATUS_FRESH if has_fresh
+                else DATA_STATUS_STALE if facts_status in ("STALE", "CONFLICT", "LOW_CONFIDENCE")
+                else DATA_STATUS_MISSING
+            ),
+            "has_conflict": facts_status == "CONFLICT",
+            "has_stale": facts_status in ("STALE", "LOW_CONFIDENCE"),
+            "half_year_score": float(score_dict.get("half_year_fact_score") or 0.0),
+            "fact_summary_text": fact_summary_text,
+            "thesis_check_status": thesis_status,
+            "thesis_inline": thesis_inline,
+            "needs_tree_work_review": needs_tree_review,
+            "needs_research_review": needs_research_review,
+            "priority_reminder": priority_reminder,
+            "downgrade_reasons": downgrade_preview,
+            "risk_preview": risk_preview,
+            "source": "half_year_facts_provider",
+            "as_of": as_of,
+        })
+
+    # Derive overall data_status:
+    #   FRESH if any symbol has fresh facts or rebuttal.
+    #   STALE if items exist but none fresh.
+    #   MISSING if no items and no errors.
+    #   FAILED if errors but no items.
+    if items:
+        data_status = DATA_STATUS_FRESH if fresh_count or contradicted_count else DATA_STATUS_STALE
+    elif errors:
+        data_status = DATA_STATUS_FAILED
+    else:
+        data_status = DATA_STATUS_MISSING
+        notes.append("half_year_facts: no symbol has fresh facts / rebuttal / needs-review")
+
+    if not items:
+        notes.append(
+            f"half_year_facts: scanned {len(symbols)} symbols, 0 surfaced "
+            "(no fresh facts / rebuttal / needs-review)"
+        )
+
+    return {
+        "source": "half_year_facts_context",
+        "as_of": as_of,
+        "data_status": data_status,
+        "knowledge_root": "",  # 不暴露完整路径，与 KB-006 一致
+        "symbol_count": len(items),
+        "scanned_symbol_count": len(symbols),
+        "fresh_fact_count": fresh_count,
+        "contradicted_count": contradicted_count,
+        "weakened_count": weakened_count,
+        "needs_review_count": needs_review_count,
+        "items": items,
+        "errors": errors,
+        "read_only": True,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Controller hints (IC-TA-002): soft scheduling guidance
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -944,6 +1325,7 @@ def _build_controller_hints(
     mandate_report: dict[str, Any],
     report_blockers: dict[str, Any],
     local_knowledge_hits: dict[str, Any] | None = None,  # [KB-006]
+    half_year_facts: dict[str, Any] | None = None,  # [HY-007]
     notes: list[str],
 ) -> dict[str, Any]:
     """Derive soft scheduling hints from the already-collected buckets.
@@ -1081,6 +1463,15 @@ def _build_controller_hints(
     if not has_any:
         notes.append("controller_hints: no routing hints derived")
 
+    # [HY-007] half-year alerts lane — 与持仓/观察仓优先级联动。
+    # 只承载事实摘要 + 软提醒（fact_update / rebuttal_alert / needs_ta_review），
+    # 不下交易结论，不强买卖词。
+    half_year_alerts: list[dict[str, Any]] = []
+    if isinstance(half_year_facts, dict):
+        half_year_alerts = _build_half_year_alert_lane(half_year_facts, as_of)
+        if half_year_alerts:
+            has_any = True
+
     return {
         "source": "controller_hints",
         "as_of": as_of,
@@ -1089,7 +1480,59 @@ def _build_controller_hints(
         "daily_report_only": daily_only,
         "suppress_push_data_insufficient": suppress_push,
         "research_review": research_review,  # [KB-006]
+        "half_year_alerts": half_year_alerts,  # [HY-007]
     }
+
+
+def _build_half_year_alert_lane(
+    half_year_bucket: dict[str, Any], as_of: str
+) -> list[dict[str, Any]]:
+    """[HY-007] 把 bucket 10 items 分类成三条软提醒 lane（不下交易结论）.
+
+    分类规则（与 briefing payload 的 reminder 分类一致）：
+      - ``rebuttal_alert``：thesis_check_status ∈ {contradicted, weakened}。
+      - ``needs_ta_review``：needs_tree_work_review 或 needs_research_review。
+      - ``fact_update``：有 fresh facts 且不属上面两类。
+    每条只带事实摘要（无强买卖词），用于 controller_hints 联动。
+    """
+    alerts: list[dict[str, Any]] = []
+    for item in half_year_bucket.get("items", []) or []:
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        thesis_status = str(item.get("thesis_check_status") or "")
+        needs_review = bool(
+            item.get("needs_tree_work_review") or item.get("needs_research_review")
+        )
+        if thesis_status in ("contradicted", "weakened"):
+            kind = "rebuttal_alert"
+            reason = item.get("thesis_inline") or item.get("fact_summary_text") or (
+                f"半年报反证提醒：thesis_check_status={thesis_status}"
+            )
+            next_step = "建议回 Tree Work 复核，必要时安排 TA 重评"
+        elif needs_review:
+            kind = "needs_ta_review"
+            reason = item.get("fact_summary_text") or "半年报提示需要 TA 复核"
+            next_step = "安排轻量/完整 TA 复核，结合半年报事实重判"
+        else:
+            kind = "fact_update"
+            reason = item.get("fact_summary_text") or "半年报事实更新"
+            next_step = "盘后日报展示，结合持仓/观察仓优先级联动"
+        alerts.append({
+            "symbol": symbol,
+            "name": item.get("name", ""),
+            "origin": item.get("origin", "half_year_facts"),
+            "kind": kind,
+            "reason": str(reason)[:240],
+            "suggested_next_step": next_step,
+            "facts_status": item.get("facts_status", ""),
+            "thesis_check_status": thesis_status,
+            "latest_period": item.get("latest_period", ""),
+            "half_year_score": item.get("half_year_score", 0.0),
+            "source": "half_year_facts_context",
+            "as_of": as_of,
+        })
+    return alerts
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1131,7 +1574,7 @@ def assert_no_strong_action_verbs(payload: dict[str, Any]) -> None:
         str(payload.get("notes", "")),
         str(payload.get("generated_by", "")),
     ]
-    # Controller-synthesised hint reasons (IC-TA-002 + KB-006) — never carry
+    # Controller-synthesised hint reasons (IC-TA-002 + KB-006 + HY-007) — never carry
     # trade verbs.
     hints = payload.get("controller_hints") or {}
     if isinstance(hints, dict):
@@ -1140,6 +1583,7 @@ def assert_no_strong_action_verbs(payload: dict[str, Any]) -> None:
             "daily_report_only",
             "suppress_push_data_insufficient",
             "research_review",  # [KB-006]
+            "half_year_alerts",  # [HY-007]
         ):
             for item in hints.get(lane, []) or []:
                 if isinstance(item, dict):
@@ -1160,6 +1604,21 @@ def assert_no_strong_action_verbs(payload: dict[str, Any]) -> None:
                 score = item.get("score") or {}
                 if isinstance(score, dict):
                     chunks.append(str(score.get("local_knowledge_summary") or ""))
+    # [HY-007] half_year_facts synthesised text (fact_summary_text /
+    # thesis_inline / downgrade_reasons / risk_preview) must stay free of
+    # trade verbs.
+    half_year = payload.get("half_year_facts") or {}
+    if isinstance(half_year, dict):
+        for line in half_year.get("errors") or []:
+            chunks.append(str(line))
+        for item in half_year.get("items") or []:
+            if isinstance(item, dict):
+                chunks.append(str(item.get("fact_summary_text") or ""))
+                chunks.append(str(item.get("thesis_inline") or ""))
+                for reason in item.get("downgrade_reasons") or []:
+                    chunks.append(str(reason))
+                for risk in item.get("risk_preview") or []:
+                    chunks.append(str(risk))
     for pattern in _STRONG_ACTION_PATTERNS:
         for chunk in chunks:
             if pattern in chunk:

@@ -1,4 +1,5 @@
 # [IC-TA-004] controller_briefing_payload
+# [HY-007] controller_half_year_briefing
 """investment-controller 飞书 briefing payload 纯引擎（dry-run）.
 
 IC-TA-003 已为盘前 / 盘后产出 ``briefing_type`` 形态的 briefing（``ta_to_schedule`` /
@@ -66,6 +67,10 @@ from tradingagents.tradeflow.controller_briefing import (
 from tradingagents.tradeflow.notification_draft import (
     CHANNEL_DAILY_DIGEST,
     CHANNEL_INTRADAY_PUSH,
+    PRIORITY_P0,
+    PRIORITY_P1,
+    PRIORITY_P2,
+    PRIORITY_P3,
     classify_delivery_channel,
 )
 from tradingagents.tradeflow.observation_state_engine import (
@@ -103,6 +108,26 @@ WARNING_HOLDINGS_RISK_MODERATE = "holdings_risk_moderate_drop"
 WARNING_OBSERVATION_INVALIDATED = "observation_invalidated"
 WARNING_DATA_SOURCE_FAILURE = "data_source_failure"
 WARNING_DATA_STALE = "data_stale"
+
+# [HY-007] controller_half_year_briefing
+# 半年报提醒类型（三类，对应 docs/TASKS.md HY-007 实现要点 2）：
+#   - HALF_YEAR_FACT_UPDATE   半年报事实更新（fresh facts，无反证）
+#   - HALF_YEAR_REBUTTAL_ALERT 反证提醒（thesis contradicted / weakened）
+#   - HALF_YEAR_NEEDS_TA_REVIEW 需要 TA 复核（needs_tree_work_review /
+#                             needs_research_review）
+HALF_YEAR_REMINDER_FACT_UPDATE = "half_year_fact_update"
+HALF_YEAR_REMINDER_REBUTTAL_ALERT = "half_year_rebuttal_alert"
+HALF_YEAR_REMINDER_NEEDS_TA_REVIEW = "half_year_needs_ta_review"
+ALLOWED_HALF_YEAR_REMINDER_TYPES = (
+    HALF_YEAR_REMINDER_FACT_UPDATE,
+    HALF_YEAR_REMINDER_REBUTTAL_ALERT,
+    HALF_YEAR_REMINDER_NEEDS_TA_REVIEW,
+)
+
+# [HY-007] 同一 symbol 同一事实的去噪窗口（24 小时）。
+# 半年报事实变化慢，30 分钟 NOTIFY 窗口对它没意义；24 小时窗口保证一天最多
+# 提醒一次，避免盘前/盘后/次日盘前重复刷屏。
+HALF_YEAR_DEDUP_WINDOW_SECONDS = 24 * 60 * 60
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -296,14 +321,259 @@ def _build_holdings_risk_warnings(
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [HY-007] 半年报提醒（fact_update / rebuttal_alert / needs_ta_review）
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _half_year_score_bucket(score: Any) -> str:
+    """把 [-3.0, +1.0] 的连续分数压成三档，作为 dedup signature 的一部分.
+
+    避免微小数值变化触发重复提醒；分数档位变更（neutral → negative）才算
+    "事实变了"。
+    """
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return "zero"
+    if s <= -1.5:
+        return "strong_negative"
+    if s < 0.0:
+        return "negative"
+    if s > 0.0:
+        return "positive"
+    return "zero"
+
+
+def _half_year_dedup_key(item: dict[str, Any], reminder_type: str) -> str:
+    """构造 (symbol, reminder_type, period, thesis_status, score_bucket) key.
+
+    半年报事实变化慢，同一 period + 同一 thesis_status + 同一分数档位
+    在 24h 内视为重复。thesis_status 从 weakened 变 contradicted 或
+    score 从 zero 变 negative 都会触发新提醒。
+    """
+    symbol = str(item.get("symbol", "")).strip()
+    period = str(item.get("latest_period", "")).strip()
+    thesis_status = str(item.get("thesis_check_status", "")).strip()
+    score_bucket = _half_year_score_bucket(item.get("half_year_score"))
+    return f"{symbol}|{reminder_type}|{period}|{thesis_status}|{score_bucket}"
+
+
+def _classify_half_year_reminder(item: dict[str, Any]) -> tuple[str, str, bool]:
+    """把 bucket 10 item 分类成 (reminder_type, priority, record_only).
+
+    分类规则（docs/TASKS.md HY-007 实现要点 2）：
+      - contradicted + priority_reminder → rebuttal_alert / P1 / non-record。
+        （只有强反证 + 高关注度才进盘中主动提醒；其余只进日报。）
+      - 其余 rebuttal（weakened 或 contradicted 无 priority_reminder）
+        → rebuttal_alert / P2 / non-record（日报展示）。
+      - needs_tree_work_review 或 needs_research_review
+        → needs_ta_review / P2 / non-record。
+      - 其他 fresh facts → fact_update / P2 / non-record。
+
+    返回的 priority 后续经 ``classify_delivery_channel`` 决定走 intraday_push
+    还是 daily_digest，自动满足"P2/P3 只进日报，P0/P1 才盘中提醒"。
+    """
+    thesis_status = str(item.get("thesis_check_status") or "")
+    needs_review = bool(
+        item.get("needs_tree_work_review") or item.get("needs_research_review")
+    )
+    priority_reminder = bool(item.get("priority_reminder"))
+    data_status = str(item.get("data_status") or "")
+
+    # 缺数据只记录不推送（record_only=True），避免"无半年报"刷屏。
+    record_only = data_status in ("missing", "failed")
+
+    if thesis_status in ("contradicted", "weakened"):
+        reminder_type = HALF_YEAR_REMINDER_REBUTTAL_ALERT
+        # 只有 contradicted + priority_reminder（高关注度 + 强反证）才进 P1。
+        # weakened / contradicted 无 priority_reminder 一律 P2 日报。
+        if thesis_status == "contradicted" and priority_reminder:
+            priority = PRIORITY_P1
+        else:
+            priority = PRIORITY_P2
+        return reminder_type, priority, record_only
+
+    if needs_review:
+        return HALF_YEAR_REMINDER_NEEDS_TA_REVIEW, PRIORITY_P2, record_only
+
+    return HALF_YEAR_REMINDER_FACT_UPDATE, PRIORITY_P2, record_only
+
+
+def _build_half_year_reminder_reason(
+    item: dict[str, Any], reminder_type: str
+) -> str:
+    """构造 briefing-friendly reason（无强买卖词，<=200 字符）.
+
+    优先复用上游 pre-clipped 字段（HY-006 half_year_fact_summary ≤200、
+    HY-005 thesis_inline 单行），仅在缺字段时退化到模板。
+    """
+    name = str(item.get("name") or item.get("symbol") or "")
+    period = str(item.get("latest_period") or "")
+    period_tail = f"（报告期 {period}）" if period else ""
+    if reminder_type == HALF_YEAR_REMINDER_REBUTTAL_ALERT:
+        inline = str(item.get("thesis_inline") or "").strip()
+        if inline:
+            # HY-005 inline 已 pre-screened，直接用。
+            return f"{name}{period_tail}：{inline}"[:200]
+        thesis = item.get("thesis_check_status") or "weakened"
+        return f"{name}{period_tail}：半年报反证提醒（{thesis}），建议回 Tree Work 复核"[:200]
+    if reminder_type == HALF_YEAR_REMINDER_NEEDS_TA_REVIEW:
+        summary = str(item.get("fact_summary_text") or "").strip()
+        if summary:
+            return f"{name}{period_tail}：{summary}；建议安排 TA 复核"[:200]
+        return f"{name}{period_tail}：半年报提示需要 TA 复核"[:200]
+    # fact_update
+    summary = str(item.get("fact_summary_text") or "").strip()
+    if summary:
+        return f"{name}{period_tail}：{summary}"[:200]
+    return f"{name}{period_tail}：半年报事实已更新"[:200]
+
+
+def build_half_year_reminders(
+    context: dict[str, Any], as_of: str
+) -> list[dict[str, Any]]:
+    """[HY-007] 从 IC context bucket 10 构造盘前/盘后半年报提醒列表.
+
+    纯函数：不读 DB / 不联网 / 不去噪（dedup 在 notify 通道或调用方套用
+    :class:`HalfYearReminderDeduplicator`）。每条提醒携带 ``dedup_key``，
+    供上游做 24h 去噪时直接复用。
+
+    返回结构（每条）::
+
+        {
+            "reminder_type": half_year_fact_update | half_year_rebuttal_alert |
+                             half_year_needs_ta_review,
+            "symbol": str, "name": str, "origin": str,
+            "reason": str,            # briefing-friendly, <=200 chars
+            "priority": "P0".."P3",
+            "notify_level": "intraday_push" | "daily_digest",
+            "record_only": bool,
+            "facts_status": str, "thesis_check_status": str,
+            "latest_period": str, "half_year_score": float,
+            "dedup_key": str,          # (symbol, type, period, thesis, score_bucket)
+            "source": "half_year_facts_context",
+            "as_of": str,
+        }
+    """
+    half_year_bucket = _bucket(context, "half_year_facts")
+    items = half_year_bucket.get("items", []) or []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        reminder_type, priority, record_only = _classify_half_year_reminder(item)
+        notify_level = _notify_level_for(priority=priority, record_only=record_only)
+        out.append({
+            "reminder_type": reminder_type,
+            "symbol": symbol,
+            "name": item.get("name", ""),
+            "origin": item.get("origin", "half_year_facts"),
+            "reason": _build_half_year_reminder_reason(item, reminder_type),
+            "priority": priority,
+            "notify_level": notify_level,
+            "record_only": record_only,
+            "facts_status": item.get("facts_status", ""),
+            "thesis_check_status": item.get("thesis_check_status", ""),
+            "latest_period": item.get("latest_period", ""),
+            "half_year_score": float(item.get("half_year_score") or 0.0),
+            "dedup_key": _half_year_dedup_key(item, reminder_type),
+            "source": "half_year_facts_context",
+            "as_of": as_of,
+        })
+    return out
+
+
+class HalfYearReminderDeduplicator:
+    """[HY-007] 半年报提醒的 24h 去噪器。
+
+    与 NOTIFY ``NotificationDeduplicator`` 同构，但窗口换成
+    ``HALF_YEAR_DEDUP_WINDOW_SECONDS``（24 小时），key 复用每条提醒的
+    ``dedup_key``（已编码 symbol / reminder_type / period / thesis_status /
+    score_bucket）。
+
+    线程安全性由调用方保证（service 层默认单例 + GIL 下足够 dry-run 场景使用）。
+    """
+
+    def __init__(self, window_seconds: int = HALF_YEAR_DEDUP_WINDOW_SECONDS) -> None:
+        self._window = int(window_seconds)
+        self._seen: dict[str, datetime] = {}
+
+    def dedup_key(self, reminder: dict[str, Any]) -> str:
+        """优先使用 reminder 自带的 dedup_key，缺失时按 symbol + reminder_type 兜底."""
+        key = str(reminder.get("dedup_key") or "").strip()
+        if key:
+            return key
+        symbol = str(reminder.get("symbol", "")).strip()
+        reminder_type = str(reminder.get("reminder_type", "")).strip()
+        return f"{symbol}|{reminder_type}"
+
+    def should_emit(
+        self, reminder: dict[str, Any], now: datetime
+    ) -> tuple[bool, str, str]:
+        """返回 (是否放行, dedup_key, 抑制原因)."""
+        key = self.dedup_key(reminder)
+        last = self._seen.get(key)
+        if last is None:
+            return True, key, ""
+        elapsed = (now - last).total_seconds()
+        if elapsed < self._window:
+            hours = elapsed / 3600.0
+            window_hours = self._window / 3600.0
+            return False, key, (
+                f"同一半年报事实 {hours:.1f} 小时内已提醒过"
+                f"（窗口 {window_hours:.0f} 小时）"
+            )
+        return True, key, ""
+
+    def mark_emitted(self, reminder: dict[str, Any], now: datetime) -> None:
+        self._seen[self.dedup_key(reminder)] = now
+
+    def reset(self) -> None:
+        self._seen.clear()
+
+
+def apply_half_year_dedup(
+    reminders: list[dict[str, Any]],
+    deduplicator: HalfYearReminderDeduplicator,
+    *,
+    now: datetime | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """[HY-007] 对半年报提醒套 24h 去噪，返回 emitted / deduplicated 两组.
+
+    与 NOTIFY ``apply_dedup`` 同构；briefing 本身不调用本函数（保持纯分类），
+    service 层 / 测试 / notify 通道调用本函数做实际去噪。
+    """
+    now = now or datetime.now()
+    emitted: list[dict[str, Any]] = []
+    deduplicated: list[dict[str, Any]] = []
+    for reminder in reminders:
+        ok, key, reason = deduplicator.should_emit(reminder, now)
+        if ok:
+            deduplicator.mark_emitted(reminder, now)
+            emitted.append(reminder)
+        else:
+            entry = dict(reminder)
+            entry["dedup_key"] = key
+            entry["dedup_reason"] = reason
+            deduplicated.append(entry)
+    return {"emitted": emitted, "deduplicated": deduplicated}
+
+
 def _notify_level_summary(
     ta_requests: list[dict[str, Any]],
     watch_items: list[dict[str, Any]],
     data_warnings: list[dict[str, Any]],
+    half_year_reminders: list[dict[str, Any]] | None = None,  # [HY-007]
 ) -> dict[str, Any]:
     """汇总 notify_level 计数（不应用去噪，只做通道分类统计）."""
     push = digest = 0
-    for bucket in (ta_requests, watch_items, data_warnings):
+    buckets = [ta_requests, watch_items, data_warnings]
+    if half_year_reminders is not None:  # [HY-007]
+        buckets.append(half_year_reminders)
+    for bucket in buckets:
         for it in bucket:
             lvl = it.get("notify_level")
             if lvl == NOTIFY_LEVEL_INTRADAY_PUSH:
@@ -329,10 +599,14 @@ def _assemble_payload(
     ta_requests: list[dict[str, Any]],
     watch_items: list[dict[str, Any]],
     data_warnings: list[dict[str, Any]],
+    half_year_reminders: list[dict[str, Any]] | None = None,  # [HY-007]
     scene_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """组装统一 payload（含 notify_level_summary / markdown_preview / 禁用词自检）."""
-    notify_summary = _notify_level_summary(ta_requests, watch_items, data_warnings)
+    half_year_reminders = half_year_reminders or []
+    notify_summary = _notify_level_summary(
+        ta_requests, watch_items, data_warnings, half_year_reminders
+    )
     payload: dict[str, Any] = {
         "schema_version": PAYLOAD_SCHEMA_VERSION,
         "scene": scene,
@@ -346,9 +620,12 @@ def _assemble_payload(
         "ta_requests": ta_requests,
         "watch_items": watch_items,
         "data_warnings": data_warnings,
+        "half_year_reminders": half_year_reminders,  # [HY-007]
         "notify_level": notify_summary,
         "scene_extras": scene_extras or {},
-        "notes": _build_scene_notes(scene, ta_requests, watch_items, data_warnings),
+        "notes": _build_scene_notes(
+            scene, ta_requests, watch_items, data_warnings, half_year_reminders
+        ),
     }
     payload["markdown_preview"] = render_briefing_markdown(payload)
     payload["forbidden_word_scan"] = scan_forbidden_words(payload)
@@ -360,6 +637,7 @@ def _build_scene_notes(
     ta_requests: list[dict[str, Any]],
     watch_items: list[dict[str, Any]],
     data_warnings: list[dict[str, Any]],
+    half_year_reminders: list[dict[str, Any]] | None = None,  # [HY-007]
 ) -> list[str]:
     notes: list[str] = []
     scene_label = {"pre_market": "盘前", "intraday": "盘中", "post_market": "盘后"}[scene]
@@ -370,6 +648,31 @@ def _build_scene_notes(
             notes.append(f"{scene_label} briefing：无标的进入 TA 队列，避免无谓调用模型")
     if not watch_items and not data_warnings:
         notes.append(f"{scene_label} briefing：暂无观察项与告警，investment-controller 本轮可保持轻量")
+    # [HY-007] 半年报提醒备注
+    if half_year_reminders:
+        rebuttal = sum(
+            1 for r in half_year_reminders
+            if r.get("reminder_type") == HALF_YEAR_REMINDER_REBUTTAL_ALERT
+        )
+        review = sum(
+            1 for r in half_year_reminders
+            if r.get("reminder_type") == HALF_YEAR_REMINDER_NEEDS_TA_REVIEW
+        )
+        fact_update = sum(
+            1 for r in half_year_reminders
+            if r.get("reminder_type") == HALF_YEAR_REMINDER_FACT_UPDATE
+        )
+        parts: list[str] = []
+        if rebuttal:
+            parts.append(f"{rebuttal} 项反证提醒")
+        if review:
+            parts.append(f"{review} 项需要 TA 复核")
+        if fact_update:
+            parts.append(f"{fact_update} 项事实更新")
+        notes.append(
+            f"{scene_label} briefing：半年报提醒 " + "，".join(parts) +
+            "（去噪窗口 24h，调用方按需套 HalfYearReminderDeduplicator）"
+        )
     return notes
 
 
@@ -380,15 +683,17 @@ def _build_scene_notes(
 def build_pre_market_payload(
     context: dict[str, Any], *, as_of: str | None = None
 ) -> dict[str, Any]:
-    """盘前 briefing：TA 调度 + 昊天主题重心 + 数据健康.
+    """盘前 briefing：TA 调度 + 昊天主题重心 + 数据健康 + 半年报提醒.
 
     盘前是 investment-controller 的主调度窗口：决定今天调哪些 TA、哪些只进日报、
-    哪些有数据缺口需人工复核。
+    哪些有数据缺口需人工复核。HY-007 在盘前额外输出半年报三类提醒，让投资决策
+    能看到事实更新与反证。
     """
     ts = _safe_now(as_of)
     ta_requests = _build_ta_requests(context, ts)
     watch_items = _build_watch_items(context, ts)
     data_warnings = _build_data_warnings(context, ts)
+    half_year_reminders = build_half_year_reminders(context, ts)  # [HY-007]
 
     mandate = _bucket(context, "mandate_daily_report")
     mandate_digest = _ic_ta003._build_mandate_digest(mandate)
@@ -401,6 +706,7 @@ def build_pre_market_payload(
         watch_n=len(watch_items),
         warn_n=len(data_warnings),
         extra=_ic_ta003._mandate_headline_extra(mandate_digest),
+        half_year_n=len(half_year_reminders),  # [HY-007]
     )
 
     return _assemble_payload(
@@ -411,6 +717,7 @@ def build_pre_market_payload(
         ta_requests=ta_requests,
         watch_items=watch_items,
         data_warnings=data_warnings,
+        half_year_reminders=half_year_reminders,  # [HY-007]
         scene_extras={
             "mandate_digest": mandate_digest,
             "data_health_note": data_health_note,
@@ -548,14 +855,16 @@ def _build_intraday_observation_warnings(
 def build_post_market_payload(
     context: dict[str, Any], *, as_of: str | None = None
 ) -> dict[str, Any]:
-    """盘后 briefing：今日表现 + 报告数据缺口 + 次日 TA 候选.
+    """盘后 briefing：今日表现 + 报告数据缺口 + 次日 TA 候选 + 半年报提醒.
 
-    盘后回答：今天发生了什么、数据缺什么、明天要不要调 TA。
+    盘后回答：今天发生了什么、数据缺什么、明天要不要调 TA。HY-007 在盘后
+    输出半年报三类提醒，让复盘能看到事实更新与反证。
     """
     ts = _safe_now(as_of)
     ta_requests = _build_ta_requests(context, ts)
     watch_items = _build_watch_items(context, ts)
     data_warnings = _build_data_warnings(context, ts)
+    half_year_reminders = build_half_year_reminders(context, ts)  # [HY-007]
 
     today_perf = _ic_ta003._build_today_performance(_bucket(context, "holdings"))
     report_gaps = _ic_ta003._build_report_gaps_summary(
@@ -568,6 +877,7 @@ def build_post_market_payload(
         watch_n=len(watch_items),
         warn_n=len(data_warnings),
         extra=_ic_ta003._post_headline_extra(today_perf, report_gaps),
+        half_year_n=len(half_year_reminders),  # [HY-007]
     )
 
     return _assemble_payload(
@@ -578,6 +888,7 @@ def build_post_market_payload(
         ta_requests=ta_requests,
         watch_items=watch_items,
         data_warnings=data_warnings,
+        half_year_reminders=half_year_reminders,  # [HY-007]
         scene_extras={
             "today_performance": today_perf,
             "report_data_gaps": report_gaps,
@@ -590,7 +901,13 @@ def build_post_market_payload(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _headline(
-    *, scene: str, ta_n: int, watch_n: int, warn_n: int, extra: str = ""
+    *,
+    scene: str,
+    ta_n: int,
+    watch_n: int,
+    warn_n: int,
+    extra: str = "",
+    half_year_n: int = 0,  # [HY-007]
 ) -> str:
     scene_label = {
         SCENE_PRE_MARKET: "盘前",
@@ -602,6 +919,8 @@ def _headline(
         parts.append(f"{ta_n} 项待 TA")
     parts.append(f"{watch_n} 项观察")
     parts.append(f"{warn_n} 项告警")
+    if half_year_n:  # [HY-007]
+        parts.append(f"{half_year_n} 项半年报提醒")
     head = f"{scene_label} briefing：" + "，".join(parts)
     if extra:
         head += f"；{extra}"
@@ -611,6 +930,57 @@ def _headline(
 # ──────────────────────────────────────────────────────────────────────────────
 # markdown 预览（供飞书卡片后续接入）
 # ──────────────────────────────────────────────────────────────────────────────
+
+# [HY-007] 半年报提醒类型 -> 中文标签
+_HALF_YEAR_REMINDER_LABELS = {
+    HALF_YEAR_REMINDER_FACT_UPDATE: "事实更新",
+    HALF_YEAR_REMINDER_REBUTTAL_ALERT: "反证提醒",
+    HALF_YEAR_REMINDER_NEEDS_TA_REVIEW: "需要 TA 复核",
+}
+
+
+def _render_half_year_reminders_section(
+    lines: list[str], reminders: list[dict[str, Any]]
+) -> None:
+    """[HY-007] 渲染半年报提醒区块（事实更新 / 反证 / 需要 TA 复核）.
+
+    无提醒时不渲染（避免"无半年报提醒"刷屏）；有提醒时按 reminder_type 分组。
+    """
+    if not reminders:
+        return
+    lines.append("## 半年报提醒（half_year_reminders）\n")
+    lines.append(
+        "> 半年报事实更新 / 反证提醒 / 需要 TA 复核；24h 去噪窗口，"
+        "P2/P3 只进日报，仅强反证+高关注度（contradicted + priority_reminder）"
+        "进盘中主动提醒。\n"
+    )
+    for r in reminders:
+        sym = r.get("symbol", "—") or "—"
+        name = r.get("name", "")
+        pri = r.get("priority", "")
+        lvl = r.get("notify_level", "")
+        rtype = r.get("reminder_type", "")
+        type_label = _HALF_YEAR_REMINDER_LABELS.get(rtype, rtype)
+        lvl_label = "盘中" if lvl == NOTIFY_LEVEL_INTRADAY_PUSH else "日报"
+        head = f"- **[{pri}] {sym} {name}** _（{type_label}，{lvl_label}）_".rstrip()
+        lines.append(head)
+        reason = r.get("reason", "")
+        if reason:
+            lines.append(f"  - {reason}")
+        thesis = r.get("thesis_check_status", "")
+        period = r.get("latest_period", "")
+        score = r.get("half_year_score")
+        meta_bits: list[str] = []
+        if period:
+            meta_bits.append(f"报告期 {period}")
+        if thesis:
+            meta_bits.append(f"thesis={thesis}")
+        if score is not None:
+            meta_bits.append(f"score={score}")
+        if meta_bits:
+            lines.append("  - " + "，".join(meta_bits))
+    lines.append("")
+
 
 def render_briefing_markdown(payload: dict[str, Any]) -> str:
     """渲染 briefing markdown 预览（供飞书卡片后续接入，dry-run 不发送）.
@@ -665,6 +1035,10 @@ def render_briefing_markdown(payload: dict[str, Any]) -> str:
     _section("待调度 TA（ta_requests）", payload.get("ta_requests", []), "reason_call_ta")
     _section("仅观察（watch_items）", payload.get("watch_items", []), "reason_skip_ta")
     _section("告警（data_warnings）", payload.get("data_warnings", []), "reason")
+    # [HY-007] 半年报提醒区块（事实更新 / 反证提醒 / 需要 TA 复核）
+    _render_half_year_reminders_section(
+        lines, payload.get("half_year_reminders", []) or []
+    )
 
     notify = payload.get("notify_level", {}) or {}
     lines.append("## notify_level 汇总\n")
@@ -927,8 +1301,14 @@ INTRADAY_FIXTURE_CONTEXT: dict[str, Any] = {
 
 
 __all__ = [
+    "ALLOWED_HALF_YEAR_REMINDER_TYPES",  # [HY-007]
     "ALLOWED_SCENES",
     "FORBIDDEN_STRONG_WORDS",
+    "HALF_YEAR_DEDUP_WINDOW_SECONDS",  # [HY-007]
+    "HALF_YEAR_REMINDER_FACT_UPDATE",  # [HY-007]
+    "HALF_YEAR_REMINDER_NEEDS_TA_REVIEW",  # [HY-007]
+    "HALF_YEAR_REMINDER_REBUTTAL_ALERT",  # [HY-007]
+    "HalfYearReminderDeduplicator",  # [HY-007]
     "INTRADAY_FIXTURE_CONTEXT",
     "NOTIFY_LEVEL_DAILY_DIGEST",
     "NOTIFY_LEVEL_INTRADAY_PUSH",
@@ -945,6 +1325,8 @@ __all__ = [
     "WARNING_HOLDINGS_RISK_MODERATE",
     "WARNING_OBSERVATION_INVALIDATED",
     "WARNING_REPORT_DATA_GAP",
+    "apply_half_year_dedup",  # [HY-007]
+    "build_half_year_reminders",  # [HY-007]
     "build_intraday_payload",
     "build_post_market_payload",
     "build_pre_market_payload",

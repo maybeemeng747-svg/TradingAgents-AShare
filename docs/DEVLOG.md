@@ -12856,3 +12856,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-018-20260712-round1.txt
 - **Run archive**: docs/task_runs/KB-018-20260712-003651/
+
+## 2026-07-12 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-007 - investment-controller 半年报 briefing payload 与去噪规则（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode timed out after 1800s
+- **Run archive**: docs/task_runs/HY-007-20260712-005434/
