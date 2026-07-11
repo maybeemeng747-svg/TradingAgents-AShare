@@ -1,5 +1,73 @@
 # 修改日志
 
+## 2026-07-11 | REPORT-UX-005 本地知识补充不覆盖动作语义的扩展回放
+
+- **执行者**：OpenCode
+- **任务**：REPORT-UX-005 — 本地知识补充不覆盖动作语义的扩展回放（P2）
+- **类型**：replay test / 回放验收
+- **状态**：✅ 完成（待外层 commit）
+
+### 背景
+
+- REPORT-UX-004 已覆盖 WAIT（数据不足观察）+ ENTER（条件入场）两类，重点证明
+  本地知识命中不会掩盖 DATA_MISSING wait_reason_codes。
+- REPORT-UX-005 在此基础上补齐 **5 类 action semantics 全覆盖**
+  （WAIT/ENTER/HOLD/REDUCE/EXIT），并新增 **half_year_facts 叠加字段**
+  （HY-003 provider 已就绪但 HY-004 报告接入尚未完成，本任务做前向兼容回归）。
+- 验收头条：本地知识强命中 + 半年报事实命中不会把 ENTER/HOLD/REDUCE
+  覆写成 WAIT；数据不足时有明确 wait_reason_codes。
+
+### 改动文件
+
+- `tests/test_report_ux005_knowledge_action_semantics_replay.py`（新增，
+  `# [REPORT-UX-005] knowledge_action_semantics_replay`）— 26 tests：
+  - **5 类 action semantics fixture**：WAIT（数据不足观察）/ ENTER（条件入场）/
+    HOLD（持有）/ REDUCE（条件减仓）/ EXIT（条件清仓），标的统一为 603296 华勤技术。
+  - **三组叠加字段注入**：`_inject_knowledge_overlays()` 把 local_knowledge
+    （KB-003）+ half_year_facts（HY-003）作为 raw_evidence 条目写入 metadata，
+    模拟 HY-004 接入后的报告管线；research_attention（KB-008）由
+    attach_report_local_knowledge 自动附加。
+  - **扩展版知识库 fixture**：KB-007 同款 9 页 + 新增华勤技术 603296 qualified
+    半年报事实页（`_HUAQIN_HALF_YEAR_PAGE`），使 603296 同时命中
+    local_knowledge HAS_DATA + half_year_facts HAS_FACTS。
+  - **7 组测试**：动作门禁保留（5 semantics）/ wait_reason_codes 契约 /
+    头条验收（方向性动作不被覆写）/ half_year_facts additive-only /
+    KB 块全语义渲染 / ReportResponse schema round-trip / 回放报告生成。
+- `docs/task_runs/REPORT-UX-005-20260711-204951/replay-report.md`（新增）—
+  简短回放报告，覆盖矩阵 + 验收结论。
+
+### 关键逻辑
+
+1. **叠加字段 additive-only 契约统一**：local_knowledge / research_attention /
+   half_year_facts 全部以 raw_evidence 条目形式存在，create_report 的
+   attach_report_local_knowledge 只增解释性 key，不改 decision /
+   execution_action / action_label / wait_reason_codes / data_blockers。
+2. **half_year_facts 前向兼容**：HY-004 接入时必须遵循同样的 additive-only
+   模式；本任务通过 `_inject_knowledge_overlays()` 提前验证 half_year_facts
+   注入 raw_evidence 后不破坏报告管线。
+3. **WAIT 原因码强制**：数据不足观察场景必须有 wait_reason_codes（含
+   DATA_MISSING），不允许只剩笼统 action_label；非 WAIT 动作必须空。
+
+### 测试结果
+
+- `tests/test_report_ux005_knowledge_action_semantics_replay.py`：**26 passed**。
+- 回归 `tests/test_report_ux004_local_knowledge_replay.py` +
+  `tests/test_api_smoke.py` + `tests/test_runtime_tier_contract.py`：
+  **150 passed**。
+- 回归 `tests/test_report_ux003_wait_reason_codes.py` +
+  `test_report_ux002_semantics_audit.py` + `test_decision_semantics.py` +
+  `test_v013_knowledge_e2e_acceptance.py` + `test_kb011_knowledge_contract_ui.py`：
+  **123 passed**。
+
+### 约束确认
+
+- 不改 `tradingagents/prompts/`。
+- 不写生产 `tradingagents.db`（全部使用 in-memory SQLite）。
+- 不调用 live LLM。
+- 不做全市场扫描 / 个股深度 TA。
+
+---
+
 ## 2026-07-11 | KB-015 研报观点事实分离与 TA 可消费摘要索引
 
 - **执行者**：OpenCode
@@ -12133,3 +12201,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-015-20260711-round1.txt
 - **Run archive**: docs/task_runs/KB-015-20260711-203324/
+
+## 2026-07-11 | AUTO-002 Auto Dev Loop
+
+- **Task**: REPORT-UX-005 - 本地知识补充不覆盖动作语义的扩展回放（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/REPORT-UX-005-20260711-round1.txt
+- **Run archive**: docs/task_runs/REPORT-UX-005-20260711-204951/

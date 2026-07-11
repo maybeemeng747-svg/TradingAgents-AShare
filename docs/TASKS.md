@@ -29,7 +29,7 @@
 1. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done）。
 2. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done）。
 3. `KB-015`：研报观点/事实/预测/风险分离与 TA 摘要索引（P1，done）。
-4. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready）。
+4. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，done — 待外层 commit）。
 5. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
 
 ### 历史任务总表（按创建顺序）
@@ -194,7 +194,7 @@
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
 160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，done — commit 559e95b + 4e7f5d3，103 tests passed，依赖 DATA-023/DATA-025 ✓）。
-161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready，依赖 REPORT-UX-004/KB-003 ✓）。
+161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，done — 待外层 commit，依赖 REPORT-UX-004/KB-003 ✓）。
 162. `PLAYBOOK-001`：上车—在车上—下车战法字段契约与 API 读写闭环（P1，done — Codex review PASS，304 focused tests passed）。
 163. `PLAYBOOK-002`：计划仓位上限与上车三笔法规则引擎（P1，blocked — 战略暂停，待研报/半年报主线完成后人工释放）。
 164. `PLAYBOOK-003`：持仓拆分与机动仓/核心仓/防守仓规则引擎（P1，blocked — 等 PLAYBOOK-001/PLAYBOOK-002 完成）。
@@ -5150,7 +5150,7 @@
 ### REPORT-UX-005: 本地知识补充不覆盖动作语义的扩展回放（P2）
 - **描述**：扩展 REPORT-UX-004 的回放范围，验证本地知识/研报关注度/未来半年报事实不会把最终动作重新压成笼统“观察”。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 待外层 commit（REPORT-UX-005-20260711-204951）
 - **前置条件**：REPORT-UX-004、KB-003 完成。
 - **执行约束**：
   - 不改 prompts。
