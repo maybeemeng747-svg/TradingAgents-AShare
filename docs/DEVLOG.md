@@ -1,5 +1,88 @@
 # 修改日志
 
+## 2026-07-11 | HY-005 旧研报观点 vs 半年报事实反证检测
+
+- **执行者**:OpenCode
+- **任务**:HY-005 — 旧研报观点 vs 半年报事实反证检测（P1）
+- **类型**:feature / thesis fact check
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-003 半年报事实 provider、KB-015 研报观点/事实分离索引、KB-007 研究关注度
+  均已就绪，但缺少把旧研报观点与新半年报事实做**规则比对**的反证检测层。
+- HY-005 把 KB-015 提取的观点/预测/风险与 HY-003 的结构化事实做方向+幅度比对，
+  标注每条观点的 ``supported`` / ``weakened`` / ``contradicted`` /
+  ``insufficient_data`` 状态，并产出 ``contradiction_flags`` 与
+  ``needs_tree_work_review``，与 KB-007 联动实现优先提醒。
+- 验收头条：不做投资结论（只做证据一致性标注）；不把单一指标变化扩大成
+  "逻辑破坏"（每个 flag 带 evidence_level）；fixture 覆盖四类场景。
+
+### 改动文件
+
+- `tradingagents/dataflows/thesis_fact_check.py`（新增，`# [HY-005]
+  thesis_fact_check`）— 旧研报观点 vs 半年报事实反证检测核心模块。
+  数据类：``ThesisCheckFlag``（单条比对标记）、``ThesisFactCheckResult``
+  （聚合结果）。主入口：``check_thesis_against_facts(opinion_index, facts)``
+  接收 KB-015 + HY-003 已查询好的 dataclass，返回反证检测结果。
+  渲染：``render_thesis_fact_check_report``（完整 Markdown）、
+  ``render_thesis_check_inline``（HY-004 区块/本地知识摘要用的单行内联）。
+- `tests/test_hy005_thesis_fact_check.py`（新增）— **76 tests**，覆盖：
+  - 四类 fixture 场景（contradicted / weakened / supported / insufficient_data）。
+  - KB-013 fixture KB 回放（weakened_old_opinion / qualified / non_financial_control）。
+  - KB-010 cache 与全量扫描语义等价。
+  - KB-007 research attention 联动（priority_reminder 高/低/无 attention）。
+  - needs_tree_work_review 触发条件（contradicted / ≥2 weakened）。
+  - 不输出强买卖词（report + inline + summary）。
+  - 不把单一指标扩大成逻辑破坏（evidence_level 字段验证）。
+  - 失败路径（无观点 / facts FAILED / symbol 推断）。
+  - JSON 序列化、方向分类、指标匹配、分业务匹配、风险确认。
+- `docs/TASKS.md` / `docs/DEVLOG.md`（修改）— 状态校准与日志。
+
+### 关键逻辑
+
+1. **观点收集策略**：
+   - ``research_claims``（KB-015 标为 opinion/unknown）+ ``forecast_items``
+     全量参与。
+   - ``reported_facts`` 中含方向关键词（增长/爆发/下滑/萎缩等）的也参与——
+     broker 观点存在 management_commentary 等 fact-origin 字段时，KB-015
+     可能标为 fact，但文本含方向词 → 仍是可反证的观点。
+   - 纯事实声明（``营收 420.4亿 (+60%)`` 无方向关键词）不参与反证。
+   - ``risk_items`` 单独由风险确认逻辑处理。
+2. **事实索引选择**：优先 fresh 页（data_status=fresh/conflict），降级使用
+   stale 页（evidence_level 降为 weak）；opinion_only / missing 页不参与反证。
+3. **方向比对规则**：
+   - 方向相反（观点正向 vs 事实负向）→ ``contradicted``（strong evidence）。
+   - 方向一致但事实增幅 < 预期×50% → ``weakened``。
+   - 方向一致且幅度接近 → ``supported``。
+   - 分业务观点通过 segment_facts 关键词匹配做方向比对。
+   - 风险观点在事实 risk_factors 中复现 → ``supported``（风险被确认）。
+4. **聚合状态优先级**：``contradicted > weakened > supported > insufficient_data``。
+5. **priority_reminder**：KB-007 attention_score >= 1.0 且 thesis_check_status
+   ∈ {contradicted, weakened} 时触发——只影响提醒优先级，不改变强动作门禁。
+
+### 测试结果
+
+- `tests/test_hy005_thesis_fact_check.py`：**76 passed**。
+- 回归 `tests/test_hy003_half_year_facts_provider.py` +
+  `tests/test_hy004_half_year_report_block.py` +
+  `tests/test_kb015_research_fact_opinion_index.py` +
+  `tests/test_kb007_research_attention.py` +
+  `tests/test_kb009_research_attention_decay.py` +
+  `tests/test_kb013_half_year_fixture_baseline.py`：
+  **380 passed**（1 pre-existing KB-009 日期 flake，与本任务无关）。
+
+### 风险点
+
+- **观点收集兜底**：``reported_facts`` 中含方向关键词的 claim 也参与反证，
+  可能误纳入部分事实声明。已有方向分类过滤（neutral 不参与），且每条 flag
+  带 evidence_level，不会把单条误判扩大成整体逻辑破坏。
+- **management_commentary 中的 broker 观点**：KB-015 可能把 broker 观点标为
+  fact（因 source_type 含 exchange_filing）。HY-005 通过方向关键词兜底收集，
+  但更精确的分离依赖 KB-015 后续优化（不在 HY-005 范围内）。
+- **未接入 TA 报告区块**：HY-005 只提供检测能力和 inline 摘要；接入 HY-004
+  半年报区块或本地知识摘要属于 HY-008 端到端验收范围。
+
 ## 2026-07-11 | HY-004 TA 报告接入"半年报事实对照"区块
 
 - **执行者**:OpenCode
@@ -12349,3 +12432,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-004-20260711-round1.txt
 - **Run archive**: docs/task_runs/HY-004-20260711-225740/
+
+## 2026-07-11 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-005 - 旧研报观点 vs 半年报事实反证检测（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-005-20260711-round1.txt
+- **Run archive**: docs/task_runs/HY-005-20260711-232608/
