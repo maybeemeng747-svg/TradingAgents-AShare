@@ -27,7 +27,7 @@
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
 1. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done）。
-2. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，ready）。
+2. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done）。
 3. `KB-015`：研报观点/事实/预测/风险分离与 TA 摘要索引（P1，ready）。
 4. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready）。
 5. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
@@ -184,7 +184,7 @@
   148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
 149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，done，依赖 KB-002/KB-012 ✓）。
 150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done，依赖 HY-001/KB-005/KB-012 ✓）。
-151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，ready，依赖 HY-001/KB-010 ✓）。
+151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done，依赖 HY-001/KB-010 ✓）。
 152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，blocked — 等 HY-003 完成）。
 153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，blocked — 等 HY-003 完成）。
 154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，blocked — 等 HY-003 完成）。
@@ -4949,7 +4949,7 @@
 ### HY-003: 半年报事实表本地索引与只读查询 provider（P1）
 - **描述**：从 Tree Work 已消化的半年报 wiki 中抽取结构化事实表，提供 TA/TradeFlow 可复用的只读查询接口。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — OpenCode 产出 `tradingagents/dataflows/half_year_facts_provider.py` + `tests/test_hy003_half_year_facts_provider.py`（57 tests），57 passed / 0 failed，KB/HY 系列回归 312 passed
 - **前置条件**：HY-001、KB-010 完成。
 - **执行约束**：
   - 只读本地知识库，不写生产 DB。

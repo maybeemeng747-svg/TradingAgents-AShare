@@ -1,5 +1,78 @@
 # 修改日志
 
+## 2026-07-11 | HY-003 半年报事实表本地索引与只读查询 provider
+
+- **执行者**：OpenCode
+- **任务**：HY-003 — 半年报事实表本地索引与只读查询 provider（P1）
+- **类型**：feature / read-only provider
+- **状态**：✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-001 已建立半年报 Tree Work 输出协议与 lint 规则，KB-013 提供共享 fixture 基线，
+  KB-010 提供知识库缓存/freshness。
+- 需要从 Tree Work 已消化的半年报 wiki 中抽取**结构化事实表**，供 TA 报告（HY-004）、
+  事实反证（HY-005）、TradeFlow 半年报因子（HY-006）等下游任务复用。
+- HY-003 在 HY-001 契约 + KB-010 缓存之上，提供按 symbol/name 只读查询的半年报事实
+  provider，输出报告期/披露日/营收/利润/毛利率/现金流/分业务事实/管理层表述/风险/
+  来源路径/stale 状态。
+
+### 改动文件
+
+- `tradingagents/dataflows/half_year_facts_provider.py`（新增，`# [HY-003] half_year_facts_provider`）—
+  核心模块（纯标准库 + 复用 KB-001/HY-001 只读解析）：
+  - **ParsedMetric**：单条 financial_facts 抽取的结构化指标（metric_key/metric_label/
+    raw/value/change），识别 revenue/net_profit/gross_margin/operating_cash_flow。
+  - **HalfYearFactsPage**：单页半年报事实表，含 financial_period/disclosure_date/
+    source_type/financial_facts/segment_facts/management_commentary/forward_guidance/
+    risk_factors/source_links/symbols/is_stale/is_opinion_only/missing_fields/
+    data_status/conflict_detail。
+  - **HalfYearFactsQueryResult**：查询聚合结果，含 status/latest_period/
+    latest_disclosure_date/summary/risks/data_status。
+  - **data_status 状态机**：fresh / stale / opinion_only / missing_period /
+    missing_facts / conflict；缺字段/过期/冲突显式标注，不得假装可用。
+  - **冲突检测** `_detect_conflicts`：同 symbol 同 period 多页关键指标数值不一致时
+    标 CONFLICT 并写 conflict_detail。
+  - **KB-010 缓存集成**：`query_half_year_facts(cache=...)` 跳过全量扫描，
+    `_build_facts_page_from_cache` 从 CachedPageData 抽取事实，语义与全量扫描等价。
+  - **查询入口** `query_half_year_facts`：按 symbol/name 只读查询，复用 KB-003 的
+    symbol 匹配口径；预筛 report_type 避免对非半年报页跑完整 audit。
+  - **报告渲染** `render_half_year_facts_block`：Markdown "半年报事实" 区块，
+    明确标注"只作背景证据，不替代行情/资金/公告原文，不改变强动作门禁"。
+  - **raw_evidence 接入辅助** `build_half_year_facts_raw_evidence_entry`：
+    供 HY-004 TA 报告区块接入。
+- `tests/test_hy003_half_year_facts_provider.py`（新增）— 57 tests，覆盖：
+  - 数值事实抽取（4 类指标 + 同比变化 + 负向变化 + 未知指标 + 裁剪）。
+  - fixture 5 类场景：有事实 / 无半年报 / 过期 / 缺报告期 / 观点冒充事实。
+  - 事实冲突检测（同 period 冲突 / 同值不冲突 / 不同 period 不冲突）。
+  - KB-010 缓存集成（语义等价 / 不写知识库 / 缓存损坏重建）。
+  - JSON 序列化（result/page/raw_evidence_entry/failed_entry roundtrip）。
+  - 不影响 KB-003 普通查询（回归保护）。
+  - 渲染（HAS_DATA / NO_DATA / FAILED / CONFLICT / OPINION_ONLY 标签）。
+  - 缺字段处理 / 排序聚合（latest_period / 风险去重）。
+  - 全 KB-013 fixture 集成。
+- `docs/task_runs/HY-003-20260711-201732/summary.md`（新增）— 任务运行档案。
+
+### 测试结果
+
+- `tests/test_hy003_half_year_facts_provider.py`：**57 passed / 0 failed**
+- 回归 KB-003 + KB-010 + KB-013 + HY-001：**312 passed / 0 failed**
+- 广义 KB/HY 系列：1225 passed / 1 pre-existing failure
+  （KB-009 时间衰减日期敏感断言，`git stash` 复现确认与 HY-003 无关）
+
+### 设计要点
+
+- **独立模块，零侵入**：`half_year_facts_provider` 是独立查询入口，不修改
+  `local_knowledge_provider` 任何行为，KB-003 普通查询路径完全不变。
+- **第一性原理**：最小实现满足"抽取摘要字段和数值事实 + 字段来源保留 + data_status
+  显式输出 + 缓存集成 + JSON 序列化"。
+- **只读安全**：仅 `open(..., "r")` + `Path.iterdir`，不写知识库/生产 DB。
+- **不输出长原文**：每条事实裁剪到 120 字符，每段 ≤ 上限条目数。
+- **字段来源可追溯**：每条事实/管理层表述/风险都带 rel_path/source_type/
+  financial_period，便于 HY-005 反证与 citation 审计。
+
+---
+
 ## 2026-07-11 | HY-002 半年报资料优先队列与 Tree Work 补录任务包
 
 - **执行者**：OpenCode
@@ -11956,3 +12029,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-002-20260711-round1.txt
 - **Run archive**: docs/task_runs/HY-002-20260711-200216/
+
+## 2026-07-11 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-003 - 半年报事实表本地索引与只读查询 provider（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-003-20260711-round1.txt
+- **Run archive**: docs/task_runs/HY-003-20260711-201732/
