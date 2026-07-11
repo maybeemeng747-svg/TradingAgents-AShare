@@ -1,5 +1,108 @@
 # 修改日志
 
+## 2026-07-12 | KB-018 同股研报观点版本演化与共识漂移时间线
+
+- **执行者**:OpenCode
+- **任务**:KB-018 — 同股研报观点版本演化与共识漂移时间线（P1）
+- **类型**:feature / research thesis timeline
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- KB-015（研报观点/事实分离）、KB-016（共识/分歧矩阵）、KB-017（citation 审计）
+  均已就绪，但当同一只股票被多份研报覆盖时，系统只能看到"当前共识"，无法回答
+  "这个核心观点是如何随时间被强化、削弱、反转或自然过期的"。
+- KB-018 在 KB-015 的 claim 抽取 + KB-016 的去重/立场 + KB-017 的 citation audit
+  之上，按 (symbol, theme, theme_token) 聚合时间线，逐节点标注
+  ``thesis_version_status``（new/reinforced/weakened/reversed/stale/
+  pending_fact_check）和 ``consensus_drift_score``，避免只看最新一篇研报丢失
+  上下文。
+- 验收头条：时间线**只描述观点和证据变化，不输出买卖动作**；同机构重复覆盖必须
+  去重（不制造虚假共识增强）；弱来源晚于强来源出现、方向相反时**阻止覆盖**
+  （计为削弱而非反转）。
+
+### 改动文件
+
+- `tradingagents/dataflows/research_thesis_timeline.py`（新增，`# [KB-018]
+  research_thesis_timeline`）— 时间线核心模块。主入口
+  ``build_research_thesis_timeline(knowledge_root, symbol, name,
+  citation_audit, today)`` 复用 KB-015 ``build_research_fact_opinion_index``
+  做 per-symbol claim 抽取，按 ``(theme, theme_token)`` 分组构建
+  ``ThesisTimeline``。每个 ``ThesisVersion`` 携带 report_date / rel_path /
+  source_quality_tier / citation_audit_status / thesis_version_status /
+  is_duplicate / weak_source_overlay / change_reason。
+  版本状态判定优先级：stale > pending_fact_check > reversed（含弱来源覆盖
+  阻止）> weakened > reinforced > new。
+  ``consensus_drift_score`` = 非重复节点对的 drift 权重均值
+  （reversed=1.0 / weakened=0.5 / stale=0.3 / pending=0.2 / reinforced=0）。
+  同机构重复检测：同 institution + claim 文本 bigram Jaccard 相似度 ≥ 0.6 →
+  重复（不计入 drift）。乱序输入稳定排序：有日期节点在前，无日期节点在后
+  （同 rel_path 字典序）。辅助函数 ``lookup_research_thesis_timeline`` /
+  ``timeline_to_ta_consumable_summary`` /
+  ``render_research_thesis_timeline_report`` /
+  ``has_forbidden_action_words``（防回归强动作词）。
+- `scripts/research_thesis_timeline.py`（新增）— CLI 入口，支持
+  ``--symbol / --name / --all / --json / --summary / --output /
+  --suggest-output``。
+- `tests/test_kb018_research_thesis_timeline.py`（新增）— **77 tests**，
+  覆盖六类 fixture（强化/削弱/反转/重复覆盖/过期/缺日期）、六枚举状态全出现、
+  ``_decide_version_status`` 单元（9 场景）、同机构重复检测（含同 path 不同
+  文本不误杀）、drift 计分（含重复不计入、reversed > weakened）、乱序输入稳定
+  时间线、弱来源覆盖阻止、KB-017 citation_audit 接入（pending_fact_check）、
+  claim_theme 分类、多 symbol/全库、lookup、报告渲染、JSON 序列化与扁平摘要、
+  约束验证（只读/不写 DB/无强动作词/不携带 decision 字段）、边界场景、CLI smoke。
+
+### 验收
+
+- **77 tests passed**（`tests/test_kb018_research_thesis_timeline.py`）。
+- KB-015/016/017/018 组合回归 **282 passed**，无新增失败。
+- 更广 KB/HY 回归 1570 passed；KB-009 有 1 个 pre-existing 日期敏感 flaky
+  测试（与本任务无关，KB-016 DEVLOG 已记录）。
+- 约束验证：知识库只读（调用前后文件不变）/ 不写生产 DB / 无强动作词
+  （report + summary + change_reason + claim_text 全检）/ 不携带
+  decision / action_label / buy_level 字段 / 弱来源不覆盖强来源 /
+  同机构重复不计入 drift。
+
+### 关键设计决策
+
+1. **thesis_key 不含 direction**：``symbol|theme:token``，让 positive /
+   negative 各节点落到**同一条时间线**——反转（reversed）才能在同一 thesis
+   内体现"由 positive 翻转为 negative"。base_direction 用首节点固化，
+   current_direction 取末节点。
+2. **同机构重复需文本相似度**：同 institution + 同/不同 rel_path 都要求 claim
+   文本 bigram Jaccard 相似度 ≥ 0.6 才判重复。这避免"同篇报告的 opinion vs
+   forecast 不同视角"被误折叠，同时仍能抓住"同机构多份报告重复同一观点"。
+3. **弱来源覆盖阻止**：方向反转 + 当前 tier 严格低于前一节点 tier → 计为
+   ``weakened + weak_source_overlay=True``，**不计 reversed**。KB-014 tier
+   优先级与 KB-017 保持一致（original_filing > official_notice >
+   broker_research > media > user_note > unknown）。
+4. **stale / pending_fact_check 优先级最高**：过期页（KB-015 stale_status=stale）
+   或 KB-017 audit=pending/insufficient_data 的节点优先落这两个状态，**不进
+   reversed/weakened**——避免用过期/未验证观点制造虚假反转。
+5. **consensus_drift_score 只统计非重复节点对**：首节点（new）和重复节点
+   （is_duplicate=True）不参与 drift 计算；drift = 后续非重复节点 drift 权重
+   的均值，区分真实新增证据（reinforced 不增 drift）和真实漂移（reversed 满权）。
+6. **乱序输入稳定排序**：``_sort_key = (date_known, 0, report_date,
+   rel_path)``——有日期节点在前（按日期升序），无日期节点在后（按 rel_path
+   字典序），保证同一组输入无论文件系统返回顺序如何，时间线节点顺序一致。
+7. **citation_audit 可选接入**：调用方负责确保 KB-017 ``CitationAuditResult``
+   与 symbol 对齐（``_symbol_equivalent`` 校验）；不传入时
+   ``pending_fact_check`` 分支不触发，但仍可从 stale_status 判定 stale。
+
+### 风险点
+
+- ``_classify_direction``（HY-005 复用）对"上调/下调"等隐式方向词可能判 neutral，
+  导致同方向连续节点误落 weakened —— 调用方应确保 claim 文本含明确方向词
+  （增长/下降/超预期/不及预期等）。
+- 同机构重复检测的文本相似度阈值（0.6）是经验值：太低会误折叠同机构不同视角，
+  太高会漏标真实重复；当前 0.6 在 fixture 上覆盖"同文本 1.0 / 不同文本 < 0.2"
+  两端，中间灰色地带由 institution + theme 双重过滤兜底。
+- 主题聚类依赖 ``_match_opinion_to_metric``（HY-005）+ ``_extract_segment_topic``，
+  对未见过的指标表达可能落 ``other``，导致多条不同观点被合并到同一 other thesis；
+  当前用 ``theme_token`` 细分（other 主题下只共享一个 token，不会过度合并）。
+
+---
+
 ## 2026-07-12 | KB-017 研报观点 vs 公告/半年报事实 citation 审计
 
 - **执行者**:OpenCode
@@ -12741,3 +12844,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-017-20260712-round1.txt
 - **Run archive**: docs/task_runs/KB-017-20260712-002020/
+
+## 2026-07-12 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-018 - 同股研报观点版本演化与共识漂移时间线（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-018-20260712-round1.txt
+- **Run archive**: docs/task_runs/KB-018-20260712-003651/
