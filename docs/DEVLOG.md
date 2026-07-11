@@ -1,5 +1,94 @@
 # 修改日志
 
+## 2026-07-12 | KB-017 研报观点 vs 公告/半年报事实 citation 审计
+
+- **执行者**:OpenCode
+- **任务**:KB-017 — 研报观点 vs 公告/半年报事实 citation 审计（P1）
+- **类型**:feature / citation fact audit
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- KB-015（研报观点/事实分离）、HY-003（半年报事实表）、KB-014（citation policy）
+  均已就绪，HY-005（thesis_fact_check）已实现 4 状态方向比对，但还缺一个
+  **显式按 KB-014 tier 优先级做交叉审计、覆盖"待验证"状态、并产出可入 TA 报告
+  区块的 audit_summary** 的模块。
+- KB-017 把 KB-015 抽出的观点 + HY-003 结构化事实做交叉审计，每条观点落
+  ``supported / weakened / contradicted / pending / insufficient_data`` 5 状态，
+  并硬约束"弱来源不得覆盖强来源"（``weak_source_blocked`` 显式记录每一次阻止）。
+- 验收头条：缺半年报事实时不得强行判定观点错误（只走 insufficient_data /
+  pending）；TA 动作语义不被 audit 直接覆写（``CitationAuditResult`` 不携带
+  ``decision / execution_action / action_label / buy_level`` 字段）。
+
+### 改动文件
+
+- `tradingagents/dataflows/citation_fact_audit.py`（新增，`# [KB-017]
+  citation_fact_audit`）— citation 审计核心模块。主入口
+  ``audit_citation_against_facts(opinion_index, facts, symbol, name)`` 接收
+  KB-015 ``ResearchFactOpinionIndexResult`` + HY-003 ``HalfYearFactsQueryResult``，
+  按 KB-014 tier 优先级（original_filing > official_notice > broker_research >
+  media > user_note > unknown）构建 ``_TieredFactIndex``，逐条审计观点落
+  ``CitationAuditFlag``。复用 HY-005 的 ``_classify_direction`` /
+  ``_parse_pct`` / ``_match_opinion_to_metric`` / ``_extract_segment_topic``
+  保持口径一致；新增 ``pending`` 状态（前瞻指引 / 含未来期关键词）+
+  ``_is_weak_source_override`` 弱来源覆盖检测。输出 ``audit_summary`` 可直
+  接进入 TA 报告"本地知识补充/半年报事实对照"区块，扁平摘要
+  ``audit_to_ta_consumable_summary`` 供 HY-004 / KB-003 路径消费。辅助函数
+  ``render_citation_audit_report`` / ``render_citation_audit_inline`` /
+  ``has_forbidden_action_words``。
+- `tests/test_kb017_citation_fact_audit.py`（新增）— **84 tests**，覆盖：
+  5 状态 fixture（支持/削弱/打脸/待验证/缺事实）、KB-014 tier 优先级、
+  弱来源覆盖检测（broker vs filing / media vs broker / 强覆盖弱不算 blocked）、
+  财务指标/分业务/风险观点审计、pending 触发（forecast origin + 未来期关键词）、
+  聚合状态优先级、失败路径（无观点/无事实/事实不可用/类型错误）、
+  输出约束（无强动作词 / 无 decision 字段）、JSON 序列化、渲染、
+  KB-015/HY-003 集成端到端。
+
+### 验收
+
+- **84 tests passed**（`tests/test_kb017_citation_fact_audit.py`）。
+- HY/KB 系列回归：KB-014/015/016/HY-005 **288 passed**；HY-003/004/006 +
+  KB-017 **231 passed**；任务 smoke（api_smoke + runtime_tier）**122 passed**。
+- 约束验证：知识库只读 / 不写生产 DB / 不改 prompts / 不调 live LLM /
+  无强动作词 / 弱来源不覆盖强来源 / 缺事实不强行判定错误 / TA 动作语义不被
+  audit 覆写。
+
+### 关键设计决策
+
+1. **新增 ``pending`` 状态**：观点属 ``forward_guidance`` 类 origin_field 或
+   文本含 ``2026/2027/全年/明年/H2/下半年`` 等未来期关键词时落 pending，**不进
+   contradicted/weakened**——任务原文要求"缺半年报事实时不得强行判定观点错误"，
+   pending 专门承载"观点可被验证但当前事实期未覆盖"的语义，区别于
+   ``insufficient_data``（观点讨论当前期但事实中无对应指标）。
+2. **KB-014 tier 优先级硬约束**：``_build_tiered_fact_index`` 按
+   ``(tier_priority, period)`` 排序选基准事实页，保证 broker/media/user_note
+   事实永远不会盖过 original_filing/official_notice；
+   ``_is_weak_source_override`` 在方向相反 + 观点 tier 严格低于事实 tier 时
+   返回 True，``weak_source_blocked=True`` 显式标记每一次阻止事件，并计入
+   ``needs_tree_work_review``。
+3. **复用 HY-005 比对助手**：``_classify_direction`` / ``_parse_pct`` /
+   ``_match_opinion_to_metric`` / ``_extract_segment_topic`` 直接 import，
+   不重复实现，保证 KB-017 与 HY-005 的方向/数值解析口径完全一致。
+4. **TA 动作语义不被覆写**：``CitationAuditResult`` 不携带
+   ``decision / execution_action / action_label / buy_level``；
+   ``audit_to_ta_consumable_summary`` 同样不含这些字段；调用方（HY-004 /
+   KB-003）决定是否调整 confidence，但不直接改 action。
+5. **聚合状态优先级**：contradicted > weakened > supported > pending >
+   insufficient_data（pending 优先级低于 supported，避免"待验证"覆盖已支持的
+   结论）。
+
+### 风险点
+
+- pending 状态依赖关键词与 origin_field 判定，对未见过的前瞻表达形态可能漏标
+  → 落到 contradicted/weakened/insufficient_data（保守，不会假装 pending）。
+- KB-014 tier 推断基于 HY-003 ``source_type`` 字段，``source_type`` 缺失或异
+  常时退化为 ``TIER_UNKNOWN``，弱来源检测会失效（但不会误判强来源）。
+- 与 HY-005 的关系是**互补**而非替代：HY-005 关注"旧研报 vs 最新半年报"的
+  方向反证（4 状态 + KB-007 attention 联动），KB-017 在此基础上加 pending +
+  tier 优先级 + audit_summary，下游可同时消费两者。
+
+---
+
 ## 2026-07-12 | KB-016 多研报一致性/分歧矩阵与关注度去重回放
 
 - **执行者**:OpenCode
@@ -12640,3 +12729,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-016-20260712-round1.txt
 - **Run archive**: docs/task_runs/KB-016-20260712-000255/
+
+## 2026-07-12 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-017 - 研报观点 vs 公告/半年报事实 citation 审计（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-017-20260712-round1.txt
+- **Run archive**: docs/task_runs/KB-017-20260712-002020/
