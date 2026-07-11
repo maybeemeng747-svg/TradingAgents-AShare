@@ -26,14 +26,17 @@
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-1. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，in_progress）。
-2. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，in_progress）。
-3. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，in_progress）。
-4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，in_progress）。
-5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，in_progress）。
-6. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，in_progress；批次内依赖 HY-004）。
-7. `HY-008`：半年报知识链路端到端回放验收（P2，in_progress；批次内依赖 HY-004/005/006/007）。
-8. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
+1. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，ready）。
+2. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，ready）。
+3. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，ready）。
+4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready）。
+5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，ready）。
+6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready；批次内依赖 KB-016/017）。
+7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，ready；批次内依赖 HY-004）。
+8. `HY-008`：半年报知识链路端到端回放验收（P2，ready；批次内依赖 HY-004/005/006/007）。
+9. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，ready；批次内依赖 HY-008）。
+10. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，ready；批次内依赖 KB-018/HY-009）。
+11. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
 
 > 本批次按上述依赖顺序执行；任一任务失败时自动循环停止，禁止绕过失败项继续做下游验收。
 
@@ -190,11 +193,11 @@
 149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，done，依赖 KB-002/KB-012 ✓）。
 150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done，依赖 HY-001/KB-005/KB-012 ✓）。
 151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done，依赖 HY-001/KB-010 ✓）。
-152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，in_progress，依赖 HY-003/KB-003/REPORT-UX-004 ✓）。
-153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，in_progress，依赖 HY-003/KB-007/KB-009 ✓）。
-154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，in_progress，依赖 HY-003/H-017/KB-004 ✓）。
-155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，in_progress，批次内依赖 HY-004）。
-156. `HY-008`：半年报知识链路端到端回放验收（P2，in_progress，批次内依赖 HY-004/HY-005/HY-006/HY-007）。
+152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，ready，依赖 HY-003/KB-003/REPORT-UX-004 ✓）。
+153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，ready，依赖 HY-003/KB-007/KB-009 ✓）。
+154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，ready，依赖 HY-003/H-017/KB-004 ✓）。
+155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，ready，批次内依赖 HY-004）。
+156. `HY-008`：半年报知识链路端到端回放验收（P2，ready，批次内依赖 HY-004/HY-005/HY-006/HY-007）。
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，done — commit f06793e + b638dca，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
@@ -207,8 +210,11 @@
 166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
 167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
 168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py` + `scripts/research_fact_opinion_index.py` + `tests/test_kb015_research_fact_opinion_index.py`（54 tests）+ `docs/knowledge_reports/research_fact_opinion_index-2026-07-11.md`，依赖 KB-014/KB-003/HY-001 ✓）。
-169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，in_progress，依赖 KB-015/KB-007/KB-009 ✓）。
-170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，in_progress，依赖 KB-015/HY-003/KB-014 ✓）。
+169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready，依赖 KB-015/KB-007/KB-009 ✓）。
+170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，ready，依赖 KB-015/HY-003/KB-014 ✓）。
+171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready，批次内依赖 KB-016/KB-017）。
+172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，ready，批次内依赖 HY-008）。
+173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，ready，批次内依赖 KB-018/HY-009）。
 
 ### 数据源治理候选队列
 
@@ -5234,6 +5240,66 @@
   - 弱来源不得覆盖强来源。
   - TA 报告动作语义不被 audit 直接覆写。
 - **代码标注要求**：`# [KB-017] citation_fact_audit`
+
+### KB-018: 同股研报观点版本演化与共识漂移时间线（P1）
+- **描述**：在 KB-016 共识矩阵和 KB-017 事实审计之上，按时间还原同一股票核心观点如何被强化、削弱、反转或自然过期，避免只看最新一篇研报丢失上下文。
+- **优先级**：P1
+- **状态**：ready — 批次内依赖 KB-016/KB-017；仅在两项均 PASS 后执行
+- **前置条件**：KB-015、KB-016、KB-017 完成。
+- **执行约束**：
+  - 不调用 live LLM，不抓取新研报正文。
+  - 时间线只描述观点和证据变化，不输出买卖动作。
+  - 同机构重复覆盖必须去重，不能制造虚假共识增强。
+- **实现要点**：
+  1. 定义 `thesis_version_status`: `new / reinforced / weakened / reversed / stale / pending_fact_check`。
+  2. 按 symbol、主题和核心观点生成 `research_thesis_timeline`，保留报告日期、来源路径、质量等级和 citation audit 状态。
+  3. 输出 `consensus_drift_score` 与变化原因，区分真实新增证据和重复报告。
+  4. 生成只含摘要和路径的时间线报告，供 TA/TradeFlow/投资总控读取。
+- **验收方式**：
+  - fixture 覆盖观点强化、削弱、反转、重复覆盖、过期和缺日期六类。
+  - 乱序输入得到稳定时间线；弱来源不得覆盖强来源。
+  - 输出不含强动作词，不改变现有 decision/action_label。
+- **代码标注要求**：`# [KB-018] research_thesis_timeline`
+
+### HY-009: 半年报增量刷新、缓存失效与事实冲突审计（P2）
+- **描述**：让 HY-003 半年报事实索引能识别新披露、修订稿和知识库页面更新，安全刷新缓存并标记跨版本事实冲突。
+- **优先级**：P2
+- **状态**：ready — 批次内依赖 HY-008；仅在半年报链路验收 PASS 后执行
+- **前置条件**：HY-003、HY-005、HY-008 完成。
+- **执行约束**：
+  - 只读本地知识库，不写生产数据库。
+  - 不联网抓取、不调用 live LLM。
+  - 冲突未消解时必须降级为待复核，禁止静默采用较新的任意值。
+- **实现要点**：
+  1. 基于页面 mtime/content hash/report_period/disclosure_date 判断新增、修订、过期和删除。
+  2. 缓存键加入 schema/version，损坏或协议升级时可重建。
+  3. 对同报告期营收、利润、现金流、毛利率等冲突输出 `fact_conflict_flags` 和来源路径。
+  4. 生成增量审计摘要，说明刷新数量、冲突数量、失效缓存和待 Tree Work 复核项。
+- **验收方式**：
+  - fixture 覆盖新增、修订、删除、缓存损坏、同周期冲突和无变化六类。
+  - 重复执行幂等；无变化不重建全量索引。
+  - 冲突事实不会进入 HAS_DATA 强结论路径。
+- **代码标注要求**：`# [HY-009] half_year_incremental_refresh`
+
+### V-014: 真实本地知识库只读 smoke 与研报主线验收日报（P2）
+- **描述**：在 fixture 验收之后，对 `~/Documents/knowledge/` 做一次只读 smoke，验证真实研报/半年报能否贯穿索引、共识、反证、报告区块和 briefing 契约。
+- **优先级**：P2
+- **状态**：ready — 批次内依赖 KB-018/HY-009；作为本批次最终验收
+- **前置条件**：HY-008、HY-009、KB-016、KB-017、KB-018 完成。
+- **执行约束**：
+  - 只读真实知识库，不修改 Tree Work 页面，不写生产数据库。
+  - 不调用 live LLM，不触发完整 TA，不联网补数据。
+  - 真实目录不可用时必须失败并写明路径/权限原因，不能用 fixture 冒充真实验收。
+- **实现要点**：
+  1. 抽样至少覆盖多研报同股、已有半年报、无半年报和过期知识四类股票。
+  2. 统计观点/事实分离覆盖率、citation 完整率、事实冲突率、待验证率和缓存新鲜度。
+  3. 验证 TA/TradeFlow/IC 输出字段可消费，但不要求调用 LLM 生成新结论。
+  4. 生成 `docs/knowledge_reports/research_mainline_acceptance-YYYY-MM-DD.md`，列出通过项、阻塞项和下一阶段建议。
+- **验收方式**：
+  - 报告明确区分 fixture PASS 与真实知识库 PASS。
+  - 每个失败样本带来源路径和失败分类，不泄露长研报正文。
+  - 验收不新增强动作词，不改变历史报告动作语义。
+- **代码标注要求**：`# [V-014] research_mainline_live_smoke`
 
 ## B. 待办
 
