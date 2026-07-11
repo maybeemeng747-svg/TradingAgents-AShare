@@ -22,15 +22,20 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-10）
+### 当前执行队列（2026-07-11）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-1. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done）。
-2. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done）。
-3. `KB-015`：研报观点/事实/预测/风险分离与 TA 摘要索引（P1，done）。
-4. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，done — 待外层 commit）。
-5. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
+1. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，in_progress）。
+2. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，in_progress）。
+3. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，in_progress）。
+4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，in_progress）。
+5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，in_progress）。
+6. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，in_progress；批次内依赖 HY-004）。
+7. `HY-008`：半年报知识链路端到端回放验收（P2，in_progress；批次内依赖 HY-004/005/006/007）。
+8. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
+
+> 本批次按上述依赖顺序执行；任一任务失败时自动循环停止，禁止绕过失败项继续做下游验收。
 
 ### 历史任务总表（按创建顺序）
 
@@ -185,11 +190,11 @@
 149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，done，依赖 KB-002/KB-012 ✓）。
 150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done，依赖 HY-001/KB-005/KB-012 ✓）。
 151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done，依赖 HY-001/KB-010 ✓）。
-152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，blocked — 等 HY-003 完成）。
-153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，blocked — 等 HY-003 完成）。
-154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，blocked — 等 HY-003 完成）。
-155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，blocked — 等 HY-004 完成）。
-156. `HY-008`：半年报知识链路端到端回放验收（P2，blocked — 等 HY-004/HY-005/HY-006/HY-007 完成）。
+152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，in_progress，依赖 HY-003/KB-003/REPORT-UX-004 ✓）。
+153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，in_progress，依赖 HY-003/KB-007/KB-009 ✓）。
+154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，in_progress，依赖 HY-003/H-017/KB-004 ✓）。
+155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，in_progress，批次内依赖 HY-004）。
+156. `HY-008`：半年报知识链路端到端回放验收（P2，in_progress，批次内依赖 HY-004/HY-005/HY-006/HY-007）。
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，done — commit f06793e + b638dca，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
@@ -202,8 +207,8 @@
 166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
 167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
 168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py` + `scripts/research_fact_opinion_index.py` + `tests/test_kb015_research_fact_opinion_index.py`（54 tests）+ `docs/knowledge_reports/research_fact_opinion_index-2026-07-11.md`，依赖 KB-014/KB-003/HY-001 ✓）。
-169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，blocked — 等 KB-015 完成）。
-170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，blocked — 等 KB-015/HY-003 完成）。
+169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，in_progress，依赖 KB-015/KB-007/KB-009 ✓）。
+170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，in_progress，依赖 KB-015/HY-003/KB-014 ✓）。
 
 ### 数据源治理候选队列
 
@@ -4969,7 +4974,7 @@
 ### HY-004: TA 报告接入“半年报事实对照”区块（P1）
 - **描述**：TA 分析报告中新增“半年报事实对照”区块，把 Tree Work 半年报事实作为背景证据展示，但不越权改变强动作门禁。
 - **优先级**：P1
-- **状态**：blocked — 等 HY-003 完成
+- **状态**：ready
 - **前置条件**：HY-003、KB-003、REPORT-UX-004 完成。
 - **执行约束**：
   - 本地知识只能作为背景补充，不得替代行情/资金/公告原文。
@@ -4989,7 +4994,7 @@
 ### HY-005: 旧研报观点 vs 半年报事实反证检测（P1）
 - **描述**：检测 Tree Work 旧研报/评分表中的核心观点是否被最新半年报事实支持、削弱或打脸，形成“反证提醒”。
 - **优先级**：P1
-- **状态**：blocked — 等 HY-003 完成
+- **状态**：ready
 - **前置条件**：HY-003、KB-007、KB-009 完成。
 - **执行约束**：
   - 不做投资结论，只做证据一致性标注。
@@ -5009,7 +5014,7 @@
 ### HY-006: TradeFlow/昊天候选接入半年报因子与降权规则（P1）
 - **描述**：让昊天左侧候选和 TradeFlow 候选展示半年报事实摘要，并在半年报事实明显削弱逻辑时降低候选优先级。
 - **优先级**：P1
-- **状态**：blocked — 等 HY-003 完成
+- **状态**：ready
 - **前置条件**：HY-003、H-017、KB-004 完成。
 - **执行约束**：
   - 半年报知识不能单独把弱候选提升为主候选。
@@ -5029,7 +5034,7 @@
 ### HY-007: investment-controller 半年报 briefing payload 与去噪规则（P2）
 - **描述**：让 investment-controller 的盘前/盘后 briefing 能读取半年报事实摘要和反证提醒，但只做调度提醒，不替 TA 下结论。
 - **优先级**：P2
-- **状态**：blocked — 等 HY-004 完成
+- **状态**：ready — 批次内依赖 HY-004；若前置失败，自动循环必须停止
 - **前置条件**：HY-004、IC-TA-004、KB-006 完成。
 - **执行约束**：
   - 不直接输出补仓/清仓等动作。
@@ -5049,7 +5054,7 @@
 ### HY-008: 半年报知识链路端到端回放验收（P2）
 - **描述**：端到端验收 Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → investment-controller briefing 的整条链路。
 - **优先级**：P2
-- **状态**：blocked — 等 HY-004/HY-005/HY-006/HY-007 完成
+- **状态**：ready — 批次内依赖 HY-004/HY-005/HY-006/HY-007；仅在前置全部 PASS 后执行
 - **前置条件**：HY-004、HY-005、HY-006、HY-007 完成。
 - **执行约束**：
   - fixture/dry-run，禁止 live LLM。
@@ -5193,7 +5198,7 @@
 ### KB-016: 多研报一致性/分歧矩阵与关注度去重回放（P1）
 - **描述**：当多份研报涉及同一只股票时，聚合它们的一致性、分歧点、过期风险和重复覆盖度，形成“研报共识/分歧矩阵”。
 - **优先级**：P1
-- **状态**：blocked — 等 KB-015 完成
+- **状态**：ready
 - **前置条件**：KB-015、KB-007、KB-009 完成。
 - **执行约束**：
   - 不把“多份研报提及”直接等同于买入信号。
@@ -5213,7 +5218,7 @@
 ### KB-017: 研报观点 vs 公告/半年报事实 citation 审计（P1）
 - **描述**：用 KB-015 的研报观点结构和 HY-003 的半年报事实表做交叉审计，标记“已被事实支持/削弱/打脸/仍待验证”的观点。
 - **优先级**：P1
-- **状态**：blocked — 等 KB-015/HY-003 完成
+- **状态**：ready
 - **前置条件**：KB-015、HY-003、KB-014 完成。
 - **执行约束**：
   - 只做证据一致性审计，不输出交易动作。
