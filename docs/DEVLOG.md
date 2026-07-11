@@ -1,5 +1,104 @@
 # 修改日志
 
+## 2026-07-11 | HY-002 半年报资料优先队列与 Tree Work 补录任务包
+
+- **执行者**：OpenCode
+- **任务**：HY-002 — 半年报资料优先队列与 Tree Work 补录任务包（P1）
+- **类型**：feature / read-only aggregation
+- **状态**：✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-001 已建立半年报 Tree Work 输出协议与 lint 规则，KB-013 提供了共享半年报
+  fixture 基线，KB-012 提供了 Tree Work 任务包框架。
+- 半年报季需要把持仓/观察仓/候选的半年报补录需求**合并为一份按优先级排序的
+  可执行任务包**，方便 OpenClaw / Tree Work 直接复制执行。
+- HY-002 在 HY-001 lint + KB-007 研究关注度之上，按"持仓 > 观察仓 > 昊天主候选
+  > TradeFlow 主候选 > 研报关注度高但知识过期"五层优先级生成补录队列。
+
+### 改动文件
+
+- `tradingagents/dataflows/half_year_task_pack.py`（新增，`# [HY-002] half_year_task_pack`）—
+  核心模块（纯标准库 + 复用 HY-001/KB-002/KB-007 只读解析）：
+  - **5 层优先级枚举**：`P1_HOLDINGS / P2_OBSERVATION / P3_HAOTIAN /
+    P4_TRADEFLOW / P5_STALE_ATTENTION`。
+  - **HalfYearTaskItem dataclass**：symbol/name/priority_tier/reason/missing_fields/
+    suggested_source_type/existing_page/action/sources/extra。
+  - **HalfYearTaskPack dataclass**：按层级分组、排序、序列化。
+  - **符号归一化**：`_bare_code` / `_symbols_match`（复用 KB-003 匹配口径）。
+  - **symbol → page 索引**：`_build_symbol_page_index` 从 HY-001 lint 结果 +
+    KB-001 frontmatter 构建 bare_code → pages 映射；lint 不可用时回退到直接扫描。
+  - **任务分类**：`_classify_symbol` 判断已有半年报页（add_fields）vs 无页
+    （ingest_new）vs 非半年报页（ingest_new 新建专属页）。
+  - **去重**：tier 内按 bare_code 去重 + 跨 tier 高优先不重复。
+  - **KB-007 stale attention 层**：关注度 score≥1.5 且有 stale_mention 的 A 股
+    symbol 自动进入 P5 层。
+  - **报告渲染**：`render_half_year_task_pack_report` 产出 Markdown 报告
+    （概览 / 输入统计 / 上游摘要 / 分层统计 / 补录任务 / ingest 模板 / 执行顺序 /
+    免责声明），**不含长原文、不含强买卖词**。
+- `scripts/half_year_task_pack.py`（新增）— CLI：
+  - 支持 `--holdings/--observation/--haotian/--tradeflow` 逗号分隔 symbol 列表。
+  - 支持 `--from-db` 从 TradeFlow DB 只读读取观察仓/候选。
+  - 支持 `--json` / `--stdout` / `--output` / `--no-attention`。
+  - 双重门禁：不调用 LLM、不写知识库、不输出交易建议。
+- `tests/test_hy002_half_year_task_pack.py`（新增，60 tests）— 完整测试套件：
+  - 数据类序列化与排序 / 符号归一化与匹配 / HY-001 字段缺口识别；
+  - **五类验收 fixture**：持仓（add_fields 缺报告期）/ 观察仓（合格页复核）/
+    候选池（事实观点混用）/ 知识缺失（ingest_new）/ 知识过期（stale 标记）；
+  - 优先级排序（P1 > P2 > P3 > P4）/ 去重（tier 内 + 跨 tier）；
+  - 空库 / 缺根目录 / 无输入降级；
+  - 报告渲染（结构 / 无强动作词 / 无长原文 / ingest 模板 / JSON 可序列化 /
+    免责声明）；
+  - 只读安全性（不修改 / 不新增文件）；
+  - KB-007 stale attention 层；
+  - 向后兼容（不影响 KB-012 / HY-001 lint）；
+  - CLI 子进程冒烟（help / fixture kb / json / write file / 无强动作词）。
+- `docs/knowledge_reports/half_year_tree_work_tasks-2026-07-11.md`（生成）—
+  fixture dry-run 示例报告。
+- `docs/TASKS.md`（修改）— HY-002 标记为 done。
+
+### 设计要点
+
+1. **第一性原理**：用户问题是"半年报季需要知道哪些标的的资料最该先补"。
+   最小事实集合 = 持仓/观察仓/候选列表 + 知识库已有半年报页的 HY-001 字段缺口。
+   HY-002 只钉住优先级和字段缺口，不写规则、不调 LLM。
+2. **剃刀定律**：纯标准库 dataclass，复用 HY-001 lint / KB-002 / KB-007 只读
+   解析；输入列表接受 dict 或 str，不强制 DB 依赖。
+3. **对已有页输出"补字段"而非"新建"**：`_classify_symbol` 判断页面是否为
+   半年报类型，已有半年报页 → `add_fields`；无页或非半年报页 → `ingest_new`。
+4. **不输出交易建议**：报告经强动作词扫描（买入/卖出/加仓/减仓/满仓/清仓等），
+   全部通过。
+5. **不复制研报原文**：报告只含 symbol/字段缺口/路径/简短原因，经原文段落
+   断言验证。
+
+### 验收对照
+
+| 验收项 | 结果 |
+|---|---|
+| fixture 覆盖持仓/观察仓/候选池/知识缺失/知识过期五类 | ✅ `TestFiveFixtureCategories` 6 tests |
+| 生成报告不含长原文 | ✅ `test_report_no_long_original_text` |
+| 生成报告不含强买卖词 | ✅ `test_report_no_strong_action_words` |
+| 输出可被 OpenClaw/Tree Work 直接复制执行 | ✅ ingest 模板 + 字段缺口 + 建议来源类型 |
+| 只读 TA 数据库和 ~/Documents/knowledge/ | ✅ `TestReadOnlySafety` 2 tests |
+| 不抓取付费研报正文 | ✅ 无网络/LLM 调用 |
+| 不输出交易建议 | ✅ 免责声明 + 无强动作词 |
+| 对已有 wiki 页输出"补字段"不重复新建 | ✅ `_classify_symbol` add_fields vs ingest_new |
+
+### 测试结果
+
+- `pytest tests/test_hy002_half_year_task_pack.py` — **60 passed**
+- 回归：HY-001 + KB-005 + KB-012 + KB-013 — **338 passed**
+- 回归：KB-007 + KB-014 + KB-010 — **224 passed**
+
+### 依赖
+
+- 前置：HY-001 ✓（半年报 lint 契约）、KB-005 ✓（tree work backlog）、
+  KB-012 ✓（tree work task pack）、KB-013 ✓（半年报 fixture 基线）
+- 后续受益：HY-003（半年报事实表 provider）、HY-004（TA 报告半年报区块）、
+  HY-005（事实反证检测）
+
+---
+
 ## 2026-07-10 | PLAYBOOK-001 上车—在车上—下车战法字段契约与状态枚举
 
 - **执行者**：OpenCode
@@ -11845,3 +11944,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/PLAYBOOK-001-20260710-123455/
+
+## 2026-07-11 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-002 - 半年报资料优先队列与 Tree Work 补录任务包（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-002-20260711-round1.txt
+- **Run archive**: docs/task_runs/HY-002-20260711-200216/
