@@ -470,6 +470,12 @@ export function buildFixtureCandidate(opts: FixtureCandidateOptions = {}): Trade
         local_knowledge_summary: '',
         local_knowledge_detail: {},
         needs_tree_work_research: false,
+        // [HY-006] tradeflow_half_year_factor — NO_FACTS semantics: zero/empty.
+        half_year_fact_score: 0,
+        half_year_fact_summary: '',
+        half_year_risk_flags: [],
+        half_year_fact_detail: {},
+        needs_research_review: false,
         // [KB-011] knowledge_contract_ui — research attention defaults
         // (NORMAL_NO_DATA semantics: zero/empty, never an error).
         research_attention_score: 0,

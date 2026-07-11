@@ -131,6 +131,13 @@ class MandateEvidencePacket:
     # industry / company layers. Stays an empty dict when no knowledge lookup
     # was performed; never used to inflate tier or strong action gate.
     local_knowledge_summary: Dict[str, Any] = field(default_factory=dict)
+    # [HY-006] tradeflow_half_year_factor — half-year report fact summary
+    # injected onto the three-layer packet so the candidate detail UI / daily
+    # report can render "半年报事实：报告期/支持/削弱/打脸/风险" alongside the
+    # policy / industry / company layers. Stays an empty dict when no
+    # half-year lookup was performed; never used to inflate confidence /
+    # needs_manual_research / tier / strong action gate.
+    half_year_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +164,7 @@ class MandateEvidencePacket:
             "confidence": self.confidence,
             "confidence_reason": self.confidence_reason,
             "local_knowledge_summary": dict(self.local_knowledge_summary),  # [KB-004]
+            "half_year_summary": dict(self.half_year_summary),  # [HY-006]
         }
 
 
@@ -358,6 +366,8 @@ def build_evidence_packet(
     topic_entry: Optional[Any] = None,
     raw_evidence: Optional[dict] = None,
     local_knowledge_result: Optional[Any] = None,
+    half_year_facts_result: Optional[Any] = None,
+    half_year_thesis_result: Optional[Any] = None,
 ) -> MandateEvidencePacket:
     """Build a :class:`MandateEvidencePacket` from a candidate dict.
 
@@ -384,6 +394,14 @@ def build_evidence_packet(
         detail UI can render "本地知识命中：公司/主题/产业链角色/风险".
         ``None`` leaves it as an empty dict. The summary never inflates the
         packet's confidence or ``needs_manual_research`` flag.
+    half_year_facts_result
+        [HY-006] Optional HY-003 ``HalfYearFactsQueryResult`` (or compatible
+        dict / duck-typed object). Combined with ``half_year_thesis_result``
+        to populate ``half_year_summary``. ``None`` leaves it empty.
+    half_year_thesis_result
+        [HY-006] Optional HY-005 ``ThesisFactCheckResult`` (or compatible
+        dict / duck-typed object). Carries the contradiction / weakened /
+        supported verdict that drives downgrade reasons.
     """
     topic = _resolve_topic(candidate)
     symbol = candidate.get("symbol", "")
@@ -518,6 +536,25 @@ def build_evidence_packet(
         except Exception:
             local_knowledge_summary_dict = {}
 
+    # [HY-006] tradeflow_half_year_factor — 把半年报事实因子聚合到证据包。
+    # 与 KB-004 同口径：只读附加，绝不影响 confidence /
+    # needs_manual_research / 强动作门禁；正向上限远低于本地知识命中分，
+    # 无法把弱技术候选提升为主候选。
+    half_year_summary_dict: Dict[str, Any] = {}
+    if half_year_facts_result is not None or half_year_thesis_result is not None:
+        try:
+            from tradingagents.dataflows.half_year_factor_score import (
+                compute_half_year_factor_score as _hy006_score,
+            )
+            half_year_summary_dict = _hy006_score(
+                half_year_facts_result,
+                half_year_thesis_result,
+                candidate_type=candidate.get("candidate_type", "") or "",
+                mandate_topic=topic,
+            )
+        except Exception:
+            half_year_summary_dict = {}
+
     return MandateEvidencePacket(
         symbol=symbol,
         name=name,
@@ -542,6 +579,7 @@ def build_evidence_packet(
         confidence=confidence,
         confidence_reason=confidence_reason,
         local_knowledge_summary=local_knowledge_summary_dict,
+        half_year_summary=half_year_summary_dict,  # [HY-006]
     )
 
 
@@ -595,6 +633,7 @@ def build_evidence_packets_for_candidates(
     topic_registry: Optional[Any] = None,
     raw_evidence_by_symbol: Optional[Dict[str, dict]] = None,
     local_knowledge_by_symbol: Optional[Dict[str, Any]] = None,
+    half_year_by_symbol: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, MandateEvidencePacket]:
     """Build packets for a list of candidate dicts, keyed by symbol.
 
@@ -605,6 +644,9 @@ def build_evidence_packets_for_candidates(
     ``local_knowledge_by_symbol`` ([KB-004]) maps ``symbol →
     LocalKnowledgeQueryResult`` so each packet can carry a local-knowledge
     hit summary alongside the three-layer evidence.
+    ``half_year_by_symbol`` ([HY-006]) maps ``symbol → (facts_result,
+    thesis_result)`` tuple so each packet can carry a half-year fact
+    summary. Either element of the tuple may be ``None``.
     """
     packets: Dict[str, MandateEvidencePacket] = {}
     for cand in candidates:
@@ -622,11 +664,22 @@ def build_evidence_packets_for_candidates(
         local_kb = None
         if local_knowledge_by_symbol:
             local_kb = local_knowledge_by_symbol.get(symbol)
+        half_facts = None
+        half_thesis = None
+        if half_year_by_symbol:
+            hy = half_year_by_symbol.get(symbol)
+            if isinstance(hy, (tuple, list)) and len(hy) == 2:
+                half_facts, half_thesis = hy[0], hy[1]
+            elif hy is not None:
+                # 容错：单独传入 facts_result。
+                half_facts = hy
         packets[symbol] = build_evidence_packet(
             cand,
             topic_entry=topic_entry,
             raw_evidence=raw_ev,
             local_knowledge_result=local_kb,
+            half_year_facts_result=half_facts,
+            half_year_thesis_result=half_thesis,
         )
     return packets
 

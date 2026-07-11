@@ -410,6 +410,9 @@ def _enrich_observation_items_with_knowledge(items: list[dict]) -> list[dict]:
         _enrich_candidates_with_research_attention(items)
         # KB-004 local knowledge batch (per-item query, handles its own root).
         _enrich_candidates_with_local_knowledge(items)
+        # [HY-006] tradeflow_half_year_factor — observation items also render
+        # the half-year block when available; best-effort, never blocks reads.
+        _enrich_candidates_with_half_year(items)
     except Exception:
         return items
     return items
@@ -588,6 +591,146 @@ def _enrich_candidates_with_local_knowledge(items: List[dict]) -> List[dict]:
             continue
         knowledge_result = _query_local_knowledge_for_candidate(it, knowledge_root)
         _apply_local_knowledge_to_item(it, knowledge_result)
+    return items
+
+
+# [HY-006] tradeflow_half_year_factor
+def _query_half_year_for_candidate(item: dict, knowledge_root: str):
+    """按候选 symbol 只读查询半年报事实表（HY-003）。
+
+    查询异常返回 ``None``（而非 FAILED 占位），让
+    :func:`compute_half_year_factor_score` 走 NO_FACTS 语义，避免把基础
+    设施故障误判为研究缺口。命中维度优先级：symbol > name。
+    """
+    if not knowledge_root:
+        return None, None
+    symbol = (item.get("symbol") or "").strip() or None
+    name = (item.get("name") or "").strip() or None
+    if not any([symbol, name]):
+        return None, None
+    facts_result = None
+    thesis_result = None
+    try:
+        from tradingagents.dataflows.half_year_facts_provider import (
+            query_half_year_facts as _hy003_query,
+        )
+        facts_result = _hy003_query(knowledge_root, symbol=symbol, name=name)
+    except Exception:
+        facts_result = None
+    # 只有拿到可用事实时才跑 HY-005 反证，避免无意义的 KB-015 索引构建。
+    if facts_result is not None and _facts_result_has_data(facts_result):
+        try:
+            from tradingagents.dataflows.research_fact_opinion_index import (
+                build_research_fact_opinion_index as _kb015_build,
+            )
+            from tradingagents.dataflows.thesis_fact_check import (
+                check_thesis_against_facts as _hy005_check,
+            )
+            opinion_index = _kb015_build(knowledge_root, symbol=symbol, name=name)
+            thesis_result = _hy005_check(
+                opinion_index, facts_result, symbol=symbol or "", name=name or "",
+            )
+        except Exception:
+            thesis_result = None
+    return facts_result, thesis_result
+
+
+def _facts_result_has_data(facts_result) -> bool:
+    """[HY-006] duck-typing 判断 HY-003 结果是否有可用事实页。"""
+    try:
+        status = getattr(facts_result, "status", None)
+        if status is None and isinstance(facts_result, dict):
+            status = facts_result.get("status")
+        if status not in ("HAS_DATA", "has_data"):
+            return False
+        pages = getattr(facts_result, "pages", None)
+        if pages is None and isinstance(facts_result, dict):
+            pages = facts_result.get("pages")
+        return bool(pages)
+    except Exception:
+        return False
+
+
+# [HY-006] tradeflow_half_year_factor
+def _apply_half_year_to_item(
+    item: dict,
+    facts_result,
+    thesis_result,
+) -> dict:
+    """把单次半年报因子计算结果注入候选 item。
+
+    只读、不调用 LLM、不写 DB；``half_year_fact_score`` 仅作为研究优先级 /
+    解释信息，**不改变** tier / action / 强动作门禁。无事实时填充空结构
+    （score=0），符合 NO_FACTS 语义。失败不变成研究缺口（与 KB-004 FAILED
+    语义一致）。
+    """
+    try:
+        from tradingagents.dataflows.half_year_factor_score import (
+            compute_half_year_factor_score as _hy006_score,
+        )
+    except Exception:
+        item.setdefault("half_year_fact_score", 0.0)
+        item.setdefault("half_year_fact_summary", "")
+        item.setdefault("half_year_risk_flags", [])
+        item.setdefault("half_year_fact_detail", {})
+        item.setdefault("needs_research_review", False)
+        return item
+
+    score_dict = _hy006_score(
+        facts_result,
+        thesis_result,
+        candidate_type=item.get("candidate_type", ""),
+        mandate_topic=item.get("mandate_topic", ""),
+    )
+    item["half_year_fact_score"] = score_dict["half_year_fact_score"]
+    item["half_year_fact_summary"] = score_dict["half_year_fact_summary"]
+    item["half_year_risk_flags"] = score_dict["half_year_risk_flags"]
+    item["half_year_fact_detail"] = score_dict
+    item["needs_research_review"] = bool(score_dict.get("needs_research_review"))
+    # [HY-006] 降权原因追加到候选 downgrade_reasons（不覆盖已有项，去重）。
+    downgrade = score_dict.get("downgrade_reasons") or []
+    if downgrade:
+        existing = list(item.get("downgrade_reasons") or [])
+        for reason in downgrade:
+            if reason and reason not in existing:
+                existing.append(reason)
+        item["downgrade_reasons"] = existing
+    return item
+
+
+# [HY-006] tradeflow_half_year_factor
+def _enrich_candidate_with_half_year(item: dict) -> dict:
+    """单条候选注入半年报因子（[HY-006]）。
+
+    失败 / 无 knowledge_root 时静默退化为空结构，绝不阻塞候选读取主链路。
+    """
+    symbol = item.get("symbol") or ""
+    if not symbol:
+        return _apply_half_year_to_item(item, None, None)
+    knowledge_root = _resolve_knowledge_root()
+    if not knowledge_root:
+        return _apply_half_year_to_item(item, None, None)
+    facts_result, thesis_result = _query_half_year_for_candidate(item, knowledge_root)
+    return _apply_half_year_to_item(item, facts_result, thesis_result)
+
+
+# [HY-006] tradeflow_half_year_factor
+def _enrich_candidates_with_half_year(items: List[dict]) -> List[dict]:
+    """批量注入半年报因子（[HY-006]）。
+
+    与 KB-004 同口径逐项查询；失败项降级为空结构，绝不阻塞候选读取主链路。
+    半年报查询（HY-003）按 (symbol, name) 过滤扫描，TradeFlow 候选池规模
+    （通常 < 20 只）下开销可接受。
+    """
+    if not items:
+        return items
+    knowledge_root = _resolve_knowledge_root()
+    for it in items:
+        if not knowledge_root or not (it.get("symbol") or ""):
+            _apply_half_year_to_item(it, None, None)
+            continue
+        facts_result, thesis_result = _query_half_year_for_candidate(it, knowledge_root)
+        _apply_half_year_to_item(it, facts_result, thesis_result)
     return items
 
 
@@ -850,6 +993,10 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
         # 只读、不调用 LLM、不改变 tier / action 门禁；过期/低置信命中不加分。
         candidate_items = _enrich_candidates_with_local_knowledge(candidate_items)
 
+        # [HY-006] tradeflow_half_year_factor — 注入半年报事实因子与降权原因。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；正向上限低无法提升主候选。
+        candidate_items = _enrich_candidates_with_half_year(candidate_items)
+
         # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
         candidate_items = _apply_knowledge_calibration_explain(candidate_items)
 
@@ -948,6 +1095,10 @@ def get_candidates(
         # 只读、不调用 LLM、不改变 tier / action 门禁；过期/低置信命中不加分。
         items = _enrich_candidates_with_local_knowledge(items)
 
+        # [HY-006] tradeflow_half_year_factor — 注入半年报事实因子与降权原因。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；正向上限低无法提升主候选。
+        items = _enrich_candidates_with_half_year(items)
+
         # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
         items = _apply_knowledge_calibration_explain(items)
 
@@ -1019,6 +1170,10 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         # [KB-004] tradeflow_knowledge_score — 候选详情也注入本地知识命中分与
         # 证据摘要（命中页路径 / 更新时间 / 风险提示），便于前端 drawer 展示。
         detail = _enrich_candidate_with_local_knowledge(detail)
+
+        # [HY-006] tradeflow_half_year_factor — 候选详情注入半年报事实因子与
+        # 降权原因（报告期 / 支持或削弱 / 风险标记），便于前端 drawer 展示。
+        detail = _enrich_candidate_with_half_year(detail)
 
         return {
             "status": "ok",

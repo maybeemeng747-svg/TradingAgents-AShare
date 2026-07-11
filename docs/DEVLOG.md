@@ -1,5 +1,96 @@
 # 修改日志
 
+## 2026-07-11 | HY-006 TradeFlow/昊天候选接入半年报因子与降权规则
+
+- **执行者**:OpenCode
+- **任务**:HY-006 — TradeFlow/昊天候选接入半年报因子与降权规则（P1）
+- **类型**:feature / tradeflow half-year factor
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-003（半年报事实 provider）、HY-005（观点-事实反证检测）、H-017（昊天三层
+  证据包）、KB-004（本地知识命中分接入候选）均已就绪，但 TradeFlow 候选和昊天
+  左侧候选还无法展示半年报事实摘要，也无法在事实明显削弱逻辑时降低候选优先级。
+- HY-006 把 HY-003 事实表 + HY-005 反证检测结果聚合成一个扁平因子字典，注入
+  TradeFlow 候选详情 / 昊天证据包 / 前端 drawer，实现"事实打脸→降权+解释"、"事实
+  支持→提高研究优先级但不改动作档位"、"无数据→只标研究缺口不惩罚"三类语义。
+- 验收头条：半年报知识不能单独把弱候选提升为主候选（正向上限 1.0 << 本地知识
+  命中分上限 3.0）；强动作门禁（action_tier / tier / action）完全不动；失败不变成
+  研究缺口（FAILED 时 needs_research_review=False，与 KB-004 语义一致）。
+
+### 改动文件
+
+- `tradingagents/dataflows/half_year_factor_score.py`（新增，`# [HY-006]
+  tradeflow_half_year_factor`）— 半年报因子评分核心模块。主入口
+  ``compute_half_year_factor_score(facts_result, thesis_result, ...)``
+  接收 HY-003 + HY-005 结果（支持 dataclass 与 dict duck-typing），返回扁平字典
+  （``half_year_fact_score`` / ``half_year_fact_summary`` /
+  ``half_year_risk_flags`` / ``needs_research_review`` / ``downgrade_reasons``
+  / ``research_priority_hint`` / ``status`` / ``errors``）。分数区间 [-3.0, +1.0]：
+  contradicted_strong=-3.0，contradicted_moderate=-2.0，weakened_multi=-1.0，
+  weakened_single=-0.5，supported/有新鲜事实=+1.0（上限封顶），无数据/insufficient=0。
+  辅助审计函数 ``has_forbidden_action_words`` 防回归强动作词。
+- `tradingagents/tradeflow/mandate_evidence_packet.py`（修改）—
+  ``MandateEvidencePacket`` 新增 ``half_year_summary`` 字段（与 KB-004
+  ``local_knowledge_summary`` 同构，不影响 confidence /
+  needs_manual_research）。``build_evidence_packet`` 新增
+  ``half_year_facts_result`` / ``half_year_thesis_result`` 可选参数；
+  ``build_evidence_packets_for_candidates`` 新增 ``half_year_by_symbol``
+  批量透传（symbol → (facts, thesis) tuple）。
+- `api/services/tradeflow_service.py`（修改）— 新增
+  ``_query_half_year_for_candidate``（按 symbol 只读查 HY-003 + HY-005，只在有
+  事实时跑反证）、``_apply_half_year_to_item``（注入因子字段 + 追加降权原因到
+  ``downgrade_reasons``）、``_enrich_candidate_with_half_year``（单条）、
+  ``_enrich_candidates_with_half_year``（批量）。在 3 个候选读取入口
+  （daily_plan / candidates / candidate_detail）于 KB-004 之后、TF-KB-001 校准
+  之前调用；observation items 同步注入（保持 KB-004 一致性）。
+- `api/tradeflow_schemas.py`（修改）— ``TradeFlowCandidateItem`` 新增
+  ``half_year_fact_score`` / ``half_year_fact_summary`` / ``half_year_risk_flags``
+  / ``half_year_fact_detail`` / ``needs_research_review``；``MandateEvidencePacketItem``
+  新增 ``half_year_summary``。
+- `frontend/src/types/index.ts`（修改）— ``TradeFlowCandidateItem`` 新增
+  half_year 五字段。
+- `frontend/src/utils/tradeflowFocus.ts`（修改）— 空候选默认值补 half_year 字段。
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx`（修改）— 新增"半年报事实"
+  渲染区块：因子分 badge、报告期、反证状态（打脸/削弱/支持/数据不足）、"需 Tree Work
+  复核"标签、摘要、降权原因、风险标记。仅在存在信号时显示（NO_FACTS 不渲染空面板）。
+- `tests/test_hy006_tradeflow_half_year_factor.py`（新增）— **46 tests**，覆盖：
+  contradicted/weakened/supported/insufficient/no_facts/FAILED/None 场景、正向分上限
+  封顶（强知识不能升主候选）、needs_research_review 规则、FAILED 不变缺口、
+  duck-typing dict 输入、MandateEvidencePacket 集成、批量透传、confidence 不被
+  inflate、TradeFlow enrich 单条/批量/降权追加去重/KB-004 字段不冲突/action_tier
+  不动、Pydantic schema 字段与序列化回读、真实 fixture KB 端到端、只读不写 DB、
+  无强买卖词。
+
+### 关键设计决策
+
+1. **正向上限 1.0 << 本地知识命中分上限 3.0**：结构性保证"半年报是佐证不是
+   发动机"，即使事实强力支持也只能"提高研究优先级"，不能把弱技术候选抬成主候选。
+   ``action_tier_scorer`` 的 7 个评分因子没有一个读取本模块字段（物理隔离）。
+2. **只读富化，不写 DB**：与 KB-004 同口径，half_year 字段在读取时实时计算，
+   不持久化到 ``tradeflow_candidates`` 表，避免 schema 迁移和 save_candidate 改造。
+3. **FAILED ≠ 研究缺口**：知识库缺失/解析异常是基础设施故障，``needs_research_review``
+   不触发（与 KB-004 ``needs_tree_work_research`` 在 FAILED 时的语义一致）。
+4. **只在有事实时跑 HY-005 反证**：避免无意义的 KB-015 索引构建开销；无事实直接
+   走 NO_FACTS 语义。
+
+### 测试结果
+
+- HY-006 新增测试：46 passed / 0 failed
+- HY/KB/H 组合回归（HY-006+HY-005+HY-003+KB-004+H-017+schema_scores）：280 passed / 0 failed
+- tradeflow engine + API smoke + runtime tier：144 passed / 0 failed
+- 前端 TypeScript 编译：0 errors
+- 前端 KB-011 合约测试：26 passed / 0 failed
+
+### 依赖
+
+- 前置：HY-003 ✓（半年报事实 provider）、H-017 ✓（昊天证据包）、KB-004 ✓（本地
+  知识命中分接入候选）、HY-005 ✓（观点-事实反证检测）
+- 后续受益：HY-008（半年报知识链路端到端回放验收）、HY-007（IC briefing payload）
+
+---
+
 ## 2026-07-11 | HY-005 旧研报观点 vs 半年报事实反证检测
 
 - **执行者**:OpenCode
@@ -12444,3 +12535,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-005-20260711-round1.txt
 - **Run archive**: docs/task_runs/HY-005-20260711-232608/
+
+## 2026-07-12 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-006 - TradeFlow/昊天候选接入半年报因子与降权规则（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-006-20260712-round1.txt
+- **Run archive**: docs/task_runs/HY-006-20260711-233936/

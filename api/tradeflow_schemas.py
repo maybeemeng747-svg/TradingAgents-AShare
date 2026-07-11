@@ -130,6 +130,11 @@ class TradeFlowCandidateItem(BaseModel):
     needs_tree_work_research: bool = False  # [KB-004] tradeflow_knowledge_score
     knowledge_influence_explain: List[str] = Field(default_factory=list)  # [TF-KB-001] knowledge_score_calibration
     knowledge_influence_detail: Dict[str, Any] = Field(default_factory=dict)  # [TF-KB-001] knowledge_score_calibration
+    half_year_fact_score: float = 0.0  # [HY-006] tradeflow_half_year_factor
+    half_year_fact_summary: str = ""  # [HY-006] tradeflow_half_year_factor
+    half_year_risk_flags: List[str] = Field(default_factory=list)  # [HY-006]
+    half_year_fact_detail: Dict[str, Any] = Field(default_factory=dict)  # [HY-006]
+    needs_research_review: bool = False  # [HY-006] tradeflow_half_year_factor
     created_at: str = ""
     updated_at: str = ""
 
@@ -866,6 +871,7 @@ class MandateEvidencePacketItem(BaseModel):
     confidence: str = ""
     confidence_reason: str = ""
     local_knowledge_summary: Dict[str, Any] = Field(default_factory=dict)  # [KB-004]
+    half_year_summary: Dict[str, Any] = Field(default_factory=dict)  # [HY-006] tradeflow_half_year_factor
 
 
 class MandateDailyCandidateItem(BaseModel):

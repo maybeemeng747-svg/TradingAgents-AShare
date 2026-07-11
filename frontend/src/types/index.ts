@@ -1197,6 +1197,15 @@ export interface TradeFlowCandidateItem {
     local_knowledge_summary: string  // [KB-004]
     local_knowledge_detail: Record<string, unknown>  // [KB-004]
     needs_tree_work_research: boolean  // [KB-004]
+    // [HY-006] tradeflow_half_year_factor — half-year report fact factor fields
+    // mirrored from backend ``TradeFlowCandidateItem`` so the drawer can render
+    // 半年报事实对照 (报告期 / 支持或削弱 / 风险标记 / 需 Tree Work 复核).
+    // Defaults to zero/empty when there is no half-year data (NO_FACTS semantics).
+    half_year_fact_score: number  // [HY-006]
+    half_year_fact_summary: string  // [HY-006]
+    half_year_risk_flags: string[]  // [HY-006]
+    half_year_fact_detail: Record<string, unknown>  // [HY-006]
+    needs_research_review: boolean  // [HY-006]
     // [KB-011] knowledge_contract_ui — research attention fields mirrored from
     // backend ``TradeFlowCandidateItem`` so the drawer can render 研报关注度
     // (base score + effective score + decay/overheat breakdown). Defaults to

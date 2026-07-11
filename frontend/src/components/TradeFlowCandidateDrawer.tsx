@@ -192,6 +192,34 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
         data.needs_tree_work_research ||
         localKnowledgeStatus
     )
+    // [HY-006] tradeflow_half_year_factor — half-year report fact factor derived
+    // values for the drawer block. Mirrors the KB-004 local knowledge pattern:
+    // show the block only when there is a real signal (score != 0, summary,
+    // risk flags, needs_research_review, or a fact period). Empty payload stays
+    // hidden so NORMAL_NO_DATA candidates don't render an empty half-year panel.
+    const halfYearDetail = (data.half_year_fact_detail || {}) as Record<string, unknown>
+    const halfYearStatus = String(halfYearDetail.status || '')
+    const halfYearThesisStatus = String(halfYearDetail.thesis_check_status || '')
+    const halfYearPeriod = String(halfYearDetail.fact_period || '')
+    const halfYearDataStatus = String(halfYearDetail.fact_data_status || '')
+    const halfYearRiskFlags = Array.isArray(data.half_year_risk_flags)
+        ? data.half_year_risk_flags.map(String).filter(Boolean)
+        : []
+    const halfYearDowngradeReasons = Array.isArray(halfYearDetail.downgrade_reasons)
+        ? (halfYearDetail.downgrade_reasons as unknown[]).map(String).filter(Boolean)
+        : []
+    const halfYearResearchHint = String(halfYearDetail.research_priority_hint || '')
+    const halfYearErrors = Array.isArray(halfYearDetail.errors)
+        ? (halfYearDetail.errors as unknown[]).map(String).filter(Boolean)
+        : []
+    const showHalfYear = Boolean(
+        (data.half_year_fact_score || 0) !== 0 ||
+        data.half_year_fact_summary ||
+        halfYearRiskFlags.length > 0 ||
+        data.needs_research_review ||
+        halfYearStatus === 'HAS_FACTS' ||
+        halfYearPeriod
+    )
     // [KB-011] knowledge_contract_ui — research attention breakdown + strong
     // positive gate. When the payload is empty, the helper returns
     // hasAnySignal=false so we render the NORMAL_NO_DATA empty state instead
@@ -520,6 +548,95 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                         <div className="text-[11px] font-medium text-red-600 dark:text-red-400">知识库查询异常</div>
                                         <div className="mt-1 space-y-1">
                                             {localKnowledgeErrors.slice(0, 3).map((err, i) => (
+                                                <div key={`${err}-${i}`} className="break-words text-[11px] text-red-500 dark:text-red-300">{err}</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {showHalfYear && (  // [HY-006] tradeflow_half_year_factor
+                        <div>
+                            <SectionTitle icon={FileText} title="半年报事实" />
+                            <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                    <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ${
+                                        (data.half_year_fact_score || 0) < 0
+                                            ? 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300'
+                                            : (data.half_year_fact_score || 0) > 0
+                                            ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                            : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                    }`}>
+                                        因子分 {(data.half_year_fact_score || 0).toFixed(2)}
+                                    </span>
+                                    {halfYearPeriod && (
+                                        <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                            报告期 {halfYearPeriod}
+                                        </span>
+                                    )}
+                                    {halfYearThesisStatus && (
+                                        <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ${
+                                            halfYearThesisStatus === 'contradicted'
+                                                ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                                : halfYearThesisStatus === 'weakened'
+                                                ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                                                : halfYearThesisStatus === 'supported'
+                                                ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                                : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                                        }`}>
+                                            {halfYearThesisStatus === 'contradicted' ? '事实打脸'
+                                                : halfYearThesisStatus === 'weakened' ? '事实削弱'
+                                                : halfYearThesisStatus === 'supported' ? '事实支持'
+                                                : halfYearThesisStatus === 'insufficient_data' ? '数据不足'
+                                                : halfYearThesisStatus}
+                                        </span>
+                                    )}
+                                    {data.needs_research_review && (
+                                        <span className="inline-flex items-center rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">
+                                            需 Tree Work 复核
+                                        </span>
+                                    )}
+                                </div>
+                                {halfYearDataStatus && (
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400">数据状态: {halfYearDataStatus}</div>
+                                )}
+                                {data.half_year_fact_summary && (
+                                    <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-xs leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/30 dark:text-slate-300">
+                                        {data.half_year_fact_summary}
+                                    </div>
+                                )}
+                                {halfYearResearchHint && (
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400">{halfYearResearchHint}</div>
+                                )}
+                                {halfYearDowngradeReasons.length > 0 && (
+                                    <div className="rounded-lg border border-amber-100 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-900/10">
+                                        <div className="text-[11px] font-medium text-amber-600 dark:text-amber-400">降权原因</div>
+                                        <div className="mt-1 space-y-1">
+                                            {halfYearDowngradeReasons.map((reason, i) => (
+                                                <div key={`${reason}-${i}`} className="text-[11px] text-amber-700 dark:text-amber-300">{reason}</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {halfYearRiskFlags.length > 0 && (
+                                    <div className="rounded-lg border border-orange-100 bg-orange-50/50 p-3 dark:border-orange-800 dark:bg-orange-900/10">
+                                        <div className="text-[11px] font-medium text-orange-600 dark:text-orange-400">风险标记</div>
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                            {halfYearRiskFlags.slice(0, 6).map((flag, i) => (
+                                                <span key={`${flag}-${i}`} className="inline-block max-w-full truncate rounded bg-orange-100 px-1.5 py-0.5 text-[11px] text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" title={flag}>
+                                                    {flag}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {halfYearErrors.length > 0 && (
+                                    <div className="rounded-lg border border-red-100 bg-red-50/50 p-3 dark:border-red-800 dark:bg-red-900/10">
+                                        <div className="text-[11px] font-medium text-red-600 dark:text-red-400">查询异常</div>
+                                        <div className="mt-1 space-y-1">
+                                            {halfYearErrors.slice(0, 3).map((err, i) => (
                                                 <div key={`${err}-${i}`} className="break-words text-[11px] text-red-500 dark:text-red-300">{err}</div>
                                             ))}
                                         </div>
