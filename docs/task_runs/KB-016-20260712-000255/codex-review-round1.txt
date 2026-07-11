@@ -1,0 +1,3920 @@
+Task: KB-016 - 多研报一致性/分歧矩阵与关注度去重回放（P1）
+Date: 2026-07-12_00:20:20
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f51f7-def3-7042-8c1a-566ce5b2030b
+--------
+user
+current changes
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- branch ---\\n' && git branch --show-current && printf '\\n--- read docs ---\\n' && sed -n '1,220p' docs/project-overview.md && printf '\\n--- TASKS ---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n--- DECISIONS ---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n--- DEVLOG ---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/task_runs/KB-016-20260712-000255/
+?? scripts/research_consensus_matrix.py
+?? tests/test_kb016_research_consensus_matrix.py
+?? tradingagents/dataflows/research_consensus_matrix.py
+
+--- branch ---
+local/tradingagents-custom
+
+--- read docs ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 当前产品事实（2026-07-10）
+
+项目已从单一报告生成器扩展为分层投研工作台，但产品主线应保持收敛：
+
+```text
+Tree Work 研报/半年报知识
+  -> 来源与事实审计
+  -> 昊天左侧候选
+  -> TradeFlow 少量候选池
+  -> 轻量 TA / 人工确认的完整 TA
+  -> 观察仓、盘中观察、盘后复盘
+```
+
+TradeFlow 的 `TECH_TRADE` 与 `POLICY_AMBUSH/POLICY_CONFIRM` 必须分池展示，不能把短线技术机会当作中长期昊天候选。Fast Radar、Light Research、Full TA 的运行层级也必须保持清晰：完整 TA 只能人工确认触发。
+
+本地 Tree Work 知识只作为可追溯的背景/观点证据，公告、原始财报和行情数据仍是事实与动作门禁的优先来源。所有知识命中都必须带来源路径、报告期或更新时间、来源等级和新鲜度。
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-07-11
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前执行队列（2026-07-11）
+
+> 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
+
+1. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，done — HY-004-20260711-225740，44 tests passed）。
+2. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，done — HY-005-20260711-232608，76 tests passed）。
+3. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，done — HY-006-20260711-233936，46 tests passed）。
+4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready）。
+5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，ready）。
+6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready；批次内依赖 KB-016/017）。
+7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，ready；批次内依赖 HY-004）。
+8. `HY-008`：半年报知识链路端到端回放验收（P2，ready；批次内依赖 HY-004/005/006/007）。
+9. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，ready；批次内依赖 HY-008）。
+10. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，ready；批次内依赖 KB-018/HY-009）。
+11. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
+
+> 本批次按上述依赖顺序执行；任一任务失败时自动循环停止，禁止绕过失败项继续做下游验收。
+
+### 历史任务总表（按创建顺序）
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+ 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，done — commit 62f0d46，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，done — commit b0f4c9c，依赖 DATA-021 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，done — commit eecfe9f，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，done — commit cb8b2ec，依赖 H-015 ✓）。
+  114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，done — commit defb365，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，done — commit 6f585c3，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，done，依赖 NOTIFY-002 ✓）。
+  121. `TRACK-009`：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1，done，依赖 TRACK-003/TRACK-007 ✓）。
+122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，done，依赖 TRACK-005/TRACK-007 ✓）。
+  123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，done — OpenCode 2026-06-29，7269 passed/0 failed，依赖 TF-QUALITY-004/H-014 ✓）。
+124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，done，依赖 H-015/H-016 ✓）。
+  125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，done — DATA-024-20260629-231953，依赖 DATA-022/DATA-023 ✓）。
+126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，done — REPORT-UX-003-20260630-180010，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
+127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，done，依赖 TF-OBS-005/UI-013 ✓）。
+128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，done，依赖 IC-TA-003/NOTIFY-003 ✓）。
+129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，done，依赖 V-010/V-011 ✓）。
+130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，done — AUTO-004-20260702-231123，依赖 AUTO-003/V-011 ✓）。
+131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_audit.py` + `scripts/audit_local_knowledge.py` + `tests/test_kb001_local_knowledge_audit.py` + `docs/knowledge_reports/local_knowledge_audit-2026-07-01.md`，47 tests passed）。
+132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_lint.py` + `scripts/lint_local_knowledge.py` + `docs/local_knowledge_contract.md` + `tests/test_kb002_local_knowledge_lint.py`（52 tests）+ 真实知识库 lint 报告；99 tests passed（KB-001+KB-002））。
+133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_provider.py` + `scripts/query_local_knowledge.py` + `tests/test_kb003_local_knowledge_provider.py`（83 tests）+ 接入 `data_collector.build_raw_evidence` / `evidence_contract` / `report_service.attach_report_local_knowledge` / `api/main.py` 响应顶层；7586 tests passed，无回归）。
+134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，done — commit 1b94c70，OpenCode 产出 `compute_local_knowledge_score` / `needs_tree_work_research` + `MandateEvidencePacket.local_knowledge_summary` + TradeFlow candidate/frontend enrichment + `tests/test_kb004_tradeflow_knowledge_score.py`（61 tests），KB/H 系列相关回归 222 passed）。
+135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，done — OpenCode 产出 `tradingagents/dataflows/tree_work_backlog.py` + `scripts/tree_work_backlog.py` + `tests/test_kb005_tree_work_backlog.py`（39 tests）+ `docs/knowledge_reports/tree_work_ingest_backlog-2026-07-01.md`，KB 系列 338 tests passed）。
+136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，done — OpenCode 产出 `api/services/local_knowledge_context_service.py` + `GET /v1/knowledge/local/search` + IC context `local_knowledge_hits` bucket + `controller_hints.research_review` lane + `tests/test_kb006_local_knowledge_context_api.py`（65 tests），依赖 KB-003/IC-TA-004 ✓）。
+137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，done — 实现完成，待外层 commit）。
+138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，done — 实现完成，待外层 commit）。
+139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，done — DATA-025-20260701-202937，依赖 DATA-011/DATA-023 ✓）。
+140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，done — OpenCode 产出 `tradingagents/dataflows/research_attention_decay.py` + `tests/test_kb009_research_attention_decay.py`（45 tests），依赖 KB-007 ✓）。
+141. `KB-010`：本地知识索引缓存与 freshness manifest（P1，done — OpenCode 产出 `tradingagents/dataflows/local_knowledge_cache.py` + `scripts/query_local_knowledge.py` 缓存参数 + `tests/test_kb010_local_knowledge_cache.py`（53 tests），依赖 KB-003/KB-007/KB-009 ✓）。
+142. `KB-011`：本地知识/研报关注度前端与 API 契约回归（P1，done — OpenCode 产出 `frontend/src/utils/knowledgeContract.ts` + `tests/test_kb011_knowledge_contract_ui.py`（14 tests）+ `frontend/src/utils/kb011KnowledgeContract.test.ts`（26 tests），修复 `ReportResponse` setattr/serialize 静默丢失 + 观察仓 KB schema 缺失 + 前端 research_attention 类型与渲染缺口，依赖 KB-008/KB-009 ✓）。
+143. `DATA-026`：生产库测试污染健康检查与 scheduler 启动告警（P1，done — commit dfc4460，2026-07-06 范围补审通过并完成 P2 补修，依赖 DB 污染治理脚本 ✓）。
+144. `AUTO-005`：自动开发前置检查接入 DB hygiene 与续航门禁（P1，done — commit 553366b + 8a58462，依赖 AUTO-004/DATA-026 ✓）。
+ 145. `REPORT-UX-004`：本地知识补充区块历史报告回放验收（P1，done — REPORT-UX-004-20260705-031930，依赖 KB-003/KB-008/REPORT-UX-003 ✓）。
+ 146. `TF-KB-001`：TradeFlow 本地知识分校准回放与弱候选防提升（P1，done，依赖 KB-004/KB-009 ✓）。
+147. `KB-012`：Tree Work 研报补录任务包导出（P2，done — commit 53cebbc，2026-07-06 范围补审通过，依赖 KB-002/KB-005/KB-007 ✓）。
+  148. `V-013`：Tree Work → TA → TradeFlow → investment-controller 知识链路验收（P2，done — V-013-20260705-040318，依赖 KB-006/TF-KB-001 ✓）。
+149. `HY-001`：半年报 Tree Work 输出协议扩展与 lint 规则（P1，done，依赖 KB-002/KB-012 ✓）。
+150. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done，依赖 HY-001/KB-005/KB-012 ✓）。
+151. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done，依赖 HY-001/KB-010 ✓）。
+152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，done — HY-004-20260711-225740，44 tests passed，依赖 HY-003/KB-003/REPORT-UX-004 ✓）。
+153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，done — HY-005-20260711-232608，76 tests passed，依赖 HY-003/KB-007/KB-009 ✓）。
+154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，done — HY-006-20260711-233936，46 tests passed，依赖 HY-003/H-017/KB-004 ✓）。
+155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，ready，批次内依赖 HY-004）。
+156. `HY-008`：半年报知识链路端到端回放验收（P2，ready，批次内依赖 HY-004/HY-005/HY-006/HY-007）。
+157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，done — commit f06793e + b638dca，依赖 AUTO-004 ✓）。
+158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
+159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
+160. `DATA-027`：免费研报/公告/半年报源 smoke 扩展与失败归因（P2，done — commit 559e95b + 4e7f5d3，103 tests passed，依赖 DATA-023/DATA-025 ✓）。
+161. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，done — 待外层 commit，依赖 REPORT-UX-004/KB-003 ✓）。
+162. `PLAYBOOK-001`：上车—在车上—下车战法字段契约与 API 读写闭环（P1，done — Codex review PASS，304 focused tests passed）。
+163. `PLAYBOOK-002`：计划仓位上限与上车三笔法规则引擎（P1，blocked — 战略暂停，待研报/半年报主线完成后人工释放）。
+164. `PLAYBOOK-003`：持仓拆分与机动仓/核心仓/防守仓规则引擎（P1，blocked — 等 PLAYBOOK-001/PLAYBOOK-002 完成）。
+165. `PLAYBOOK-004`：TA 报告动作语义接入战法阶段与仓位建议（P1，blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成）。
+166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
+167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
+168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py` + `scripts/research_fact_opinion_index.py` + `tests/test_kb015_research_fact_opinion_index.py`（54 tests）+ `docs/knowledge_reports/research_fact_opinion_index-2026-07-11.md`，依赖 KB-014/KB-003/HY-001 ✓）。
+169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready，依赖 KB-015/KB-007/KB-009 ✓）。
+170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，ready，依赖 KB-015/HY-003/KB-014 ✓）。
+171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready，批次内依赖 KB-016/KB-017）。
+172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，ready，批次内依赖 HY-008）。
+173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，ready，批次内依赖 KB-018/HY-009）。
+
+### 数据源治理候选队列
+
+
+--- DECISIONS ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+## ADR-006: 2026-07-10 将研报/半年报/昊天闭环设为唯一产品主线
+- **日期**：2026-07-10
+- **背景**：系统已有 TradeFlow、跟踪看板、知识库和自动开发等大量工程能力，但真实候选中仍以技术池为主，观察仓和盘后 Review 的生产记录不足，半年报事实 Provider 尚未完成。
+- **决策**：优先完成 HY-002/HY-003/KB-015 及其后续事实审计，再做昊天真实候选和交易日回放；PLAYBOOK-002~006 暂停，除非直接阻塞主线。
+- **原因**：用户核心目标是从政策、产业和研报中找到少量高质量中长期候选，而不是继续扩大功能数量。先验证选股和证据闭环，才能判断后续仓位规则是否值得实现。
+- **影响**：自动领取顺序以 `docs/TASKS.md` 的“当前执行队列”为准；fixture 验收和真实运行验收必须分开记录；新功能必须说明是否直接服务主线。
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- DEVLOG ---
+# 修改日志
+
+## 2026-07-12 | KB-016 多研报一致性/分歧矩阵与关注度去重回放
+
+- **执行者**:OpenCode
+- **任务**:KB-016 — 多研报一致性/分歧矩阵与关注度去重回放（P1）
+- **类型**:feature / research consensus matrix
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- KB-015（研报观点/事实分离）、KB-007（多研报重复提及因子）、KB-009（机构级
+  去重 + 时效衰减）已就绪，但当多份研报涉及同一只股票时，系统无法回答
+  "这些研报是否一致、在哪里分裂、哪些观点需要事实反证"。
+- KB-016 把 KB-015 的 claim 抽取 + KB-007 的关注度聚合 + KB-009 的机构去重/衰减
+  组合成一个**按 symbol 聚合的共识/分歧矩阵**，输出四维分歧
+  （业绩预测 / 产业链角色 / 风险判断 / 估值假设）、consensus_score、
+  disagreement_score、attention_count_effective，并标记 needs_fact_check 候选
+  交 HY-003/HY-005 做事实反证。
+- 验收头条：多研报高关注**只能提高研究优先级**，绝不绕过 TradeFlow/TA 强动作
+  门禁；输出文档不含买入/卖出/加仓/减仓等强动作词。
+
+### 改动文件
+
+- `tradingagents/dataflows/research_consensus_matrix.py`（新增，`# [KB-016]
+  research_consensus_matrix`）— 共识/分歧矩阵核心模块。主入口
+  ``build_research_consensus_matrix(knowledge_root, symbol, name,
+  window_months, today)`` 复用 KB-015 ``build_research_fact_opinion_index``
+  做 per-symbol claim 抽取，按 3/6/12 月窗口聚合，输出
+  ``SymbolConsensusMatrix``（含 consensus_score / disagreement_score /
+  attention_count_effective / dominant_stance / needs_fact_check /
+  fact_check_reasons / fact_check_priority / 四维 DimensionDisagreement /
+  ReportStance[]）。规则版立场检测（无 LLM）：四维各取
+  bullish/bearish/neutral/unknown；关键词命中 + 数值符号辅助。
+  去重：同机构 + 同标题（norm）+ 同立场 → 重复；同 rel_path → 重复。
+  过期页绕过窗口（decay not delete）。needs_fact_check 触发：分歧 ≥ 0.34 /
+  弱来源共识 ≥ 2 / 过期占比 ≥ 50% / KB-015 verification_needs > 0。
+  辅助函数 ``lookup_research_consensus_matrix`` /
+  ``matrix_to_ta_consumable_summary`` /
+  ``matrix_to_summary_dict`` / ``render_research_consensus_matrix_report`` /
+  ``has_forbidden_action_words``（防回归强动作词）。
+- `scripts/research_consensus_matrix.py`（新增）— CLI 入口，支持
+  ``--symbol / --name / --all / --window 3|6|12 / --needs-fact-check /
+  --json / --summary / --output / --suggest-output``。
+- `tests/test_kb016_research_consensus_matrix.py`（新增）— **67 tests**，
+  覆盖五类 fixture（一致看多 / 一致看空 / 观点分裂 / 重复报告 / 过期报告）、
+  四维立场检测、去重规则、时间窗口、needs_fact_check 判定、多研报高关注不
+  绕过门禁、报告渲染、JSON 序列化与扁平摘要、lookup、边界场景、overall_stance
+  合成。
+
+### 验收
+
+- **67 tests passed**（`tests/test_kb016_research_consensus_matrix.py`）。
+- KB-015/016/HY-005/HY-006 组合回归 **243 passed**，无新增失败。
+- KB-009 有 1 个 pre-existing 日期敏感 flaky 测试（与本任务无关，stash 验证
+  确认未改动前也失败）。
+- 约束验证：知识库只读（调用前后文件不变）/ 不写生产 DB / 无强动作词 /
+  弱来源不覆盖动作语义 / 不复制原文段落。
+
+### 关键设计决策
+
+1. **过期页绕过窗口**：任务要求"对过期观点做去重/衰减"——decay not delete。
+   stale_risk=高 或 valid_until 过期的页即使超出 3/6/12 月窗口仍纳入矩阵
+   （stale_count + needs_fact_check），但不计入 attention_count_effective。
+2. **保守去重**：宁可漏标也不误杀真实多机构共识——同机构 + 同标题 + 同立场
+   才判重复；不同机构同标题不折叠；同标题不同立场不折叠（这是真实分歧）。
+3. **needs_fact_check 四触发器**：高分歧 / 弱来源看多共识 / 过期主导 /
+   KB-015 验证缺口；优先级 low/medium/high，高分歧 + 弱来源共识同时出现 → high。
+4. **consensus_score 不是买入信号**：[0, 1] 区间中性指标，输出文档刻意避免
+   强动作词；dominant_stance 用 "偏看多/偏看空/中性" 而非 BUY/SELL。
+
+### 风险点
+
+- 立场检测是规则版（关键词 + 数值符号），对未见过的表达形态可能漏判 →
+  stance=unknown（不误判，但可能漏标分歧）。KB-018 版本演化时间线可在
+  ``thesis_version_status`` 维度补一层人工标注。
+- 机构名提取依赖 KB-009 ``split_institution``，对 ``中信证券-华勤技术`` 形态
+  有效；无分隔符的来源别名可能被误当作独立机构（KB-009 已有同样限制）。
+- KB-018（同股研报观点版本演化）依赖本任务的 ``ReportStance[]`` 与
+  ``DimensionDisagreement``，下游时间线可直接消费 ``matrix.reports`` 序列。
+
+---
+
+## 2026-07-11 | HY-006 TradeFlow/昊天候选接入半年报因子与降权规则
+
+- **执行者**:OpenCode
+- **任务**:HY-006 — TradeFlow/昊天候选接入半年报因子与降权规则（P1）
+- **类型**:feature / tradeflow half-year factor
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-003（半年报事实 provider）、HY-005（观点-事实反证检测）、H-017（昊天三层
+  证据包）、KB-004（本地知识命中分接入候选）均已就绪，但 TradeFlow 候选和昊天
+  左侧候选还无法展示半年报事实摘要，也无法在事实明显削弱逻辑时降低候选优先级。
+- HY-006 把 HY-003 事实表 + HY-005 反证检测结果聚合成一个扁平因子字典，注入
+  TradeFlow 候选详情 / 昊天证据包 / 前端 drawer，实现"事实打脸→降权+解释"、"事实
+  支持→提高研究优先级但不改动作档位"、"无数据→只标研究缺口不惩罚"三类语义。
+- 验收头条：半年报知识不能单独把弱候选提升为主候选（正向上限 1.0 << 本地知识
+  命中分上限 3.0）；强动作门禁（action_tier / tier / action）完全不动；失败不变成
+  研究缺口（FAILED 时 needs_research_review=False，与 KB-004 语义一致）。
+
+### 改动文件
+
+- `tradingagents/dataflows/half_year_factor_score.py`（新增，`# [HY-006]
+  tradeflow_half_year_factor`）— 半年报因子评分核心模块。主入口
+  ``compute_half_year_factor_score(facts_result, thesis_result, ...)``
+  接收 HY-003 + HY-005 结果（支持 dataclass 与 dict duck-typing），返回扁平字典
+  （``half_year_fact_score`` / ``half_year_fact_summary`` /
+  ``half_year_risk_flags`` / ``needs_research_review`` / ``downgrade_reasons``
+  / ``research_priority_hint`` / ``status`` / ``errors``）。分数区间 [-3.0, +1.0]：
+  contradicted_strong=-3.0，contradicted_moderate=-2.0，weakened_multi=-1.0，
+  weakened_single=-0.5，supported/有新鲜事实=+1.0（上限封顶），无数据/insufficient=0。
+  辅助审计函数 ``has_forbidden_action_words`` 防回归强动作词。
+- `tradingagents/tradeflow/mandate_evidence_packet.py`（修改）—
+  ``MandateEvidencePacket`` 新增 ``half_year_summary`` 字段（与 KB-004
+  ``local_knowledge_summary`` 同构，不影响 confidence /
+  needs_manual_research）。``build_evidence_packet`` 新增
+  ``half_year_facts_result`` / ``half_year_thesis_result`` 可选参数；
+  ``build_evidence_packets_for_candidates`` 新增 ``half_year_by_symbol``
+  批量透传（symbol → (facts, thesis) tuple）。
+- `api/services/tradeflow_service.py`（修改）— 新增
+  ``_query_half_year_for_candidate``（按 symbol 只读查 HY-003 + HY-005，只在有
+  事实时跑反证）、``_apply_half_year_to_item``（注入因子字段 + 追加降权原因到
+  ``downgrade_reasons``）、``_enrich_candidate_with_half_year``（单条）、
+  ``_enrich_candidates_with_half_year``（批量）。在 3 个候选读取入口
+  （daily_plan / candidates / candidate_detail）于 KB-004 之后、TF-KB-001 校准
+  之前调用；observation items 同步注入（保持 KB-004 一致性）。
+- `api/tradeflow_schemas.py`（修改）— ``TradeFlowCandidateItem`` 新增
+  ``half_year_fact_score`` / ``half_year_fact_summary`` / ``half_year_risk_flags``
+  / ``half_year_fact_detail`` / ``needs_research_review``；``MandateEvidencePacketItem``
+  新增 ``half_year_summary``。
+- `frontend/src/types/index.ts`（修改）— ``TradeFlowCandidateItem`` 新增
+  half_year 五字段。
+- `frontend/src/utils/tradeflowFocus.ts`（修改）— 空候选默认值补 half_year 字段。
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx`（修改）— 新增"半年报事实"
+  渲染区块：因子分 badge、报告期、反证状态（打脸/削弱/支持/数据不足）、"需 Tree Work
+  复核"标签、摘要、降权原因、风险标记。仅在存在信号时显示（NO_FACTS 不渲染空面板）。
+- `tests/test_hy006_tradeflow_half_year_factor.py`（新增）— **46 tests**，覆盖：
+  contradicted/weakened/supported/insufficient/no_facts/FAILED/None 场景、正向分上限
+  封顶（强知识不能升主候选）、needs_research_review 规则、FAILED 不变缺口、
+  duck-typing dict 输入、MandateEvidencePacket 集成、批量透传、confidence 不被
+  inflate、TradeFlow enrich 单条/批量/降权追加去重/KB-004 字段不冲突/action_tier
+  不动、Pydantic schema 字段与序列化回读、真实 fixture KB 端到端、只读不写 DB、
+  无强买卖词。
+
+### 关键设计决策
+
+1. **正向上限 1.0 << 本地知识命中分上限 3.0**：结构性保证"半年报是佐证不是
+   发动机"，即使事实强力支持也只能"提高研究优先级"，不能把弱技术候选抬成主候选。
+   ``action_tier_scorer`` 的 7 个评分因子没有一个读取本模块字段（物理隔离）。
+2. **只读富化，不写 DB**：与 KB-004 同口径，half_year 字段在读取时实时计算，
+   不持久化到 ``tradeflow_candidates`` 表，避免 schema 迁移和 save_candidate 改造。
+3. **FAILED ≠ 研究缺口**：知识库缺失/解析异常是基础设施故障，``needs_research_review``
+   不触发（与 KB-004 ``needs_tree_work_research`` 在 FAILED 时的语义一致）。
+4. **只在有事实时跑 HY-005 反证**：避免无意义的 KB-015 索引构建开销；无事实直接
+   走 NO_FACTS 语义。
+
+### 测试结果
+
+- HY-006 新增测试：46 passed / 0 failed
+- HY/KB/H 组合回归（HY-006+HY-005+HY-003+KB-004+H-017+schema_scores）：280 passed / 0 failed
+- tradeflow engine + API smoke + runtime tier：144 passed / 0 failed
+- 前端 TypeScript 编译：0 errors
+- 前端 KB-011 合约测试：26 passed / 0 failed
+
+### 依赖
+
+- 前置：HY-003 ✓（半年报事实 provider）、H-017 ✓（昊天证据包）、KB-004 ✓（本地
+  知识命中分接入候选）、HY-005 ✓（观点-事实反证检测）
+- 后续受益：HY-008（半年报知识链路端到端回放验收）、HY-007（IC briefing payload）
+
+---
+
+## 2026-07-11 | HY-005 旧研报观点 vs 半年报事实反证检测
+
+- **执行者**:OpenCode
+- **任务**:HY-005 — 旧研报观点 vs 半年报事实反证检测（P1）
+- **类型**:feature / thesis fact check
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-003 半年报事实 provider、KB-015 研报观点/事实分离索引、KB-007 研究关注度
+  均已就绪，但缺少把旧研报观点与新半年报事实做**规则比对**的反证检测层。
+- HY-005 把 KB-015 提取的观点/预测/风险与 HY-003 的结构化事实做方向+幅度比对，
+  标注每条观点的 ``supported`` / ``weakened`` / ``contradicted`` /
+  ``insufficient_data`` 状态，并产出 ``contradiction_flags`` 与
+  ``needs_tree_work_review``，与 KB-007 联动实现优先提醒。
+- 验收头条：不做投资结论（只做证据一致性标注）；不把单一指标变化扩大成
+  "逻辑破坏"（每个 flag 带 evidence_level）；fixture 覆盖四类场景。
+
+### 改动文件
+
+- `tradingagents/dataflows/thesis_fact_check.py`（新增，`# [HY-005]
+  thesis_fact_check`）— 旧研报观点 vs 半年报事实反证检测核心模块。
+  数据类：``ThesisCheckFlag``（单条比对标记）、``ThesisFactCheckResult``
+  （聚合结果）。主入口：``check_thesis_against_facts(opinion_index, facts)``
+  接收 KB-015 + HY-003 已查询好的 dataclass，返回反证检测结果。
+  渲染：``render_thesis_fact_check_report``（完整 Markdown）、
+  ``render_thesis_check_inline``（HY-004 区块/本地知识摘要用的单行内联）。
+- `tests/test_hy005_thesis_fact_check.py`（新增）— **76 tests**，覆盖：
+  - 四类 fixture 场景（contradicted / weakened / supported / insufficient_data）。
+  - KB-013 fixture KB 回放（weakened_old_opinion / qualified / non_financial_control）。
+  - KB-010 cache 与全量扫描语义等价。
+  - KB-007 research attention 联动（priority_reminder 高/低/无 attention）。
+  - needs_tree_work_review 触发条件（contradicted / ≥2 weakened）。
+  - 不输出强买卖词（report + inline + summary）。
+  - 不把单一指标扩大成逻辑破坏（evidence_level 字段验证）。
+  - 失败路径（无观点 / facts FAILED / symbol 推断）。
+  - JSON 序列化、方向分类、指标匹配、分业务匹配、风险确认。
+- `docs/TASKS.md` / `docs/DEVLOG.md`（修改）— 状态校准与日志。
+
+### 关键逻辑
+
+1. **观点收集策略**：
+   - ``research_claims``（KB-015 标为 opinion/unknown）+ ``forecast_items``
+     全量参与。
+   - ``reported_facts`` 中含方向关键词（增长/爆发/下滑/萎缩等）的也参与——
+     broker 观点存在 management_commentary 等 fact-origin 字段时，KB-015
+
+exec
+/bin/zsh -lc "git diff --stat && printf '\\n--- cached stat ---\\n' && git diff --cached --stat && printf '\\n--- untracked tree ---\\n' && find docs/task_runs/KB-016-20260712-000255 -maxdepth 3 -type f -print && printf '\\n--- files sizes ---\\n' && wc -l tradingagents/dataflows/research_consensus_matrix.py scripts/research_consensus_matrix.py tests/test_kb016_research_consensus_matrix.py docs/TASKS.md docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md | 81 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ docs/TASKS.md  |  2 +-
+ 2 files changed, 82 insertions(+), 1 deletion(-)
+
+--- cached stat ---
+
+--- untracked tree ---
+docs/task_runs/KB-016-20260712-000255/tests-round1.txt
+docs/task_runs/KB-016-20260712-000255/knowledge-preflight.txt
+docs/task_runs/KB-016-20260712-000255/codegraph-status.json
+docs/task_runs/KB-016-20260712-000255/prompt-round1.md
+docs/task_runs/KB-016-20260712-000255/codegraph-context.txt
+docs/task_runs/KB-016-20260712-000255/opencode-round1.txt
+docs/task_runs/KB-016-20260712-000255/task.md
+docs/task_runs/KB-016-20260712-000255/codegraph-impact.txt
+
+--- files sizes ---
+    1493 tradingagents/dataflows/research_consensus_matrix.py
+     185 scripts/research_consensus_matrix.py
+     983 tests/test_kb016_research_consensus_matrix.py
+    5827 docs/TASKS.md
+   12630 docs/DEVLOG.md
+   21118 total
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/research_consensus_matrix.py && sed -n '260,620p' tradingagents/dataflows/research_consensus_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [KB-016] research_consensus_matrix
+"""多研报一致性 / 分歧矩阵与关注度去重回放。
+
+在 KB-015（研报观点/事实分离）、KB-007（多研报重复提及因子）、KB-009（机构级
+去重 + 时效衰减）之上，本模块把同一只标的多份研报按 symbol 聚合，输出：
+
+  - ``consensus_score`` ∈ [0, 1]：观点一致程度（越高越一致）。
+  - ``disagreement_score`` ∈ [0, 1+]：四个维度的分歧总量（越高越分裂）。
+  - ``attention_count_effective``：去重 + 衰减后的有效关注篇数。
+  - 四维分歧矩阵：业绩预测 / 产业链角色 / 风险判断 / 估值假设。
+  - ``needs_fact_check`` 候选：高分歧或弱来源共识 → 交 HY-003/HY-005 做事实反证。
+
+设计约束（对应任务 KB-016）：
+  - **不是买入信号**：``consensus_score`` 只表达"多份研报观点是否一致"，
+    **绝不**直接转成交易动作；输出文档刻意避免 ``买入 / 卖出 / 加仓 / 减仓 /
+    强烈推荐`` 等强动作词。
+  - **只读本地知识库**：仅用 ``open(..., "r", encoding="utf-8")`` 与
+    ``Path.iterdir``，绝不向知识库写文件；不写生产 DB。
+  - **不复制研报正文**：每条 claim 文本裁剪到 ``_CLAIM_MAX_CHARS``。
+  - **不调用 LLM / 不访问外网**：纯标准库 + 复用 KB-015 只读解析。
+  - **机构级 / 标题级去重**：同机构 + 同标题 + 同立场 → 只计一次主权重，
+    避免虚假共识增强；过期观点 → 衰减为弱证据而非删除。
+  - **多研报高关注只能提高研究优先级**：不会绕过 TradeFlow / TA 强动作门禁。
+
+立场检测（规则版，无 LLM）：
+  四维（``performance`` / ``supply_chain_role`` / ``risk`` / ``valuation``）每维
+  在 ``bullish`` / ``bearish`` / ``neutral`` / ``unknown`` 中取值。规则基于
+  关键词命中 + 数值断言符号；**不做任何买卖建议推断**。
+
+合成公式（解释可读、可复现）::
+
+    # 1. per-page stance：从 KB-015 claims 按维度合成 stance
+    # 2. per-dimension disagreement：1 - max(bullish, bearish) / total
+    # 3. consensus_score  = 1 - mean(dim_disagreement)
+    # 4. disagreement_score = sum(dim_disagreement)
+    # 5. attention_count_effective：fresh 页数 - 机构级重复数
+    # 6. needs_fact_check：disagreement 高 / 弱来源共识 / 过期主导 / 验证缺口
+
+使用示例::
+
+    from tradingagents.dataflows.research_consensus_matrix import (
+        build_research_consensus_matrix,
+        render_research_consensus_matrix_report,
+    )
+    result = build_research_consensus_matrix(
+        "/Users/maybee/Documents/knowledge", symbol="603296"
+    )
+    print(render_research_consensus_matrix_report(result))
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+# 复用 KB-001 只读解析助手，保持单一解析实现。
+from tradingagents.dataflows.local_knowledge_audit import (
+    INVESTMENT_SUBDIR,
+    _iter_markdown_files,
+    _parse_frontmatter,
+    _read_text_safe,
+    _safe_str,
+    _split_frontmatter,
+    default_knowledge_root,
+)
+from tradingagents.dataflows.local_knowledge_lint import (
+    HIGH_STALE_RISK_VALUES,
+    LOW_CONFIDENCE_EVIDENCE_LEVELS,
+    _normalize_source_type_list,
+)
+from tradingagents.dataflows.local_knowledge_provider import (
+    STATUS_FAILED,
+    STATUS_HAS_DATA,
+    STATUS_LOW_CONFIDENCE,
+    STATUS_NORMAL_NO_DATA,
+    STATUS_STALE,
+    _normalize_str_list,
+    _normalize_symbol_list,
+    _symbol_matches,
+)
+from tradingagents.dataflows.citation_policy import (  # [KB-014] citation_policy
+    OPINION_ONLY_TIERS,
+    TIER_BROKER_RESEARCH,
+    TIER_MEDIA,
+    TIER_ORIGINAL_FILING,
+    TIER_OFFICIAL_NOTICE,
+    TIER_UNKNOWN,
+    TIER_USER_NOTE,
+    CitationAssessment,
+    classify_source_quality_tier,
+)
+from tradingagents.dataflows.research_attention import (  # [KB-007]
+    _split_symbol_entry,
+)
+from tradingagents.dataflows.research_attention_decay import (  # [KB-009]
+    split_institution as _kb009_split_institution,
+)
+from tradingagents.dataflows.research_fact_opinion_index import (  # [KB-015]
+    CLAIM_FACT,
+    CLAIM_FORECAST,
+    CLAIM_OPINION,
+    CLAIM_RISK,
+    STALE_FRESH,
+    STALE_LOW_CONFIDENCE,
+    STALE_STALE,
+    ResearchClaimItem,
+    ResearchFactOpinionPage,
+    build_research_fact_opinion_index,
+)
+
+
+# ── 常量 ──────────────────────────────────────────────────────────────
+
+VENDOR = "tree_work_wiki"
+TASK_CODE = "KB-016"
+
+# 立场取值（per dimension）。
+STANCE_BULLISH = "bullish"
+STANCE_BEARISH = "bearish"
+STANCE_NEUTRAL = "neutral"
+STANCE_UNKNOWN = "unknown"
+ALL_STANCES: Tuple[str, ...] = (
+    STANCE_BULLISH,
+    STANCE_BEARISH,
+    STANCE_NEUTRAL,
+    STANCE_UNKNOWN,
+)
+
+# 四维分歧矩阵（与任务原文严格一致）。
+DIM_PERFORMANCE = "performance"          # 业绩预测分歧
+DIM_SUPPLY_CHAIN_ROLE = "supply_chain_role"  # 产业链角色分歧
+DIM_RISK = "risk"                         # 风险判断分歧
+DIM_VALUATION = "valuation"              # 估值假设分歧
+DIMENSIONS: Tuple[str, ...] = (
+    DIM_PERFORMANCE,
+    DIM_SUPPLY_CHAIN_ROLE,
+    DIM_RISK,
+    DIM_VALUATION,
+)
+_DIMENSION_LABELS: Dict[str, str] = {
+    DIM_PERFORMANCE: "业绩预测",
+    DIM_SUPPLY_CHAIN_ROLE: "产业链角色",
+    DIM_RISK: "风险判断",
+    DIM_VALUATION: "估值假设",
+}
+
+# 时间窗口（月）。
+WINDOW_3M = 3
+WINDOW_6M = 6
+WINDOW_12M = 12
+DEFAULT_WINDOW_MONTHS = WINDOW_12M
+ALL_WINDOWS: Tuple[int, ...] = (WINDOW_3M, WINDOW_6M, WINDOW_12M)
+
+# 文本裁剪上限。
+_CLAIM_MAX_CHARS = 120
+_SUMMARY_MAX_CHARS = 200
+_MAX_REASONS = 8
+_MAX_MATRIX_PAGES = 15
+
+# needs_fact_check 触发阈值。
+DISAGREEMENT_THRESHOLD = 0.34   # 单维分歧 > 1/3 → 疑似分裂
+WEAK_SOURCE_BULLISH_THRESHOLD = 2  # 弱来源共识 ≥2 篇 → 需核实
+STALE_DOMINANCE_RATIO = 0.5     # 过期页占比 ≥ 50% → 需刷新
+
+# ── 立场关键词（规则版，无 LLM）────────────────────────────────────────
+
+# 业绩预测 bullish：增长 / 超预期 / 上修 / 高增 / 改善
+_PERF_BULLISH_KW: Tuple[str, ...] = (
+    "增长", "高增", "超预期", "好于预期", "优于预期", "上修", "上调",
+    "改善", "提升", "加速", "突破", "创新高", "强劲", "放量增长",
+    "扭亏", "减亏", "盈利恢复",
+)
+# 业绩预测 bearish：下降 / 不及预期 / 下修 / 恶化 / 亏损扩大
+_PERF_BEARISH_KW: Tuple[str, ...] = (
+    "下降", "下滑", "不及预期", "低于预期", "差于预期", "下修", "下调",
+    "恶化", "萎缩", "承压", "亏损扩大", "续亏", "增速放缓", "负增长",
+    "同比转负",
+)
+
+# 产业链角色 bullish：龙头 / 核心受益 / 主力 / 一体化 / 卡位
+_ROLE_BULLISH_KW: Tuple[str, ...] = (
+    "龙头", "核心受益", "主力", "主导", "一体化", "卡位", "稀缺",
+    "壁垒", "领先", "头部", "关键供应商", "核心环节", "深度布局",
+)
+# 产业链角色 bearish：边缘 / 替代 / 受益有限 / 缺位 / 竞争加剧
+_ROLE_BEARISH_KW: Tuple[str, ...] = (
+    "边缘", "替代", "受益有限", "缺位", "竞争加剧", "份额下滑",
+    "技术落后", "客户流失", "掉队", "出局",
+)
+
+# 风险判断 bullish（风险可控 / 下降）：风险可控、风险下降、风险释放
+_RISK_BULLISH_KW: Tuple[str, ...] = (
+    "风险可控", "风险下降", "风险释放", "风险缓和", "风险缓解",
+    "风险较低", "无明显风险", "下行空间有限",
+)
+# 风险判断 bearish（风险加剧 / 上升）：风险加剧、风险上升、担忧
+_RISK_BEARISH_KW: Tuple[str, ...] = (
+    "风险加剧", "风险上升", "风险加大", "风险提升", "担忧", "承压",
+    "隐患", "不确定性显著", "下行风险", "较大风险", "高风险",
+)
+
+# 估值 bullish（低估 / 合理）：低估、估值合理、估值修复
+_VAL_BULLISH_KW: Tuple[str, ...] = (
+    "低估", "估值合理", "估值修复", "估值提升", "性价比", "安全边际",
+    "估值偏低", "具有吸引力", "估值优势",
+)
+# 估值 bearish（高估 / 贵）：高估、估值贵、估值偏高
+_VAL_BEARISH_KW: Tuple[str, ...] = (
+    "高估", "估值贵", "估值偏高", "估值较高", "透支", "泡沫",
+    "估值压力", "估值偏贵", "缺乏安全边际",
+)
+
+# 按维度组织关键词表。
+_BULLISH_KW_BY_DIM: Dict[str, Tuple[str, ...]] = {
+    DIM_PERFORMANCE: _PERF_BULLISH_KW,
+    DIM_SUPPLY_CHAIN_ROLE: _ROLE_BULLISH_KW,
+    DIM_RISK: _RISK_BULLISH_KW,
+    DIM_VALUATION: _VAL_BULLISH_KW,
+}
+_BEARISH_KW_BY_DIM: Dict[str, Tuple[str, ...]] = {
+    DIM_PERFORMANCE: _PERF_BEARISH_KW,
+    DIM_SUPPLY_CHAIN_ROLE: _ROLE_BEARISH_KW,
+    DIM_RISK: _RISK_BEARISH_KW,
+    DIM_VALUATION: _VAL_BEARISH_KW,
+}
+
+# 数值变化符号辅助（+25% / -10pp / 增长 50% / 下降 30%）。
+_POSITIVE_NUMBER_RE = re.compile(r"[+]?\d+(?:\.\d+)?\s*(?:%|pp|个百分点|倍)")
+_NEGATIVE_NUMBER_RE = re.compile(
+    r"-\s*\d+(?:\.\d+)?\s*(?:%|pp|个百分点|倍)|下降\s*\d|下滑\s*\d|减少\s*\d"
+)
+
+# 强动作词黑名单（输出文档不含）。
+_FORBIDDEN_ACTION_WORDS: Tuple[str, ...] = (
+    "买入", "卖出", "加仓", "减仓", "强烈推荐", "BUY", "SELL",
+    "立即买入", "全仓", "止损",
+)
+
+
+# ── 数据类 ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class DimensionStance:
+    """单页在某维度的立场判定。
+
+    携带 stance + 命中关键词（便于审查与 explain），不携带原文段落。
+    """
+
+    dimension: str
+    stance: str = STANCE_UNKNOWN
+    hit_keywords: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dimension": self.dimension,
+            "dimension": self.dimension,
+            "stance": self.stance,
+            "hit_keywords": list(self.hit_keywords),
+        }
+
+
+@dataclass
+class ReportStance:
+    """单份研报（KB-015 page）在四个维度上的立场 + 元数据。"""
+
+    rel_path: str
+    title: str
+    symbol: str = ""
+    name: str = ""
+    source_quality_tier: str = TIER_UNKNOWN
+    report_date: Optional[str] = None
+    stale_status: str = STALE_FRESH
+    confidence: str = "low"
+    institution: str = ""
+    is_duplicate: bool = False
+    duplicate_reason: str = ""
+    overall_stance: str = STANCE_UNKNOWN
+    dimensions: Dict[str, DimensionStance] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rel_path": self.rel_path,
+            "title": self.title,
+            "symbol": self.symbol,
+            "name": self.name,
+            "source_quality_tier": self.source_quality_tier,
+            "report_date": self.report_date,
+            "stale_status": self.stale_status,
+            "confidence": self.confidence,
+            "institution": self.institution,
+            "is_duplicate": self.is_duplicate,
+            "duplicate_reason": self.duplicate_reason,
+            "overall_stance": self.overall_stance,
+            "dimensions": {k: v.to_dict() for k, v in self.dimensions.items()},
+        }
+
+
+@dataclass
+class DimensionDisagreement:
+    """单维度分歧聚合。
+
+    - ``bullish_count`` / ``bearish_count`` / ``neutral_count`` /
+      ``unknown_count``：去重后各立场页数（duplicate=True 不计入）。
+    - ``disagreement_score`` ∈ [0, 1]：1 - max(bull, bear) / total。
+    """
+
+    dimension: str
+    bullish_count: int = 0
+    bearish_count: int = 0
+    neutral_count: int = 0
+    unknown_count: int = 0
+    disagreement_score: float = 0.0
+    dominant_stance: str = STANCE_UNKNOWN
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dimension": self.dimension,
+            "bullish_count": self.bullish_count,
+            "bearish_count": self.bearish_count,
+            "neutral_count": self.neutral_count,
+            "unknown_count": self.unknown_count,
+            "disagreement_score": round(self.disagreement_score, 3),
+            "dominant_stance": self.dominant_stance,
+        }
+
+
+@dataclass
+class SymbolConsensusMatrix:
+    """单标的的研报共识 / 分歧矩阵聚合结果。"""
+
+    symbol_key: str
+    bare_code: str
+    name: str
+    window_months: int = DEFAULT_WINDOW_MONTHS
+    report_count_total: int = 0
+    report_count_in_window: int = 0
+    report_count_duplicate: int = 0
+    attention_count_effective: int = 0
+    stale_count: int = 0
+    fresh_count: int = 0
+    low_confidence_count: int = 0
+    consensus_score: float = 0.0
+    disagreement_score: float = 0.0
+    dominant_stance: str = STANCE_UNKNOWN
+    needs_fact_check: bool = False
+    fact_check_reasons: List[str] = field(default_factory=list)
+    fact_check_priority: str = "low"  # low / medium / high
+    dimensions: Dict[str, DimensionDisagreement] = field(default_factory=dict)
+    reports: List[ReportStance] = field(default_factory=list)
+    summary: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol_key": self.symbol_key,
+            "bare_code": self.bare_code,
+            "name": self.name,
+            "window_months": self.window_months,
+            "report_count_total": self.report_count_total,
+            "report_count_in_window": self.report_count_in_window,
+            "report_count_duplicate": self.report_count_duplicate,
+            "attention_count_effective": self.attention_count_effective,
+            "stale_count": self.stale_count,
+            "fresh_count": self.fresh_count,
+            "low_confidence_count": self.low_confidence_count,
+            "consensus_score": round(self.consensus_score, 3),
+            "disagreement_score": round(self.disagreement_score, 3),
+            "dominant_stance": self.dominant_stance,
+            "needs_fact_check": self.needs_fact_check,
+            "fact_check_reasons": list(self.fact_check_reasons),
+            "fact_check_priority": self.fact_check_priority,
+            "dimensions": {k: v.to_dict() for k, v in self.dimensions.items()},
+            "reports": [r.to_dict() for r in self.reports],
+            "summary": self.summary,
+        }
+
+
+@dataclass
+class ResearchConsensusMatrixResult:
+    """整次研报共识 / 分歧矩阵聚合结果。"""
+
+    status: str = STATUS_NORMAL_NO_DATA
+    vendor: str = VENDOR
+    task: str = TASK_CODE
+    knowledge_root: str = ""
+    window_months: int = DEFAULT_WINDOW_MONTHS
+    as_of_date: str = ""
+    query: Dict[str, Any] = field(default_factory=dict)
+    symbols: List[SymbolConsensusMatrix] = field(default_factory=list)
+    needs_fact_check_symbols: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "task": self.task,
+            "knowledge_root": self.knowledge_root,
+            "window_months": self.window_months,
+            "as_of_date": self.as_of_date,
+            "query": dict(self.query),
+            "symbols": [s.to_dict() for s in self.symbols],
+            "needs_fact_check_symbols": list(self.needs_fact_check_symbols),
+            "errors": list(self.errors),
+        }
+
+
+# ── KB-007 / KB-009 复用桥接 ─────────────────────────────────────────
+
+# KB-009 的 split_institution 是权威实现（KB-007 也复用它）。
+# 这里做一次安全解析，便于 KB-016 在 KB-009 缺失时回退到内置实现，
+# 避免循环依赖 / 模块加载顺序问题。
+def _resolve_split_institution() -> Any:
+    """安全解析 KB-009 的机构分割函数；缺失时回退到内置实现。"""
+    try:
+        return _kb009_split_institution
+    except NameError:  # pragma: no cover
+        return _fallback_split_institution
+
+
+def _fallback_split_institution(source_alias: str) -> str:
+    """内置兜底：取首个 ``- / — / ： / :`` 之前的部分。"""
+    text = str(source_alias).strip()
+    if not text:
+        return ""
+    m = re.search(r"[-—：:]", text)
+    if m:
+        inst = text[: m.start()].strip()
+        return inst or text
+    return text
+
+
+# 解析一次，模块级常量。
+_split_institution_fn = _resolve_split_institution()
+
+
+def split_institution_helper(source_alias: str) -> str:
+    """对外暴露的稳定机构分割函数（被 KB-016 测试与 report 共用）。"""
+    return _split_institution_fn(source_alias) or ""
+
+
+# ── 文本裁剪与归一化 ──────────────────────────────────────────────────
+
+
+def _clip_text(text: str, max_chars: int = _CLAIM_MAX_CHARS) -> str:
+    text = (text or "").strip()
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + "…"
+    return text
+
+
+def _is_valid_date(text: Optional[str]) -> Optional[date]:
+    """解析 ``updated`` / ``disclosure_date`` / ``2026-08-30`` 形态的日期。"""
+    if not text:
+        return None
+    cleaned = re.sub(r"[/-]", "", str(text).strip())
+    if not re.fullmatch(r"\d{8}", cleaned):
+        return None
+    try:
+        return date(int(cleaned[:4]), int(cleaned[4:6]), int(cleaned[6:8]))
+    except ValueError:
+        return None
+
+
+def _within_window(
+    report_date: Optional[str], today: date, window_months: int
+) -> bool:
+    """报告日期是否在 window_months 内。无日期 → 视作在窗口内（不误杀）。"""
+    if window_months <= 0:
+        return True
+    if not report_date:
+        return True
+    rd = _is_valid_date(report_date)
+    if rd is None:
+        return True
+    # 近似 month 差：用 30 天近似 1 月。
+    delta_days = (today - rd).days
+    return 0 <= delta_days <= window_months * 31
+
+
+# ── 立场检测（规则版，无 LLM）─────────────────────────────────────────
+
+
+def _detect_dimension_stance(
+    dimension: str, claims: List[ResearchClaimItem]
+) -> DimensionStance:
+    """对单维度做关键词命中统计，返回 bullish/bearish/neutral/unknown。
+
+    规则：
+      - 命中 bullish 关键词 → +1 bull 命中。
+      - 命中 bearish 关键词 → +1 bear 命中。
+      - bull > bear → bullish；bear > bull → bearish；同分且 > 0 → neutral；
+        无命中 → unknown。
+      - 数值符号辅助：仅在该 claim 已命中文字关键词时叠加，不单独触发
+        （避免"营收 100 亿"被误判）。
+    """
+    bull_kws = _BULLISH_KW_BY_DIM.get(dimension, ())
+    bear_kws = _BEARISH_KW_BY_DIM.get(dimension, ())
+    bull_hits: List[str] = []
+    bear_hits: List[str] = []
+
+    for claim in claims:
+        text = claim.text or ""
+        if not text:
+            continue
+        text_lower = text  # 中文不做 lower
+        # 文字关键词。
+        for kw in bull_kws:
+            if kw in text_lower and kw not in bull_hits:
+                bull_hits.append(kw)
+        for kw in bear_kws:
+            if kw in text_lower and kw not in bear_hits:
+                bear_hits.append(kw)
+        # 数值符号辅助（仅在已有文字命中时叠加）。
+        if bull_hits and _POSITIVE_NUMBER_RE.search(text):
+            if "+数值" not in bull_hits:
+                bull_hits.append("+数值")
+        if bear_hits and _NEGATIVE_NUMBER_RE.search(text):
+            if "-数值" not in bear_hits:
+                bear_hits.append("-数值")
+
+    if not bull_hits and not bear_hits:
+        return DimensionStance(dimension=dimension, stance=STANCE_UNKNOWN)
+
+    if len(bull_hits) > len(bear_hits):
+        stance = STANCE_BULLISH
+    elif len(bear_hits) > len(bull_hits):
+        stance = STANCE_BEARISH
+    else:
+        stance = STANCE_NEUTRAL
+
+    return DimensionStance(
+        dimension=dimension,
+        stance=stance,
+        hit_keywords=bull_hits + bear_hits,
+    )
+
+
+def _page_dimension_claims(
+    page: ResearchFactOpinionPage, dimension: str
+) -> List[ResearchClaimItem]:
+    """把 KB-015 page claims 按维度归类。
+
+    - performance：forecast_items（前瞻指引）+ research_claims 中含业绩关键词。
+    - supply_chain_role：research_claims + reported_facts 中含角色关键词。
+    - risk：risk_items。
+    - valuation：research_claims 中含估值关键词。
+    """
+    if dimension == DIM_RISK:
+        return list(page.risk_items)
+    if dimension == DIM_PERFORMANCE:
+        # 前瞻指引 + 含业绩关键词的观点/事实。
+        base = list(page.forecast_items)
+        for c in page.research_claims + page.reported_facts:
+            if c.claim_type in (CLAIM_FORECAST, CLAIM_FACT, CLAIM_OPINION):
+                base.append(c)
+        return base
+    if dimension == DIM_VALUATION:
+        # 只看观点类（估值假设多在观点段）。
+        return list(page.research_claims)
+    if dimension == DIM_SUPPLY_CHAIN_ROLE:
+        return list(page.research_claims + page.reported_facts)
+    return []
+
+
+def _detect_overall_stance(
+    dimensions: Dict[str, DimensionStance],
+) -> str:
+    """从四维立场合成 overall_stance。
+
+    - 全部 bullish（无 bearish）→ bullish。
+    - 全部 bearish（无 bullish）→ bearish。
+    - 同时有 bullish 和 bearish → neutral（内部分裂）。
+    - 全部 unknown → unknown。
+    """
+    bull = sum(1 for d in dimensions.values() if d.stance == STANCE_BULLISH)
+    bear = sum(1 for d in dimensions.values() if d.stance == STANCE_BEARISH)
+    if bull > 0 and bear > 0:
+        return STANCE_NEUTRAL
+    if bull > 0:
+        return STANCE_BULLISH
+    if bear > 0:
+        return STANCE_BEARISH
+    return STANCE_UNKNOWN
+
+
+# ── 机构 / 标题去重 ────────────────────────────────────────────────────
+
+
+def _extract_institution(page: ResearchFactOpinionPage) -> str:
+    """从 KB-015 page 的 sources（通过 citation）推断机构名。
+
+    KB-015 page 不直接携带 sources alias，但携带 source_quality_tier 与
+    rel_path。这里用 rel_path / title 关键词做兜底，避免错误折叠。
+    """
+    # KB-015 page 没有暴露 sources，从 title / rel_path 提取机构名。
+    candidates = [page.title, page.rel_path]
+    for text in candidates:
+        if not text:
+            continue
+        inst = split_institution_helper(text)
+        if inst and inst not in ("wiki", "investment"):
+            return inst
+    return page.rel_path  # 兜底：用 rel_path 作独立 key，避免误折叠
+
+
+def _norm_title(title: str) -> str:
+    """标题归一化：去空白 / 去日期 / 去常见后缀，用于跨页去重。"""
+    t = (title or "").strip()
+    # 去日期前缀（2026-07-11- / 20260711-）。
+    t = re.sub(r"^\d{4}[-/]?\d{2}[-/]?\d{2}[-_\s]*", "", t)
+    # 去常见后缀。
+    t = re.sub(r"[-_—（(].*$", "", t).strip()
+    return t.lower()
+
+
+def _mark_duplicates(reports: List[ReportStance]) -> None:
+
+exec
+/bin/zsh -lc "sed -n '620,1040p' tradingagents/dataflows/research_consensus_matrix.py && sed -n '1040,1540p' tradingagents/dataflows/research_consensus_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+def _mark_duplicates(reports: List[ReportStance]) -> None:
+    """原地标记重复报告（同机构 + 同标题 + 同立场 → 重复）。
+
+    规则（保守，宁可漏标也不误杀真实多机构共识）：
+      - 同机构 + 同标题（norm）+ 同 overall_stance → 重复（保留首条）。
+      - 同 rel_path → 重复。
+      - 同标题 + 同 overall_stance + 同日报日期 → 重复。
+    """
+    seen_keys: List[Tuple[str, str, str]] = []
+    seen_paths: List[str] = []
+    for r in reports:
+        if r.rel_path in seen_paths:
+            r.is_duplicate = True
+            r.duplicate_reason = "同文件重复导入"
+            continue
+        key = (r.institution or "", _norm_title(r.title), r.overall_stance)
+        # 只在 institution + title 都非空时做机构级去重。
+        if key[0] and key[1] and key[2] != STANCE_UNKNOWN:
+            if key in seen_keys:
+                r.is_duplicate = True
+                r.duplicate_reason = (
+                    f"同机构「{key[0]}」同标题「{key[1][:20]}」"
+                    f"重复覆盖，保留首条"
+                )
+                seen_paths.append(r.rel_path)
+                continue
+            seen_keys.append(key)
+        seen_paths.append(r.rel_path)
+
+
+# ── 共识 / 分歧合成 ──────────────────────────────────────────────────
+
+
+def _dimension_disagreement(
+    dim: str, reports: List[ReportStance]
+) -> DimensionDisagreement:
+    """聚合单维度的分歧（仅非重复页）。"""
+    bull = bear = neut = unk = 0
+    for r in reports:
+        if r.is_duplicate:
+            continue
+        ds = r.dimensions.get(dim)
+        if ds is None:
+            unk += 1
+            continue
+        if ds.stance == STANCE_BULLISH:
+            bull += 1
+        elif ds.stance == STANCE_BEARISH:
+            bear += 1
+        elif ds.stance == STANCE_NEUTRAL:
+            neut += 1
+        else:
+            unk += 1
+
+    total = bull + bear + neut + unk
+    if total <= 0:
+        score = 0.0
+        dominant = STANCE_UNKNOWN
+    else:
+        max_count = max(bull, bear, neut, unk)
+        score = max(0.0, 1.0 - max_count / total)
+        # dominant：取计数最多的 stance（并列时优先 bull > bear > neut > unk）。
+        if bull >= bear and bull >= neut and bull >= unk and bull > 0:
+            dominant = STANCE_BULLISH
+        elif bear >= bull and bear >= neut and bear >= unk and bear > 0:
+            dominant = STANCE_BEARISH
+        elif neut > 0 and neut >= unk:
+            dominant = STANCE_NEUTRAL
+        else:
+            dominant = STANCE_UNKNOWN if unk == total else (
+                STANCE_NEUTRAL if neut > 0 else STANCE_UNKNOWN
+            )
+
+    return DimensionDisagreement(
+        dimension=dim,
+        bullish_count=bull,
+        bearish_count=bear,
+        neutral_count=neut,
+        unknown_count=unk,
+        disagreement_score=score,
+        dominant_stance=dominant,
+    )
+
+
+def _symbol_dominant_stance(
+    dim_results: Dict[str, DimensionDisagreement],
+) -> str:
+    """从四维聚合结果推断 symbol 级 dominant_stance。
+
+    规则：四维 dominant_stance 投票，bull/bear 各自计数，多数胜出；平票 neutral。
+    """
+    bull = sum(1 for d in dim_results.values() if d.dominant_stance == STANCE_BULLISH)
+    bear = sum(1 for d in dim_results.values() if d.dominant_stance == STANCE_BEARISH)
+    if bull > bear and bull > 0:
+        return STANCE_BULLISH
+    if bear > bull and bear > 0:
+        return STANCE_BEARISH
+    if bull > 0 or bear > 0:
+        return STANCE_NEUTRAL
+    return STANCE_UNKNOWN
+
+
+def _fact_check_reasons(
+    matrix: SymbolConsensusMatrix,
+    has_opinion_only_consensus: bool,
+    stale_ratio: float,
+    kb015_verification_count: int,
+) -> Tuple[List[str], str]:
+    """生成 needs_fact_check 触发原因与优先级。
+
+    返回 ``(reasons, priority)``。priority: low / medium / high。
+    """
+    reasons: List[str] = []
+    priority = "low"
+
+    # 1. 任一维度分歧超过阈值 → 疑似观点分裂，需事实对照。
+    split_dims = [
+        d for d in matrix.dimensions.values()
+        if d.disagreement_score >= DISAGREEMENT_THRESHOLD
+    ]
+    if split_dims:
+        dim_labels = "、".join(
+            _DIMENSION_LABELS.get(d.dimension, d.dimension) for d in split_dims
+        )
+        reasons.append(
+            f"{dim_labels}维度分歧较高（≥{DISAGREEMENT_THRESHOLD:.2f}），"
+            "需 HY-003/HY-005 做事实对照判定。"
+        )
+        priority = "medium"
+
+    # 2. 弱来源共识：仅观点类来源（broker/media/user_note/unknown）且 bullish 共识。
+    if has_opinion_only_consensus and matrix.dominant_stance == STANCE_BULLISH:
+        bull_total = sum(
+            d.bullish_count for d in matrix.dimensions.values()
+        )
+        if bull_total >= WEAK_SOURCE_BULLISH_THRESHOLD:
+            reasons.append(
+                f"看多共识仅基于券商/媒体观点（{bull_total} 条），"
+                "缺乏公告/财报原文支撑，需事实反证。"
+            )
+            if priority == "low":
+                priority = "medium"
+
+    # 3. 过期页主导：stale_ratio ≥ 50%。
+    #    覆盖两类场景：in-window 内 stale 占比高，或全部为 out-of-window stale。
+    #    stale_ratio 在调用前已做 total>0 防护（total=0 时 stale_ratio=0.0）。
+    if stale_ratio >= STALE_DOMINANCE_RATIO:
+        reasons.append(
+            f"过期研报占比 {stale_ratio:.0%}（≥{STALE_DOMINANCE_RATIO:.0%}），"
+            "观点可能基于旧数据，需刷新事实。"
+        )
+        if priority == "low":
+            priority = "medium"
+
+    # 4. KB-015 verification_needs > 0：观点冒充事实 / 缺来源。
+    if kb015_verification_count > 0:
+        reasons.append(
+            f"KB-015 标记 {kb015_verification_count} 处待验证项"
+            "（观点冒充事实 / 缺来源），需事实核验。"
+        )
+        if priority == "low":
+            priority = "medium"
+
+    # 5. 高分歧 + 弱来源共识同时出现 → 高优先级。
+    if split_dims and has_opinion_only_consensus:
+        priority = "high"
+
+    return reasons, priority
+
+
+def _render_summary(matrix: SymbolConsensusMatrix) -> str:
+    """渲染一句话中性摘要（含负面信息，无强动作词）。"""
+    parts: List[str] = []
+    stance_label = {
+        STANCE_BULLISH: "偏看多",
+        STANCE_BEARISH: "偏看空",
+        STANCE_NEUTRAL: "观点中性/分裂",
+        STANCE_UNKNOWN: "观点不明",
+    }.get(matrix.dominant_stance, matrix.dominant_stance)
+    parts.append(
+        f"近 {matrix.window_months} 月有效研报 "
+        f"{matrix.attention_count_effective} 篇，共识倾向 {stance_label}，"
+        f"consensus={matrix.consensus_score:.2f} / "
+        f"disagreement={matrix.disagreement_score:.2f}"
+    )
+    # 负面信息：重复 / 过期 / 低置信。
+    negatives: List[str] = []
+    if matrix.report_count_duplicate:
+        negatives.append(f"重复报告 {matrix.report_count_duplicate}")
+    if matrix.stale_count:
+        negatives.append(f"过期 {matrix.stale_count}")
+    if matrix.low_confidence_count:
+        negatives.append(f"低置信 {matrix.low_confidence_count}")
+    if negatives:
+        parts.append("负面：" + "、".join(negatives))
+    if matrix.needs_fact_check:
+        parts.append(
+            f"需事实反证（{matrix.fact_check_priority}）："
+            + "；".join(matrix.fact_check_reasons[:2])
+        )
+    return "；".join(parts) + "。"
+
+
+# ── 单 symbol 矩阵构建 ────────────────────────────────────────────────
+
+
+def _build_symbol_matrix(
+    symbol_key: str,
+    bare_code: str,
+    name: str,
+    pages: List[ResearchFactOpinionPage],
+    *,
+    window_months: int,
+    today: date,
+) -> SymbolConsensusMatrix:
+    """从 KB-015 pages 构建单 symbol 的共识 / 分歧矩阵。"""
+    matrix = SymbolConsensusMatrix(
+        symbol_key=symbol_key,
+        bare_code=bare_code,
+        name=name,
+        window_months=window_months,
+    )
+    matrix.report_count_total = len(pages)
+
+    # 1. 时间窗口过滤。
+    #    **过期页绕过窗口**（对应任务"对过期观点做去重/衰减"——decay not delete）：
+    #    stale_risk=高 或 valid_until 过期的页即使超出 3/6/12 月窗口，
+    #    仍纳入矩阵并标 stale_count，触发 needs_fact_check（建议刷新事实）。
+    in_window_pages: List[ResearchFactOpinionPage] = []
+    stale_out_of_window: List[ResearchFactOpinionPage] = []
+    for p in pages:
+        if _within_window(p.report_date, today, window_months):
+            in_window_pages.append(p)
+        elif p.stale_status == STALE_STALE:
+            stale_out_of_window.append(p)
+    all_matrix_pages = in_window_pages + stale_out_of_window
+    matrix.report_count_in_window = len(in_window_pages)
+
+    # 2. 为每页构建 ReportStance（含四维立场）。
+    reports: List[ReportStance] = []
+    for p in all_matrix_pages:
+        dims: Dict[str, DimensionStance] = {}
+        for dim in DIMENSIONS:
+            dim_claims = _page_dimension_claims(p, dim)
+            dims[dim] = _detect_dimension_stance(dim, dim_claims)
+        overall = _detect_overall_stance(dims)
+        reports.append(ReportStance(
+            rel_path=p.rel_path,
+            title=p.title,
+            symbol=p.symbol,
+            name=p.name,
+            source_quality_tier=p.source_quality_tier,
+            report_date=p.report_date,
+            stale_status=p.stale_status,
+            confidence=p.confidence,
+            institution=_extract_institution(p),
+            overall_stance=overall,
+            dimensions=dims,
+        ))
+
+    # 3. 机构 / 标题去重。
+    _mark_duplicates(reports)
+
+    # 4. 聚合维度分歧。
+    dim_results: Dict[str, DimensionDisagreement] = {}
+    for dim in DIMENSIONS:
+        dim_results[dim] = _dimension_disagreement(dim, reports)
+    matrix.dimensions = dim_results
+
+    # 5. 共识 / 分歧分数。
+    non_dup_reports = [r for r in reports if not r.is_duplicate]
+    if dim_results:
+        valid_disagreements = [
+            d.disagreement_score for d in dim_results.values()
+        ]
+        avg_disagreement = sum(valid_disagreements) / len(valid_disagreements)
+        matrix.disagreement_score = sum(valid_disagreements)
+        matrix.consensus_score = max(0.0, 1.0 - avg_disagreement)
+    matrix.dominant_stance = _symbol_dominant_stance(dim_results)
+
+    # 6. 统计字段。
+    #    stale_count 包含 in-window stale + out-of-window stale（过期绕过窗口）。
+    matrix.report_count_duplicate = sum(1 for r in reports if r.is_duplicate)
+    matrix.stale_count = sum(
+        1 for r in non_dup_reports if r.stale_status == STALE_STALE
+    )
+    matrix.fresh_count = sum(
+        1 for r in non_dup_reports if r.stale_status == STALE_FRESH
+    )
+    matrix.low_confidence_count = sum(
+        1 for r in non_dup_reports if r.stale_status == STALE_LOW_CONFIDENCE
+    )
+    # attention_count_effective = 非重复 fresh + 部分 low_confidence
+    # （low_confidence 按 0.5 权重近似，向下取整）。
+    # 注意：out-of-window stale 不计入有效关注度（已过期）。
+    matrix.attention_count_effective = (
+        matrix.fresh_count + matrix.low_confidence_count // 2
+    )
+
+    # 7. needs_fact_check 判定。
+    has_opinion_only = all(
+        r.source_quality_tier in OPINION_ONLY_TIERS for r in non_dup_reports
+    ) and len(non_dup_reports) > 0
+    # stale_ratio：stale / total_matrix_pages（含 out-of-window stale）。
+    total_for_ratio = matrix.report_count_in_window + len(stale_out_of_window)
+    stale_ratio = (
+        matrix.stale_count / total_for_ratio if total_for_ratio > 0 else 0.0
+    )
+    kb015_verification = sum(
+        len(p.verification_needs) for p in all_matrix_pages
+    )
+    reasons, priority = _fact_check_reasons(
+        matrix, has_opinion_only, stale_ratio, kb015_verification
+    )
+    matrix.needs_fact_check = bool(reasons)
+    matrix.fact_check_reasons = reasons[:_MAX_REASONS]
+    matrix.fact_check_priority = priority
+
+    # 8. 报告与摘要。
+    matrix.reports = reports[:_MAX_MATRIX_PAGES]
+    matrix.summary = _render_summary(matrix)
+
+    return matrix
+
+
+# ── 主入口 ────────────────────────────────────────────────────────────
+
+
+def build_research_consensus_matrix(
+    knowledge_root: str,
+    *,
+    symbol: Optional[str] = None,
+    name: Optional[str] = None,
+    window_months: int = DEFAULT_WINDOW_MONTHS,
+    today: Optional[date] = None,
+) -> ResearchConsensusMatrixResult:
+    """构建研报共识 / 分歧矩阵。
+
+    参数:
+        knowledge_root: 知识库根目录绝对路径。
+        symbol: A 股代码或代码+后缀（如 ``603296`` / ``603296.SH``）。
+            ``None`` 时不限 symbol（全库索引模式，扫描所有 investment 页）。
+        name: 公司简称（与页面 symbols 简称或 title 子串匹配）。
+        window_months: 时间窗口（3/6/12），默认 12。
+        today: 用于时间窗口与 stale 判定的基准日期（测试注入）；
+            ``None`` 用 ``date.today()``。
+
+    返回:
+        :class:`ResearchConsensusMatrixResult`。单页解析失败不抛异常，记入 errors。
+        知识库不存在时返回 status=FAILED。
+    """
+    symbol = (symbol or "").strip() or None
+    name = (name or "").strip() or None
+    if today is None:
+        today = date.today()
+
+    query_desc: Dict[str, Any] = {}
+    if symbol:
+        query_desc["symbol"] = symbol
+    if name:
+        query_desc["name"] = name
+
+    root = Path(knowledge_root).expanduser()
+    result = ResearchConsensusMatrixResult(
+        knowledge_root=str(root),
+        window_months=window_months,
+        as_of_date=today.strftime("%Y-%m-%d"),
+        query=query_desc,
+    )
+
+    if not root.exists():
+        result.status = STATUS_FAILED
+        result.errors.append(f"knowledge_root 不存在: {root}")
+        return result
+
+    investment_dir = root / INVESTMENT_SUBDIR
+    if not investment_dir.exists():
+        result.errors.append(f"investment 分区不存在: {investment_dir}")
+        result.status = STATUS_NORMAL_NO_DATA
+        return result
+
+    md_files = _iter_markdown_files(investment_dir)
+    if not md_files:
+        result.status = STATUS_NORMAL_NO_DATA
+        return result
+
+    # ── 1. 逐页读 frontmatter 做 symbol/name 预筛 → 分组 ──
+    # symbol_key → list of (rel_path, abs_path, frontmatter)
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for md in md_files:
+        rel = str(md.relative_to(root))
+        try:
+            text = _read_text_safe(md)
+            fm_text, _body = _split_frontmatter(text)
+            frontmatter = _parse_frontmatter(fm_text)
+        except Exception as exc:  # pragma: no cover - 容错
+            result.errors.append(f"{rel}: frontmatter 解析失败 {exc!r}")
+            continue
+
+        page_symbols = _normalize_symbol_list(frontmatter.get("symbols"))
+        title = _safe_str(frontmatter.get("title")) or md.stem
+
+        # 命中判定。
+        matched = False
+        if not symbol and not name:
+            matched = True
+        elif symbol and _symbol_matches(symbol, page_symbols):
+            matched = True
+        elif name:
+            q = name.lower()
+            if q in (title or "").lower():
+                matched = True
+            for entry in page_symbols:
+                parts = entry.split(maxsplit=1)
+                sname = parts[1] if len(parts) > 1 else ""
+                if sname and q in sname.lower():
+                    matched = True
+                    break
+
+        if not matched:
+        if not matched:
+            continue
+
+        # 为每个命中 symbol 建组（多 symbol 页同时进多组）。
+        for entry in page_symbols:
+            code_norm, bare, sname = _split_symbol_entry(entry)
+            if not code_norm and not sname:
+                continue
+            skey = code_norm or sname
+            # symbol 精确查询时只保留目标 symbol 的组。
+            if symbol:
+                if not _symbol_matches(symbol, [entry]):
+                    continue
+            if skey not in grouped:
+                grouped[skey] = {
+                    "bare_code": bare,
+                    "name": sname,
+                    "paths": [],
+                }
+            grouped[skey]["paths"].append(rel)
+
+    if not grouped:
+        result.status = STATUS_NORMAL_NO_DATA
+        return result
+
+    # ── 2. 按 symbol 分组构建 KB-015 index + matrix ──
+    matrices: List[SymbolConsensusMatrix] = []
+    for skey, info in grouped.items():
+        # 用 KB-015 做 per-symbol claim 抽取（只读，不重复实现）。
+        try:
+            kb015_result = build_research_fact_opinion_index(
+                knowledge_root,
+                symbol=skey,
+                name=info.get("name") or None,
+                today=today,
+                max_pages=_MAX_MATRIX_PAGES,
+            )
+        except Exception as exc:  # pragma: no cover
+            result.errors.append(f"{skey}: KB-015 索引失败 {exc!r}")
+            continue
+
+        if not kb015_result.pages:
+            continue
+        result.errors.extend(kb015_result.errors or [])
+
+        try:
+            matrix = _build_symbol_matrix(
+                skey,
+                info.get("bare_code", ""),
+                info.get("name", ""),
+                kb015_result.pages,
+                window_months=window_months,
+                today=today,
+            )
+        except Exception as exc:  # pragma: no cover
+            result.errors.append(f"{skey}: 矩阵构建失败 {exc!r}")
+            continue
+
+        matrices.append(matrix)
+
+    # 排序：needs_fact_check=True 优先；其次 consensus_score 降序；最后 symbol_key。
+    matrices.sort(
+        key=lambda m: (
+            0 if m.needs_fact_check else 1,
+            -m.consensus_score,
+            m.symbol_key,
+        )
+    )
+    result.symbols = matrices
+    result.needs_fact_check_symbols = [
+        m.symbol_key for m in matrices if m.needs_fact_check
+    ]
+
+    # 状态机。
+    if not matrices:
+        result.status = STATUS_NORMAL_NO_DATA
+    elif all(m.report_count_total == 0 for m in matrices):
+        result.status = STATUS_NORMAL_NO_DATA
+    else:
+        # 任一 matrix 有 fresh 页 → HAS_DATA；否则按 stale/low 聚合。
+        any_fresh = any(m.fresh_count > 0 for m in matrices)
+        all_stale = all(
+            m.fresh_count == 0 and m.low_confidence_count == 0
+            for m in matrices if m.report_count_in_window > 0
+        )
+        if any_fresh:
+            result.status = STATUS_HAS_DATA
+        elif all_stale:
+            result.status = STATUS_STALE
+        else:
+            result.status = STATUS_LOW_CONFIDENCE
+
+    return result
+
+
+# ── 单 symbol 查询便利 ────────────────────────────────────────────────
+
+
+def lookup_research_consensus_matrix(
+    knowledge_root: str,
+    symbol: Optional[str],
+    *,
+    window_months: int = DEFAULT_WINDOW_MONTHS,
+    today: Optional[date] = None,
+) -> Optional[SymbolConsensusMatrix]:
+    """单 symbol 查询共识 / 分歧矩阵。
+
+    无命中返回 ``None``；永远不会因单页解析失败而抛异常。
+    """
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return None
+    result = build_research_consensus_matrix(
+        knowledge_root, symbol=symbol,
+        window_months=window_months, today=today,
+    )
+    for m in result.symbols:
+        if _symbol_equivalent(symbol, m.symbol_key, m.bare_code):
+            return m
+    return None
+
+
+_SUFFIX_RE = re.compile(r"\.(SH|SZ|BJ|HK|US|SS)$", re.IGNORECASE)
+
+
+def _symbol_equivalent(query: str, sym_key: str, bare_code: str) -> bool:
+    """宽松等价判定（与 KB-008 口径一致）。
+
+    bare_code 仅在 sym_key 不是代码形态（如 sym_key 是公司简称）时兜底使用；
+    若 sym_key 本身已是代码（如 ``600200.SH``），则 bare_code 不可信
+    （可能来自不一致的调用方输入），避免误匹配。
+    """
+    if not query or not sym_key:
+        return False
+    q = query.strip().upper()
+    s = sym_key.strip().upper()
+    if q == s:
+        return True
+    q_bare = _SUFFIX_RE.sub("", q).strip()
+    s_bare = _SUFFIX_RE.sub("", s).strip()
+    if q_bare and s_bare and q_bare == s_bare:
+        return True
+    # bare_code 兜底：仅当 sym_key 不是代码形态时才使用。
+    if s_bare and s_bare.isdigit():
+        return False
+    if bare_code and q_bare and q_bare == bare_code.upper():
+        return True
+    return False
+
+
+# ── TA 可消费扁平摘要 ────────────────────────────────────────────────
+
+
+def matrix_to_ta_consumable_summary(
+    matrix: Optional[SymbolConsensusMatrix],
+) -> Dict[str, Any]:
+    """把单 symbol 矩阵转为 TA/TradeFlow 可复用的扁平字典。
+
+    无命中（``matrix is None``）时返回空结构（NORMAL_NO_DATA）。
+    """
+    if matrix is None:
+        return {
+            "has_hit": False,
+            "consensus_score": 0.0,
+            "disagreement_score": 0.0,
+            "attention_count_effective": 0,
+            "dominant_stance": STANCE_UNKNOWN,
+            "needs_fact_check": False,
+            "fact_check_priority": "low",
+            "fact_check_reasons": [],
+            "dimensions_brief": {},
+            "consensus_summary": "",
+        }
+
+    dim_brief: Dict[str, Any] = {}
+    for dim in DIMENSIONS:
+        d = matrix.dimensions.get(dim)
+        if d is None:
+            dim_brief[dim] = {
+                "disagreement_score": 0.0,
+                "dominant_stance": STANCE_UNKNOWN,
+            }
+        else:
+            dim_brief[dim] = {
+                "disagreement_score": round(d.disagreement_score, 3),
+                "dominant_stance": d.dominant_stance,
+                "bullish_count": d.bullish_count,
+                "bearish_count": d.bearish_count,
+            }
+    return {
+        "has_hit": True,
+        "consensus_score": round(matrix.consensus_score, 3),
+        "disagreement_score": round(matrix.disagreement_score, 3),
+        "attention_count_effective": matrix.attention_count_effective,
+        "dominant_stance": matrix.dominant_stance,
+        "needs_fact_check": matrix.needs_fact_check,
+        "fact_check_priority": matrix.fact_check_priority,
+        "fact_check_reasons": list(matrix.fact_check_reasons),
+        "dimensions_brief": dim_brief,
+        "consensus_summary": matrix.summary,
+    }
+
+
+def matrix_to_summary_dict(
+    matrix: Optional[SymbolConsensusMatrix],
+) -> Dict[str, Any]:
+    """[KB-008/KB-016] 把单 symbol 矩阵转为前端/UI 可展示的扁平字典。
+
+    字段名与 :func:`attention_to_summary` 风格一致，便于前端复用渲染。
+    """
+    if matrix is None:
+        return {
+            "research_consensus_has_hit": False,
+            "research_consensus_score": 0.0,
+            "research_disagreement_score": 0.0,
+            "research_attention_effective_count": 0,
+            "research_consensus_stance": STANCE_UNKNOWN,
+            "research_consensus_needs_fact_check": False,
+            "research_consensus_priority": "low",
+            "research_consensus_reasons": [],
+            "research_consensus_summary": "",
+        }
+    return {
+        "research_consensus_has_hit": True,
+        "research_consensus_score": round(matrix.consensus_score, 3),
+        "research_disagreement_score": round(matrix.disagreement_score, 3),
+        "research_attention_effective_count": matrix.attention_count_effective,
+        "research_consensus_stance": matrix.dominant_stance,
+        "research_consensus_needs_fact_check": matrix.needs_fact_check,
+        "research_consensus_priority": matrix.fact_check_priority,
+        "research_consensus_reasons": list(matrix.fact_check_reasons),
+        "research_consensus_summary": matrix.summary,
+    }
+
+
+# ── 报告渲染 ──────────────────────────────────────────────────────────
+
+
+_STATUS_LABELS = {
+    STATUS_HAS_DATA: "已生成研报共识/分歧矩阵",
+    STATUS_NORMAL_NO_DATA: "无研报命中（窗口内）",
+    STATUS_FAILED: "研报共识/分歧矩阵构建失败",
+    STATUS_STALE: "研报全部已过期（仅供参考）",
+    STATUS_LOW_CONFIDENCE: "研报全部低置信（仅供参考）",
+}
+
+_STANCE_LABELS = {
+    STANCE_BULLISH: "偏看多",
+    STANCE_BEARISH: "偏看空",
+    STANCE_NEUTRAL: "中性/分裂",
+    STANCE_UNKNOWN: "不明",
+}
+
+
+def render_research_consensus_matrix_report(
+    result: ResearchConsensusMatrixResult,
+    *,
+    top: int = 20,
+) -> str:
+    """渲染完整的研报共识 / 分歧矩阵 Markdown 报告。
+
+    只展示摘要和路径，不展示长正文。状态为 NORMAL_NO_DATA / FAILED 时返回
+    最小化报告（不抛异常）。**不含买卖建议或强动作词**。
+    """
+    lines: List[str] = []
+    lines.append(f"# 研报共识/分歧矩阵报告 — {TASK_CODE}")
+    lines.append("")
+    lines.append(f"- 知识库：`{result.knowledge_root}`")
+    lines.append(f"- 查询：`{result.query or '全库'}`")
+    lines.append(f"- 时间窗口：近 {result.window_months} 月")
+    lines.append(f"- 基准日期：{result.as_of_date}")
+    status_label = _STATUS_LABELS.get(result.status, result.status)
+    lines.append(f"- 状态：{result.status}（{status_label}）")
+    lines.append(f"- 命中标的数：{len(result.symbols)}")
+    lines.append(
+        f"- 需事实反证候选：{len(result.needs_fact_check_symbols)} 个"
+    )
+    if result.errors:
+        lines.append(f"- 错误：{'; '.join(result.errors[:5])}")
+    lines.append("")
+    lines.append(
+        "> 本矩阵聚合同股多份研报的一致性 / 分歧，"
+        "**不构成买卖建议**；多研报高关注只提高研究优先级，"
+        "不绕过 TradeFlow/TA 强动作门禁。"
+        "同机构重复覆盖已去重；过期观点已衰减为弱证据。"
+    )
+    lines.append("")
+
+    if result.status in (STATUS_NORMAL_NO_DATA, STATUS_FAILED):
+        lines.append("（无研报命中或构建失败）")
+        return "\n".join(lines)
+
+    # 概览表。
+    top_syms = result.symbols[:top]
+    if top_syms:
+        lines.append("## 概览")
+        lines.append("")
+        lines.append(
+            "| 标的 | 有效研报 | consensus | disagreement | 倾向 | "
+            "需反证 | 优先级 |"
+        )
+        lines.append("|------|----------|-----------|--------------|------|"
+            "--------|--------|")
+        for m in top_syms:
+            stance = _STANCE_LABELS.get(m.dominant_stance, m.dominant_stance)
+            nfc = "是" if m.needs_fact_check else "—"
+            lines.append(
+                f"| `{m.symbol_key}` {m.name} | "
+                f"{m.attention_count_effective} | "
+                f"{m.consensus_score:.2f} | {m.disagreement_score:.2f} | "
+                f"{stance} | {nfc} | {m.fact_check_priority} |"
+            )
+        lines.append("")
+
+    # 详细矩阵。
+    for idx, m in enumerate(top_syms[:10], 1):
+        lines.append(f"## {idx}. `{m.symbol_key}` {m.name or '未命名'}")
+        lines.append("")
+        lines.append(
+            f"- 有效研报：**{m.attention_count_effective}** ｜ "
+            f"窗口内 {m.report_count_in_window}（重复 {m.report_count_duplicate}）｜ "
+            f"fresh {m.fresh_count} / stale {m.stale_count} / "
+            f"low_conf {m.low_confidence_count}"
+        )
+        lines.append(
+            f"- consensus_score：**{m.consensus_score:.2f}** ｜ "
+            f"disagreement_score：**{m.disagreement_score:.2f}** ｜ "
+            f"dominant_stance：**"
+            f"{_STANCE_LABELS.get(m.dominant_stance, m.dominant_stance)}**"
+        )
+        if m.needs_fact_check:
+            lines.append(
+                f"- ⚠️ **needs_fact_check=True**（优先级 {m.fact_check_priority}）："
+            )
+            for r in m.fact_check_reasons:
+                lines.append(f"  - {r}")
+        lines.append(f"- 摘要：{m.summary}")
+        lines.append("")
+
+        # 四维矩阵。
+        lines.append("### 四维分歧矩阵")
+        lines.append("")
+        lines.append("| 维度 | 看多 | 看空 | 中性 | 不明 | 分歧 | 主导 |")
+        lines.append("|------|------|------|------|------|------|------|")
+        for dim in DIMENSIONS:
+            d = m.dimensions.get(dim)
+            if d is None:
+                lines.append(
+                    f"| {_DIMENSION_LABELS[dim]} | - | - | - | - | - | - |"
+                )
+                continue
+            lines.append(
+                f"| {_DIMENSION_LABELS[dim]} | "
+                f"{d.bullish_count} | {d.bearish_count} | "
+                f"{d.neutral_count} | {d.unknown_count} | "
+                f"{d.disagreement_score:.2f} | "
+                f"{_STANCE_LABELS.get(d.dominant_stance, d.dominant_stance)} |"
+            )
+        lines.append("")
+
+        # 报告列表。
+        if m.reports:
+            lines.append("### 报告列表")
+            lines.append("")
+            for r in m.reports:
+                dup_tag = " [重复]" if r.is_duplicate else ""
+                if r.duplicate_reason:
+                    dup_tag += f" ← {r.duplicate_reason}"
+                flags = []
+                if r.stale_status == STALE_STALE:
+                    flags.append("STALE")
+                if r.stale_status == STALE_LOW_CONFIDENCE:
+                    flags.append("LOW_CONF")
+                flag_text = f" [{', '.join(flags)}]" if flags else ""
+                stance_label = _STANCE_LABELS.get(
+                    r.overall_stance, r.overall_stance
+                )
+                lines.append(
+                    f"- `{r.rel_path}` ({r.source_quality_tier})"
+                    f"{flag_text}{dup_tag} → {stance_label}"
+                )
+            lines.append("")
+
+    # 计分口径。
+    lines.append("## 计分口径")
+    lines.append("")
+    lines.append("```")
+    lines.append("# 单维分歧 disagreement = 1 - max(bull, bear) / total")
+    lines.append("# consensus_score = 1 - mean(dim_disagreement)")
+    lines.append("# disagreement_score = sum(dim_disagreement)")
+    lines.append(
+        f"# needs_fact_check 触发：分歧≥{DISAGREEMENT_THRESHOLD} / "
+        "弱来源共识 / 过期主导 / KB-015 验证缺口"
+    )
+    lines.append("```")
+    lines.append("")
+    lines.append(
+        f"_由 `tradingagents.dataflows.research_consensus_matrix` 只读生成；"
+        f"任务编号 {TASK_CODE}。_"
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── 便利函数 ──────────────────────────────────────────────────────────
+
+
+def suggest_report_output_path(
+    docs_dir: str = "docs/knowledge_reports",
+) -> str:
+    """建议的报告输出路径：``docs/knowledge_reports/research_consensus_matrix-YYYY-MM-DD.md``。"""
+    today = date.today().strftime("%Y-%m-%d")
+    return os.path.join(docs_dir, f"research_consensus_matrix-{today}.md")
+
+
+def has_forbidden_action_words(text: str) -> bool:
+    """检查文本是否含强动作词（防回归辅助）。"""
+    for word in _FORBIDDEN_ACTION_WORDS:
+        if word in (text or ""):
+            return True
+    return False
+
+
+__all__ = [
+    "VENDOR",
+    "TASK_CODE",
+    "STANCE_BULLISH",
+    "STANCE_BEARISH",
+    "STANCE_NEUTRAL",
+    "STANCE_UNKNOWN",
+    "ALL_STANCES",
+    "DIM_PERFORMANCE",
+    "DIM_SUPPLY_CHAIN_ROLE",
+    "DIM_RISK",
+    "DIM_VALUATION",
+    "DIMENSIONS",
+    "WINDOW_3M",
+    "WINDOW_6M",
+    "WINDOW_12M",
+    "DEFAULT_WINDOW_MONTHS",
+    "DimensionStance",
+    "ReportStance",
+    "DimensionDisagreement",
+    "SymbolConsensusMatrix",
+    "ResearchConsensusMatrixResult",
+    "split_institution_helper",
+    "build_research_consensus_matrix",
+    "lookup_research_consensus_matrix",
+    "matrix_to_ta_consumable_summary",
+    "matrix_to_summary_dict",
+    "render_research_consensus_matrix_report",
+    "suggest_report_output_path",
+    "has_forbidden_action_words",
+]
+
+exec
+/bin/zsh -lc 'python -m py_compile tradingagents/dataflows/research_consensus_matrix.py scripts/research_consensus_matrix.py tests/test_kb016_research_consensus_matrix.py' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && python -m py_compile tradingagents/dataflows/research_consensus_matrix.py scripts/research_consensus_matrix.py tests/test_kb016_research_consensus_matrix.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/research_consensus_matrix.py | sed -n '820,900p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   820	    return "；".join(parts) + "。"
+   821	
+   822	
+   823	# ── 单 symbol 矩阵构建 ────────────────────────────────────────────────
+   824	
+   825	
+   826	def _build_symbol_matrix(
+   827	    symbol_key: str,
+   828	    bare_code: str,
+   829	    name: str,
+   830	    pages: List[ResearchFactOpinionPage],
+   831	    *,
+   832	    window_months: int,
+   833	    today: date,
+   834	) -> SymbolConsensusMatrix:
+   835	    """从 KB-015 pages 构建单 symbol 的共识 / 分歧矩阵。"""
+   836	    matrix = SymbolConsensusMatrix(
+   837	        symbol_key=symbol_key,
+   838	        bare_code=bare_code,
+   839	        name=name,
+   840	        window_months=window_months,
+   841	    )
+   842	    matrix.report_count_total = len(pages)
+   843	
+   844	    # 1. 时间窗口过滤。
+   845	    #    **过期页绕过窗口**（对应任务"对过期观点做去重/衰减"——decay not delete）：
+   846	    #    stale_risk=高 或 valid_until 过期的页即使超出 3/6/12 月窗口，
+   847	    #    仍纳入矩阵并标 stale_count，触发 needs_fact_check（建议刷新事实）。
+   848	    in_window_pages: List[ResearchFactOpinionPage] = []
+   849	    stale_out_of_window: List[ResearchFactOpinionPage] = []
+   850	    for p in pages:
+   851	        if _within_window(p.report_date, today, window_months):
+   852	            in_window_pages.append(p)
+   853	        elif p.stale_status == STALE_STALE:
+   854	            stale_out_of_window.append(p)
+   855	    all_matrix_pages = in_window_pages + stale_out_of_window
+   856	    matrix.report_count_in_window = len(in_window_pages)
+   857	
+   858	    # 2. 为每页构建 ReportStance（含四维立场）。
+   859	    reports: List[ReportStance] = []
+   860	    for p in all_matrix_pages:
+   861	        dims: Dict[str, DimensionStance] = {}
+   862	        for dim in DIMENSIONS:
+   863	            dim_claims = _page_dimension_claims(p, dim)
+   864	            dims[dim] = _detect_dimension_stance(dim, dim_claims)
+   865	        overall = _detect_overall_stance(dims)
+   866	        reports.append(ReportStance(
+   867	            rel_path=p.rel_path,
+   868	            title=p.title,
+   869	            symbol=p.symbol,
+   870	            name=p.name,
+   871	            source_quality_tier=p.source_quality_tier,
+   872	            report_date=p.report_date,
+   873	            stale_status=p.stale_status,
+   874	            confidence=p.confidence,
+   875	            institution=_extract_institution(p),
+   876	            overall_stance=overall,
+   877	            dimensions=dims,
+   878	        ))
+   879	
+   880	    # 3. 机构 / 标题去重。
+   881	    _mark_duplicates(reports)
+   882	
+   883	    # 4. 聚合维度分歧。
+   884	    dim_results: Dict[str, DimensionDisagreement] = {}
+   885	    for dim in DIMENSIONS:
+   886	        dim_results[dim] = _dimension_disagreement(dim, reports)
+   887	    matrix.dimensions = dim_results
+   888	
+   889	    # 5. 共识 / 分歧分数。
+   890	    non_dup_reports = [r for r in reports if not r.is_duplicate]
+   891	    if dim_results:
+   892	        valid_disagreements = [
+   893	            d.disagreement_score for d in dim_results.values()
+   894	        ]
+   895	        avg_disagreement = sum(valid_disagreements) / len(valid_disagreements)
+   896	        matrix.disagreement_score = sum(valid_disagreements)
+   897	        matrix.consensus_score = max(0.0, 1.0 - avg_disagreement)
+   898	    matrix.dominant_stance = _symbol_dominant_stance(dim_results)
+   899	
+   900	    # 6. 统计字段。
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/research_consensus_matrix.py | sed -n '990,1085p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   990	    if not root.exists():
+   991	        result.status = STATUS_FAILED
+   992	        result.errors.append(f"knowledge_root 不存在: {root}")
+   993	        return result
+   994	
+   995	    investment_dir = root / INVESTMENT_SUBDIR
+   996	    if not investment_dir.exists():
+   997	        result.errors.append(f"investment 分区不存在: {investment_dir}")
+   998	        result.status = STATUS_NORMAL_NO_DATA
+   999	        return result
+  1000	
+  1001	    md_files = _iter_markdown_files(investment_dir)
+  1002	    if not md_files:
+  1003	        result.status = STATUS_NORMAL_NO_DATA
+  1004	        return result
+  1005	
+  1006	    # ── 1. 逐页读 frontmatter 做 symbol/name 预筛 → 分组 ──
+  1007	    # symbol_key → list of (rel_path, abs_path, frontmatter)
+  1008	    grouped: Dict[str, Dict[str, Any]] = {}
+  1009	
+  1010	    for md in md_files:
+  1011	        rel = str(md.relative_to(root))
+  1012	        try:
+  1013	            text = _read_text_safe(md)
+  1014	            fm_text, _body = _split_frontmatter(text)
+  1015	            frontmatter = _parse_frontmatter(fm_text)
+  1016	        except Exception as exc:  # pragma: no cover - 容错
+  1017	            result.errors.append(f"{rel}: frontmatter 解析失败 {exc!r}")
+  1018	            continue
+  1019	
+  1020	        page_symbols = _normalize_symbol_list(frontmatter.get("symbols"))
+  1021	        title = _safe_str(frontmatter.get("title")) or md.stem
+  1022	
+  1023	        # 命中判定。
+  1024	        matched = False
+  1025	        if not symbol and not name:
+  1026	            matched = True
+  1027	        elif symbol and _symbol_matches(symbol, page_symbols):
+  1028	            matched = True
+  1029	        elif name:
+  1030	            q = name.lower()
+  1031	            if q in (title or "").lower():
+  1032	                matched = True
+  1033	            for entry in page_symbols:
+  1034	                parts = entry.split(maxsplit=1)
+  1035	                sname = parts[1] if len(parts) > 1 else ""
+  1036	                if sname and q in sname.lower():
+  1037	                    matched = True
+  1038	                    break
+  1039	
+  1040	        if not matched:
+  1041	            continue
+  1042	
+  1043	        # 为每个命中 symbol 建组（多 symbol 页同时进多组）。
+  1044	        for entry in page_symbols:
+  1045	            code_norm, bare, sname = _split_symbol_entry(entry)
+  1046	            if not code_norm and not sname:
+  1047	                continue
+  1048	            skey = code_norm or sname
+  1049	            # symbol 精确查询时只保留目标 symbol 的组。
+  1050	            if symbol:
+  1051	                if not _symbol_matches(symbol, [entry]):
+  1052	                    continue
+  1053	            if skey not in grouped:
+  1054	                grouped[skey] = {
+  1055	                    "bare_code": bare,
+  1056	                    "name": sname,
+  1057	                    "paths": [],
+  1058	                }
+  1059	            grouped[skey]["paths"].append(rel)
+  1060	
+  1061	    if not grouped:
+  1062	        result.status = STATUS_NORMAL_NO_DATA
+  1063	        return result
+  1064	
+  1065	    # ── 2. 按 symbol 分组构建 KB-015 index + matrix ──
+  1066	    matrices: List[SymbolConsensusMatrix] = []
+  1067	    for skey, info in grouped.items():
+  1068	        # 用 KB-015 做 per-symbol claim 抽取（只读，不重复实现）。
+  1069	        try:
+  1070	            kb015_result = build_research_fact_opinion_index(
+  1071	                knowledge_root,
+  1072	                symbol=skey,
+  1073	                name=info.get("name") or None,
+  1074	                today=today,
+  1075	                max_pages=_MAX_MATRIX_PAGES,
+  1076	            )
+  1077	        except Exception as exc:  # pragma: no cover
+  1078	            result.errors.append(f"{skey}: KB-015 索引失败 {exc!r}")
+  1079	            continue
+  1080	
+  1081	        if not kb015_result.pages:
+  1082	            continue
+  1083	        result.errors.extend(kb015_result.errors or [])
+  1084	
+  1085	        try:
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest -q tests/test_kb016_research_consensus_matrix.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 807ms:
+...................................................................      [100%]
+67 passed in 0.60s
+
+exec
+/bin/zsh -lc "sed -n '1,260p' scripts/research_consensus_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env python3
+"""KB-016 — 多研报一致性/分歧矩阵与关注度去重回放 CLI。
+
+把 Tree Work 已消化研报中的「观点/事实/预测/风险」按 symbol 聚合成共识/分歧矩阵。
+
+**只读**：绝不向知识库写文件；不调用 LLM；不访问外网；不输出原文段落；
+不写生产 DB；**不输出买卖建议或强动作词**。
+
+Usage::
+
+    # 按 symbol 查询（默认 12 个月窗口）
+    python scripts/research_consensus_matrix.py --symbol 603296
+    python scripts/research_consensus_matrix.py --symbol 603296.SH --json
+
+    # 按 name 查询
+    python scripts/research_consensus_matrix.py --name "华勤技术"
+
+    # 全库索引模式（不限 symbol/name，扫描所有 investment 页）
+    python scripts/research_consensus_matrix.py --all
+
+    # 指定时间窗口（3/6/12 月）
+    python scripts/research_consensus_matrix.py --symbol 603296 --window 6
+
+    # 只列出需要事实反证的候选
+    python scripts/research_consensus_matrix.py --all --needs-fact-check
+
+    # 输出到文件
+    python scripts/research_consensus_matrix.py --symbol 603296 \
+        --output docs/knowledge_reports/research_consensus_matrix-2026-07-12.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.dataflows.research_consensus_matrix import (  # noqa: E402
+    TASK_CODE,
+    build_research_consensus_matrix,
+    matrix_to_ta_consumable_summary,
+    render_research_consensus_matrix_report,
+    suggest_report_output_path,
+)
+from tradingagents.dataflows.local_knowledge_audit import (  # noqa: E402
+    default_knowledge_root,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="KB-016 多研报一致性/分歧矩阵与关注度去重回放",
+    )
+    parser.add_argument(
+        "--knowledge-root",
+        default=None,
+        help="知识库根目录。默认 $AUTO_DEV_KNOWLEDGE_ROOT 或 ~/Documents/knowledge。",
+    )
+    parser.add_argument(
+        "--symbol",
+        default=None,
+        help="A 股代码或代码+后缀（如 603296 / 603296.SH）。",
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="公司/主题简称（与 title/symbols 简称子串匹配）。",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="全库索引模式（不限 symbol/name，扫描所有 investment 页）。",
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=12,
+        choices=(3, 6, 12),
+        help="时间窗口（月）。默认 12。",
+    )
+    parser.add_argument(
+        "--needs-fact-check",
+        action="store_true",
+        help="只列出 needs_fact_check=True 的候选。",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="输出结构化 JSON 而非 Markdown 报告。",
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="输出 TA 可消费的扁平摘要 JSON（matrix_to_ta_consumable_summary）。",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="输出路径。默认仅打印到 stdout。",
+    )
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="同时打印 payload 到 stdout（与 --output 配合）。",
+    )
+    parser.add_argument(
+        "--suggest-output",
+        action="store_true",
+        help="打印建议的输出路径后退出（不执行查询）。",
+    )
+    args = parser.parse_args()
+
+    if args.suggest_output:
+        print(suggest_report_output_path())
+        return 0
+
+    if not args.all and not any([args.symbol, args.name]):
+        parser.error(
+            "需要 --symbol / --name 中的一个，或使用 --all 全库索引模式"
+        )
+
+    knowledge_root = args.knowledge_root or default_knowledge_root()
+
+    result = build_research_consensus_matrix(
+        knowledge_root,
+        symbol=args.symbol,
+        name=args.name,
+        window_months=args.window,
+    )
+
+    if args.needs_fact_check:
+        # 过滤后只保留 needs_fact_check=True 的 symbol。
+        result.symbols = [
+            s for s in result.symbols if s.needs_fact_check
+        ]
+        result.needs_fact_check_symbols = [
+            s.symbol_key for s in result.symbols
+        ]
+
+    if args.json:
+        payload = json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+    elif args.summary:
+        if len(result.symbols) == 1:
+            payload = json.dumps(
+                matrix_to_ta_consumable_summary(result.symbols[0]),
+                ensure_ascii=False, indent=2,
+            )
+        else:
+            payload = json.dumps(
+                {
+                    "status": result.status,
+                    "symbols": [
+                        matrix_to_ta_consumable_summary(s)
+                        for s in result.symbols
+                    ],
+                },
+                ensure_ascii=False, indent=2,
+            )
+    else:
+        payload = render_research_consensus_matrix_report(result)
+
+    print_to_stdout = args.stdout or not args.output
+    if print_to_stdout:
+        print(payload)
+    if args.output:
+        out_dir = os.path.dirname(args.output)
+        if out_dir and not os.path.isdir(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        print(
+            f"[{TASK_CODE}] matrix written to {args.output} "
+            f"(status={result.status}, symbols={len(result.symbols)}, "
+            f"needs_fact_check={len(result.needs_fact_check_symbols)})",
+            file=sys.stderr,
+        )
+
+    return 0 if result.status != "FAILED" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+exec
+/bin/zsh -lc "grep -n \"def test\" tests/test_kb016_research_consensus_matrix.py | head -80 && sed -n '1,220p' tests/test_kb016_research_consensus_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+309:    def test_consistent_bullish(self, fixture_kb: Path):
+326:    def test_consistent_bearish(self, fixture_kb: Path):
+337:    def test_split_opinions_triggers_fact_check(self, fixture_kb: Path):
+353:    def test_duplicate_reports_collapsed(self, fixture_kb: Path):
+367:    def test_stale_report_low_weight(self, fixture_kb: Path):
+383:    def test_all_four_dimensions_present(self, fixture_kb: Path):
+393:    def test_performance_dimension_stance_detection(self):
+406:    def test_risk_dimension_stance_detection(self):
+417:    def test_valuation_dimension_stance_detection(self):
+428:    def test_supply_chain_role_dimension_stance_detection(self):
+439:    def test_neutral_when_equal_hits(self):
+455:    def test_unknown_when_no_hits(self):
+471:    def test_same_institution_same_title_marked_dup(self):
+493:    def test_different_institution_not_dup(self):
+508:    def test_same_title_different_stance_not_dup(self):
+523:    def test_same_path_always_dup(self):
+539:    def test_norm_title_strips_dates_and_suffix(self):
+544:    def test_split_institution_helper_basic(self):
+554:    def test_within_window_recent(self):
+557:    def test_within_window_old_report(self):
+561:    def test_within_window_no_date_kept(self):
+566:    def test_within_window_invalid_date_kept(self):
+570:    def test_window_3m_filters_old(self, fixture_kb: Path):
+589:    def test_split_triggers_fact_check(self, fixture_kb: Path):
+597:    def test_stale_dominance_triggers_fact_check(self, fixture_kb: Path):
+605:    def test_consistent_does_not_force_fact_check(self, fixture_kb: Path):
+616:    def test_fact_check_priority_values(self, fixture_kb: Path):
+623:    def test_needs_fact_check_symbols_aggregated(self, fixture_kb: Path):
+639:    def test_no_strong_action_words_in_report(self, fixture_kb: Path):
+647:    def test_no_strong_action_words_in_summary(self, fixture_kb: Path):
+655:    def test_consensus_score_not_action_signal(self, fixture_kb: Path):
+664:    def test_has_forbidden_action_words_detector(self):
+673:    def test_report_has_title_and_status(self, fixture_kb: Path):
+681:    def test_report_empty_result(self, tmp_path: Path):
+690:    def test_report_failed(self, tmp_path: Path):
+697:    def test_report_contains_matrix_table(self, fixture_kb: Path):
+707:    def test_report_contains_paths_not_full_text(self, fixture_kb: Path):
+717:    def test_report_top_limit(self, fixture_kb: Path):
+733:    def test_result_json_serializable(self, fixture_kb: Path):
+743:    def test_symbol_matrix_serializable(self, fixture_kb: Path):
+754:    def test_dimension_stance_serializable(self):
+765:    def test_ta_consumable_summary_hit(self, fixture_kb: Path):
+775:    def test_ta_consumable_summary_empty(self):
+781:    def test_matrix_to_summary_dict(self, fixture_kb: Path):
+789:    def test_matrix_to_summary_dict_empty(self):
+799:    def test_knowledge_root_not_modified(self, fixture_kb: Path):
+809:    def test_no_db_writes(self, fixture_kb: Path, tmp_path: Path):
+817:    def test_consensus_not_buy_signal(self, fixture_kb: Path):
+826:    def test_weak_source_not_overrides_action(self, fixture_kb: Path):
+843:    def test_lookup_found(self, fixture_kb: Path):
+850:    def test_lookup_with_suffix(self, fixture_kb: Path):
+856:    def test_lookup_not_found(self, fixture_kb: Path):
+862:    def test_lookup_empty_symbol(self, fixture_kb: Path):
+868:    def test_symbol_equivalent(self):
+879:    def test_knowledge_root_not_exists(self, tmp_path: Path):
+886:    def test_investment_dir_not_exists(self, tmp_path: Path):
+893:    def test_empty_investment_dir(self, tmp_path: Path):
+901:    def test_no_matching_symbol(self, fixture_kb: Path):
+908:    def test_single_page_does_not_crash(self, tmp_path: Path):
+919:    def test_all_index_mode(self, fixture_kb: Path):
+931:    def test_default_window_is_12(self):
+934:    def test_default_result_structure(self):
+947:    def test_suggest_output_path_format(self):
+958:    def test_all_bullish(self):
+965:    def test_all_bearish(self):
+972:    def test_mixed_bull_bear(self):
+979:    def test_all_unknown(self):
+# [KB-016] research_consensus_matrix
+"""Tests for 多研报一致性/分歧矩阵与关注度去重回放 (KB-016).
+
+覆盖（验收要求）：
+  - fixture 覆盖一致看多、一致看空、观点分裂、重复报告、过期报告五类。
+  - 四维分歧矩阵：业绩预测 / 产业链角色 / 风险判断 / 估值假设。
+  - 去重规则：同机构 + 同标题 + 同立场 → 重复。
+  - 时间窗口：3/6/12 月过滤。
+  - needs_fact_check：高分歧 / 弱来源共识 / 过期主导 / 验证缺口。
+  - 多研报高关注只能提高研究优先级，不绕过 TradeFlow/TA 门禁。
+  - 约束：不写知识库 / 不输出原文 / 无买卖建议词 / 弱来源不覆盖动作语义。
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+from tradingagents.dataflows.local_knowledge_audit import INVESTMENT_SUBDIR
+from tradingagents.dataflows.citation_policy import (
+    TIER_BROKER_RESEARCH,
+    TIER_MEDIA,
+    TIER_ORIGINAL_FILING,
+)
+from tradingagents.dataflows.research_consensus_matrix import (
+    DEFAULT_WINDOW_MONTHS,
+    DIM_PERFORMANCE,
+    DIM_RISK,
+    DIM_SUPPLY_CHAIN_ROLE,
+    DIM_VALUATION,
+    STANCE_BEARISH,
+    STANCE_BULLISH,
+    STANCE_NEUTRAL,
+    STANCE_UNKNOWN,
+    DimensionDisagreement,
+    DimensionStance,
+    ReportStance,
+    ResearchConsensusMatrixResult,
+    SymbolConsensusMatrix,
+    build_research_consensus_matrix,
+    has_forbidden_action_words,
+    lookup_research_consensus_matrix,
+    matrix_to_summary_dict,
+    matrix_to_ta_consumable_summary,
+    render_research_consensus_matrix_report,
+    split_institution_helper,
+    suggest_report_output_path,
+    _detect_dimension_stance,
+    _detect_overall_stance,
+    _mark_duplicates,
+    _norm_title,
+    _symbol_equivalent,
+    _within_window,
+)
+from tradingagents.dataflows.research_fact_opinion_index import (
+    CLAIM_FACT,
+    CLAIM_FORECAST,
+    CLAIM_OPINION,
+    CLAIM_RISK,
+    ResearchClaimItem,
+    ResearchFactOpinionPage,
+)
+
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+_FORBIDDEN_ACTION_WORDS = (
+    "买入", "卖出", "加仓", "减仓", "强烈推荐", "BUY", "SELL",
+    "立即买入", "全仓", "止损",
+)
+
+
+def _assert_no_strong_action_words(text: str) -> None:
+    for forbidden in _FORBIDDEN_ACTION_WORDS:
+        assert forbidden not in text, (
+            f"text contains forbidden action word: {forbidden}"
+        )
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+# 测试基准日期：让所有 fixture 都在窗口内。
+_TODAY = date(2026, 7, 12)
+
+
+def _broker_page(
+    rel_name: str,
+    *,
+    symbol: str,
+    name: str,
+    title: str,
+    body_opinion: str,
+    body_risk: str = "风险可控。",
+    report_date: str = "2026-06-01",
+    stale_risk: str = "低",
+    valid_until: str = "2099-12-31",
+    evidence_level: str = "B",
+    source_quality: str = "中",
+    extra_fm: str = "",
+    body_forecast: str = "",
+    institution_hint: str = "",
+) -> str:
+    """生成一份券商研报 markdown（用于共识/分歧 fixture）。"""
+    sources = f"[[{institution_hint or '某券商'}-研究|{institution_hint or '某券商'}深度]]"
+    fm = f"""---
+title: {title}
+created: {report_date}
+updated: {report_date}
+sources:
+  - "{sources}"
+tags: [{name}]
+related: []
+symbols: ["{symbol} {name}"]
+themes: [AI]
+report_type: 深度
+evidence_level: {evidence_level}
+valid_until: {valid_until}
+source_quality: {source_quality}
+stale_risk: {stale_risk}
+{extra_fm}
+---
+
+# {title}
+
+## 一句话总结
+
+{body_opinion}
+
+## 投资逻辑
+
+- {body_opinion}
+
+## 前瞻指引
+
+- {body_forecast or body_opinion}
+
+## 风险提示
+
+- {body_risk}
+"""
+    return fm
+
+
+# ── fixtures ─────────────────────────────────────────────────────────
+
+
+# 1) 一致看多：3 家不同机构，全部看多。
+_BULLISH_1 = _broker_page(
+    "bullish-1.md",
+    symbol="600100.SH", name="某甲公司",
+    title="中信证券-某甲公司深度",
+    body_opinion="营收高增长，渗透率提升，估值修复空间大。",
+    body_risk="风险可控。",
+    body_forecast="预计全年营收增长 30%。",
+    institution_hint="中信证券",
+)
+_BULLISH_2 = _broker_page(
+    "bullish-2.md",
+    symbol="600100.SH", name="某甲公司",
+    title="国泰君安-某甲公司点评",
+    body_opinion="业绩超预期，产业链龙头地位稳固，估值合理。",
+    body_risk="风险下降。",
+    body_forecast="上调全年利润预测。",
+    institution_hint="国泰君安",
+)
+_BULLISH_3 = _broker_page(
+    "bullish-3.md",
+    symbol="600100.SH", name="某甲公司",
+    title="华泰证券-某甲公司跟踪",
+    body_opinion="主业加速改善，核心受益 AI 浪潮，估值偏低。",
+    body_risk="无明显风险。",
+    body_forecast="增长强劲。",
+    institution_hint="华泰证券",
+)
+
+# 2) 一致看空：3 家不同机构，全部看空。
+_BEARISH_1 = _broker_page(
+    "bearish-1.md",
+    symbol="600200.SH", name="某乙公司",
+    title="中金公司-某乙公司点评",
+    body_opinion="营收同比下降，竞争加剧，估值偏高。",
+    body_risk="下行风险加剧。",
+    body_forecast="下修全年利润预测。",
+    institution_hint="中金公司",
+)
+_BEARISH_2 = _broker_page(
+    "bearish-2.md",
+    symbol="600200.SH", name="某乙公司",
+    title="海通证券-某乙公司风险提示",
+    body_opinion="业绩不及预期，份额下滑，高估透支。",
+    body_risk="高风险。",
+    body_forecast="萎缩持续。",
+    institution_hint="海通证券",
+)
+_BEARISH_3 = _broker_page(
+    "bearish-3.md",
+    symbol="600200.SH", name="某乙公司",
+    title="广发证券-某乙公司预警",
+    body_opinion="亏损扩大，替代风险加剧，估值贵。",
+    body_risk="风险上升。",
+    body_forecast="续亏。",
+    institution_hint="广发证券",
+)
+
+# 3) 观点分裂：2 篇看多 + 2 篇看空。
+_SPLIT_BULL_1 = _broker_page(
+    "split-bull-1.md",
+    symbol="600300.SH", name="某丙公司",
+    title="招商证券-某丙公司看多",
+    body_opinion="营收高增长，估值修复。",
+    body_risk="风险可控。",
+    institution_hint="招商证券",
+)
+
+exec
+/bin/zsh -lc "grep -R \"OPINION_ONLY_TIERS\" -n tradingagents/dataflows/citation_policy.py && grep -R \"class ResearchFactOpinionPage\" -n tradingagents/dataflows/research_fact_opinion_index.py | head && sed -n '1,220p' tradingagents/dataflows/research_fact_opinion_index.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/citation_policy.py:274:OPINION_ONLY_TIERS: Tuple[str, ...] = (
+tradingagents/dataflows/citation_policy.py:326:        self.is_opinion_only = self.tier in OPINION_ONLY_TIERS
+tradingagents/dataflows/citation_policy.py:565:    is_opinion_only = tier in OPINION_ONLY_TIERS
+tradingagents/dataflows/citation_policy.py:680:    "OPINION_ONLY_TIERS",
+tradingagents/dataflows/research_fact_opinion_index.py:207:class ResearchFactOpinionPage:
+# [KB-015] research_fact_opinion_index
+"""研报观点事实分离与 TA 可消费摘要索引。
+
+在 KB-001 只读**审计**、KB-002 契约 **lint**、KB-003 raw_evidence 接入、
+KB-014 citation policy 之上，本模块把 Tree Work 已消化的
+``wiki/investment/`` 页面中的「观点 / 事实 / 预测 / 风险 / 待验证事项」拆成
+TA 可消费的结构化摘要索引，避免研报观点被误当成公告/财报事实。
+
+设计约束（对应任务 KB-015）：
+  - **只读本地知识库**：仅用 ``open(..., "r", encoding="utf-8")`` 与
+    ``Path.iterdir``，绝不向知识库写文件；不写生产 DB。
+  - **不抓取新研报正文**：只读取 KB-001/KB-002 已解析的 frontmatter / 章节信息，
+    不向外网发请求。
+  - **不复制长篇原文**：每条 claim 文本裁剪到上限（``_CLAIM_MAX_CHARS``）。
+  - **不把券商观点直接转成交易动作**：``claim_type`` 只做事实/观点分离标签，
+    不改变强动作门禁（Buy/Risk Level 仍由 DECISION-001/TF-QUALITY-001 等控制）。
+  - **不调用 LLM / 不访问外网**：纯标准库 + 复用 KB-001 / KB-014 只读解析助手。
+  - **接入 KB-010 cache/freshness**：传入 :class:`KnowledgeCache` 时跳过全量扫描，
+    直接基于缓存做 claim 抽取（语义与全量扫描等价）。索引损坏时可重建。
+  - **弱来源/过期来源只降置信，不覆盖动作语义**：``stale_status`` /
+    ``confidence`` 反映来源可信度，但不会把观点变成事实。
+
+claim_type 分类（与 KB-014 citation policy 联动）：
+  - ``fact``：来自 ``original_filing`` / ``official_notice`` 的事实类字段
+    （``financial_facts`` / ``segment_facts`` / ``management_commentary``）。
+  - ``opinion``：来自 ``broker_research`` / ``media`` 的事实类字段，或正文中
+    的「核心观点 / 投资逻辑 / 一句话总结」段——**观点冒充事实**会被标为
+    ``opinion`` 而非 ``fact``。
+  - ``forecast``：``forward_guidance`` 字段或正文中的前瞻指引段。
+  - ``risk``：``risk_factors`` 字段或正文「风险提示 / 风险」段。
+  - ``unknown``：无法确定来源或字段类型时兜底。
+
+stale_status 状态机（单页粒度）：
+  - ``fresh``：非 stale、非 low_confidence、非待补充。
+  - ``stale``：``stale_risk=高`` 或 ``valid_until`` 已过期。
+  - ``low_confidence``：``evidence_level`` 为低 / 待补充 / 弱来源。
+
+查询级 status（聚合）：
+  - ``HAS_DATA``：至少一页 stale_status=fresh 且有 claim。
+  - ``NORMAL_NO_DATA``：无任何命中页。
+  - ``FAILED``：知识库不可读 / 路径不存在 / 解析异常。
+  - ``STALE``：仅命中 stale 页。
+  - ``LOW_CONFIDENCE``：仅命中 low_confidence 页。
+
+使用示例::
+
+    from tradingagents.dataflows.research_fact_opinion_index import (
+        build_research_fact_opinion_index,
+        render_research_fact_opinion_report,
+    )
+    result = build_research_fact_opinion_index(
+        "/Users/maybee/Documents/knowledge", symbol="603296"
+    )
+    print(render_research_fact_opinion_report(result))
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+# 复用 KB-001 只读解析助手，保持单一解析实现，避免行为分叉。
+from tradingagents.dataflows.local_knowledge_audit import (
+    INVESTMENT_SUBDIR,
+    _audit_single_page,
+    _iter_markdown_files,
+    _parse_frontmatter,
+    _read_text_safe,
+    _safe_str,
+    _split_frontmatter,
+    default_knowledge_root,
+)
+from tradingagents.dataflows.local_knowledge_lint import (
+    HIGH_STALE_RISK_VALUES,
+    LOW_CONFIDENCE_EVIDENCE_LEVELS,
+    _normalize_source_type_list,
+)
+from tradingagents.dataflows.local_knowledge_provider import (
+    STATUS_FAILED,
+    STATUS_HAS_DATA,
+    STATUS_LOW_CONFIDENCE,
+    STATUS_NORMAL_NO_DATA,
+    STATUS_STALE,
+    _normalize_str_list,
+    _normalize_symbol_list,
+    _symbol_matches,
+)
+from tradingagents.dataflows.citation_policy import (  # [KB-014] citation_policy
+    OPINION_ONLY_TIERS,
+    SOURCE_TYPE_FACT_VALUES,
+    TIER_BROKER_RESEARCH,
+    TIER_MEDIA,
+    TIER_ORIGINAL_FILING,
+    TIER_OFFICIAL_NOTICE,
+    TIER_UNKNOWN,
+    TIER_USER_NOTE,
+    CitationAssessment,
+    apply_tier_to_confidence,
+    classify_source_quality_tier,
+    compute_tier_confidence_weight,
+)
+
+
+# ── 常量 ──────────────────────────────────────────────────────────────
+
+VENDOR = "tree_work_wiki"
+TASK_CODE = "KB-015"
+
+# claim_type 取值（与任务原文严格一致）。
+CLAIM_FACT = "fact"
+CLAIM_OPINION = "opinion"
+CLAIM_FORECAST = "forecast"
+CLAIM_RISK = "risk"
+CLAIM_UNKNOWN = "unknown"
+CLAIM_TYPES: Tuple[str, ...] = (
+    CLAIM_FACT,
+    CLAIM_OPINION,
+    CLAIM_FORECAST,
+    CLAIM_RISK,
+    CLAIM_UNKNOWN,
+)
+
+# stale_status 单页枚举。
+STALE_FRESH = "fresh"
+STALE_STALE = "stale"
+STALE_LOW_CONFIDENCE = "low_confidence"
+
+# 文本裁剪上限（避免输出长篇原文）。
+_CLAIM_MAX_CHARS = 120
+_VERIFICATION_MAX_CHARS = 100
+_MAX_CLAIMS_PER_CATEGORY = 6
+_MAX_VERIFICATION_ENTRIES = 5
+_MAX_PAGES = 10
+
+# 正文段落标题（复用 KB-003 口径，保持一致）。
+_OPINION_HEADERS = (
+    "一句话总结",
+    "核心观点",
+    "核心结论",
+    "投资逻辑",
+    "核心数据",
+)
+_RISK_HEADERS = (
+    "风险提示",
+    "风险",
+    "风险与不确定性",
+)
+_FORECAST_HEADERS = (
+    "前瞻指引",
+    "未来展望",
+    "业绩展望",
+    "指引",
+)
+# 观点段（核心观点/投资逻辑等）在正文中出现时，无论来源 tier 如何，都视为 opinion。
+_OPINION_BODY_ORIGIN = "body:opinion"
+_RISK_BODY_ORIGIN = "body:risk"
+_FORECAST_BODY_ORIGIN = "body:forecast"
+
+# 观点含数值断言的检测：数字 + 单位/百分比，用于 verification_needs。
+_NUMERIC_ASSERTION_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:亿|万|万亿|亿元|万元|%|pp|个百分点|倍|元)"
+)
+
+
+# ── 数据类 ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ResearchClaimItem:
+    """单条研报观点/事实/预测/风险记录。
+
+    每条记录都携带任务要求的溯源字段：
+    ``symbol / name / source_path / source_quality_tier / report_date / stale_status``。
+    """
+
+    claim_type: str
+    text: str
+    origin_field: str
+    symbol: str = ""
+    name: str = ""
+    source_path: str = ""
+    source_quality_tier: str = TIER_UNKNOWN
+    report_date: Optional[str] = None
+    stale_status: str = STALE_FRESH
+    confidence: str = "low"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "claim_type": self.claim_type,
+            "text": self.text,
+            "origin_field": self.origin_field,
+            "symbol": self.symbol,
+            "name": self.name,
+            "source_path": self.source_path,
+            "source_quality_tier": self.source_quality_tier,
+            "report_date": self.report_date,
+            "stale_status": self.stale_status,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass
+class ResearchFactOpinionPage:
+    """单页研报的观点/事实/预测/风险分离结果。
+
+    所有 list 字段都是裁剪后的摘要条目，每条裁剪到 ``_CLAIM_MAX_CHARS``。
+    """
+
+    rel_path: str
+    title: str
+    symbols: List[str] = field(default_factory=list)
+    symbol: str = ""
+    name: str = ""
+    report_type: str = ""
+    source_quality_tier: str = TIER_UNKNOWN
+    report_date: Optional[str] = None
+
+exec
+/bin/zsh -lc "sed -n '220,330p' tradingagents/dataflows/research_fact_opinion_index.py && sed -n '250,290p' tradingagents/dataflows/citation_policy.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    report_date: Optional[str] = None
+    stale_status: str = STALE_FRESH
+    confidence: str = "low"
+    research_claims: List[ResearchClaimItem] = field(default_factory=list)
+    reported_facts: List[ResearchClaimItem] = field(default_factory=list)
+    forecast_items: List[ResearchClaimItem] = field(default_factory=list)
+    risk_items: List[ResearchClaimItem] = field(default_factory=list)
+    verification_needs: List[str] = field(default_factory=list)
+    citation_signals: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rel_path": self.rel_path,
+            "title": self.title,
+            "symbols": list(self.symbols),
+            "symbol": self.symbol,
+            "name": self.name,
+            "report_type": self.report_type,
+            "source_quality_tier": self.source_quality_tier,
+            "report_date": self.report_date,
+            "stale_status": self.stale_status,
+            "confidence": self.confidence,
+            "research_claims": [c.to_dict() for c in self.research_claims],
+            "reported_facts": [c.to_dict() for c in self.reported_facts],
+            "forecast_items": [c.to_dict() for c in self.forecast_items],
+            "risk_items": [c.to_dict() for c in self.risk_items],
+            "verification_needs": list(self.verification_needs),
+            "citation_signals": list(self.citation_signals),
+        }
+
+
+@dataclass
+class ResearchFactOpinionIndexResult:
+    """整次研报观点/事实分离索引的聚合结果。"""
+
+    status: str = STATUS_NORMAL_NO_DATA
+    vendor: str = VENDOR
+    task: str = TASK_CODE
+    pages: List[ResearchFactOpinionPage] = field(default_factory=list)
+    symbols: List[str] = field(default_factory=list)
+    names: List[str] = field(default_factory=list)
+    claim_counts: Dict[str, int] = field(default_factory=dict)
+    verification_count: int = 0
+    knowledge_root: str = ""
+    query: Dict[str, Any] = field(default_factory=dict)
+    errors: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "task": self.task,
+            "pages": [p.to_dict() for p in self.pages],
+            "symbols": list(self.symbols),
+            "names": list(self.names),
+            "claim_counts": dict(self.claim_counts),
+            "verification_count": self.verification_count,
+            "knowledge_root": self.knowledge_root,
+            "query": dict(self.query),
+            "errors": list(self.errors),
+        }
+
+
+# ── 文本裁剪与归一化 ──────────────────────────────────────────────────
+
+
+def _clip_text(text: str, max_chars: int = _CLAIM_MAX_CHARS) -> str:
+    """裁剪到 max_chars，超长加省略号。"""
+    text = (text or "").strip()
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + "…"
+    return text
+
+
+def _normalize_list_field(raw: Any) -> List[str]:
+    """把 frontmatter list/str 字段归一为非空字符串列表（不裁剪，由调用方裁剪）。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(s) for s in raw if s is not None]
+    else:
+        return []
+    out: List[str] = []
+    for item in items:
+        text = str(item).strip().strip('"').strip("'").strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _dedup_clip(items: List[str], max_chars: int, max_entries: int) -> List[str]:
+    """裁剪每条到 max_chars，去重保序，截断到 max_entries。"""
+    out: List[str] = []
+    for item in items:
+        text = _clip_text(item, max_chars)
+        if not text:
+            continue
+        if text not in out:
+            out.append(text)
+        if len(out) >= max_entries:
+            break
+    return out
+
+
+# ── stale / confidence 判定 ───────────────────────────────────────────
+
+
+def _compute_stale_status(
+    *,
+)
+
+# 每页 tier 的 confidence 权重（0.0 ~ 1.0）。
+# 调用方据此对 attention / local_knowledge_score 做软调节。
+TIER_CONFIDENCE_WEIGHTS: Dict[str, float] = {
+    TIER_ORIGINAL_FILING: 1.0,
+    TIER_OFFICIAL_NOTICE: 1.0,
+    TIER_BROKER_RESEARCH: 0.6,
+    TIER_MEDIA: 0.3,
+    TIER_USER_NOTE: 0.2,
+    TIER_UNKNOWN: 0.1,
+}
+
+# tier 对应的使用边界说明（citation policy 文档与 lint finding 复用）。
+TIER_USAGE_POLICY: Dict[str, str] = {
+    TIER_ORIGINAL_FILING: "可作为事实进入 raw_evidence / HY-005 事实反证。",
+    TIER_OFFICIAL_NOTICE: "可作为官方事实；优先级高于券商/媒体观点。",
+    TIER_BROKER_RESEARCH: "仅作观点/线索，不得冒充事实进入反证或加分。",
+    TIER_MEDIA: "仅作背景/线索，不得作为结论依据。",
+    TIER_USER_NOTE: "仅作背景记录；不进入候选加分；建议补来源后升级。",
+    TIER_UNKNOWN: "来源不可识别，TA 标 WEAK_SOURCE；建议回 Tree Work 补 source_type / sources。",
+}
+
+# 不可作为"事实"的 tier（仅作观点/线索）。
+OPINION_ONLY_TIERS: Tuple[str, ...] = (
+    TIER_BROKER_RESEARCH,
+    TIER_MEDIA,
+    TIER_USER_NOTE,
+    TIER_UNKNOWN,
+)
+
+
+# ── 数据类 ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class CitationAssessment:
+    """单页来源可信度评估结果。
+
+    携带 tier / 命中证据 / 软权重 / 风险标签，供 lint finding、provider
+    confidence 计算、KB-004 local_knowledge_score 软调节使用。
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest -q tests/test_kb015_research_fact_opinion_index.py tests/test_kb016_research_consensus_matrix.py tests/test_hy005_thesis_fact_check.py tests/test_hy006_tradeflow_half_year_factor.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 2405ms:
+........................................................................ [ 29%]
+........................................................................ [ 59%]
+........................................................................ [ 88%]
+...........................                                              [100%]
+243 passed in 1.86s
+
+exec
+/bin/zsh -lc 'grep -n "def build_research_fact_opinion_index" -A160 tradingagents/dataflows/research_fact_opinion_index.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+1129:def build_research_fact_opinion_index(
+1130-    knowledge_root: str,
+1131-    *,
+1132-    symbol: Optional[str] = None,
+1133-    name: Optional[str] = None,
+1134-    cache: Any = None,
+1135-    today: Optional[date] = None,
+1136-    max_pages: int = _MAX_PAGES,
+1137-) -> ResearchFactOpinionIndexResult:
+1138-    """构建研报观点/事实分离索引。
+1139-
+1140-    参数:
+1141-        knowledge_root: 知识库根目录绝对路径。
+1142-        symbol: A 股代码或代码+后缀（如 ``603296`` / ``603296.SH``）。
+1143-            ``None`` 时不限 symbol（索引模式，扫描全部 investment 页）。
+1144-        name: 公司简称（与页面 symbols 简称或 title 子串匹配）。
+1145-        cache: [KB-010] 可选的 :class:`KnowledgeCache`。传入时跳过全量扫描，
+1146-            直接基于缓存做 claim 抽取（语义与全量扫描等价）。``None`` 时走全量扫描。
+1147-        today: 用于 stale 判定的基准日期（测试注入）；``None`` 用 ``date.today()``。
+1148-        max_pages: 最多返回的命中页数。
+1149-
+1150-    返回:
+1151-        :class:`ResearchFactOpinionIndexResult`。永远不会因单页解析失败而抛异常：
+1152-        单页失败记入 ``errors`` 并跳过；知识库不存在时返回 status=FAILED。
+1153-    """
+1154-    symbol = (symbol or "").strip() or None
+1155-    name = (name or "").strip() or None
+1156-    if today is None:
+1157-        today = date.today()
+1158-
+1159-    query_desc: Dict[str, Any] = {}
+1160-    if symbol:
+1161-        query_desc["symbol"] = symbol
+1162-    if name:
+1163-        query_desc["name"] = name
+1164-
+1165-    root = Path(knowledge_root).expanduser()
+1166-    result = ResearchFactOpinionIndexResult(
+1167-        knowledge_root=str(root),
+1168-        query=query_desc,
+1169-    )
+1170-
+1171-    if not root.exists():
+1172-        result.status = STATUS_FAILED
+1173-        result.errors.append(f"knowledge_root 不存在: {root}")
+1174-        return result
+1175-
+1176-    pages: List[ResearchFactOpinionPage] = []
+1177-
+1178-    if cache is not None:
+1179-        # [KB-010] 缓存路径。
+1180-        result.errors.extend(cache.errors or [])
+1181-        for _rel, cached_page in cache.pages.items():
+1182-            try:
+1183-                page_symbols = list(cached_page.symbols or [])
+1184-                if not _query_matches_page(
+1185-                    symbol, name, page_symbols, cached_page.title
+1186-                ):
+1187-                    continue
+1188-                rfo_page = _build_page_from_cache(
+1189-                    cached_page,
+1190-                    query_symbol=symbol,
+1191-                    query_name=name,
+1192-                    today=today,
+1193-                )
+1194-            except Exception as exc:  # pragma: no cover - 容错
+1195-                result.errors.append(f"{_rel}: 缓存 claim 抽取失败 {exc!r}")
+1196-                continue
+1197-            if rfo_page is None:
+1198-                continue
+1199-            pages.append(rfo_page)
+1200-    else:
+1201-        # 全量扫描路径。
+1202-        investment_dir = root / INVESTMENT_SUBDIR
+1203-        if not investment_dir.exists():
+1204-            result.errors.append(f"investment 分区不存在: {investment_dir}")
+1205-            result.status = STATUS_NORMAL_NO_DATA
+1206-            return result
+1207-        md_files = _iter_markdown_files(investment_dir)
+1208-        for md in md_files:
+1209-            rel = str(md.relative_to(root))
+1210-            # 先读 frontmatter 做 symbol/name 预筛，避免对无关页跑完整 audit。
+1211-            try:
+1212-                text = _read_text_safe(md)
+1213-                fm_text, _body = _split_frontmatter(text)
+1214-                frontmatter = _parse_frontmatter(fm_text)
+1215-            except Exception as exc:  # pragma: no cover
+1216-                result.errors.append(f"{rel}: 解析失败 {exc!r}")
+1217-                continue
+1218-
+1219-            page_symbols = _normalize_symbol_list(frontmatter.get("symbols"))
+1220-            title = _safe_str(frontmatter.get("title")) or md.stem
+1221-            if not _query_matches_page(symbol, name, page_symbols, title):
+1222-                continue
+1223-
+1224-            try:
+1225-                rfo_page, err = _build_page_from_scan(
+1226-                    rel,
+1227-                    md,
+1228-                    query_symbol=symbol,
+1229-                    query_name=name,
+1230-                    today=today,
+1231-                )
+1232-            except Exception as exc:  # pragma: no cover
+1233-                result.errors.append(f"{rel}: claim 抽取失败 {exc!r}")
+1234-                continue
+1235-            if err:
+1236-                result.errors.append(err)
+1237-                continue
+1238-            if rfo_page is None:
+1239-                continue
+1240-            pages.append(rfo_page)
+1241-
+1242-    # 排序：fresh 优先，其次 stale，最后 low_confidence；同优先级按 rel_path。
+1243-    pages.sort(key=_page_rank_key)
+1244-    if len(pages) > max_pages:
+1245-        pages = pages[:max_pages]
+1246-    result.pages = pages
+1247-
+1248-    _aggregate_result(result)
+1249-    return result
+1250-
+1251-
+1252-def _page_rank_key(page: ResearchFactOpinionPage) -> Tuple[int, str]:
+1253-    """排序键：(stale_status_rank, rel_path)。
+1254-
+1255-    fresh → stale → low_confidence；同优先级按 rel_path。
+1256-    """
+1257-    status_rank = {
+1258-        STALE_FRESH: 0,
+1259-        STALE_STALE: 1,
+1260-        STALE_LOW_CONFIDENCE: 2,
+1261-    }.get(page.stale_status, 9)
+1262-    return (status_rank, page.rel_path)
+1263-
+1264-
+1265-def _aggregate_result(result: ResearchFactOpinionIndexResult) -> None:
+1266-    """聚合 pages → status / symbols / names / claim_counts / verification_count。"""
+1267-    pages = result.pages
+1268-    if not pages:
+1269-        result.status = STATUS_NORMAL_NO_DATA
+1270-        return
+1271-
+1272-    symbols_seen: List[str] = []
+1273-    names_seen: List[str] = []
+1274-    claim_counts: Dict[str, int] = {ct: 0 for ct in CLAIM_TYPES}
+1275-    verification_total = 0
+1276-    for p in pages:
+1277-        for s in p.symbols:
+1278-            if s not in symbols_seen:
+1279-                symbols_seen.append(s)
+1280-        if p.name and p.name not in names_seen:
+1281-            names_seen.append(p.name)
+1282-        for c in (
+1283-            p.research_claims + p.reported_facts + p.forecast_items + p.risk_items
+1284-        ):
+1285-            ct = c.claim_type
+1286-            if ct in claim_counts:
+1287-                claim_counts[ct] += 1
+1288-            else:
+1289-                claim_counts[CLAIM_UNKNOWN] += 1
+
+exec
+/bin/zsh -lc 'grep -R "def _split_symbol_entry" -n tradingagents/dataflows && grep -R "def _symbol_matches" -n tradingagents/dataflows/local_knowledge_provider.py tradingagents/dataflows/research_attention.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/research_attention.py:306:def _split_symbol_entry(entry: str) -> Tuple[str, str, str]:
+tradingagents/dataflows/local_knowledge_provider.py:302:def _split_symbol_entry(entry: str) -> Tuple[str, str]:
+tradingagents/dataflows/half_year_facts_provider.py:967:def _split_symbol_entry(entry: str) -> Tuple[str, str]:
+tradingagents/dataflows/local_knowledge_provider.py:314:def _symbol_matches(query_symbol: str, page_symbols: List[str]) -> bool:
+
+exec
+/bin/zsh -lc "sed -n '300,335p' tradingagents/dataflows/research_attention.py && sed -n '294,330p' tradingagents/dataflows/local_knowledge_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    for it in items:
+        if it and it not in seen:
+            seen.append(it)
+    return seen
+
+
+def _split_symbol_entry(entry: str) -> Tuple[str, str, str]:
+    """``603296.SH 华勤技术`` → ``(code_with_suffix, bare_code, name)``。
+
+    - code_with_suffix: ``603296.SH``（保留交易所后缀，大写）。
+    - bare_code: ``603296``（去后缀）。
+    - name: ``华勤技术``（去首尾空白）。
+    """
+    parts = str(entry).strip().split(maxsplit=1)
+    code = parts[0] if parts else ""
+    name = parts[1].strip() if len(parts) > 1 else ""
+    bare = re.sub(r"\.(SH|SZ|BJ|HK|US|SS)$", "", code, flags=re.IGNORECASE).strip()
+    code_norm = code.upper() if code else ""
+    return code_norm, bare, name
+
+
+def classify_asset_class(
+    code_with_suffix: str,
+    bare_code: str,
+    name: str,
+    frontmatter: Dict[str, Any],
+) -> str:
+    """按后缀 + 代码前缀 + 上下文关键词识别资产类别。
+
+    优先级：HK / US 后缀 → 基金关键词（覆盖 .SH/.SZ/.BJ 后缀的 ETF/LOF）→
+    A 股后缀 → A 股前缀 → 基金前缀 → 未上市。
+
+    例：``510300.SH 沪深300ETF`` 因 tags/name 含 ``ETF`` 而归类为 FUND，
+    而非 A_SHARE；``603296.SH 华勤技术`` 因无基金关键词归类为 A_SHARE。
+    """
+    code_upper = code_with_suffix.upper()
+        if not text:
+            return []
+        return [text]
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return []
+
+
+def _split_symbol_entry(entry: str) -> Tuple[str, str]:
+    """把 ``603296.SH 华勤技术`` 拆为 ``(代码, 简称)``。
+
+    代码部分去掉 ``.SH/.SZ`` 后缀得到 6 位 bare code；简称部分原样返回（去首尾空白）。
+    """
+    parts = entry.split(maxsplit=1)
+    code = parts[0] if parts else ""
+    name = parts[1] if len(parts) > 1 else ""
+    bare = _SUFFIX_RE.sub("", code).strip()
+    return bare, name
+
+
+def _symbol_matches(query_symbol: str, page_symbols: List[str]) -> bool:
+    """判断查询 symbol 是否命中页面 symbols 列表。
+
+    - ``603296`` 命中 ``603296.SH 华勤技术``（bare code 子串）。
+    - ``603296.SH`` 命中 ``603296.SH 华勤技术``（去后缀比较）。
+    - ``华勤技术`` 命中 ``603296.SH 华勤技术``（简称子串，大小写不敏感）。
+    """
+    if not query_symbol or not page_symbols:
+        return False
+    q = query_symbol.strip()
+    q_bare = _SUFFIX_RE.sub("", q).strip()
+    q_lower = q.lower()
+    for entry in page_symbols:
+        bare, name = _split_symbol_entry(entry)
+        if q_bare and bare == q_bare:
+            return True
+        # 全代码比较（保留后缀，大小写不敏感）。
+
+exec
+/bin/zsh -lc "sed -n '330,365p' tradingagents/dataflows/local_knowledge_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        # 全代码比较（保留后缀，大小写不敏感）。
+        entry_code = entry.split(maxsplit=1)[0] if entry else ""
+        if entry_code and entry_code.lower() == q_lower:
+            return True
+        if name and q_lower and q_lower in name.lower():
+            return True
+    return False
+
+
+def _theme_matches(query_themes: List[str], page_themes: List[str]) -> bool:
+    """查询 themes 与页面 themes 任一子串命中即视为命中（大小写不敏感）。"""
+    if not query_themes or not page_themes:
+        return False
+    q_norm = [t.lower().strip() for t in query_themes if t and t.strip()]
+    p_norm = [t.lower().strip() for t in page_themes if t and t.strip()]
+    for q in q_norm:
+        for p in p_norm:
+            if not q or not p:
+                continue
+            if q in p or p in q:
+                return True
+    return False
+
+
+def _name_matches(query_name: str, title: str, filename: str) -> bool:
+    """查询 name 与页面 title/filename 子串命中（大小写不敏感）。"""
+    if not query_name:
+        return False
+    q = query_name.strip().lower()
+    if not q:
+        return False
+    if q in (title or "").lower():
+        return True
+    if q in (filename or "").lower():
+        return True
+    return False
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/research_consensus_matrix.py | sed -n '645,685p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   645	                continue
+   646	            seen_keys.append(key)
+   647	        seen_paths.append(r.rel_path)
+   648	
+   649	
+   650	# ── 共识 / 分歧合成 ──────────────────────────────────────────────────
+   651	
+   652	
+   653	def _dimension_disagreement(
+   654	    dim: str, reports: List[ReportStance]
+   655	) -> DimensionDisagreement:
+   656	    """聚合单维度的分歧（仅非重复页）。"""
+   657	    bull = bear = neut = unk = 0
+   658	    for r in reports:
+   659	        if r.is_duplicate:
+   660	            continue
+   661	        ds = r.dimensions.get(dim)
+   662	        if ds is None:
+   663	            unk += 1
+   664	            continue
+   665	        if ds.stance == STANCE_BULLISH:
+   666	            bull += 1
+   667	        elif ds.stance == STANCE_BEARISH:
+   668	            bear += 1
+   669	        elif ds.stance == STANCE_NEUTRAL:
+   670	            neut += 1
+   671	        else:
+   672	            unk += 1
+   673	
+   674	    total = bull + bear + neut + unk
+   675	    if total <= 0:
+   676	        score = 0.0
+   677	        dominant = STANCE_UNKNOWN
+   678	    else:
+   679	        max_count = max(bull, bear, neut, unk)
+   680	        score = max(0.0, 1.0 - max_count / total)
+   681	        # dominant：取计数最多的 stance（并列时优先 bull > bear > neut > unk）。
+   682	        if bull >= bear and bull >= neut and bull >= unk and bull > 0:
+   683	            dominant = STANCE_BULLISH
+   684	        elif bear >= bull and bear >= neut and bear >= unk and bear > 0:
+   685	            dominant = STANCE_BEARISH
+
+exec
+/bin/zsh -lc "git diff -- docs/TASKS.md docs/DEVLOG.md && nl -ba tradingagents/dataflows/research_consensus_matrix.py | sed -n '1068,1078p' && nl -ba tradingagents/dataflows/research_consensus_matrix.py | sed -n '928,936p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 101ac58..e2f0d00 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,86 @@
+ # 修改日志
+ 
++## 2026-07-12 | KB-016 多研报一致性/分歧矩阵与关注度去重回放
++
++- **执行者**:OpenCode
++- **任务**:KB-016 — 多研报一致性/分歧矩阵与关注度去重回放（P1）
++- **类型**:feature / research consensus matrix
++- **状态**:✅ 完成（待外层 commit）
++
++### 背景
++
++- KB-015（研报观点/事实分离）、KB-007（多研报重复提及因子）、KB-009（机构级
++  去重 + 时效衰减）已就绪，但当多份研报涉及同一只股票时，系统无法回答
++  "这些研报是否一致、在哪里分裂、哪些观点需要事实反证"。
++- KB-016 把 KB-015 的 claim 抽取 + KB-007 的关注度聚合 + KB-009 的机构去重/衰减
++  组合成一个**按 symbol 聚合的共识/分歧矩阵**，输出四维分歧
++  （业绩预测 / 产业链角色 / 风险判断 / 估值假设）、consensus_score、
++  disagreement_score、attention_count_effective，并标记 needs_fact_check 候选
++  交 HY-003/HY-005 做事实反证。
++- 验收头条：多研报高关注**只能提高研究优先级**，绝不绕过 TradeFlow/TA 强动作
++  门禁；输出文档不含买入/卖出/加仓/减仓等强动作词。
++
++### 改动文件
++
++- `tradingagents/dataflows/research_consensus_matrix.py`（新增，`# [KB-016]
++  research_consensus_matrix`）— 共识/分歧矩阵核心模块。主入口
++  ``build_research_consensus_matrix(knowledge_root, symbol, name,
++  window_months, today)`` 复用 KB-015 ``build_research_fact_opinion_index``
++  做 per-symbol claim 抽取，按 3/6/12 月窗口聚合，输出
++  ``SymbolConsensusMatrix``（含 consensus_score / disagreement_score /
++  attention_count_effective / dominant_stance / needs_fact_check /
++  fact_check_reasons / fact_check_priority / 四维 DimensionDisagreement /
++  ReportStance[]）。规则版立场检测（无 LLM）：四维各取
++  bullish/bearish/neutral/unknown；关键词命中 + 数值符号辅助。
++  去重：同机构 + 同标题（norm）+ 同立场 → 重复；同 rel_path → 重复。
++  过期页绕过窗口（decay not delete）。needs_fact_check 触发：分歧 ≥ 0.34 /
++  弱来源共识 ≥ 2 / 过期占比 ≥ 50% / KB-015 verification_needs > 0。
++  辅助函数 ``lookup_research_consensus_matrix`` /
++  ``matrix_to_ta_consumable_summary`` /
++  ``matrix_to_summary_dict`` / ``render_research_consensus_matrix_report`` /
++  ``has_forbidden_action_words``（防回归强动作词）。
++- `scripts/research_consensus_matrix.py`（新增）— CLI 入口，支持
++  ``--symbol / --name / --all / --window 3|6|12 / --needs-fact-check /
++  --json / --summary / --output / --suggest-output``。
++- `tests/test_kb016_research_consensus_matrix.py`（新增）— **67 tests**，
++  覆盖五类 fixture（一致看多 / 一致看空 / 观点分裂 / 重复报告 / 过期报告）、
++  四维立场检测、去重规则、时间窗口、needs_fact_check 判定、多研报高关注不
++  绕过门禁、报告渲染、JSON 序列化与扁平摘要、lookup、边界场景、overall_stance
++  合成。
++
++### 验收
++
++- **67 tests passed**（`tests/test_kb016_research_consensus_matrix.py`）。
++- KB-015/016/HY-005/HY-006 组合回归 **243 passed**，无新增失败。
++- KB-009 有 1 个 pre-existing 日期敏感 flaky 测试（与本任务无关，stash 验证
++  确认未改动前也失败）。
++- 约束验证：知识库只读（调用前后文件不变）/ 不写生产 DB / 无强动作词 /
++  弱来源不覆盖动作语义 / 不复制原文段落。
++
++### 关键设计决策
++
++1. **过期页绕过窗口**：任务要求"对过期观点做去重/衰减"——decay not delete。
++   stale_risk=高 或 valid_until 过期的页即使超出 3/6/12 月窗口仍纳入矩阵
++   （stale_count + needs_fact_check），但不计入 attention_count_effective。
++2. **保守去重**：宁可漏标也不误杀真实多机构共识——同机构 + 同标题 + 同立场
++   才判重复；不同机构同标题不折叠；同标题不同立场不折叠（这是真实分歧）。
++3. **needs_fact_check 四触发器**：高分歧 / 弱来源看多共识 / 过期主导 /
++   KB-015 验证缺口；优先级 low/medium/high，高分歧 + 弱来源共识同时出现 → high。
++4. **consensus_score 不是买入信号**：[0, 1] 区间中性指标，输出文档刻意避免
++   强动作词；dominant_stance 用 "偏看多/偏看空/中性" 而非 BUY/SELL。
++
++### 风险点
++
++- 立场检测是规则版（关键词 + 数值符号），对未见过的表达形态可能漏判 →
++  stance=unknown（不误判，但可能漏标分歧）。KB-018 版本演化时间线可在
++  ``thesis_version_status`` 维度补一层人工标注。
++- 机构名提取依赖 KB-009 ``split_institution``，对 ``中信证券-华勤技术`` 形态
++  有效；无分隔符的来源别名可能被误当作独立机构（KB-009 已有同样限制）。
++- KB-018（同股研报观点版本演化）依赖本任务的 ``ReportStance[]`` 与
++  ``DimensionDisagreement``，下游时间线可直接消费 ``matrix.reports`` 序列。
++
++---
++
+ ## 2026-07-11 | HY-006 TradeFlow/昊天候选接入半年报因子与降权规则
+ 
+ - **执行者**:OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 244fc1b..3817562 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -5204,7 +5204,7 @@
+ ### KB-016: 多研报一致性/分歧矩阵与关注度去重回放（P1）
+ - **描述**：当多份研报涉及同一只股票时，聚合它们的一致性、分歧点、过期风险和重复覆盖度，形成“研报共识/分歧矩阵”。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed KB-016-20260712-000255
+ - **前置条件**：KB-015、KB-007、KB-009 完成。
+ - **执行约束**：
+   - 不把“多份研报提及”直接等同于买入信号。
+  1068	        # 用 KB-015 做 per-symbol claim 抽取（只读，不重复实现）。
+  1069	        try:
+  1070	            kb015_result = build_research_fact_opinion_index(
+  1071	                knowledge_root,
+  1072	                symbol=skey,
+  1073	                name=info.get("name") or None,
+  1074	                today=today,
+  1075	                max_pages=_MAX_MATRIX_PAGES,
+  1076	            )
+  1077	        except Exception as exc:  # pragma: no cover
+  1078	            result.errors.append(f"{skey}: KB-015 索引失败 {exc!r}")
+   928	    kb015_verification = sum(
+   929	        len(p.verification_needs) for p in all_matrix_pages
+   930	    )
+   931	    reasons, priority = _fact_check_reasons(
+   932	        matrix, has_opinion_only, stale_ratio, kb015_verification
+   933	    )
+   934	    matrix.needs_fact_check = bool(reasons)
+   935	    matrix.fact_check_reasons = reasons[:_MAX_REASONS]
+   936	    matrix.fact_check_priority = priority
+
+exec
+/bin/zsh -lc 'grep -n "KB-016" docs/TASKS.md | head -10' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+32:4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready）。
+34:6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready；批次内依赖 KB-016/017）。
+213:169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready，依赖 KB-015/KB-007/KB-009 ✓）。
+215:171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready，批次内依赖 KB-016/KB-017）。
+5204:### KB-016: 多研报一致性/分歧矩阵与关注度去重回放（P1）
+5207:- **状态**：in_progress — claimed KB-016-20260712-000255
+5222:- **代码标注要求**：`# [KB-016] research_consensus_matrix`
+5245:- **描述**：在 KB-016 共识矩阵和 KB-017 事实审计之上，按时间还原同一股票核心观点如何被强化、削弱、反转或自然过期，避免只看最新一篇研报丢失上下文。
+5247:- **状态**：ready — 批次内依赖 KB-016/KB-017；仅在两项均 PASS 后执行
+5248:- **前置条件**：KB-015、KB-016、KB-017 完成。
+
+exec
+/bin/zsh -lc "grep -R \"def _iter_markdown_files\" -n tradingagents/dataflows/local_knowledge_audit.py | head -1 && sed -n '84,105p' tradingagents/dataflows/local_knowledge_audit.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/local_knowledge_audit.py:560:def _iter_markdown_files(root: Path) -> List[Path]:
+    "风险与不确定性",
+)
+SOURCES_SECTION_PATTERNS: Tuple[str, ...] = (
+    "原始资料",
+    "关联研报",
+    "资料来源",
+    "参考资料",
+)
+
+# 待补充/低置信标记。
+TODO_MARKERS: Tuple[str, ...] = (
+    "此页面内容不完整",
+    "待补充",
+    "内容待补充",
+    "占位",
+)
+
+# 页面类型关键词。
+_SCORE_TABLE_KEYWORDS = ("评分表", "评分体系")
+_SUMMARY_TABLE_KEYWORDS = ("汇总表", "汇总", "速查表", "核心看点汇总")
+_INDUSTRY_REPORT_TYPES = ("行业", "周报", "策略", "深度", "综述", "产业链")
+_COMPANY_REPORT_TYPES = ("公司点评", "公司分析", "财报分析", "公司深度")
+
+exec
+/bin/zsh -lc "sed -n '560,575p' tradingagents/dataflows/local_knowledge_audit.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+def _iter_markdown_files(root: Path) -> List[Path]:
+    if not root.exists() or not root.is_dir():
+        return []
+    return sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() == ".md")
+
+
+def _list_inbox_items(inbox_dir: Path) -> List[str]:
+    """列出 inbox/ 下所有文件（md + 图片 + 其他），用于未消化清单。"""
+    if not inbox_dir.exists() or not inbox_dir.is_dir():
+        return []
+    items: List[str] = []
+    for path in sorted(inbox_dir.rglob("*")):
+        if path.is_file():
+            items.append(str(path.relative_to(inbox_dir)))
+    return items
+
+
+exec
+/bin/zsh -lc "sed -n '589,616p' tests/test_kb016_research_consensus_matrix.py && sed -n '826,842p' tests/test_kb016_research_consensus_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    def test_split_triggers_fact_check(self, fixture_kb: Path):
+        result = build_research_consensus_matrix(
+            str(fixture_kb), symbol="600300", today=_TODAY,
+        )
+        m = result.symbols[0]
+        assert m.needs_fact_check is True
+        assert any("分歧" in r for r in m.fact_check_reasons)
+
+    def test_stale_dominance_triggers_fact_check(self, fixture_kb: Path):
+        result = build_research_consensus_matrix(
+            str(fixture_kb), symbol="600500", today=_TODAY,
+        )
+        m = result.symbols[0]
+        assert m.needs_fact_check is True
+        assert any("过期" in r for r in m.fact_check_reasons)
+
+    def test_consistent_does_not_force_fact_check(self, fixture_kb: Path):
+        """一致看多（多机构）不一定 needs_fact_check（除非弱来源）。"""
+        result = build_research_consensus_matrix(
+            str(fixture_kb), symbol="600100", today=_TODAY,
+        )
+        m = result.symbols[0]
+        # 多机构一致看多 → 共识高，needs_fact_check 可能为 False
+        # （除非触发其他规则）。这里只验证不崩溃。
+        assert isinstance(m.needs_fact_check, bool)
+        assert m.consensus_score >= 0.5
+
+    def test_fact_check_priority_values(self, fixture_kb: Path):
+    def test_weak_source_not_overrides_action(self, fixture_kb: Path):
+        """弱来源（media/user_note）不覆盖动作语义。"""
+        # 一致看多（600100）的来源都是 broker_research，但 consensus_score
+        # 只是中性指标，不会变成 BUY。
+        result = build_research_consensus_matrix(
+            str(fixture_kb), symbol="600100", today=_TODAY,
+        )
+        m = result.symbols[0]
+        assert m.dominant_stance in (STANCE_BULLISH, STANCE_NEUTRAL, STANCE_UNKNOWN)
+        # 不应输出 BUY/SELL 字样。
+        _assert_no_strong_action_words(str(m.to_dict()))
+
+
+# ── 10. lookup / 单 symbol 查询 ─────────────────────────────────────
+
+
+class TestLookup:
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from datetime import date
+from tradingagents.dataflows.research_consensus_matrix import _build_symbol_matrix
+from tradingagents.dataflows.research_fact_opinion_index import ResearchFactOpinionPage, ResearchClaimItem, CLAIM_OPINION, STALE_FRESH
+from tradingagents.dataflows.citation_policy import TIER_BROKER_RESEARCH
+p=ResearchFactOpinionPage(rel_path='a.md', title='中信-甲', symbol='600001.SH', name='甲', source_quality_tier=TIER_BROKER_RESEARCH, report_date='2026-06-01', stale_status=STALE_FRESH, confidence='medium', research_claims=[ResearchClaimItem(CLAIM_OPINION,'营收增长，估值修复空间大','body', source_quality_tier=TIER_BROKER_RESEARCH)])
+m=_build_symbol_matrix('600001.SH','600001','甲',[p],window_months=12,today=date(2026,7,12))
+print(m.attention_count_effective, m.dominant_stance, m.needs_fact_check, m.fact_check_reasons)
+for k,d in m.dimensions.items(): print(k,d.bullish_count,d.bearish_count,d.unknown_count,d.dominant_stance)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+1 bullish True ['看多共识仅基于券商/媒体观点（2 条），缺乏公告/财报原文支撑，需事实反证。']
+performance 1 0 0 bullish
+supply_chain_role 0 0 1 unknown
+risk 0 0 1 unknown
+valuation 1 0 0 bullish
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/research_consensus_matrix.py | sed -n '730,770p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   730	    返回 ``(reasons, priority)``。priority: low / medium / high。
+   731	    """
+   732	    reasons: List[str] = []
+   733	    priority = "low"
+   734	
+   735	    # 1. 任一维度分歧超过阈值 → 疑似观点分裂，需事实对照。
+   736	    split_dims = [
+   737	        d for d in matrix.dimensions.values()
+   738	        if d.disagreement_score >= DISAGREEMENT_THRESHOLD
+   739	    ]
+   740	    if split_dims:
+   741	        dim_labels = "、".join(
+   742	            _DIMENSION_LABELS.get(d.dimension, d.dimension) for d in split_dims
+   743	        )
+   744	        reasons.append(
+   745	            f"{dim_labels}维度分歧较高（≥{DISAGREEMENT_THRESHOLD:.2f}），"
+   746	            "需 HY-003/HY-005 做事实对照判定。"
+   747	        )
+   748	        priority = "medium"
+   749	
+   750	    # 2. 弱来源共识：仅观点类来源（broker/media/user_note/unknown）且 bullish 共识。
+   751	    if has_opinion_only_consensus and matrix.dominant_stance == STANCE_BULLISH:
+   752	        bull_total = sum(
+   753	            d.bullish_count for d in matrix.dimensions.values()
+   754	        )
+   755	        if bull_total >= WEAK_SOURCE_BULLISH_THRESHOLD:
+   756	            reasons.append(
+   757	                f"看多共识仅基于券商/媒体观点（{bull_total} 条），"
+   758	                "缺乏公告/财报原文支撑，需事实反证。"
+   759	            )
+   760	            if priority == "low":
+   761	                priority = "medium"
+   762	
+   763	    # 3. 过期页主导：stale_ratio ≥ 50%。
+   764	    #    覆盖两类场景：in-window 内 stale 占比高，或全部为 out-of-window stale。
+   765	    #    stale_ratio 在调用前已做 total>0 防护（total=0 时 stale_ratio=0.0）。
+   766	    if stale_ratio >= STALE_DOMINANCE_RATIO:
+   767	        reasons.append(
+   768	            f"过期研报占比 {stale_ratio:.0%}（≥{STALE_DOMINANCE_RATIO:.0%}），"
+   769	            "观点可能基于旧数据，需刷新事实。"
+   770	        )
+
+codex
+The new module imports and the included tests pass, but the consensus matrix has core aggregation accuracy issues for common multi-report scenarios. These can produce false fact-check flags or miss real disagreements, so the patch should not be considered correct yet.
+
+Full review comments:
+
+- [P2] Do not truncate matrix inputs at display cap — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_consensus_matrix.py:1070-1075
+  For symbols with more than 15 matching research pages, passing `_MAX_MATRIX_PAGES` into KB-015 truncates the pages before `_build_symbol_matrix` computes scores, effective attention, stale counts, and fact-check reasons. A bearish or stale report after the first 15 sorted pages is completely invisible to the consensus matrix; keep this cap only for rendered `matrix.reports`, not for aggregation.
+
+- [P2] Count weak-source consensus by report — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_consensus_matrix.py:752-754
+  When a single opinion-only report is bullish in two dimensions, `bull_total` becomes 2 and trips the “弱来源共识 ≥2” rule even though there is only one report. This creates false `needs_fact_check` candidates and misleading reason text; the threshold should count unique non-duplicate bullish reports, not bullish dimension cells.
+
+- [P2] Keep unknown stances from masking splits — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_consensus_matrix.py:679-680
+  If a stock has one bullish report, one bearish report, and several no-keyword/unknown reports, `max(bull, bear, neut, unk)` lets `unknown_count` dominate and lowers disagreement below the fact-check threshold. This misses the explicit bull/bear split; unknown/no-signal pages should not reduce disagreement for observed opposing stances.
+The new module imports and the included tests pass, but the consensus matrix has core aggregation accuracy issues for common multi-report scenarios. These can produce false fact-check flags or miss real disagreements, so the patch should not be considered correct yet.
+
+Full review comments:
+
+- [P2] Do not truncate matrix inputs at display cap — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_consensus_matrix.py:1070-1075
+  For symbols with more than 15 matching research pages, passing `_MAX_MATRIX_PAGES` into KB-015 truncates the pages before `_build_symbol_matrix` computes scores, effective attention, stale counts, and fact-check reasons. A bearish or stale report after the first 15 sorted pages is completely invisible to the consensus matrix; keep this cap only for rendered `matrix.reports`, not for aggregation.
+
+- [P2] Count weak-source consensus by report — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_consensus_matrix.py:752-754
+  When a single opinion-only report is bullish in two dimensions, `bull_total` becomes 2 and trips the “弱来源共识 ≥2” rule even though there is only one report. This creates false `needs_fact_check` candidates and misleading reason text; the threshold should count unique non-duplicate bullish reports, not bullish dimension cells.
+
+- [P2] Keep unknown stances from masking splits — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_consensus_matrix.py:679-680
+  If a stock has one bullish report, one bearish report, and several no-keyword/unknown reports, `max(bull, bear, neut, unk)` lets `unknown_count` dominate and lowers disagreement below the fact-check threshold. This misses the explicit bull/bear split; unknown/no-signal pages should not reduce disagreement for observed opposing stances.

@@ -1,5 +1,86 @@
 # 修改日志
 
+## 2026-07-12 | KB-016 多研报一致性/分歧矩阵与关注度去重回放
+
+- **执行者**:OpenCode
+- **任务**:KB-016 — 多研报一致性/分歧矩阵与关注度去重回放（P1）
+- **类型**:feature / research consensus matrix
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- KB-015（研报观点/事实分离）、KB-007（多研报重复提及因子）、KB-009（机构级
+  去重 + 时效衰减）已就绪，但当多份研报涉及同一只股票时，系统无法回答
+  "这些研报是否一致、在哪里分裂、哪些观点需要事实反证"。
+- KB-016 把 KB-015 的 claim 抽取 + KB-007 的关注度聚合 + KB-009 的机构去重/衰减
+  组合成一个**按 symbol 聚合的共识/分歧矩阵**，输出四维分歧
+  （业绩预测 / 产业链角色 / 风险判断 / 估值假设）、consensus_score、
+  disagreement_score、attention_count_effective，并标记 needs_fact_check 候选
+  交 HY-003/HY-005 做事实反证。
+- 验收头条：多研报高关注**只能提高研究优先级**，绝不绕过 TradeFlow/TA 强动作
+  门禁；输出文档不含买入/卖出/加仓/减仓等强动作词。
+
+### 改动文件
+
+- `tradingagents/dataflows/research_consensus_matrix.py`（新增，`# [KB-016]
+  research_consensus_matrix`）— 共识/分歧矩阵核心模块。主入口
+  ``build_research_consensus_matrix(knowledge_root, symbol, name,
+  window_months, today)`` 复用 KB-015 ``build_research_fact_opinion_index``
+  做 per-symbol claim 抽取，按 3/6/12 月窗口聚合，输出
+  ``SymbolConsensusMatrix``（含 consensus_score / disagreement_score /
+  attention_count_effective / dominant_stance / needs_fact_check /
+  fact_check_reasons / fact_check_priority / 四维 DimensionDisagreement /
+  ReportStance[]）。规则版立场检测（无 LLM）：四维各取
+  bullish/bearish/neutral/unknown；关键词命中 + 数值符号辅助。
+  去重：同机构 + 同标题（norm）+ 同立场 → 重复；同 rel_path → 重复。
+  过期页绕过窗口（decay not delete）。needs_fact_check 触发：分歧 ≥ 0.34 /
+  弱来源共识 ≥ 2 / 过期占比 ≥ 50% / KB-015 verification_needs > 0。
+  辅助函数 ``lookup_research_consensus_matrix`` /
+  ``matrix_to_ta_consumable_summary`` /
+  ``matrix_to_summary_dict`` / ``render_research_consensus_matrix_report`` /
+  ``has_forbidden_action_words``（防回归强动作词）。
+- `scripts/research_consensus_matrix.py`（新增）— CLI 入口，支持
+  ``--symbol / --name / --all / --window 3|6|12 / --needs-fact-check /
+  --json / --summary / --output / --suggest-output``。
+- `tests/test_kb016_research_consensus_matrix.py`（新增）— **67 tests**，
+  覆盖五类 fixture（一致看多 / 一致看空 / 观点分裂 / 重复报告 / 过期报告）、
+  四维立场检测、去重规则、时间窗口、needs_fact_check 判定、多研报高关注不
+  绕过门禁、报告渲染、JSON 序列化与扁平摘要、lookup、边界场景、overall_stance
+  合成。
+
+### 验收
+
+- **67 tests passed**（`tests/test_kb016_research_consensus_matrix.py`）。
+- KB-015/016/HY-005/HY-006 组合回归 **243 passed**，无新增失败。
+- KB-009 有 1 个 pre-existing 日期敏感 flaky 测试（与本任务无关，stash 验证
+  确认未改动前也失败）。
+- 约束验证：知识库只读（调用前后文件不变）/ 不写生产 DB / 无强动作词 /
+  弱来源不覆盖动作语义 / 不复制原文段落。
+
+### 关键设计决策
+
+1. **过期页绕过窗口**：任务要求"对过期观点做去重/衰减"——decay not delete。
+   stale_risk=高 或 valid_until 过期的页即使超出 3/6/12 月窗口仍纳入矩阵
+   （stale_count + needs_fact_check），但不计入 attention_count_effective。
+2. **保守去重**：宁可漏标也不误杀真实多机构共识——同机构 + 同标题 + 同立场
+   才判重复；不同机构同标题不折叠；同标题不同立场不折叠（这是真实分歧）。
+3. **needs_fact_check 四触发器**：高分歧 / 弱来源看多共识 / 过期主导 /
+   KB-015 验证缺口；优先级 low/medium/high，高分歧 + 弱来源共识同时出现 → high。
+4. **consensus_score 不是买入信号**：[0, 1] 区间中性指标，输出文档刻意避免
+   强动作词；dominant_stance 用 "偏看多/偏看空/中性" 而非 BUY/SELL。
+
+### 风险点
+
+- 立场检测是规则版（关键词 + 数值符号），对未见过的表达形态可能漏判 →
+  stance=unknown（不误判，但可能漏标分歧）。KB-018 版本演化时间线可在
+  ``thesis_version_status`` 维度补一层人工标注。
+- 机构名提取依赖 KB-009 ``split_institution``，对 ``中信证券-华勤技术`` 形态
+  有效；无分隔符的来源别名可能被误当作独立机构（KB-009 已有同样限制）。
+- KB-018（同股研报观点版本演化）依赖本任务的 ``ReportStance[]`` 与
+  ``DimensionDisagreement``，下游时间线可直接消费 ``matrix.reports`` 序列。
+
+---
+
 ## 2026-07-11 | HY-006 TradeFlow/昊天候选接入半年报因子与降权规则
 
 - **执行者**:OpenCode
@@ -12547,3 +12628,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-006-20260712-round1.txt
 - **Run archive**: docs/task_runs/HY-006-20260711-233936/
+
+## 2026-07-12 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-016 - 多研报一致性/分歧矩阵与关注度去重回放（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-016-20260712-round1.txt
+- **Run archive**: docs/task_runs/KB-016-20260712-000255/
