@@ -1,5 +1,85 @@
 # 修改日志
 
+## 2026-07-11 | KB-015 研报观点事实分离与 TA 可消费摘要索引
+
+- **执行者**：OpenCode
+- **任务**：KB-015 — 研报观点事实分离与 TA 可消费摘要索引（P1）
+- **类型**：feature / read-only provider
+- **状态**：✅ 完成（待外层 commit）
+
+### 背景
+
+- KB-014 已建立研报/财报来源可信度分层与 citation policy（6 类 tier），
+  KB-003 提供 raw_evidence 接入，KB-010 提供缓存/freshness，HY-001/HY-003
+  提供半年报契约与事实表 provider。
+- 需要把 Tree Work 已消化研报中的「观点 / 事实 / 预测 / 风险 / 待验证事项」
+  拆成 TA 可消费的结构化摘要索引，避免研报观点被误当成公告/财报事实。
+- KB-015 在 KB-014 citation policy + KB-010 缓存之上，只读抽取每页 investment wiki
+  的五类 claim，每条携带 symbol/name/source_path/source_quality_tier/report_date/
+  stale_status 溯源字段，并输出 verification_needs 供 KB-017 citation 审计复用。
+
+### 改动文件
+
+- `tradingagents/dataflows/research_fact_opinion_index.py`（新增，
+  `# [KB-015] research_fact_opinion_index`）— 核心模块（纯标准库 + 复用
+  KB-001/KB-014 只读解析）：
+  - **ResearchClaimItem**：单条研报观点/事实/预测/风险记录，携带 claim_type
+    （fact/opinion/forecast/risk/unknown）+ 全量溯源字段。
+  - **ResearchFactOpinionPage**：单页分离结果，含 research_claims/reported_facts/
+    forecast_items/risk_items/verification_needs 五类 + citation_signals。
+  - **ResearchFactOpinionIndexResult**：索引聚合结果，含 status/pages/symbols/
+    names/claim_counts/verification_count。
+  - `build_research_fact_opinion_index()`：主入口，支持 symbol/name/全库索引模式，
+    KB-010 缓存路径与全量扫描语义等价。
+  - `_classify_field_claim_type()`：按字段名 + 来源 tier/source_type 判定
+    claim_type；事实源 financial_facts → fact，观点源 → opinion（观点冒充事实），
+    forward_guidance → forecast，risk_factors → risk。
+  - `_build_verification_needs()`：生成待验证事项——弱来源含数值断言、
+    缺来源、stale、券商事实类字段冒充事实四类场景。
+  - `render_research_fact_opinion_report()`：Markdown 报告（只展示摘要和路径）。
+  - `to_ta_consumable_summary()`：TA/TradeFlow 可复用的扁平摘要字典。
+
+- `scripts/research_fact_opinion_index.py`（新增）— CLI，支持
+  `--symbol`/`--name`/`--all`/`--json`/`--summary`/`--output`/KB-010 缓存参数。
+
+- `tests/test_kb015_research_fact_opinion_index.py`（新增）— 54 tests，
+  覆盖五类 fixture（事实/观点/预测/风险/缺来源）、claim_type 分类、
+  stale_status、verification_needs、查询命中、KB-010 缓存等价性、
+  报告渲染、JSON 序列化、约束验证（只读/无买卖词/弱来源不冒充事实/文本裁剪）。
+
+- `docs/knowledge_reports/research_fact_opinion_index-2026-07-11.md`（新增）—
+  真实知识库 dry-run 报告（76 页索引，status=HAS_DATA）。
+
+### 关键逻辑
+
+1. **观点/事实分离**：通过 KB-014 citation tier 决定 financial_facts/segment_facts/
+   management_commentary 的 claim_type——original_filing/official_notice → fact，
+   broker_research/media/user_note/unknown → opinion（观点冒充事实保护）。
+2. **forward_guidance 恒为 forecast**：无论来源层级，前瞻指引都是预测。
+3. **verification_needs 四类触发**：弱来源含数值断言需核验、缺来源需补、
+   stale 需更新核验、券商事实类字段需交叉核验。
+4. **KB-010 缓存兼容**：传入 KnowledgeCache 时跳过全量扫描，用预抽取字段
+   （summary/risks/sources）替代正文段落抽取，语义与全量扫描等价。
+5. **弱来源只降置信不覆盖动作语义**：stale_status=low_confidence 的页面
+   仍保留在索引中，但 confidence=low，不进入事实反证或候选加分。
+
+### 测试结果
+
+- `tests/test_kb015_research_fact_opinion_index.py`：**54 passed**。
+- 回归：KB-014/KB-010/API smoke/runtime tier 共 268 passed，无回归。
+- KB/HY 系列（KB-003/KB-004/HY-003 等）248 passed，KB-009 有 1 个预存
+  日期相关失败（time_decay_factor，与本任务无关）。
+
+### 风险点
+
+- 缓存路径用预抽取 summary/risks 替代正文段落，若 KB-010 缓存的 summary 字段
+  与正文「核心观点」段不一致，缓存与全量扫描的 research_claims 可能有细微差异；
+  但 financial_facts/risk_factors 等 frontmatter 字段不受影响。
+- verification_needs 的数值断言检测使用正则，对中文数字（如「翻倍」）不敏感，
+  仅检测阿拉伯数字+单位组合。
+
+---
+
 ## 2026-07-11 | HY-003 半年报事实表本地索引与只读查询 provider
 
 - **执行者**：OpenCode
@@ -12041,3 +12121,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-003-20260711-round1.txt
 - **Run archive**: docs/task_runs/HY-003-20260711-201732/
+
+## 2026-07-11 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-015 - 研报观点事实分离与 TA 可消费摘要索引（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-015-20260711-round1.txt
+- **Run archive**: docs/task_runs/KB-015-20260711-203324/

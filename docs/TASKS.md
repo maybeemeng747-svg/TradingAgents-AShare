@@ -28,7 +28,7 @@
 
 1. `HY-002`：半年报资料优先队列与 Tree Work 补录任务包（P1，done）。
 2. `HY-003`：半年报事实表本地索引与只读查询 provider（P1，done）。
-3. `KB-015`：研报观点/事实/预测/风险分离与 TA 摘要索引（P1，ready）。
+3. `KB-015`：研报观点/事实/预测/风险分离与 TA 摘要索引（P1，done）。
 4. `REPORT-UX-005`：本地知识补充不覆盖动作语义的扩展回放（P2，ready）。
 5. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
 
@@ -201,7 +201,7 @@
 165. `PLAYBOOK-004`：TA 报告动作语义接入战法阶段与仓位建议（P1，blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成）。
 166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
 167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
-168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，ready，依赖 KB-014/KB-003/HY-001 ✓）。
+168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py` + `scripts/research_fact_opinion_index.py` + `tests/test_kb015_research_fact_opinion_index.py`（54 tests）+ `docs/knowledge_reports/research_fact_opinion_index-2026-07-11.md`，依赖 KB-014/KB-003/HY-001 ✓）。
 169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，blocked — 等 KB-015 完成）。
 170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，blocked — 等 KB-015/HY-003 完成）。
 
@@ -5170,7 +5170,7 @@
 ### KB-015: 研报观点事实分离与 TA 可消费摘要索引（P1）
 - **描述**：把 Tree Work 已消化研报中的“观点、事实、预测、风险、待验证事项”拆成 TA 可消费的结构化摘要，避免研报观点被误当成公告/财报事实。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py`（54 tests passed）
 - **前置条件**：KB-014、KB-003、HY-001 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge/`，不得修改知识库。
