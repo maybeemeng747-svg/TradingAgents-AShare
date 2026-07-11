@@ -4949,7 +4949,7 @@
 ### HY-003: 半年报事实表本地索引与只读查询 provider（P1）
 - **描述**：从 Tree Work 已消化的半年报 wiki 中抽取结构化事实表，提供 TA/TradeFlow 可复用的只读查询接口。
 - **优先级**：P1
-- **状态**：done — OpenCode 产出 `tradingagents/dataflows/half_year_facts_provider.py` + `tests/test_hy003_half_year_facts_provider.py`（57 tests），57 passed / 0 failed，KB/HY 系列回归 312 passed
+- **状态**：done -- commit 678b234
 - **前置条件**：HY-001、KB-010 完成。
 - **执行约束**：
   - 只读本地知识库，不写生产 DB。
