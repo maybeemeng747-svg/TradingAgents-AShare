@@ -865,6 +865,13 @@ class ReportResponse(BaseModel):
     knowledge_theme_count: Optional[int] = None
     research_attention_summary: Optional[str] = None
     research_attention_block: Optional[str] = None
+    # [HY-004] half_year_report_block — surfaced at top level so the frontend
+    # can render "半年报事实对照" without digging into result_data. Attached
+    # by ``_attach_report_data_blockers_for_response``; read-only with
+    # respect to the strong action gate.
+    half_year_facts_block: Optional[str] = None
+    half_year_facts_summary: Optional[Dict[str, Any]] = None
+    half_year_facts_status: Optional[str] = None
     # [PLAYBOOK-001] lifecycle_contract — optional playbook stage + summary
     # dict for TA report passthrough. Populated best-effort from result_data
     # by report_service; defaults to None/empty so old reports are unaffected.
@@ -935,6 +942,10 @@ class ReportSummaryResponse(BaseModel):
     knowledge_theme_count: Optional[int] = None
     research_attention_summary: Optional[str] = None
     research_attention_block: Optional[str] = None
+    # [HY-004] half_year_report_block — summary fields mirrored at top level.
+    half_year_facts_block: Optional[str] = None
+    half_year_facts_summary: Optional[Dict[str, Any]] = None
+    half_year_facts_status: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -3884,6 +3895,45 @@ def _attach_report_data_blockers_for_response(report: Any) -> Any:
             ):
                 if getattr(report, fld, None) is None:
                     setattr(report, fld, result_data.get(fld))
+        # [HY-004] half_year_report_block — surfaced at top level so the
+        # frontend can render "半年报事实对照" without digging into
+        # result_data. Recompute on read for legacy rows that predate HY-004
+        # so the section still appears; never alters decisions or gates.
+        if (
+            getattr(report, "half_year_facts_block", None) is None
+            and getattr(report, "symbol", None)
+        ):
+            try:
+                hy_enriched = report_service.attach_report_half_year_facts(
+                    result_data=dict(result_data),
+                    symbol=getattr(report, "symbol", None),
+                )
+                if isinstance(hy_enriched, dict):
+                    setattr(
+                        report,
+                        "half_year_facts_block",
+                        hy_enriched.get("half_year_facts_block"),
+                    )
+                    setattr(
+                        report,
+                        "half_year_facts_summary",
+                        hy_enriched.get("half_year_facts_summary"),
+                    )
+                    setattr(
+                        report,
+                        "half_year_facts_status",
+                        hy_enriched.get("half_year_facts_status"),
+                    )
+            except Exception:
+                pass
+        else:
+            for hy_fld in (
+                "half_year_facts_block",
+                "half_year_facts_summary",
+                "half_year_facts_status",
+            ):
+                if getattr(report, hy_fld, None) is None:
+                    setattr(report, hy_fld, result_data.get(hy_fld))
     return report
 
 

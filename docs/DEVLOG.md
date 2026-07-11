@@ -1,5 +1,106 @@
 # 修改日志
 
+## 2026-07-11 | HY-004 TA 报告接入"半年报事实对照"区块
+
+- **执行者**:OpenCode
+- **任务**:HY-004 — TA 报告接入"半年报事实对照"区块（P1）
+- **类型**:feature / report attach chain
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-003 半年报事实 provider 已就绪，但 TA 报告管线尚未接入；REPORT-UX-005
+  已通过 `_inject_knowledge_overlays()` 前向兼容验证 half_year_facts
+  raw_evidence 注入不破坏报告管线。
+- HY-004 把半年报事实正式接入 `report_service.create_report` attach 链路，
+  与 KB-003 本地知识补充 / REPORT-UX-003 wait_reason_codes / DATA-021
+  data_blockers **完全解耦**——只增解释性 key，不改强动作门禁。
+- 验收头条：半年报事实命中（HAS_FACTS）不得掩盖数据缺口（DATA_MISSING）；
+  无半年报事实时显示缺口（NO_DATA），不误判 FAILED。
+
+### 改动文件
+
+- `api/services/report_service.py`（修改，`# [HY-004] half_year_report_block`）—
+  新增 `attach_report_half_year_facts()` / `_cached_half_year_facts_entry()` /
+  `_half_year_status_to_short()` / `_build_half_year_facts_summary()`，
+  并在 `create_report` attach 链路中追加调用（位于
+  `attach_report_local_knowledge` 之后）。新增 3 个 result_data key：
+  `half_year_facts_block`（Markdown）/ `half_year_facts_summary`（dict，含
+  事实/管理层表述/待验证事项/风险四子区）/ `half_year_facts_status`
+  （`HAS_FACTS`/`NO_DATA`/`STALE`/`LOW_CONFIDENCE`/`CONFLICT`/`FAILED`）。
+- `tradingagents/dataflows/half_year_facts_provider.py`（修改）— 为
+  `HalfYearFactsQueryResult` 补 `from_dict` classmethod，与
+  `LocalKnowledgeQueryResult.from_dict` 对齐，使 attach 链路能从缓存的
+  raw_evidence payload 还原查询结果（避免每次报告读取都重扫知识库）。
+- `tradingagents/graph/data_collector.py`（修改）— 在
+  `build_raw_evidence` 末尾追加 `half_year_facts` raw_evidence 条目注入
+  （与 `local_knowledge` 同款 failure-safe try/except，失败不阻塞主链路）。
+- `api/main.py`（修改）— `ReportResponse` / `ReportSummaryResponse` 声明
+  3 个新顶层字段；`_attach_report_data_blockers_for_response` 在响应组装
+  阶段把 result_data 里的 HY 字段同步到顶层，并对历史报告按 symbol
+  recompute-on-read（与 KB-003/KB-008 同款回填策略）。
+- `tests/test_hy004_half_year_report_block.py`（新增）— **44 tests**，
+  覆盖 7 个回放场景 ×（动作门禁保留 / wait_reason_codes 保留 /
+  data_blockers 保留 / HY 区块状态匹配）+ 头条验收（HAS_FACTS 不掩盖
+  DATA_MISSING）+ NO_DATA 不误判 FAILED + CONFLICT 不崩 + additive-only
+  + 缓存复用 + 历史报告回填 + 区块四子区结构 + STALE/LOW_CONFIDENCE
+  不误升 HAS_FACTS + from_dict round-trip + DataCollector 注入。
+- `docs/TASKS.md` / `docs/DEVLOG.md`（修改）— 状态校准与日志。
+
+### 关键逻辑
+
+1. **attach 优先级**（与 KB-003 完全一致）：
+   (1) 复用 `metadata.raw_evidence.half_year_facts` 缓存条目（data_collector
+   已产出，避免重扫知识库）；
+   (2) 缓存缺失时按 symbol re-query（为 HY-004 之前的旧报告回填）；
+   (3) 既无缓存又无 symbol 时静默跳过。
+2. **status 映射严格区分 gap vs failure**：`NO_DATA`（无半年报页命中，缺口）
+   ≠ `FAILED`（provider 异常 / 知识库不可读）。这是 HY-004 验收头条之一。
+3. **区块四子区显式结构化**：`half_year_facts_summary.sections` 暴露
+   `facts` / `management_commentary` / `needs_verification` / `risks`
+   四个子区，每个含 `available` / `count` / `preview`，前端无需重解析
+   Markdown 即可渲染四张子卡。`needs_verification` 聚合前瞻指引 +
+   事实冲突 detail + 缺字段提示。
+4. **additive-only 契约**：attach 函数对 `decision` / `execution_action` /
+   `action_label` / `research_direction` / `wait_reason_codes` /
+   `data_blockers` / `local_knowledge_block` 等 pre-existing key
+   byte-for-byte 保留，只新增 HY 相关 key。
+
+### 测试结果
+
+- `tests/test_hy004_half_year_report_block.py`：**44 passed**。
+- 回归 `tests/test_hy003_half_year_facts_provider.py` +
+  `tests/test_report_ux004_local_knowledge_replay.py` +
+  `tests/test_report_ux005_knowledge_action_semantics_replay.py` +
+  `tests/test_kb003_local_knowledge_provider.py` +
+  `tests/test_api_smoke.py` + `tests/test_runtime_tier_contract.py`：
+  **360 passed**。
+- 回归 `tests/test_data_collector.py` +
+  `tests/test_data004_evidence_contract.py` +
+  `tests/test_kb011_knowledge_contract_ui.py` +
+  `tests/test_raw_evidence_vendor.py` +
+  `tests/test_g006_raw_evidence_snapshot.py`：**108 passed**。
+- 大范围回归（report/half_year/hy00/kb00/kb011/data_collector/evidence/
+  knowledge/report_ux 关键词，排除既有 KB-009 日期 flake）：
+  **2402 passed, 4 skipped**。
+- 既有 KB-009 `test_different_institutions_consensus_not_suppressed` 失败
+  与本任务无关（`git stash` 验证为预存日期敏感 flake：时效衰减因子
+  0.969 < 测试阈值 0.99）。
+
+### 风险点
+
+- **DataCollector 注入路径**：`build_raw_evidence` 现在会多做一次
+  half_year_facts 查询。已有 try/except 兜底，失败只产 FAILED 条目，
+  不阻塞主链路；但生产知识库较大时首次查询可能有少量开销。这与
+  KB-003 local_knowledge 注入同款，已被既有性能预算覆盖。
+- **历史报告回填**：`_attach_report_data_blockers_for_response` 会在
+  响应阶段对缺 HY 字段的旧报告做 re-query。若知识库不可用，re-query
+  失败时静默跳过（已有 try/except），不影响旧报告展示。
+- **未接入前端**：本次只完成 API/result_data 契约与后端测试；前端
+  渲染"半年报事实对照"区块属于 HY-008 端到端验收范围。
+
+---
+
 ## 2026-07-11 | 研报主线续航任务扩展与状态校准
 
 - **类型**：task planning / queue repair
@@ -12236,3 +12337,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/REPORT-UX-005-20260711-round1.txt
 - **Run archive**: docs/task_runs/REPORT-UX-005-20260711-204951/
+
+## 2026-07-11 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-004 - TA 报告接入“半年报事实对照”区块（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-004-20260711-round1.txt
+- **Run archive**: docs/task_runs/HY-004-20260711-225740/

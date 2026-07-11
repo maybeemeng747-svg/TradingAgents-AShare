@@ -293,6 +293,46 @@ class HalfYearFactsQueryResult:
             "errors": list(self.errors),
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "HalfYearFactsQueryResult":
+        """Reconstruct a query result from its dict form.
+
+        [HY-004] half_year_report_block — used by the report attach chain to
+        reuse the cached ``raw_evidence.half_year_facts`` payload produced by
+        the data collector, mirroring :meth:`LocalKnowledgeQueryResult.from_dict`.
+        Tolerant of missing keys so partial payloads (e.g. legacy rows) do not
+        raise.
+        """
+        if not isinstance(data, dict):
+            return cls()
+        pages_raw = data.get("pages") or []
+        pages: List[HalfYearFactsPage] = []
+        if isinstance(pages_raw, list):
+            for item in pages_raw:
+                if isinstance(item, HalfYearFactsPage):
+                    pages.append(item)
+                elif isinstance(item, dict):
+                    try:
+                        pages.append(HalfYearFactsPage.from_dict(item))
+                    except Exception:
+                        continue
+        return cls(
+            status=str(data.get("status") or STATUS_NORMAL_NO_DATA),
+            vendor=str(data.get("vendor") or VENDOR),
+            task=str(data.get("task") or TASK_CODE),
+            symbol=str(data.get("symbol") or ""),
+            name=str(data.get("name") or ""),
+            pages=pages,
+            latest_period=data.get("latest_period"),
+            latest_disclosure_date=data.get("latest_disclosure_date"),
+            summary=list(data.get("summary") or []),
+            risks=list(data.get("risks") or []),
+            data_status=str(data.get("data_status") or DATA_FRESH),
+            knowledge_root=str(data.get("knowledge_root") or ""),
+            query=dict(data.get("query") or {}),
+            errors=list(data.get("errors") or []),
+        )
+
 
 # ── 事实抽取 ──────────────────────────────────────────────────────────
 

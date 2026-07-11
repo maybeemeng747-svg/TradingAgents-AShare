@@ -820,4 +820,26 @@ class DataCollector:
                 trade_date, now_iso, f"{type(exc).__name__}: {exc}"
             )
 
+        # [HY-004] half_year_facts_raw_evidence — Tree Work 半年报事实表只读查询，
+        # 与 local_knowledge 独立注入；失败不阻塞主链路，也不改动作语义。
+        try:
+            from tradingagents.dataflows.half_year_facts_provider import (
+                build_half_year_facts_raw_evidence_entry as _hy_build_entry,
+                query_failed_entry as _hy_failed_entry,
+                query_half_year_facts as _hy_query,
+            )
+            from tradingagents.dataflows.local_knowledge_audit import (
+                default_knowledge_root as _hy_default_root,
+            )
+
+            hy_root = _hy_default_root()
+            hy_result = _hy_query(hy_root, symbol=ticker)
+            raw_evidence["half_year_facts"] = _hy_build_entry(
+                hy_result, trade_date, now_iso
+            )
+        except Exception as exc:  # pragma: no cover - 容错：半年报不可用不阻塞主链路
+            raw_evidence["half_year_facts"] = _hy_failed_entry(
+                trade_date, now_iso, f"{type(exc).__name__}: {exc}"
+            )
+
         return raw_evidence

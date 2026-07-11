@@ -414,6 +414,267 @@ def _cached_local_knowledge_entry(
     return entry if isinstance(entry, dict) else None
 
 
+# [HY-004] half_year_report_block
+def _cached_half_year_facts_entry(
+    result_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return ``metadata.raw_evidence.half_year_facts`` if present.
+
+    Mirrors :func:`_cached_local_knowledge_entry` so the HY-004 attach step can
+    reuse the data collector payload instead of re-parsing the wiki on every
+    report read.
+    """
+    metadata = result_data.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    raw_ev = metadata.get("raw_evidence")
+    if not isinstance(raw_ev, dict):
+        return None
+    entry = raw_ev.get("half_year_facts")
+    return entry if isinstance(entry, dict) else None
+
+
+def attach_report_half_year_facts(
+    result_data: Optional[Dict[str, Any]],
+    symbol: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Attach [HY-004] half-year facts block to report result_data.
+
+    Adds the "半年报事实对照" section to TA reports. Strictly read-only with
+    respect to the strong action gate: this function MUST NOT alter
+    ``decision`` / ``execution_action`` / ``action_label`` /
+    ``research_direction`` / ``wait_reason_codes`` / ``data_blockers``.
+    Half-year facts serve as background evidence only and never substitute for
+    missing market/fund/news data (see REPORT-UX-004 isolation contract).
+
+    Priority (same shape as :func:`attach_report_local_knowledge`):
+      1. Reuse existing ``metadata.raw_evidence.half_year_facts`` payload when
+         the data collector already produced one (avoids re-parsing the wiki
+         for every report read).
+      2. Otherwise re-query by ``symbol`` (for legacy rows that predate HY-004
+         or runs without data_collector).
+      3. Skip silently when no symbol and no cached entry are available.
+
+    Output keys (all backward-compatible; old reports simply get None/empty):
+      - ``half_year_facts_block``: Markdown string. Empty when no half-year
+        page hit so the UI can hide the section.
+      - ``half_year_facts_summary``: dict with structured fields the frontend
+        can render without re-parsing markdown (status / data_status /
+        matched_count / latest_period / latest_disclosure_date / sections /
+        has_conflict / has_stale / has_opinion_only).
+      - ``half_year_facts_status``: short string (``HAS_FACTS`` / ``NO_DATA`` /
+        ``STALE`` / ``LOW_CONFIDENCE`` / ``CONFLICT`` / ``FAILED``) for
+        quick filtering. ``NO_DATA`` is a *gap*, not a failure — the report
+        must still surface the original ``wait_reason_codes``.
+    """
+    if not isinstance(result_data, dict):
+        return result_data
+    try:
+        from tradingagents.dataflows.half_year_facts_provider import (
+            HalfYearFactsQueryResult,
+            default_knowledge_root as _hy_default_root,
+            query_half_year_facts as _hy_query,
+            render_half_year_facts_block as _hy_render,
+        )
+
+        # 1. Reuse cached raw_evidence entry (preferred path).
+        cached_entry = _cached_half_year_facts_entry(result_data)
+        result_obj: Optional[HalfYearFactsQueryResult] = None
+        if isinstance(cached_entry, dict):
+            payload = cached_entry.get("raw")
+            if isinstance(payload, dict):
+                result_obj = HalfYearFactsQueryResult.from_dict(payload)
+
+        # 2. Re-query for legacy rows when no usable cache.
+        if result_obj is None and symbol:
+            resolved_symbol = str(symbol).strip()
+            if resolved_symbol:
+                try:
+                    result_obj = _hy_query(
+                        _hy_default_root(), symbol=resolved_symbol
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "HY-004 half_year_facts re-query failed for %s: %s",
+                        resolved_symbol,
+                        exc,
+                    )
+                    result_obj = None
+
+        if result_obj is None:
+            return result_data
+
+        # Build the short status string for top-level filtering.
+        status_short = _half_year_status_to_short(
+            result_obj.status,
+            result_obj.data_status,
+        )
+
+        enriched = dict(result_data)
+        enriched["half_year_facts_block"] = _hy_render(result_obj)
+        enriched["half_year_facts_summary"] = _build_half_year_facts_summary(
+            result_obj
+        )
+        enriched["half_year_facts_status"] = status_short
+
+        return enriched
+    except Exception as exc:
+        logger.warning("HY-004 half_year_facts attachment failed: %s", exc)
+        return result_data
+
+
+def _half_year_status_to_short(status: str, data_status: str) -> str:
+    """Map the provider status/data_status pair to a short filter token.
+
+    ``NO_DATA`` represents a *gap* (no half-year pages matched) and must NOT
+    be confused with ``FAILED`` (provider exception / unreadable KB). This
+    distinction is the core of the HY-004 acceptance criterion: "无半年报事实
+    时显示缺口，不误判 failed".
+    """
+    from tradingagents.dataflows.half_year_facts_provider import DATA_CONFLICT
+    from tradingagents.dataflows.local_knowledge_provider import (
+        STATUS_FAILED,
+        STATUS_HAS_DATA,
+        STATUS_LOW_CONFIDENCE,
+        STATUS_NORMAL_NO_DATA,
+        STATUS_STALE,
+    )
+
+    if status == STATUS_FAILED:
+        return "FAILED"
+    if status == STATUS_NORMAL_NO_DATA:
+        return "NO_DATA"
+    if status == STATUS_STALE:
+        return "STALE"
+    if status == STATUS_LOW_CONFIDENCE:
+        return "LOW_CONFIDENCE"
+    if data_status == DATA_CONFLICT:
+        return "CONFLICT"
+    if status == STATUS_HAS_DATA:
+        return "HAS_FACTS"
+    return "NO_DATA"
+
+
+def _build_half_year_facts_summary(
+    result: Any,
+) -> Dict[str, Any]:
+    """Build the structured ``half_year_facts_summary`` dict.
+
+    The summary exposes the four required sub-sections (事实 / 管理层表述 /
+    待验证事项 / 风险) so the frontend can render distinct cards without
+    re-parsing the markdown block. Each sub-section carries an
+    ``available`` flag, a ``count`` and a short ``preview`` list.
+    """
+    from tradingagents.dataflows.half_year_facts_provider import (
+        DATA_CONFLICT,
+        DATA_MISSING_FACTS,
+        DATA_MISSING_PERIOD,
+    )
+
+    pages = list(getattr(result, "pages", []) or [])
+    # 事实：聚合 financial_facts raw（每页前 3 条，全局去重保序）。
+    facts_preview: List[str] = []
+    commentary_preview: List[str] = []
+    needs_verification_preview: List[str] = []
+    risks_preview: List[str] = []
+
+    has_conflict = False
+    has_stale = False
+    has_opinion_only = False
+    has_missing_period = False
+    has_missing_facts = False
+
+    for p in pages:
+        if getattr(p, "data_status", None) == DATA_CONFLICT:
+            has_conflict = True
+        if getattr(p, "is_stale", False):
+            has_stale = True
+        if getattr(p, "is_opinion_only", False):
+            has_opinion_only = True
+        if getattr(p, "data_status", None) == DATA_MISSING_PERIOD:
+            has_missing_period = True
+        if getattr(p, "data_status", None) == DATA_MISSING_FACTS:
+            has_missing_facts = True
+
+        # 事实：financial_facts raw。
+        for m in (getattr(p, "financial_facts", None) or [])[:3]:
+            raw = getattr(m, "raw", None)
+            if raw and raw not in facts_preview:
+                facts_preview.append(raw)
+        # 管理层表述。
+        for mc in (getattr(p, "management_commentary", None) or [])[:2]:
+            if mc and mc not in commentary_preview:
+                commentary_preview.append(mc)
+        # 待验证事项：前瞻指引（公司指引，半事实）+ 事实冲突 + 缺字段。
+        for fg in (getattr(p, "forward_guidance", None) or [])[:2]:
+            if fg and fg not in needs_verification_preview:
+                needs_verification_preview.append(fg)
+        if getattr(p, "data_status", None) == DATA_CONFLICT and getattr(
+            p, "conflict_detail", None
+        ):
+            cd = p.conflict_detail
+            if cd and cd not in needs_verification_preview:
+                needs_verification_preview.append(cd)
+        missing_fields = list(getattr(p, "missing_fields", None) or [])
+        if missing_fields:
+            tag = "缺字段需复核：" + ",".join(missing_fields)
+            if tag not in needs_verification_preview:
+                needs_verification_preview.append(tag)
+        # 风险：risk_factors。
+        for r in (getattr(p, "risk_factors", None) or [])[:3]:
+            if r and r not in risks_preview:
+                risks_preview.append(r)
+
+    # 截断 preview 列表，避免 summary 过长。
+    facts_preview = facts_preview[:5]
+    commentary_preview = commentary_preview[:3]
+    needs_verification_preview = needs_verification_preview[:5]
+    risks_preview = risks_preview[:6]
+
+    return {
+        "status": result.status,
+        "data_status": result.data_status,
+        "matched_count": len(pages),
+        "latest_period": result.latest_period,
+        "latest_disclosure_date": result.latest_disclosure_date,
+        "vendor": getattr(result, "vendor", None),
+        "task": getattr(result, "task", None),
+        "updated_at": getattr(result, "pages", None) and any(
+            getattr(p, "updated_at", None) for p in pages
+        ) and next(
+            (getattr(p, "updated_at", None) for p in pages if getattr(p, "updated_at", None)),
+            None,
+        ),
+        "sections": {
+            "facts": {
+                "available": bool(facts_preview),
+                "count": len(facts_preview),
+                "preview": facts_preview,
+            },
+            "management_commentary": {
+                "available": bool(commentary_preview),
+                "count": len(commentary_preview),
+                "preview": commentary_preview,
+            },
+            "needs_verification": {
+                "available": bool(needs_verification_preview),
+                "count": len(needs_verification_preview),
+                "preview": needs_verification_preview,
+            },
+            "risks": {
+                "available": bool(risks_preview),
+                "count": len(risks_preview),
+                "preview": risks_preview,
+            },
+        },
+        "has_conflict": has_conflict,
+        "has_stale": has_stale,
+        "has_opinion_only": has_opinion_only,
+        "has_missing_period": has_missing_period,
+        "has_missing_facts": has_missing_facts,
+    }
+
+
 def extract_structured_data(
     final_trade_decision: str,
     fundamentals_report: str = "",
@@ -876,6 +1137,11 @@ def create_report(
     # Reuses metadata.raw_evidence.local_knowledge when present; otherwise
     # re-queries by symbol. Read-only with respect to the strong action gate.
     result_data = attach_report_local_knowledge(result_data, symbol=symbol)
+    # [HY-004] half_year_report_block — render "半年报事实对照" block.
+    # Reuses metadata.raw_evidence.half_year_facts when present; otherwise
+    # re-queries by symbol. Background evidence only — must NOT alter the
+    # strong action gate or mask data_blockers / wait_reason_codes.
+    result_data = attach_report_half_year_facts(result_data, symbol=symbol)
 
     now = datetime.now(timezone.utc)
     
