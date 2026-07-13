@@ -34,7 +34,7 @@
 6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941）。
 7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
 8. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，ready）。
-9. `HY-008`：半年报知识链路端到端回放验收（P2，ready；HY-007 已完成）。
+9. `HY-008`：半年报知识链路端到端回放验收（P2，done — HY-008-20260713-190756，24 tests passed）。
 10. `KB-019`：Tree Work 研报增量摄取清单与重复导入预检（P2，ready；前置均已完成）。
 11. `KB-020`：同股研报/半年报证据聚合只读 API（P2，ready；前置均已完成）。
 12. `HY-010`：持仓/观察仓半年报待更新清单（P2，ready；只基于现有 HY-003/007）。
@@ -211,7 +211,7 @@
 153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，done — HY-005-20260711-232608，76 tests passed，依赖 HY-003/KB-007/KB-009 ✓）。
 154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，done — HY-006-20260711-233936，46 tests passed，依赖 HY-003/H-017/KB-004 ✓）。
 155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
-156. `HY-008`：半年报知识链路端到端回放验收（P2，ready，HY-007 已完成）。
+156. `HY-008`：半年报知识链路端到端回放验收（P2，done — HY-008-20260713-190756，24 tests passed，依赖 HY-004/HY-005/HY-006/HY-007 ✓）。
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，done — commit f06793e + b638dca，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
@@ -5080,7 +5080,7 @@
 ### HY-008: 半年报知识链路端到端回放验收（P2）
 - **描述**：端到端验收 Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → investment-controller briefing 的整条链路。
 - **优先级**：P2
-- **状态**：in_progress — claimed HY-008-20260713-190756
+- **状态**：done — HY-008-20260713-190756，24 tests passed
 - **前置条件**：HY-004、HY-005、HY-006、HY-007 完成。
 - **执行约束**：
   - fixture/dry-run，禁止 live LLM。
@@ -5324,7 +5324,7 @@
 ### KB-019: Tree Work 研报增量摄取清单与重复导入预检（P2）
 - **描述**：面向半年报集中披露期，把 `inbox/raw/wiki` 的新增、已消化、重复、缺字段和待更新资料整理为可回查的增量摄取清单，避免同一研报重复消化或遗漏。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/KB-019-20260713-191013
 - **前置条件**：KB-005、KB-010、KB-012 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge/`，不得移动、改写或删除 Tree Work 文件。

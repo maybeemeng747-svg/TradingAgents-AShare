@@ -90,7 +90,9 @@ _STATUS_RE = re.compile(
     re.IGNORECASE,
 )
 _PRIO_RE = re.compile(r"\*\*优先级\*\*\s*[：:,]+\s*P(\d)", re.IGNORECASE)
-_PRIO_INLINE_RE = re.compile(r"\(P(\d)\)")
+# Accept both ASCII `(P0)` and full-width `（P0）` parens — Chinese task
+# titles consistently use the full-width form.
+_PRIO_INLINE_RE = re.compile(r"[（(]\s*P(\d)\s*[）)]")
 _DEPENDS_ON_RE = re.compile(
     r"-\s+\*\*depends_on\*\*\s*[：:,]+\s*(.+?)(?:\n|$)",
     re.IGNORECASE,

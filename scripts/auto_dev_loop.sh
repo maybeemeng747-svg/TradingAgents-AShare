@@ -450,9 +450,84 @@ acquire_lock
 # ID|title|priority|test_cmds (or NONE|||) for backward compatibility. A
 # non-zero exit (missing dep on a gating task, cycle touching a gating task)
 # aborts the batch under `set -e` and the reason is on stderr.
+DEP_RESOLVER="$SCRIPT_DIR/task_dependency_resolver.py"
+
+parse_ready_tasks_legacy() {
+    # Fallback used only when task_dependency_resolver.py is unavailable
+    # (e.g. partial vendoring / older test fixtures). Preserves the original
+    # AUTO-002 picker semantics that ignored depends_on metadata.
+    python3 - "$TASKS_FILE" <<'PYEOF'
+import re, sys
+
+tasks_file = sys.argv[1]
+with open(tasks_file, "r") as f:
+    content = f.read()
+
+pattern = re.compile(
+    r"###\s+([\w-]+):\s*(.+?)\n(.*?)(?=\n###|\n---|\Z)",
+    re.DOTALL
+)
+
+priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+EXCLUDE_KEYWORDS = {"preflight", "checklist", "inspection", "baseline"}
+EXCLUDE_ID_PREFIXES = ("R-",)
+EXCLUDE_IDS = {"T-000"}
+
+tasks = []
+for m in pattern.finditer(content):
+    task_id = m.group(1)
+    title = m.group(2).strip()
+    body = m.group(3)
+
+    if not re.search(r"\*\*(status|状态)\*\*.*?ready", body, re.IGNORECASE):
+        continue
+
+    if "done" in title.lower() or "\u2713" in title:
+        continue
+
+    if task_id in EXCLUDE_IDS:
+        continue
+    if any(task_id.startswith(p) for p in EXCLUDE_ID_PREFIXES):
+        continue
+
+    title_lower = title.lower()
+    if any(kw in title_lower for kw in EXCLUDE_KEYWORDS):
+        continue
+
+    prio_match = re.search(r"P(\d)", body)
+    prio = f"P{prio_match.group(1)}" if prio_match else "P2"
+
+    test_cmds = re.findall(r"`(pytest\s+[^`]+)`", body)
+
+    tasks.append({
+        "id": task_id,
+        "title": title,
+        "priority": prio,
+        "priority_num": priority_order.get(prio, 9),
+        "test_cmds": test_cmds,
+        "body_start": m.start(),
+    })
+
+tasks.sort(key=lambda t: (t["priority_num"], t["body_start"]))
+
+if tasks:
+    t = tasks[0]
+    print(f"{t['id']}|{t['title']}|{t['priority']}|{','.join(t['test_cmds'])}")
+else:
+    print("NONE|||")
+PYEOF
+}
+
 parse_ready_tasks() {
-    python3 "$SCRIPT_DIR/task_dependency_resolver.py" claim \
-        --tasks-file "$TASKS_FILE"
+    if [ -f "$DEP_RESOLVER" ]; then
+        python3 "$DEP_RESOLVER" claim --tasks-file "$TASKS_FILE"
+    else
+        # NOTE: warn must go to stderr so it does not contaminate the
+        # captured stdout (which carries the ID|title|... payload).
+        warn "[AUTO-007] task_dependency_resolver.py missing — falling back to legacy picker" >&2
+        parse_ready_tasks_legacy
+    fi
 }
 
 # --- Main loop: execute until no ready tasks remain ---
@@ -616,6 +691,17 @@ if [ "$DRY_RUN" = true ]; then
     echo "  Full tests:       ${AUTO_DEV_FULL_TESTS}"
     echo "  Max tasks:        ${AUTO_DEV_MAX_TASKS} (0 means until no ready tasks)"
     echo "========================================"
+    # [AUTO-007] dependency_aware_claim — surface dependency state so the
+    # human can see blocked reasons, releasable tasks and ordering without
+    # modifying TASKS.md.
+    DEP_RESOLVER="$SCRIPT_DIR/task_dependency_resolver.py"
+    if [ -f "$DEP_RESOLVER" ]; then
+        echo ""
+        echo "--- [AUTO-007] dependency report (read-only) ---"
+        set +e
+        python3 "$DEP_RESOLVER" dry-run --tasks-file "$TASKS_FILE" 2>&1 | tail -60
+        set -e
+    fi
     break
 fi
 

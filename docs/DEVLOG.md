@@ -1,5 +1,142 @@
 # 修改日志
 
+## 2026-07-13 | KB-019 Tree Work 研报增量摄取清单与重复导入预检
+
+- **执行者**:OpenCode
+- **任务**:KB-019 — Tree Work 研报增量摄取清单与重复导入预检（P2）
+- **类型**:feature / research ingest delta / duplicate precheck
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- 半年报集中披露期需要把 inbox/raw/wiki 的新增、已消化、重复、缺字段、过期、
+  冲突资料整理为可回查的增量摄取清单，避免同一研报被重复消化或遗漏。
+- KB-005（backlog）/ KB-010（cache）/ HY-002（task pack）只回答"哪些 raw 未消化"，
+  无法回答"哪些是重复、哪些缺元数据、哪些已被过期 wiki 引用、哪些疑似版本冲突"。
+- KB-019 在这三套上游之上，按稳定 ``ingest_key`` 标注六类状态，**只标注重复 /
+  冲突，绝不自动删除文件**。
+
+### 改动文件
+
+- `tradingagents/dataflows/research_ingest_delta.py`（新增，`# [KB-019]
+  research_ingest_delta`）— 增量摄取清单核心模块。主入口
+  ``build_research_ingest_delta(knowledge_root, *, include_inbox, include_raw,
+  include_wiki, use_backlog)`` 复用 KB-001 audit helpers / KB-005 backlog
+  上游统计 / KB-001 ``extract_raw_references`` 做 raw↔wiki 引用映射。
+  ``ingest_key = sha1(rel_path | fingerprint | symbol | report_date |
+  institution | source_url)[:16]``，``business_key = symbol|date|institution|url``
+  用于"同业务身份"重复检测。
+  六状态：``new / digested / duplicate / needs_metadata / stale / conflict``；
+  ``_decide_status`` 按 STATUS_ORDER 优先级判定（wiki 页只走 needs_metadata /
+  stale 两条路）。
+  重复 / 冲突两阶段检测：Phase 1 全局同 fingerprint → ``duplicate``；Phase 2 同
+  business_key 三要素齐全时，标题 Sørensen–Dice 相似度 ≥ 0.6 → ``duplicate``，
+  否则 → ``conflict``。"原始"选择：FP 集群大小降序 → 文件大小降序 → location
+  字典序，保证乱序输入得到稳定结果。
+  辅助函数 ``render_ingest_delta_report`` /
+  ``compute_ingest_key`` / ``compute_business_key`` / ``compute_fingerprint``
+  / ``extract_research_metadata`` / ``title_similarity`` /
+  ``has_forbidden_action_words`` / ``suggest_ingest_delta_output_path``。
+- `scripts/research_ingest_delta.py`（新增）— CLI 入口，支持
+  ``--knowledge-root / --no-inbox / --no-raw / --no-wiki / --no-backlog /
+  --json / --output / --stdout / --suggest-output``。
+- `tests/test_kb019_research_ingest_delta.py`（新增）— **67 tests**，覆盖
+  ingest_key / business_key / fingerprint 稳定性与归一化、元数据抽取
+  （frontmatter 优先 + filename/body 兜底）、标题相似度（Dice/中文 bigram）、
+  整库六状态覆盖、幂等性、乱序输入稳定、空目录、KB-005 backlog 接入、
+  序列化、报告渲染、只读安全、输出契约（无 decision/action_label/buy_level）、
+  CLI smoke。
+
+### 验收
+
+- **67 tests passed**（`tests/test_kb019_research_ingest_delta.py`）。
+- KB-005 / KB-010 / KB-012 / KB-018 组合回归 **236 passed**，无新增失败。
+- 真实知识库 dry-run：总 222 项（new=7 / digested=10 / duplicate=14 /
+  needs_metadata=169 / stale=21 / conflict=1），跑两次结果一致；调用前后 349
+  个文件 hash 完全不变（只读）。
+- 约束验证：知识库只读 / 不写生产 DB / 报告 + reason + JSON 全检无强动作词 /
+  不携带 decision/action_label/buy_level / 重复执行幂等 / 重复检测只标注不删除。
+
+### 关键设计决策
+
+1. **ingest_key 含 fingerprint**：区分"同 path 不同版本"（同 path + 不同内容 →
+   不同 key）与"同内容不同路径"（同 fingerprint → Phase 1 dup）。只看 path 会
+   漏检文件被覆盖；只看 fingerprint 会漏检同 path 不同版本。
+2. **business_key 不含 path/fingerprint**：用于"同机构同日同股"重复检测。
+   Phase 2 在 business_key 三要素（symbol+date+institution）齐全时才参与，
+   避免误把"同公司不同日期"判定为重复。
+3. **两阶段检测**：Phase 1 全局 fingerprint 处理"同一篇研报多文件"（含
+   assets/ 下 PDF 与 md 引用同源）；Phase 2 处理"同机构同日同股近似标题"
+   （任务原文）。两阶段都不自动删除，只标 ``duplicate_of``。
+4. **"原始"选择按文件大小降序**：当同 business_key 内所有 fingerprint 都唯一
+   时，按文件大小（更完整）+ location 字典序稳定选择"原始"。比单纯 location
+   字典序更接近语义（filename 的 ASCII 排序会让 `-v2-OCR.md` 排到 `.md` 前）。
+5. **标题相似度用 Sørensen–Dice + 字符 bigram**：Jaccard 对"一个标题是另一个
+   子串"惩罚过强；Dice 在共同子串较多时给更高分。中文 token 化用 char bigram
+   捕捉子串重叠（"华勤技术" → 华勤/勤技/技术/术超 等），同时保留 alphanumeric
+   word token。
+6. **wiki 页只走 needs_metadata / stale**：wiki 页是"已消化"的产物，不参与
+   duplicate/conflict 检测；元数据齐全且未过期的 wiki 页直接过滤掉，避免噪声。
+7. **conflict 仅在"同 business_key + 内容显著不同"时触发**：标题相似度 < 0.6
+   才升级为 conflict，避免把"同篇报告不同 OCR"误判为冲突。
+
+### 风险点
+
+- ``ingest_key`` 含 path，文件改名后 key 会变；但 fingerprint 仍可识别"同内容
+  不同路径"（Phase 1）。完全依赖 ingest_key 做幂等性校验时需注意 path 稳定。
+- 标题相似度阈值 0.6 是经验值：太低会误把"同机构不同主题"判为重复，太高会漏
+  标"OCR 差异版"。当前 fixture 覆盖 ≥ 0.6 与 < 0.2 两端。
+- ``_detect_duplicates_and_conflicts`` 的 Phase 2 只比较"原始"与其他成员，不
+  做两两比较；若组内有 ≥3 个不同 fingerprint 且彼此互不相似，只会都标 conflict
+  with original，可能遗漏组内其他两两冲突。当前 fixture 未触发此场景。
+- 全局 fingerprint 检测会受 1MB 内容截断影响：>1MB 的文件只读前 1MB，若两个
+  大文件前 1MB 相同但后续不同，会被误判为重复。raw 研报 md/pdf 一般 <1MB，影
+  响有限。
+
+---
+
+## 2026-07-13 | HY-008 半年报知识链路端到端回放验收
+
+- **类型**:acceptance / e2e replay / half-year knowledge chain
+- **状态**:✅ 实现完成，24 tests passed；HY-001~008 + KB-015 + REPORT-UX-004 组合 505 passed，无回归
+- **背景**:HY-003 ~ HY-007 已分别打通"Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → IC briefing"五段能力。HY-008 用四个端到端场景从 wiki 一路跑到 IC briefing，验收字段/来源/状态/去噪/动作门禁隔离的一致性。
+- **改动**:
+  - 新增 `tests/test_hy008_half_year_e2e_acceptance.py`(24 tests):4 个内联 fixture 场景(事实支持 / 事实削弱 / 事实打脸 / 无半年报),每场景跑完 HY-003 → KB-015/HY-005 → HY-006 → HY-004 → HY-007 五段链路。
+  - 新增 `docs/knowledge_reports/half_year_e2e_acceptance-2026-07-13.md`:验收报告,回答"事实是什么/来源在哪里/旧逻辑是否被支持削弱/是否需要复核"。
+- **四场景黄金基线**(probe 实证):
+  - S1 事实支持(000977 浪潮信息):supported,+1.0,fact_update(P2 daily)
+  - S2 事实削弱(002415 海康威视):weakened,-0.5,rebuttal_alert(P2 daily)
+  - S3 事实打脸(300750 宁德时代):contradicted,-3.0,rebuttal_alert(P2 daily)
+  - S4 无半年报(000001 平安银行):NO_DATA,0.0,无提醒(不刷屏)
+- **核心隔离契约回归**:半年报命中不掩盖 `wait_reason_codes=DATA_MISSING`、不掩盖 `data_blockers(individual_fund_flow=query_failed)`、不改 `action_label=数据不足观察`;TradeFlow 候选 tier/action 不被半年报因子(无论正负)覆盖。
+- **失败路径**(墨菲定律):知识库只读(SHA 不变)、损坏研报页容错跳过、无半年报不刷屏、禁用 LLM 构造后链路仍跑通、TA 报告写入内存 SQLite(非生产 DB)。
+- **约束保持**:全程 fixture/dry-run,禁止 live LLM;未改 `tradingagents/prompts/`;未写生产 `tradingagents.db`。
+- **下游释放**:HY-008 ✓ 后可释放 **HY-009**(半年报增量刷新/缓存失效/事实冲突审计)。
+
+---
+
+## 2026-07-13 | AUTO-007 自动开发依赖感知领取与阻塞任务自动解锁
+
+- **类型**：automation correctness / dependency governance
+- **状态**：✅ 实现完成，263 auto/M-012 测试 + 122 默认 smoke 全部 passed；待外层 commit 与 Codex review
+- **背景**：原 `parse_ready_tasks` 只解析 `状态=ready`，无法识别机器依赖字段；DEVLOG 2026-07-13 已记录“首版曾把依赖任务全部标为 ready，但 picker 不执行自然语言门禁”的中断后越级领取风险。AUTO-007 给任务加入机器可读 `depends_on` / `auto_release`，并让 picker / release 真正执行依赖门禁。
+- **改动**：
+  - 新增 `scripts/task_dependency_resolver.py`：解析 `depends_on`（逗号分隔）与 `auto_release`（true/false），区分 ready / blocked_auto / blocked_human / in_progress / proposed / done；提供 `claim` / `release` / `dry-run` 三个子命令。
+  - `scripts/auto_dev_loop.sh`：
+    - `parse_ready_tasks` 改为调用 `task_dependency_resolver.py claim`，输出格式保持 `ID|title|priority|tests` / `NONE|||` 不变。
+    - 新增 legacy fallback：当 resolver 缺失时退化到原 inline picker，保证部分 vendoring / 旧测试 setup 不破。
+    - 任务标记 done 后插入 `[AUTO-007] release` 步骤，把 `blocked_auto + auto_release=true + 依赖已满足` 的下游任务原地改成 ready；失败仅 warn，不影响 commit。
+    - `--dry-run` 末尾追加只读 `task_dependency_resolver.py dry-run` 报告：可领取 / 被依赖阻塞 / 缺失 / 循环 / 可释放候选。
+- **依赖门禁语义**：
+  - `ready` 任务若声明 `depends_on`，依赖未完成时不会被领取（修复“ready 被提前手工改色”的越级风险）。
+  - `blocked_auto + auto_release=true` 在依赖完成后可被 picker 直接领取（`release` 会先把状态改 ready）。
+  - `blocked-human / NEEDS_HUMAN / 战略暂停 / auto_release=false` 永不自动释放；`in_progress / proposed / done` 永不被领。
+  - 缺失依赖与循环依赖仅在触及 **gating task**（ready 或 blocked_auto+auto_release）时 hard stop 并把原因打到 stderr；非 gating 任务（例如 SCORE-001 等 ZCode 契约）只发 WARN，不阻塞批次。
+- **约束保持**：未降低 dirty-tree / 测试 / Codex review / 失败即停四道门禁；未改 `tradingagents/prompts/`；未写生产 DB；兼容没有机器字段的历史任务（自动按空依赖 + `auto_release=false` 处理）。
+- **测试**：`tests/test_auto007_dependency_aware_claim.py` 65 tests，覆盖依赖完成 / 未完成 / 缺失（gating 与非 gating）/ 循环 / NEEDS_HUMAN / 战略暂停 / 旧格式 / HY-008→HY-009 解锁 / 优先级与文档序排序 / shell 语法 / resolver 存在与缺失两条路径 / 锁恢复。AUTO/M-012 组合 263 passed；默认 smoke 122 passed。
+
+---
+
 ## 2026-07-13 | 研究评分快照到 TA/TradeFlow 的四卡裁决任务线
 
 - **类型**：architecture / task planning / research score integration
@@ -12916,3 +13053,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: OpenCode timed out after 1800s
 - **Run archive**: docs/task_runs/HY-007-20260712-005434/
+
+## 2026-07-13 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-019 - Tree Work 研报增量摄取清单与重复导入预检（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode timed out after 1800s
+- **Run archive**: docs/task_runs/KB-019-20260713-191013/
