@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-11
+> 最后更新：2026-07-13
 
 ---
 
@@ -22,7 +22,7 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-11）
+### 当前执行队列（2026-07-13 夜间批次）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -33,12 +33,20 @@
 5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，done — commit 0f8789b）。
 6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941）。
 7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
-8. `HY-008`：半年报知识链路端到端回放验收（P2，ready；HY-007 已完成）。
-9. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
-10. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-11. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
+8. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，ready）。
+9. `HY-008`：半年报知识链路端到端回放验收（P2，ready；HY-007 已完成）。
+10. `KB-019`：Tree Work 研报增量摄取清单与重复导入预检（P2，ready；前置均已完成）。
+11. `KB-020`：同股研报/半年报证据聚合只读 API（P2，ready；前置均已完成）。
+12. `HY-010`：持仓/观察仓半年报待更新清单（P2，ready；只基于现有 HY-003/007）。
+13. `REPORT-UX-006`：TA 报告知识证据来源卡与缺口解释（P2，ready）。
+14. `HY-011`：半年报报告期/披露日/修订版本元数据 sanity check（P2，ready）。
+15. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
+16. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+17. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 KB-020 人工验收后释放）。
+18. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+19. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
 
-> 本批次按上述依赖顺序执行；任一任务失败时自动循环停止，禁止绕过失败项继续做下游验收。
+> 今晚只自动领取 7 个 `ready` 任务，它们的代码前置均已满足；有下游依赖的任务保持 `blocked`，不再依赖自然语言门禁。任一任务失败时自动循环停止。按近期单任务 20–35 分钟估算，约覆盖 3–4 小时。
 
 ### 历史任务总表（按创建顺序）
 
@@ -5300,6 +5308,166 @@
   - 每个失败样本带来源路径和失败分类，不泄露长研报正文。
   - 验收不新增强动作词，不改变历史报告动作语义。
 - **代码标注要求**：`# [V-014] research_mainline_live_smoke`
+
+### KB-019: Tree Work 研报增量摄取清单与重复导入预检（P2）
+- **描述**：面向半年报集中披露期，把 `inbox/raw/wiki` 的新增、已消化、重复、缺字段和待更新资料整理为可回查的增量摄取清单，避免同一研报重复消化或遗漏。
+- **优先级**：P2
+- **状态**：ready — KB-005/KB-010/KB-012 已完成
+- **前置条件**：KB-005、KB-010、KB-012 完成。
+- **执行约束**：
+  - 只读 `~/Documents/knowledge/`，不得移动、改写或删除 Tree Work 文件。
+  - 不复制长篇研报正文，不调用 live LLM，不写生产数据库。
+  - 优先复用 `tree_work_backlog.py`、`local_knowledge_cache.py` 和 `half_year_task_pack.py`，禁止另造第二套索引。
+- **实现要点**：
+  1. 基于相对路径、文件指纹、symbol、report_date、institution/source_url 生成稳定 `ingest_key`。
+  2. 输出 `new / digested / duplicate / needs_metadata / stale / conflict` 六类状态及可解释原因。
+  3. 对同一研报多文件、同机构同日同股近似标题做重复预检，但不得自动删除。
+  4. 提供 CLI/JSON/Markdown 输出，并生成 `docs/knowledge_reports/research-ingest-delta-YYYY-MM-DD.md`。
+- **验收方式**：
+  - fixture 覆盖六类状态、乱序输入、重复执行和空目录。
+  - 重复执行幂等，真实知识库 dry-run 前后文件 hash 不变。
+  - 输出只含元数据、摘要和路径，不含长正文或交易动作。
+- **代码标注要求**：`# [KB-019] research_ingest_delta`
+
+### KB-020: 同股研报/半年报证据聚合只读 API（P2）
+- **描述**：为单只股票提供统一的证据查询契约，把 KB-016 共识矩阵、KB-017 citation 审计、KB-018 观点时间线和 HY-003 半年报事实聚合到一个只读响应中。
+- **优先级**：P2
+- **状态**：ready — KB-016/KB-017/KB-018/HY-003 已完成
+- **前置条件**：KB-016、KB-017、KB-018、HY-003 完成。
+- **执行约束**：
+  - 不调用 LLM、不抓取正文、不写数据库；只返回摘要、状态、指标和来源路径。
+  - API 不输出或改写 `decision/action_label/buy_level`。
+  - 固定路由必须放在动态 symbol 路由之前，并补路由顺序回归。
+- **实现要点**：
+  1. 新增聚合 service，统一返回 `symbol/as_of/data_status/source_freshness/consensus/citation_audit/thesis_timeline/half_year_facts/gaps/errors`。
+  2. 新增 `GET /v1/knowledge/research/evidence/{symbol}`，支持可选 `as_of` 与窗口参数，非法 symbol 明确 4xx。
+  3. 子模块失败按桶降级，不能因为一项失败把其他证据全部清空。
+  4. 对来源路径做知识根目录内校验，响应不得泄露 API key 或文件正文。
+- **验收方式**：
+  - fixture 覆盖完整、部分缺失、冲突、过期、单桶异常和非法 symbol。
+  - API schema、service、路由 smoke 和 JSON 序列化测试通过。
+  - 旧 `/v1/knowledge/local/search` 契约无回归。
+- **代码标注要求**：`# [KB-020] research_evidence_api`
+
+### UI-014: TA 研报证据中心与来源下钻（P2）
+- **描述**：在报告查看体验中增加轻量“研报证据”入口，让用户看到同股研报共识、分歧、半年报事实、待验证项和来源路径，而不是只看到一个知识分数。
+- **优先级**：P2
+- **状态**：blocked — 等待 KB-020 完成并人工确认 API 契约
+- **前置条件**：KB-011、KB-020、REPORT-UX-005 完成。
+- **执行约束**：
+  - 复用现有 ReportViewer/抽屉/Tab 风格，不新建重型独立应用。
+  - 首屏懒加载，失败不阻塞报告正文；不显示长篇研报原文。
+  - 证据颜色表达支持/削弱/冲突/待验证，不映射成买卖颜色或动作。
+- **实现要点**：
+  1. API client/type 接入 KB-020 契约。
+  2. 展示摘要：有效研报数、机构去重数、共识/分歧、最新半年报期、冲突/待验证数。
+  3. 下钻列表展示观点时间线、citation 状态、来源等级、报告日期和可复制相对路径。
+  4. 空数据、知识库禁用、部分失败、加载中均有明确状态。
+- **验收方式**：
+  - 前端类型检查与 build 通过。
+  - 组件测试或静态契约测试覆盖完整/空/部分失败/冲突四态。
+  - 移动端和桌面端不溢出，报告主体不因接口慢而阻塞。
+- **代码标注要求**：`// [UI-014] research_evidence_center`
+
+### HY-010: 持仓/观察仓半年报待更新清单（P2）
+- **描述**：把持仓、观察仓和昊天候选映射到半年报知识覆盖状态，输出“哪些票已有新事实、哪些仍缺半年报、哪些存在冲突或待 Tree Work 消化”的优先清单。
+- **优先级**：P2
+- **状态**：ready — HY-003/HY-007/TRACK-001 已完成
+- **前置条件**：HY-003、HY-007、TRACK-001 完成；HY-009 完成后再补增量冲突字段，不阻塞本任务基础版。
+- **执行约束**：
+  - 只读持仓/观察仓/候选和本地知识，不写生产数据库、不调用 LLM。
+  - 优先级只表示资料补全顺序，不输出交易动作。
+  - 缺披露日时标记 unknown，不得猜日期。
+- **实现要点**：
+  1. 统一 symbol universe，并保留 `holding / observation / mandate_candidate` 来源。
+  2. 输出 `up_to_date / missing / stale / conflict / needs_digest / unknown` 状态。
+  3. 排序优先级：持仓冲突 > 持仓缺失 > 接近触发观察仓 > 昊天主候选 > 其他。
+  4. 提供 CLI/JSON/Markdown 摘要，供 investment-controller 后续只读消费。
+- **验收方式**：
+  - fixture 覆盖三类来源、重复 symbol、无知识根、冲突和未知日期。
+  - 不读取密钥、不写 DB，重复执行稳定。
+  - 输出能回答“今晚优先消化哪几份资料以及为什么”。
+- **代码标注要求**：`# [HY-010] half_year_update_queue`
+
+### V-015: 研报增量摄取→证据 API→前端→待更新清单端到端验收（P2）
+- **描述**：对 KB-019/KB-020/UI-014/HY-010 做最终 fixture + 真实知识库只读验收，确认半年报集中导入时链路可用、可追溯、不会影响交易动作。
+- **优先级**：P2
+- **状态**：blocked — 等待 KB-019、KB-020、UI-014、HY-010 完成
+- **前置条件**：KB-019、KB-020、UI-014、HY-010 完成。
+- **执行约束**：
+  - fixture 与真实只读 smoke 分开报告；真实目录不可用不得伪造 PASS。
+  - 不调用 live LLM、不写生产数据库、不修改知识库、不触发完整 TA。
+  - 不修改 prompts，不新增强动作词。
+- **实现要点**：
+  1. 回放新增研报、重复研报、缺元数据、半年报修订、事实冲突五类。
+  2. 验证 ingest_key/status → 证据 API → 前端契约 → 待更新队列字段一致。
+  3. 验证局部失败、缓存损坏和空目录均可解释降级。
+  4. 生成 `docs/knowledge_reports/research-operations-acceptance-YYYY-MM-DD.md`。
+- **验收方式**：
+  - 定向回归、API smoke、前端 build 全部通过。
+  - 验收报告列出通过项、失败样本、来源路径和人工下一步。
+  - 确认 `decision/execution_action/action_label` 在全链路前后不变。
+- **代码标注要求**：`# [V-015] research_operations_e2e`
+
+### AUTO-007: 自动开发依赖感知领取与阻塞任务自动解锁（P1）
+- **描述**：让任务领取器真正理解依赖关系，避免把尚未满足前置条件的下游任务提前标成 ready，也避免前项完成后仍需人工改状态。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：AUTO-006 完成。
+- **执行约束**：
+  - 不降低 dirty-tree、测试、Codex review、失败即停四道门禁。
+  - 不把依赖缺失当 PASS，不自动释放 `NEEDS_HUMAN` 或战略暂停任务。
+  - 兼容没有机器依赖字段的历史任务。
+- **实现要点**：
+  1. 为新任务支持机器可读 `depends_on`（逗号分隔任务 ID）和 `auto_release=true/false` 元数据，不能只解析自然语言。
+  2. picker 仅在所有依赖详情状态为 done 时领取 queued/blocked-auto 任务；缺失、循环依赖、状态不一致均停止并归档原因。
+  3. 当前任务完成后重新计算可领取项，不要求手工改下游 ready。
+  4. dry-run 展示依赖阻塞原因、可释放任务和排序，不修改 TASKS.md。
+- **验收方式**：
+  - fixture 覆盖依赖完成、未完成、缺失、循环、NEEDS_HUMAN、战略暂停和旧格式。
+  - 模拟 HY-008 done 后 HY-009 可领取，HY-008 未完成时 HY-009 不可领取。
+  - shell syntax、dry-run、锁恢复和失败即停回归通过。
+- **代码标注要求**：`# [AUTO-007] dependency_aware_claim`
+
+### REPORT-UX-006: TA 报告知识证据来源卡与缺口解释（P2）
+- **描述**：基于现有 `local_knowledge_summary` 与 `half_year_facts_summary`，在 TA 报告中清晰显示“用了哪些本地资料、资料是否过期/冲突、还缺什么”，不等待新的聚合 API。
+- **优先级**：P2
+- **状态**：ready — KB-011/HY-004/REPORT-UX-005 已完成
+- **前置条件**：KB-011、HY-004、REPORT-UX-005 完成。
+- **执行约束**：
+  - 复用 ReportViewer，不新增重型页面；不展示长正文。
+  - 来源状态不得映射成买卖动作，不改变 `decision/execution_action/action_label`。
+  - 慢查询或缺知识库不阻塞报告主体。
+- **实现要点**：
+  1. 增加轻量来源卡：命中文档数、来源等级、最新日期、半年报期、fresh/stale/conflict/disabled。
+  2. 缺口解释至少区分：无命中、缺来源、过期、事实冲突、待 Tree Work 消化、知识库禁用。
+  3. 来源路径仅显示知识根目录内相对路径，可复制但不直接暴露任意绝对路径。
+  4. 旧报告字段缺失时保持兼容空态。
+- **验收方式**：
+  - 前端 build/typecheck 通过。
+  - 契约/组件测试覆盖完整、空、过期、冲突、禁用和旧报告六态。
+  - 报告动作语义回放无变化。
+- **代码标注要求**：`// [REPORT-UX-006] knowledge_evidence_card`
+
+### HY-011: 半年报报告期/披露日/修订版本元数据 sanity check（P2）
+- **描述**：在大量半年报进入 Tree Work 前，对报告期、披露日期、修订版本、symbol/name 和来源类型做轻量校验，阻止错期、未来日期和修订稿覆盖原稿等元数据污染。
+- **优先级**：P2
+- **状态**：ready — HY-001/KB-014 已完成
+- **前置条件**：HY-001、KB-014、KB-002 完成。
+- **执行约束**：
+  - 只做 lint/sanity，不修改知识库文件，不调用 LLM。
+  - 不猜缺失日期；缺失与非法必须分开。
+  - 修订稿优先级只用于事实索引选择，不生成交易动作。
+- **实现要点**：
+  1. 校验 `financial_period/report_date/disclosure_date/source_quality_tier/symbol/name` 的格式与组合关系。
+  2. 识别未来披露日、报告期晚于披露日、非半年报周期、symbol/name 错配、同周期多版本无修订标记。
+  3. 输出 `error/warning/info` 与稳定 rule_id，并接入现有 local knowledge lint 报告。
+  4. 对修订稿保留原始/修订来源路径，不静默覆盖。
+- **验收方式**：
+  - fixture 覆盖合法、缺失、非法日期、未来日期、错周期、错 symbol、修订稿和多版本冲突。
+  - 与 KB-002/HY-001 现有 lint 回归兼容。
+  - 真实知识库 dry-run 只读且报告不含正文。
+- **代码标注要求**：`# [HY-011] half_year_metadata_sanity`
 
 ## B. 待办
 
