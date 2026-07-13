@@ -1,5 +1,18 @@
 # 修改日志
 
+## 2026-07-12 | HY-007 人工收口与任务池状态修复
+
+- **类型**：review fix / queue recovery
+- **状态**：✅ 三项 Codex P2 已补修并通过最终复审
+- **背景**：OpenCode 在 1800 秒超时前已完成 HY-007 代码与测试，但未进入 Codex review，随后以 `5463b16 [unreviewed]` 提交；顶部任务队列同时残留多项假 `in_progress`。
+- **Codex 首轮发现**：生产 briefing 服务未实际应用 24 小时半年报提醒去重；HY-003 事实冲突被 HY-006 的 `has_fresh_facts` 误标为普通 fresh 更新。
+- **补修**：生产 service 按 user 复用去重器并串行执行 check+mark；冲突事实改为 stale/review lane、分数不为正，并补充冲突摘要和降权原因。
+- **回归**：HY-007 + IC-TA-004 定向测试 119 passed；HY-007/IC/通知/HY-004~006 组合回归 567 passed；静态编译与 `git diff --check` 通过。
+- **Codex 复审**：首轮补修后复审进一步发现混合 fresh/conflict 页会被 HY-003 聚合 fresh 掩盖；现已改为逐页检查并补回归。2026-07-13 在隔离 worktree 重新执行 `codex review --uncommitted`（GPT-5.5 / high），结论为无 actionable correctness issues；审查器自行运行的 119 项测试通过。
+- **状态校准**：KB-016/017/018 与 HY-007 标为 done；只释放 HY-008 为 ready；HY-009/V-014 继续按依赖保持 blocked。
+
+---
+
 ## 2026-07-12 | KB-018 同股研报观点版本演化与共识漂移时间线
 
 - **执行者**:OpenCode

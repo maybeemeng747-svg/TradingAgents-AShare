@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from threading import Lock
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -37,6 +38,7 @@ from tradingagents.tradeflow.controller_briefing_payload import (
     SCENE_INTRADAY,
     SCENE_POST_MARKET,
     SCENE_PRE_MARKET,
+    HalfYearReminderDeduplicator,
     build_intraday_payload,
     build_post_market_payload,
     build_pre_market_payload,
@@ -44,6 +46,9 @@ from tradingagents.tradeflow.controller_briefing_payload import (
 )
 
 logger = logging.getLogger(__name__)
+
+_HALF_YEAR_DEDUPLICATORS: dict[str, HalfYearReminderDeduplicator] = {}
+_HALF_YEAR_DEDUP_LOCK = Lock()
 
 _SceneKind = Literal["pre", "intraday", "post", "all"]
 
@@ -88,10 +93,33 @@ def build_briefing_payload_dry_run(
     as_of = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     context = _safe_get_context(db, user_id, tf_db_path, as_of)
     builder = _SCENE_BUILDERS[scene]
-    payload = builder(context, as_of=as_of)
+    if scene in (SCENE_PRE_MARKET, SCENE_POST_MARKET):
+        # Keep dedup state per user so one account cannot suppress another
+        # account's reminder. The lock covers the in-memory check+mark pair.
+        with _HALF_YEAR_DEDUP_LOCK:
+            deduplicator = _HALF_YEAR_DEDUPLICATORS.setdefault(
+                str(user_id), HalfYearReminderDeduplicator()
+            )
+            payload = builder(
+                context,
+                as_of=as_of,
+                half_year_deduplicator=deduplicator,
+                dedup_now=now or datetime.now(),
+            )
+    else:
+        payload = builder(context, as_of=as_of)
     payload["runtime_tier_meta"] = _tradeflow_meta("controller_briefing_payload")
     payload["context_data_status"] = _context_data_status(context)
     return payload
+
+
+def reset_half_year_dedup_state(*, user_id: str | None = None) -> None:
+    """Clear HY-007 in-memory dedup state (tests / process lifecycle hooks)."""
+    with _HALF_YEAR_DEDUP_LOCK:
+        if user_id is None:
+            _HALF_YEAR_DEDUPLICATORS.clear()
+        else:
+            _HALF_YEAR_DEDUPLICATORS.pop(str(user_id), None)
 
 
 def run_briefing_scene_fixtures(
@@ -168,5 +196,6 @@ __all__ = [
     "SCENE_POST_MARKET",
     "SCENE_PRE_MARKET",
     "build_briefing_payload_dry_run",
+    "reset_half_year_dedup_state",
     "run_briefing_scene_fixtures",
 ]

@@ -29,13 +29,13 @@
 1. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，done — HY-004-20260711-225740，44 tests passed）。
 2. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，done — HY-005-20260711-232608，76 tests passed）。
 3. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，done — HY-006-20260711-233936，46 tests passed）。
-4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready）。
-5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，ready）。
-6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready；批次内依赖 KB-016/017）。
-7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，ready；批次内依赖 HY-004）。
-8. `HY-008`：半年报知识链路端到端回放验收（P2，ready；批次内依赖 HY-004/005/006/007）。
-9. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，ready；批次内依赖 HY-008）。
-10. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，ready；批次内依赖 KB-018/HY-009）。
+4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，done — commit 7e1c6af）。
+5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，done — commit 0f8789b）。
+6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941）。
+7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
+8. `HY-008`：半年报知识链路端到端回放验收（P2，ready；HY-007 已完成）。
+9. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
+10. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
 11. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
 
 > 本批次按上述依赖顺序执行；任一任务失败时自动循环停止，禁止绕过失败项继续做下游验收。
@@ -196,8 +196,8 @@
 152. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，done — HY-004-20260711-225740，44 tests passed，依赖 HY-003/KB-003/REPORT-UX-004 ✓）。
 153. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，done — HY-005-20260711-232608，76 tests passed，依赖 HY-003/KB-007/KB-009 ✓）。
 154. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，done — HY-006-20260711-233936，46 tests passed，依赖 HY-003/H-017/KB-004 ✓）。
-155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，ready，批次内依赖 HY-004）。
-156. `HY-008`：半年报知识链路端到端回放验收（P2，ready，批次内依赖 HY-004/HY-005/HY-006/HY-007）。
+155. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
+156. `HY-008`：半年报知识链路端到端回放验收（P2，ready，HY-007 已完成）。
 157. `AUTO-006`：Codex review 超时 watchdog 与收口策略（P1，done — commit f06793e + b638dca，依赖 AUTO-004 ✓）。
 158. `KB-013`：半年报 fixture 样本集与契约回放基线（P1，done，依赖 KB-002/KB-012 ✓）。
 159. `KB-014`：研报/财报来源可信度分层与 citation policy（P1，done — OpenCode 产出 `tradingagents/dataflows/citation_policy.py` + 6 类 `source_quality_tier` + 3 条 CIT- lint 规则 + provider/cache 软降级 + `tests/test_kb014_citation_policy.py`（91 tests）+ `docs/citation_policy.md`；KB/HY/V013 系列 1075 passed，Codex review 补修边界后 KB 组合回归 581 passed，依赖 DATA-025/KB-002 ✓）。
@@ -210,11 +210,11 @@
 166. `PLAYBOOK-005`：跟踪看板战法字段前端展示与观察仓导入映射（P2，blocked — 等 PLAYBOOK-001/PLAYBOOK-004 完成）。
 167. `PLAYBOOK-006`：战法回放验收与利通电子样例 fixture（P2，blocked — 等 PLAYBOOK-004/PLAYBOOK-005 完成）。
 168. `KB-015`：研报观点事实分离与 TA 可消费摘要索引（P1，done — OpenCode 产出 `tradingagents/dataflows/research_fact_opinion_index.py` + `scripts/research_fact_opinion_index.py` + `tests/test_kb015_research_fact_opinion_index.py`（54 tests）+ `docs/knowledge_reports/research_fact_opinion_index-2026-07-11.md`，依赖 KB-014/KB-003/HY-001 ✓）。
-169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，ready，依赖 KB-015/KB-007/KB-009 ✓）。
-170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，ready，依赖 KB-015/HY-003/KB-014 ✓）。
-171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，ready，批次内依赖 KB-016/KB-017）。
-172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，ready，批次内依赖 HY-008）。
-173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，ready，批次内依赖 KB-018/HY-009）。
+169. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，done — commit 7e1c6af，依赖 KB-015/KB-007/KB-009 ✓）。
+170. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，done — commit 0f8789b，依赖 KB-015/HY-003/KB-014 ✓）。
+171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
+172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
+173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
 
 ### 数据源治理候选队列
 
@@ -5040,7 +5040,7 @@
 ### HY-007: investment-controller 半年报 briefing payload 与去噪规则（P2）
 - **描述**：让 investment-controller 的盘前/盘后 briefing 能读取半年报事实摘要和反证提醒，但只做调度提醒，不替 TA 下结论。
 - **优先级**：P2
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/HY-007-20260712-005434
+- **状态**：done — base commit `5463b16`；24 小时去重、冲突降级与混合 fresh/conflict 补修已通过最终 Codex review
 - **前置条件**：HY-004、IC-TA-004、KB-006 完成。
 - **执行约束**：
   - 不直接输出补仓/清仓等动作。
@@ -5060,7 +5060,7 @@
 ### HY-008: 半年报知识链路端到端回放验收（P2）
 - **描述**：端到端验收 Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → investment-controller briefing 的整条链路。
 - **优先级**：P2
-- **状态**：ready — 批次内依赖 HY-004/HY-005/HY-006/HY-007；仅在前置全部 PASS 后执行
+- **状态**：ready — HY-007 最终 Codex review 已 PASS
 - **前置条件**：HY-004、HY-005、HY-006、HY-007 完成。
 - **执行约束**：
   - fixture/dry-run，禁止 live LLM。
@@ -5264,7 +5264,7 @@
 ### HY-009: 半年报增量刷新、缓存失效与事实冲突审计（P2）
 - **描述**：让 HY-003 半年报事实索引能识别新披露、修订稿和知识库页面更新，安全刷新缓存并标记跨版本事实冲突。
 - **优先级**：P2
-- **状态**：ready — 批次内依赖 HY-008；仅在半年报链路验收 PASS 后执行
+- **状态**：blocked — 等待 HY-008 完成
 - **前置条件**：HY-003、HY-005、HY-008 完成。
 - **执行约束**：
   - 只读本地知识库，不写生产数据库。
@@ -5284,7 +5284,7 @@
 ### V-014: 真实本地知识库只读 smoke 与研报主线验收日报（P2）
 - **描述**：在 fixture 验收之后，对 `~/Documents/knowledge/` 做一次只读 smoke，验证真实研报/半年报能否贯穿索引、共识、反证、报告区块和 briefing 契约。
 - **优先级**：P2
-- **状态**：ready — 批次内依赖 KB-018/HY-009；作为本批次最终验收
+- **状态**：blocked — 等待 HY-009 完成；作为本批次最终验收
 - **前置条件**：HY-008、HY-009、KB-016、KB-017、KB-018 完成。
 - **执行约束**：
   - 只读真实知识库，不修改 Tree Work 页面，不写生产数据库。

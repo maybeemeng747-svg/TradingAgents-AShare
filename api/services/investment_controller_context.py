@@ -1178,6 +1178,20 @@ def _collect_half_year_facts(
             getattr(facts_result, "status", None),
             getattr(facts_result, "data_status", None),
         )
+        fact_pages = getattr(facts_result, "pages", None) or []
+        has_conflict = facts_status == "CONFLICT" or any(
+            str(
+                page.get("data_status")
+                if isinstance(page, dict)
+                else getattr(page, "data_status", "")
+            ).lower() == "conflict"
+            for page in fact_pages
+        )
+        # HY-003 aggregate status prefers any fresh page over conflict pages.
+        # For briefing safety, a mixed fresh/conflict result must still enter
+        # the review lane and must not be used for thesis comparison.
+        if has_conflict:
+            facts_status = "CONFLICT"
 
         thesis_result = None
         # 只在事实可用时跑 HY-005（与 HY-006 _enrich 一致），避免无谓的
@@ -1213,10 +1227,13 @@ def _collect_half_year_facts(
 
         # 只把"有事实"或"有反证提醒"或"需要 TA 复核"的标的纳入 items；
         # 纯 NO_DATA/FAILED 不进 items（避免"没有半年报"变成噪音）。
-        has_fresh = bool(score_dict.get("has_fresh_facts"))
+        has_fresh = bool(score_dict.get("has_fresh_facts")) and not has_conflict
         needs_tree_review = bool(getattr(thesis_result, "needs_tree_work_review", False))
         priority_reminder = bool(getattr(thesis_result, "priority_reminder", False))
-        needs_research_review = bool(score_dict.get("needs_research_review"))
+        # Conflicting facts are usable for surfacing the discrepancy, but are
+        # not a fresh fact update. Force them into the review lane so the
+        # briefing cannot present one arbitrary value as confirmed evidence.
+        needs_research_review = bool(score_dict.get("needs_research_review")) or has_conflict
         is_rebuttal = thesis_status in ("contradicted", "weakened")
         is_needs_review = needs_tree_review or needs_research_review
         if not (has_fresh or is_rebuttal or is_needs_review):
@@ -1242,7 +1259,20 @@ def _collect_half_year_facts(
             if r
         ][:_HALF_YEAR_DOWNGRADE_PREVIEW_LIMIT]
         # 防御性裁剪（上游已 pre-clip，但 hybrid 输入可能超出）。
-        fact_summary_text = str(score_dict.get("half_year_fact_summary") or "")[:_HALF_YEAR_TEXT_CLIP]
+        fact_summary_text = str(score_dict.get("half_year_fact_summary") or "")
+        half_year_score = float(score_dict.get("half_year_fact_score") or 0.0)
+        if has_conflict:
+            conflict_note = "半年报事实存在冲突，需 Tree Work 复核"
+            fact_summary_text = (
+                f"{conflict_note}；{fact_summary_text}" if fact_summary_text
+                else conflict_note
+            )
+            half_year_score = min(half_year_score, 0.0)
+            if conflict_note not in risk_preview:
+                risk_preview = [conflict_note, *risk_preview][:_HALF_YEAR_RISK_PREVIEW_LIMIT]
+            if conflict_note not in downgrade_preview:
+                downgrade_preview = [conflict_note, *downgrade_preview][:_HALF_YEAR_DOWNGRADE_PREVIEW_LIMIT]
+        fact_summary_text = fact_summary_text[:_HALF_YEAR_TEXT_CLIP]
         thesis_inline = thesis_inline[:_HALF_YEAR_TEXT_CLIP]
 
         items.append({
@@ -1257,9 +1287,9 @@ def _collect_half_year_facts(
                 else DATA_STATUS_STALE if facts_status in ("STALE", "CONFLICT", "LOW_CONFIDENCE")
                 else DATA_STATUS_MISSING
             ),
-            "has_conflict": facts_status == "CONFLICT",
+            "has_conflict": has_conflict,
             "has_stale": facts_status in ("STALE", "LOW_CONFIDENCE"),
-            "half_year_score": float(score_dict.get("half_year_fact_score") or 0.0),
+            "half_year_score": half_year_score,
             "fact_summary_text": fact_summary_text,
             "thesis_check_status": thesis_status,
             "thesis_inline": thesis_inline,

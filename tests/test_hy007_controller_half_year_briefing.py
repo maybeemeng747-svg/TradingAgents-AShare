@@ -756,6 +756,83 @@ class TestCollectHalfYearFactsFixture:
         assert bucket["data_status"] == "skipped"
         assert bucket["items"] == []
 
+    def test_conflicting_facts_route_to_review_not_fresh_update(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from api.services import investment_controller_context as icc
+
+        investment = tmp_path / "wiki" / "investment"
+        investment.mkdir(parents=True)
+        page_template = """---
+title: 冲突公司-2025H1-{suffix}
+symbols: ["888888.SZ 冲突公司"]
+report_type: 半年报
+financial_period: 2025H1
+disclosure_date: 2026-08-29
+valid_until: 2099-12-31
+stale_risk: 低
+source_type: [exchange_filing]
+financial_facts:
+  - 营收 {revenue}亿 (+10%)
+risk_factors: [风险]
+---
+# 冲突样本
+"""
+        (investment / "a.md").write_text(
+            page_template.format(suffix="A", revenue="100"), encoding="utf-8"
+        )
+        (investment / "b.md").write_text(
+            page_template.format(suffix="B", revenue="150"), encoding="utf-8"
+        )
+        # A third, non-conflicting fresh page makes HY-003 aggregate status
+        # ``fresh`` even though the revenue pages conflict. HY-007 must inspect
+        # page-level status so the conflict cannot be hidden by that aggregate.
+        (investment / "c.md").write_text(
+            """---
+title: 冲突公司-2025H1-C
+symbols: ["888888.SZ 冲突公司"]
+report_type: 半年报
+financial_period: 2025H1
+disclosure_date: 2026-08-29
+valid_until: 2099-12-31
+stale_risk: 低
+source_type: [exchange_filing]
+financial_facts:
+  - 毛利率 30%
+risk_factors: [风险]
+---
+# 混合 fresh/conflict 样本
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("KNOWLEDGE_ROOT", str(tmp_path))
+
+        bucket = icc._collect_half_year_facts(
+            "2026-07-12 09:30:00",
+            holdings={"items": [{"symbol": "888888.SZ", "name": "冲突公司"}]},
+            observation={"items": []},
+            candidates={"items": []},
+            mandate_report={"data_status": "missing"},
+            notes=[],
+        )
+
+        assert bucket["data_status"] == "stale"
+        assert bucket["fresh_fact_count"] == 0
+        assert len(bucket["items"]) == 1
+        item = bucket["items"][0]
+        assert item["facts_status"] == "CONFLICT"
+        assert item["has_conflict"] is True
+        assert item["data_status"] == "stale"
+        assert item["needs_research_review"] is True
+        assert item["half_year_score"] <= 0
+        assert "事实存在冲突" in item["fact_summary_text"]
+
+        reminders = build_half_year_reminders(
+            _ctx_with_half_year(bucket["items"]), "2026-07-12 09:30:00"
+        )
+        assert reminders[0]["reminder_type"] == HALF_YEAR_REMINDER_NEEDS_TA_REVIEW
+        assert reminders[0]["notify_level"] == NOTIFY_LEVEL_DAILY_DIGEST
+
     def test_full_chain_with_fixture_kb(self, tmp_path: Path):
         """端到端：fixture KB → bucket 10 → briefing 三类提醒.
 
@@ -929,6 +1006,42 @@ class TestEndToEndPipeline:
         # 次日（>24h）：全部重新放行
         out3 = apply_half_year_dedup(reminders, d, now=datetime(2026, 7, 13, 10, 0, 0))
         assert len(out3["emitted"]) == 3
+
+    def test_production_service_applies_user_scoped_24h_dedup(
+        self, monkeypatch
+    ):
+        from api.services import controller_briefing_payload_service as svc
+
+        ctx = _ctx_with_half_year([
+            _hy_item(
+                symbol="300750.SZ",
+                thesis_check_status="contradicted",
+                priority_reminder=True,
+                half_year_score=-3.0,
+            )
+        ])
+        monkeypatch.setattr(svc, "_safe_get_context", lambda *args: ctx)
+        now = datetime(2026, 7, 12, 9, 30, 0)
+        svc.reset_half_year_dedup_state()
+        try:
+            first = svc.build_briefing_payload_dry_run(
+                object(), "user-a", scene="pre_market", now=now
+            )
+            repeated = svc.build_briefing_payload_dry_run(
+                object(), "user-a", scene="post_market", now=now + timedelta(hours=6)
+            )
+            other_user = svc.build_briefing_payload_dry_run(
+                object(), "user-b", scene="pre_market", now=now + timedelta(hours=6)
+            )
+        finally:
+            svc.reset_half_year_dedup_state()
+
+        assert len(first["half_year_reminders"]) == 1
+        assert first["notify_level"]["dedup_applied"] is True
+        assert repeated["half_year_reminders"] == []
+        assert len(repeated["half_year_deduplicated"]) == 1
+        assert repeated["notify_level"]["half_year_deduplicated_count"] == 1
+        assert len(other_user["half_year_reminders"]) == 1
 
     def test_priority_distribution_for_intraday_push(self):
         # 验收：P2/P3 只进日报；只有 contradicted + priority_reminder 才进 intraday_push

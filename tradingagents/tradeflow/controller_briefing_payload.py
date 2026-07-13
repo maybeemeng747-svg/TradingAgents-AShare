@@ -543,8 +543,8 @@ def apply_half_year_dedup(
 ) -> dict[str, list[dict[str, Any]]]:
     """[HY-007] 对半年报提醒套 24h 去噪，返回 emitted / deduplicated 两组.
 
-    与 NOTIFY ``apply_dedup`` 同构；briefing 本身不调用本函数（保持纯分类），
-    service 层 / 测试 / notify 通道调用本函数做实际去噪。
+    与 NOTIFY ``apply_dedup`` 同构；纯 builder 只有在调用方显式注入
+    deduplicator 时才调用本函数，生产 service 按 user 复用实例。
     """
     now = now or datetime.now()
     emitted: list[dict[str, Any]] = []
@@ -600,13 +600,20 @@ def _assemble_payload(
     watch_items: list[dict[str, Any]],
     data_warnings: list[dict[str, Any]],
     half_year_reminders: list[dict[str, Any]] | None = None,  # [HY-007]
+    half_year_deduplicated: list[dict[str, Any]] | None = None,  # [HY-007]
+    half_year_dedup_applied: bool = False,  # [HY-007]
     scene_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """组装统一 payload（含 notify_level_summary / markdown_preview / 禁用词自检）."""
     half_year_reminders = half_year_reminders or []
+    half_year_deduplicated = half_year_deduplicated or []
     notify_summary = _notify_level_summary(
         ta_requests, watch_items, data_warnings, half_year_reminders
     )
+    if half_year_dedup_applied:
+        notify_summary["dedup_applied"] = True
+        notify_summary["half_year_deduplicated_count"] = len(half_year_deduplicated)
+        notify_summary["note"] = "半年报提醒已应用 24 小时去重"
     payload: dict[str, Any] = {
         "schema_version": PAYLOAD_SCHEMA_VERSION,
         "scene": scene,
@@ -621,10 +628,16 @@ def _assemble_payload(
         "watch_items": watch_items,
         "data_warnings": data_warnings,
         "half_year_reminders": half_year_reminders,  # [HY-007]
+        "half_year_deduplicated": half_year_deduplicated,  # [HY-007]
         "notify_level": notify_summary,
         "scene_extras": scene_extras or {},
         "notes": _build_scene_notes(
-            scene, ta_requests, watch_items, data_warnings, half_year_reminders
+            scene,
+            ta_requests,
+            watch_items,
+            data_warnings,
+            half_year_reminders,
+            half_year_deduplicated,
         ),
     }
     payload["markdown_preview"] = render_briefing_markdown(payload)
@@ -638,6 +651,7 @@ def _build_scene_notes(
     watch_items: list[dict[str, Any]],
     data_warnings: list[dict[str, Any]],
     half_year_reminders: list[dict[str, Any]] | None = None,  # [HY-007]
+    half_year_deduplicated: list[dict[str, Any]] | None = None,  # [HY-007]
 ) -> list[str]:
     notes: list[str] = []
     scene_label = {"pre_market": "盘前", "intraday": "盘中", "post_market": "盘后"}[scene]
@@ -671,7 +685,12 @@ def _build_scene_notes(
             parts.append(f"{fact_update} 项事实更新")
         notes.append(
             f"{scene_label} briefing：半年报提醒 " + "，".join(parts) +
-            "（去噪窗口 24h，调用方按需套 HalfYearReminderDeduplicator）"
+            "（去噪窗口 24h）"
+        )
+    if half_year_deduplicated:
+        notes.append(
+            f"{scene_label} briefing：已抑制 {len(half_year_deduplicated)} 项"
+            " 24 小时内重复的半年报提醒"
         )
     return notes
 
@@ -681,7 +700,9 @@ def _build_scene_notes(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_pre_market_payload(
-    context: dict[str, Any], *, as_of: str | None = None
+    context: dict[str, Any], *, as_of: str | None = None,
+    half_year_deduplicator: HalfYearReminderDeduplicator | None = None,
+    dedup_now: datetime | None = None,
 ) -> dict[str, Any]:
     """盘前 briefing：TA 调度 + 昊天主题重心 + 数据健康 + 半年报提醒.
 
@@ -694,6 +715,13 @@ def build_pre_market_payload(
     watch_items = _build_watch_items(context, ts)
     data_warnings = _build_data_warnings(context, ts)
     half_year_reminders = build_half_year_reminders(context, ts)  # [HY-007]
+    half_year_deduplicated: list[dict[str, Any]] = []
+    if half_year_deduplicator is not None:
+        dedup_result = apply_half_year_dedup(
+            half_year_reminders, half_year_deduplicator, now=dedup_now
+        )
+        half_year_reminders = dedup_result["emitted"]
+        half_year_deduplicated = dedup_result["deduplicated"]
 
     mandate = _bucket(context, "mandate_daily_report")
     mandate_digest = _ic_ta003._build_mandate_digest(mandate)
@@ -718,6 +746,8 @@ def build_pre_market_payload(
         watch_items=watch_items,
         data_warnings=data_warnings,
         half_year_reminders=half_year_reminders,  # [HY-007]
+        half_year_deduplicated=half_year_deduplicated,  # [HY-007]
+        half_year_dedup_applied=half_year_deduplicator is not None,  # [HY-007]
         scene_extras={
             "mandate_digest": mandate_digest,
             "data_health_note": data_health_note,
@@ -853,7 +883,9 @@ def _build_intraday_observation_warnings(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_post_market_payload(
-    context: dict[str, Any], *, as_of: str | None = None
+    context: dict[str, Any], *, as_of: str | None = None,
+    half_year_deduplicator: HalfYearReminderDeduplicator | None = None,
+    dedup_now: datetime | None = None,
 ) -> dict[str, Any]:
     """盘后 briefing：今日表现 + 报告数据缺口 + 次日 TA 候选 + 半年报提醒.
 
@@ -865,6 +897,13 @@ def build_post_market_payload(
     watch_items = _build_watch_items(context, ts)
     data_warnings = _build_data_warnings(context, ts)
     half_year_reminders = build_half_year_reminders(context, ts)  # [HY-007]
+    half_year_deduplicated: list[dict[str, Any]] = []
+    if half_year_deduplicator is not None:
+        dedup_result = apply_half_year_dedup(
+            half_year_reminders, half_year_deduplicator, now=dedup_now
+        )
+        half_year_reminders = dedup_result["emitted"]
+        half_year_deduplicated = dedup_result["deduplicated"]
 
     today_perf = _ic_ta003._build_today_performance(_bucket(context, "holdings"))
     report_gaps = _ic_ta003._build_report_gaps_summary(
@@ -889,6 +928,8 @@ def build_post_market_payload(
         watch_items=watch_items,
         data_warnings=data_warnings,
         half_year_reminders=half_year_reminders,  # [HY-007]
+        half_year_deduplicated=half_year_deduplicated,  # [HY-007]
+        half_year_dedup_applied=half_year_deduplicator is not None,  # [HY-007]
         scene_extras={
             "today_performance": today_perf,
             "report_data_gaps": report_gaps,
@@ -1044,7 +1085,12 @@ def render_briefing_markdown(payload: dict[str, Any]) -> str:
     lines.append("## notify_level 汇总\n")
     lines.append(f"- 盘中主动提醒：{notify.get('intraday_push_count', 0)} 条")
     lines.append(f"- 夜间日报：{notify.get('daily_digest_count', 0)} 条")
-    lines.append(f"- 去噪：{notify.get('dedup_applied', False)}（briefing 只分类，去噪在 notify 通道）")
+    dedup_note = (
+        "半年报提醒已应用 24 小时去噪"
+        if notify.get("dedup_applied", False)
+        else "纯 builder 只分类；生产 service/notify 通道负责去噪"
+    )
+    lines.append(f"- 去噪：{notify.get('dedup_applied', False)}（{dedup_note}）")
     lines.append("")
 
     notes = payload.get("notes", []) or []
