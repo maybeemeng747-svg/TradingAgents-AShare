@@ -36,7 +36,7 @@ class TestBarkPayload:
 
         payload = build_report_payload(_make_report())
 
-        assert payload["title"] == "601958.SH HOLD/中性 62%"
+        assert payload["title"] == "601958.SH 中性 HOLD 62%"
         assert "TradingAgents 定时分析 | 2026-05-07" in payload["body"]
         assert "价位：目标 12.3 / 止损 10.8" in payload["body"]
 
@@ -53,8 +53,8 @@ class TestBarkPayload:
             },
         ))
 
-        assert payload["title"] == "601958.SH 等待触发/偏多 62%"
-        assert "结论：等待触发，方向：偏多，动作码：WAIT" in payload["body"]
+        assert payload["title"] == "601958.SH 偏多 等待触发 62%"
+        assert "结论：等待触发，方向：偏多，动作：WAIT" in payload["body"]
         assert "结论：HOLD" not in payload["body"]
 
     def test_report_payload_uses_push_summary_instead_of_full_markdown_report(self):
@@ -77,13 +77,97 @@ class TestBarkPayload:
             ),
         ))
 
-        assert payload["title"] == "000938.SZ SELL/偏空 85%"
+        assert payload["title"] == "000938.SZ 偏空 SELL 85%"
         assert "价位：目标 31 / 止损 33.8" in payload["body"]
         assert "风控：Hold" in payload["body"]
-        assert "未持仓：严格禁止开立任何多头仓位" in payload["body"]
-        assert "已持仓：应执行减仓或清仓操作" in payload["body"]
+        assert "持仓：应执行减仓或清仓操作" in payload["body"]
         assert "### 风控委员会审核报告" not in payload["body"]
         assert len(payload["body"]) <= 900
+
+    def test_report_payload_preserves_short_complete_guidance(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="已持仓者：清仓。未持仓者：不开仓。",
+        ))
+
+        assert "持仓：清仓" in payload["body"]
+        assert "未持仓：不开仓" in payload["body"]
+
+    def test_report_payload_preserves_short_complete_trigger(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="未持仓者：等待。站稳年线。",
+        ))
+
+        assert "触发：站稳年线" in payload["body"]
+
+    def test_report_payload_omits_incomplete_trigger_fragment(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="触发基本面失效条件的核心。",
+        ))
+
+        assert "触发：" not in payload["body"]
+
+    def test_report_payload_uses_later_valid_trigger_after_fragment(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="触发基本面失效条件的核心。站稳年线。",
+        ))
+
+        assert "触发：站稳年线" in payload["body"]
+
+    def test_report_payload_scans_later_trigger_with_same_keyword(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="触发基本面失效条件的核心。触发：突破12.3元。",
+        ))
+
+        assert "触发：突破12.3元" in payload["body"]
+
+    def test_report_payload_does_not_treat_generic_count_as_trigger(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="触发基本面失效条件的核心有3项。触发：突破12.3元。",
+        ))
+
+        assert "触发：突破12.3元" in payload["body"]
+        assert "触发基本面失效条件的核心有3项" not in payload["body"]
+
+    def test_report_payload_extracts_trigger_after_comma_in_same_sentence(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="触发基本面失效条件的核心有3项，触发：突破12.3元。",
+        ))
+
+        assert "触发：突破12.3元" in payload["body"]
+        assert "触发基本面失效条件的核心有3项" not in payload["body"]
+
+    def test_report_payload_prefers_explicit_entry_trigger_over_stop_loss(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="已持仓者：跌破10元止损。未持仓者：触发：突破12元再买入。",
+        ))
+
+        assert "触发：突破12元再买入" in payload["body"]
+        assert "触发：跌破10元止损" not in payload["body"]
+
+    def test_report_payload_accepts_trigger_price_with_wei_separator(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            final_trade_decision="为剩余仓位设置条件单，触发价为14.40元，动作为全部卖出。",
+        ))
+
+        assert "触发：14.40元" in payload["body"]
 
     def test_test_payload_uses_default_copy(self):
         from api.services.bark_notification_service import build_test_payload

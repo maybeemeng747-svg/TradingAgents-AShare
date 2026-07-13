@@ -23,13 +23,19 @@ def _clip_text(text: str | None, limit: int = 720) -> str:
     return compact[:limit]
 
 
-def _format_value(value: object) -> str:
+def _format_value(value: object) -> str | None:
+    """Format a numeric value, returning None for missing/placeholder values."""
     if value is None:
-        return "-"
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return str(value)
+        text = str(value).strip()
+        if not text or text in ("-", "0", "0.0", "0.00"):
+            return None
+        return text
+    if number == 0:
+        return None
     return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
@@ -45,13 +51,19 @@ def _plain_report_text(report: "ReportDB") -> str:
     return text
 
 
-def _extract_phrase(text: str, keyword: str, limit: int = 86) -> str | None:
+def _extract_phrases(text: str, keyword: str, limit: int = 86) -> list[str]:
+    phrases: list[str] = []
     for segment in re.split(r"[\n。；;]+", text):
         compact = " ".join(segment.split()).strip(" -*\t")
         if keyword in compact:
             compact = compact[compact.find(keyword):]
-            return compact[:limit]
-    return None
+            phrases.append(compact[:limit])
+    return phrases
+
+
+def _extract_phrase(text: str, keyword: str, limit: int = 86) -> str | None:
+    phrases = _extract_phrases(text, keyword, limit)
+    return phrases[0] if phrases else None
 
 
 def _extract_risk_review(text: str) -> str | None:
@@ -72,6 +84,45 @@ def _remove_leading_label(text: str, labels: tuple[str, ...]) -> str:
     for label in labels:
         cleaned = cleaned.replace(label, "")
     return cleaned.lstrip(" ：:-")
+
+
+def _is_meaningful_guidance(text: str) -> bool:
+    """Keep concise real guidance while rejecting empty label fragments."""
+    compact = " ".join(str(text or "").split()).strip(" ：:;-，。,.()（）")
+    if compact in {"", "-", "若存在", "如有", "暂无", "无"}:
+        return False
+    return bool(re.search(r"[A-Za-z0-9\u4e00-\u9fff]{2,}", compact))
+
+
+def _extract_trigger_phrase(text: str) -> str | None:
+    """Extract the condition itself instead of a sentence containing it."""
+    explicit_candidates: list[tuple[int, str]] = []
+    technical_candidates: list[tuple[int, str]] = []
+
+    for match in re.finditer(
+        r"触发(?:条件|价格|价|点位|点)?(?:[：:]|为|是)\s*([^，,。；;\n]{1,86})",
+        text,
+    ):
+        candidate = match.group(1).strip()
+        if _is_meaningful_guidance(candidate) and candidate not in {"待定", "等待确认"}:
+            explicit_candidates.append((match.start(), candidate))
+
+    technical_pattern = re.compile(
+        r"(?:^|[\s，,。；;：:\n])"
+        r"((?:(?:若|如|待|等待|确认|股价|收盘价|价格|未|只有|仅当|建议(?:在)?)\s*)?"
+        r"(?:站稳|站上|突破|跌破|守住|回升|上穿|下穿)"
+        r"[^，,。；;\n]{1,60})"
+    )
+    for match in technical_pattern.finditer(text):
+        candidate = match.group(1).strip()
+        if _is_meaningful_guidance(candidate):
+            technical_candidates.append((match.start(1), candidate))
+
+    if explicit_candidates:
+        return min(explicit_candidates, key=lambda item: item[0])[1]
+    if technical_candidates:
+        return min(technical_candidates, key=lambda item: item[0])[1]
+    return None
 
 
 def _semantic_field(report: "ReportDB", key: str) -> str | None:
@@ -96,40 +147,49 @@ def _display_direction(report: "ReportDB") -> str:
 
 
 def _build_action_lines(report: "ReportDB", text: str) -> list[str]:
+    """Build concise bullet points for the Bark notification.
+
+    Rules:
+    - Only include lines with real, specific content from the report.
+    - Skip generic fallback phrases ("观望，等待确认信号" etc.).
+    - Skip truncated/meaningless fragments.
+    - Max 4 lines.
+    """
     lines: list[str] = []
-    risk_review = _extract_risk_review(text)
     decision = str(getattr(report, "decision", "") or "").upper()
+
+    # Risk review: only if it differs from the main decision and is substantive
+    risk_review = _extract_risk_review(text)
     if risk_review and risk_review.upper() not in {"", decision}:
-        lines.append(f"风控：{risk_review}（若与决策不同，以执行约束为准）")
+        lines.append(f"风控：{risk_review}")
 
-    not_holding = _extract_phrase(text, "未持仓者") or _extract_phrase(text, "未持仓")
-    if not_holding:
-        lines.append(f"未持仓：{_remove_leading_label(not_holding, ('未持仓者', '未持仓'))}")
-    else:
-        if decision == "SELL":
-            lines.append("未持仓：不追高，不开多，等待右侧确认")
-        elif decision == "BUY":
-            lines.append("未持仓：只按触发条件小仓试探，避免追高")
-        else:
-            lines.append("未持仓：观望，等待确认信号")
-
+    # Holding guidance: only from actual report text, no generic fallbacks
     holding = _extract_phrase(text, "已持仓者") or _extract_phrase(text, "已持仓")
     if holding:
-        lines.append(f"已持仓：{_remove_leading_label(holding, ('已持仓者（若存在）', '已持仓者', '已持仓'))}")
-    elif decision == "SELL":
-        lines.append("已持仓：反弹减仓或清仓，严格执行止损")
-    elif decision == "BUY":
-        lines.append("已持仓：按计划持有，跌破止损先降风险")
+        cleaned = _remove_leading_label(holding, ("已持仓者（若存在）", "已持仓者", "已持仓"))
+        if _is_meaningful_guidance(cleaned):
+            lines.append(f"持仓：{cleaned}")
 
-    trigger = _extract_phrase(text, "触发") or _extract_phrase(text, "站稳")
+    # Not-holding guidance: only from actual report text
+    not_holding = _extract_phrase(text, "未持仓者") or _extract_phrase(text, "未持仓")
+    if not_holding:
+        cleaned = _remove_leading_label(not_holding, ("未持仓者", "未持仓"))
+        if _is_meaningful_guidance(cleaned):
+            lines.append(f"未持仓：{cleaned}")
+
+    # Trigger/price: keep concise complete conditions such as "站稳年线".
+    trigger = _extract_trigger_phrase(text)
     if trigger:
         lines.append(f"触发：{trigger}")
 
+    # Event risk: only if it adds new info not already in other lines
     event_risk = _extract_phrase(text, "事件风险") or _extract_phrase(text, "风险")
-    if event_risk and event_risk not in lines:
-        lines.append(f"风险：{event_risk}")
+    if event_risk and len(event_risk) >= 8:
+        # Deduplicate against existing lines
+        if not any(event_risk in line for line in lines):
+            lines.append(f"风险：{event_risk}")
 
-    return lines[:5]
+    return lines[:4]
 
 
 def normalize_bark_url(value: str) -> str:
@@ -164,24 +224,43 @@ def build_report_payload(report: "ReportDB") -> dict:
     direction = _display_direction(report)
     execution_action = _semantic_field(report, "execution_action")
     confidence = getattr(report, "confidence", None)
-    confidence_text = f" {confidence}%" if confidence is not None else ""
-    title = f"{report.symbol} {decision}/{direction}{confidence_text}"
 
-    lines = [
-        f"TradingAgents 定时分析 | {report.trade_date}",
-        f"结论：{decision}，方向：{direction}"
-    ]
-    if execution_action:
-        lines[-1] += f"，动作码：{execution_action}"
-
+    # Title: symbol + direction + confidence; skip redundant action if same as direction
+    title_parts = [str(report.symbol)]
+    if direction and direction != "-":
+        title_parts.append(direction)
+    if decision and decision != "-" and decision != direction:
+        title_parts.append(decision)
     if confidence is not None:
-        lines[-1] += f"，置信度：{confidence}%"
+        title_parts.append(f"{confidence}%")
+    title = " ".join(title_parts)
 
-    target_price = getattr(report, "target_price", None)
-    stop_loss_price = getattr(report, "stop_loss_price", None)
-    if target_price is not None or stop_loss_price is not None:
-        lines.append(f"价位：目标 {_format_value(target_price)} / 止损 {_format_value(stop_loss_price)}")
+    lines = [f"TradingAgents 定时分析 | {report.trade_date}"]
 
+    # Conclusion line: only include fields that have real values
+    conclusion_parts: list[str] = []
+    if decision and decision != "-":
+        conclusion_parts.append(f"结论：{decision}")
+    if direction and direction != "-":
+        conclusion_parts.append(f"方向：{direction}")
+    if execution_action and execution_action != "-":
+        conclusion_parts.append(f"动作：{execution_action}")
+    if confidence is not None:
+        conclusion_parts.append(f"置信度：{confidence}%")
+    if conclusion_parts:
+        lines.append("，".join(conclusion_parts))
+
+    # Price line: only show when both values are real numbers
+    target = _format_value(getattr(report, "target_price", None))
+    stop_loss = _format_value(getattr(report, "stop_loss_price", None))
+    if target and stop_loss:
+        lines.append(f"价位：目标 {target} / 止损 {stop_loss}")
+    elif target:
+        lines.append(f"目标价：{target}")
+    elif stop_loss:
+        lines.append(f"止损价：{stop_loss}")
+
+    # Action lines: only include non-generic, non-empty content
     text = _plain_report_text(report)
     action_lines = _build_action_lines(report, text)
     if action_lines:
