@@ -1,5 +1,19 @@
 # 修改日志
 
+## 2026-07-13 | 研究评分快照到 TA/TradeFlow 的四卡裁决任务线
+
+- **类型**：architecture / task planning / research score integration
+- **状态**：✅ 架构边界固化；TA 侧 SCORE-001~006 全部暂不自动领取，先由 ZCode 交付契约与 fixture
+- **背景**：用户计划由 ZCode 对接现有知识库并增加跑分；TA 已有 readiness、TradeFlow 分项、账户风控和 PLAYBOOK 阶段。完整复制四张评分卡会导致重复计分和动作冲突。
+- **决策**：知识快照只产出 `research_evidence_confidence + thesis_quality + score_change`；TradeFlow 复用既有因子生成 `entry_timing`；账户上下文生成 `portfolio_fit`；TA 统一执行八类硬门禁并映射七阶段。明确不生成混合总分。
+- **任务**：新增 SCORE-001（只读快照契约）、SCORE-002（入场时机适配）、SCORE-003（组合适配）、SCORE-004（统一 veto）、SCORE-005（七阶段映射）、SCORE-006（对抗回放）。SCORE-001 等 ZCode 契约与 fixture 人工确认后再释放，避免 TA 抢先造第二套 schema。
+- **硬约束**：沿用证据 70% 强动作门禁和 Level 4 的 85% 门槛；权限、超配、现金、首次大跌/跌停、传闻、逻辑证伪均不得被高分覆盖。知识快照夹带 action/stage 时必须忽略并告警。
+- **战略边界**：本任务线服务研报/半年报主线；只做阶段语义，不解锁 PLAYBOOK-002/003 的真实仓位三笔法。
+- **归属澄清**：`research-scorer` 属于 ZCode 知识库接入项目；本仓库不实现其评分公式和正式快照写入。现有 Tree Work 页面保留为历史上游输入，不做全局改名。已新增 `docs/zcode_research_scorer_handoff.md` 供 ZCode 领取；SCORE-006 改为人工释放，必须看到真实快照后才能做跨项目验收。
+- **验证**：本轮仅修改任务与架构文档，未修改代码、prompts 或数据库；后续各任务必须 fixture 优先、Codex 对抗审查、失败即停。
+
+---
+
 ## 2026-07-13 | 夜间研报/半年报主线任务扩充
 
 - **类型**：task planning / nightly queue

@@ -40,13 +40,19 @@
 12. `HY-010`：持仓/观察仓半年报待更新清单（P2，ready；只基于现有 HY-003/007）。
 13. `REPORT-UX-006`：TA 报告知识证据来源卡与缺口解释（P2，ready）。
 14. `HY-011`：半年报报告期/披露日/修订版本元数据 sanity check（P2，ready）。
-15. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
-16. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-17. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 KB-020 人工验收后释放）。
-18. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
-19. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停，待研报主线阶段完成后人工释放）。
+15. `SCORE-001`：TA 只读 `research_score_snapshot` 契约与安全接入（P1，blocked-human；等待 ZCode 契约与 fixture 人工确认）。
+16. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+17. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+18. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+19. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+20. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 真实快照人工确认）。
+21. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
+22. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+23. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 KB-020 人工验收后释放）。
+24. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+25. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停；SCORE 任务只做阶段判定，不解锁真实仓位规则）。
 
-> 今晚只自动领取 7 个 `ready` 任务，它们的代码前置均已满足；有下游依赖的任务保持 `blocked`，不再依赖自然语言门禁。任一任务失败时自动循环停止。按近期单任务 20–35 分钟估算，约覆盖 3–4 小时。
+> 今晚只自动领取原有 7 个 `ready` 任务，它们的代码前置均已满足；SCORE 链等待 ZCode 先发布正式契约与 fixture，不允许 TA 抢先造第二套 schema。任一任务失败时自动循环停止。按近期单任务 20–35 分钟估算，约覆盖 3–4 小时。
 
 ### 历史任务总表（按创建顺序）
 
@@ -223,6 +229,12 @@
 171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
+174. `SCORE-001`：TA 只读 `research_score_snapshot` 契约与安全接入（P1，blocked-human，等待 ZCode 契约与 fixture）。
+175. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
+176. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
+177. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
+178. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
+179. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human，依赖 SCORE-005 与 ZCode 真实快照）。
 
 ### 数据源治理候选队列
 
@@ -5068,7 +5080,7 @@
 ### HY-008: 半年报知识链路端到端回放验收（P2）
 - **描述**：端到端验收 Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → investment-controller briefing 的整条链路。
 - **优先级**：P2
-- **状态**：ready — HY-007 最终 Codex review 已 PASS
+- **状态**：ready
 - **前置条件**：HY-004、HY-005、HY-006、HY-007 完成。
 - **执行约束**：
   - fixture/dry-run，禁止 live LLM。
@@ -5312,7 +5324,7 @@
 ### KB-019: Tree Work 研报增量摄取清单与重复导入预检（P2）
 - **描述**：面向半年报集中披露期，把 `inbox/raw/wiki` 的新增、已消化、重复、缺字段和待更新资料整理为可回查的增量摄取清单，避免同一研报重复消化或遗漏。
 - **优先级**：P2
-- **状态**：ready — KB-005/KB-010/KB-012 已完成
+- **状态**：ready
 - **前置条件**：KB-005、KB-010、KB-012 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge/`，不得移动、改写或删除 Tree Work 文件。
@@ -5332,7 +5344,7 @@
 ### KB-020: 同股研报/半年报证据聚合只读 API（P2）
 - **描述**：为单只股票提供统一的证据查询契约，把 KB-016 共识矩阵、KB-017 citation 审计、KB-018 观点时间线和 HY-003 半年报事实聚合到一个只读响应中。
 - **优先级**：P2
-- **状态**：ready — KB-016/KB-017/KB-018/HY-003 已完成
+- **状态**：ready
 - **前置条件**：KB-016、KB-017、KB-018、HY-003 完成。
 - **执行约束**：
   - 不调用 LLM、不抓取正文、不写数据库；只返回摘要、状态、指标和来源路径。
@@ -5372,7 +5384,7 @@
 ### HY-010: 持仓/观察仓半年报待更新清单（P2）
 - **描述**：把持仓、观察仓和昊天候选映射到半年报知识覆盖状态，输出“哪些票已有新事实、哪些仍缺半年报、哪些存在冲突或待 Tree Work 消化”的优先清单。
 - **优先级**：P2
-- **状态**：ready — HY-003/HY-007/TRACK-001 已完成
+- **状态**：ready
 - **前置条件**：HY-003、HY-007、TRACK-001 完成；HY-009 完成后再补增量冲突字段，不阻塞本任务基础版。
 - **执行约束**：
   - 只读持仓/观察仓/候选和本地知识，不写生产数据库、不调用 LLM。
@@ -5432,7 +5444,7 @@
 ### REPORT-UX-006: TA 报告知识证据来源卡与缺口解释（P2）
 - **描述**：基于现有 `local_knowledge_summary` 与 `half_year_facts_summary`，在 TA 报告中清晰显示“用了哪些本地资料、资料是否过期/冲突、还缺什么”，不等待新的聚合 API。
 - **优先级**：P2
-- **状态**：ready — KB-011/HY-004/REPORT-UX-005 已完成
+- **状态**：ready
 - **前置条件**：KB-011、HY-004、REPORT-UX-005 完成。
 - **执行约束**：
   - 复用 ReportViewer，不新增重型页面；不展示长正文。
@@ -5452,7 +5464,7 @@
 ### HY-011: 半年报报告期/披露日/修订版本元数据 sanity check（P2）
 - **描述**：在大量半年报进入 Tree Work 前，对报告期、披露日期、修订版本、symbol/name 和来源类型做轻量校验，阻止错期、未来日期和修订稿覆盖原稿等元数据污染。
 - **优先级**：P2
-- **状态**：ready — HY-001/KB-014 已完成
+- **状态**：ready
 - **前置条件**：HY-001、KB-014、KB-002 完成。
 - **执行约束**：
   - 只做 lint/sanity，不修改知识库文件，不调用 LLM。
@@ -5468,6 +5480,145 @@
   - 与 KB-002/HY-001 现有 lint 回归兼容。
   - 真实知识库 dry-run 只读且报告不含正文。
 - **代码标注要求**：`# [HY-011] half_year_metadata_sanity`
+
+## SCORE. 研究评分快照接入与四卡裁决链（2026-07-13 新增）
+
+> 目标：知识库只提供慢变量 `research_score_snapshot`（研究证据可信度、投资逻辑质量及变化原因）；TradeFlow 继续负责实时入场时机，账户上下文负责组合适配，TA 统一执行硬门禁并映射到七阶段。禁止生成一个混合总分，也禁止知识分直接覆盖动作语义。
+>
+> **代码归属边界**：`research-scorer` 的公式、证据条目、投资假设和正式快照写入属于 ZCode 知识库接入项目，不在本仓库实现。本仓库的 SCORE-001~006 只负责读取、校验、动态补齐和裁决。现有 Tree Work 知识页继续作为历史上游输入，不做全局改名；新增评分与快照发布统一由 ZCode 负责。知识库侧任务包见 `docs/zcode_research_scorer_handoff.md`。
+
+### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
+- **描述**：建立 TA 侧只读快照契约和 provider，使 ZCode 后续产出的研究评分快照可被 TA/TradeFlow 稳定消费，但不重新计算知识库分数、不接受知识库给出的交易动作。
+- **优先级**：P1
+- **状态**：blocked-human — 等待 ZCode 完成 ZC-RS-001 契约并提供合法 JSON Schema 与 fixture 后人工释放
+- **前置条件**：KB-014、KB-015、KB-016、KB-017、KB-018、KB-020 完成；ZC-RS-001 由 ZCode 交付并经人工确认。
+- **depends_on**：KB-014, KB-015, KB-016, KB-017, KB-018, KB-020, ZC-RS-001
+- **auto_release**：false
+- **执行约束**：
+  - 只读知识库；不修改知识库文件，不写生产数据库，不调用 live LLM。
+  - 快照只允许研究字段；即使输入含 `action/stage/planned_position/buy_level` 也必须忽略并记录 schema warning。
+  - 不用 `0` 代替“缺证据/不可评分”；必须区分 `HAS_DATA / STALE / LOW_CONFIDENCE / NORMAL_NO_DATA / FAILED`。
+  - 不建立第二套 A-E 来源等级；复用 KB-014 `source_quality_tier` 与 citation 权重。
+- **实现要点**：
+  1. 定义版本化 `ResearchScoreSnapshot`：`symbol/name/as_of/rubric_id/rubric_version/status`。
+  2. 只承载 `research_evidence_confidence`、`thesis_quality`、两者分项、`score_change`、`evidence_refs`、`missing_evidence`、升级/降级/证伪条件。
+  3. 增加本地只读 loader/provider，并校验 symbol、日期、分数范围、rubric 版本、来源路径和 JSON/schema 类型。
+  4. 快照过期、损坏、标的不匹配或版本未知时 fail closed，只返回降级状态，不得沿用上一只股票或默认高分。
+  5. 接入 KB-020 聚合响应与 TradeFlow candidate detail 的可选只读桶；旧数据无字段时保持兼容。
+  6. 不实现证据分/逻辑分公式；fixture 仅用于锁定跨项目契约，正式值必须来自 ZCode 发布的快照。
+- **验收方式**：
+  - fixture 覆盖完整、缺字段、过期、损坏、symbol 错配、未知版本、非法分数和夹带动作字段。
+  - 断言 provider 不写知识库/DB、不调用 LLM，旧 API 契约无回归。
+  - 断言知识快照极高分时 `decision/execution_action/action_tier` 仍不发生变化。
+- **代码标注要求**：`# [SCORE-001] research_score_snapshot_contract`
+
+### SCORE-002: 复用 TradeFlow 现有因子生成 entry_timing 评分卡（P1）
+- **描述**：把 TradeFlow 已有技术、资金、事件、拥挤/过热、触发距离和赔率字段组合成独立 `entry_timing` 评分卡，禁止另造一套行情和资金计算。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待 SCORE-001
+- **前置条件**：SCORE-001、TF-QUALITY-004、TF-RISK-001 完成。
+- **depends_on**：SCORE-001, TF-QUALITY-004, TF-RISK-001
+- **auto_release**：true
+- **执行约束**：
+  - 不调用 LLM、不联网、不改 prompts；纯确定性映射。
+  - 复用 `technical_score/fund_flow_score/event_score/risk_penalty_score/data_quality_score`、触发距离、Observe 状态和现有 Opportunity/Action Tier 规则。
+  - 资金单位未校验或数据失败时不得输出“资金确认充分”；缺数据必须降低时机置信度而非伪造中性满分。
+- **实现要点**：
+  1. 输出 `entry_timing` 0–100 和分项：估值预期位置、拥挤度、资金价格确认、催化有效性、下行赔率。
+  2. 每个分项携带 `status/source_fields/reasons/missing_fields`，可追溯到现有候选字段。
+  3. 第一次大跌、跌停未打开、爆量破位、板块退潮作为时机风险标志，不在本任务直接改最终动作。
+  4. API/前端只增加可选字段，保留原有分项和 action tier。
+- **验收方式**：
+  - fixture 覆盖高分确认、过热、无资金、单位未校验、首次大跌、跌停和字段全缺。
+  - 相同原始字段得到稳定分数；不得因研究快照高分抬高 `entry_timing`。
+- **代码标注要求**：`# [SCORE-002] entry_timing_adapter`
+
+### SCORE-003: 账户上下文 portfolio_fit 评分卡（P1）
+- **描述**：基于账户权限、真实持仓、可用现金、行业集中度、标的流动性和风险预算生成独立 `portfolio_fit`，回答“这只票是否适合当前账户参与”。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待 SCORE-001
+- **前置条件**：SCORE-001、C-002、TF-RISK-001、IC-TA-001 完成。
+- **depends_on**：SCORE-001, C-002, TF-RISK-001, IC-TA-001
+- **auto_release**：true
+- **执行约束**：
+  - 只读 holdings/账户能力/观察仓/风险预算；不修改真实持仓、不生成委托。
+  - 真实账户上下文缺失时状态为 `unknown`，不得假定有权限、有现金或零持仓。
+  - 模拟账本与真实持仓必须标明来源，禁止混用。
+- **实现要点**：
+  1. 输出 `portfolio_fit` 0–100 及六分项：交易权限、仓位与上限、现金防守空间、相关性集中度、流动性执行难度、账户风险预算。
+  2. 同时输出布尔/三态事实：`tradable_by_user/position_overweight/insufficient_cash/concentration_exceeded/risk_budget_exceeded/context_unknown`。
+  3. 对科创板/创业板权限、当前单票占比、同主题暴露、最低一手成本和可用现金做确定性校验。
+  4. 评分只描述适配度；硬性阻断由 SCORE-004 集中裁决。
+- **验收方式**：
+  - fixture 覆盖不可交易、空仓现金足、已超配、现金不足、高相关集中、持仓未知及模拟/真实来源冲突。
+  - 任意缺省上下文不会被解释为“适配良好”。
+- **代码标注要求**：`# [SCORE-003] portfolio_fit_card`
+
+### SCORE-004: 八类硬性否决统一门禁（P0）
+- **描述**：把研究证据、TradeFlow 时机、账户适配和既有强动作门禁汇总成单一 `vetoes` 裁决层；评分再高也不得绕过否决项。
+- **优先级**：P0
+- **状态**：blocked-auto — 等待 SCORE-002/SCORE-003
+- **前置条件**：SCORE-002、SCORE-003、D-002、D-003、PLAYBOOK-001 完成。
+- **depends_on**：SCORE-002, SCORE-003, D-002, D-003, PLAYBOOK-001
+- **auto_release**：true
+- **执行约束**：
+  - 必须复用现有 `source_coverage/evidence_coverage`、Buy/Risk Level、C-001/C-002 和强动作 sanitizer，不平行重写。
+  - 门禁只收紧、不放宽既有 70%/85% 阈值；冲突时采用更保守规则并记录来源。
+  - 不改 prompts、不调用 LLM、不把知识库分数当执行证据覆盖率。
+- **实现要点**：
+  1. 证据覆盖任一核心门禁低于 70%，禁止强动作；Level 4 继续要求 source/evidence 均达到 85% 及既有全部条件。
+  2. 用户不可买时禁止 ENTER/试错/确认/进攻；当前持仓超配时禁止继续增加风险暴露；现金不足时禁止新增试错。
+  3. 第一次大跌或跌停未打开时禁止进攻仓；仅传闻/弱来源时禁止确认仓；核心逻辑被公告澄清或事实反证时进入风控/退出候选。
+  4. 输出稳定 `veto_code/severity/evidence_refs/blocked_actions/reason`，保留所有命中的否决项而非只返回第一项。
+  5. 门禁优先级固定：核心假设证伪 > 持仓重大风险 > 权限/账户否决 > 证据否决 > 时机否决。
+- **验收方式**：
+  - 对八类否决逐项 fixture，并覆盖多否决并发、字段未知、旧报告和重复执行。
+  - 对抗测试：四卡均 100 分仍不能绕过任一硬门禁。
+  - 无持仓时不得输出 REDUCE/EXIT 持仓动作；逻辑退出语义需安全映射为 WAIT/移出观察。
+- **代码标注要求**：`# [SCORE-004] unified_veto_gate`
+
+### SCORE-005: 四卡结果到七阶段与动作语义的确定性映射（P1）
+- **描述**：在 SCORE-004 后，把研究分、入场时机、组合适配、分数变化和否决结果映射到 PLAYBOOK-001 七阶段，同时保留 WAIT/ENTER/HOLD/REDUCE/EXIT 为底层兼容动作。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待 SCORE-004
+- **前置条件**：SCORE-004、PLAYBOOK-001、DECISION-004 完成。
+- **depends_on**：SCORE-004, PLAYBOOK-001, DECISION-004
+- **auto_release**：true
+- **执行约束**：
+  - 本任务只做阶段与动作语义，不实现计划仓位百分比或三笔法数量；PLAYBOOK-002/003 继续战略暂停。
+  - 未知阶段不得回退为 `hold`；缺持仓不得生成持仓动作。
+  - 知识分不能单独触发 `trial/confirm/attack`，价格上涨也不能单独触发确认。
+- **实现要点**：
+  1. 研究分高但时机差：未持仓映射 `observe + WAIT`；已持仓且无风险映射 `hold + HOLD`。
+  2. 研究分高、时机合格、组合允许且无 veto：可依次进入 `trial/confirm/attack`；确认必须有产业/客户订单/业绩至少两类证据增强，进攻必须已有确认状态及明确撤退条件。
+  3. 研究分下降、冲突/反证增加：已持仓映射 `risk + REDUCE`，未持仓保持 `observe + WAIT` 并阻断进入。
+  4. 核心假设证伪：已持仓映射 `exit + EXIT`；未持仓映射 `exit + WAIT` 并移出研究/观察候选，不违反 C-001。
+  5. 输出 `playbook_stage/playbook_action_label/execution_action/stage_reason_codes/upgrade_conditions/downgrade_conditions/invalidation_conditions`。
+- **验收方式**：
+  - 覆盖用户给出的四类映射，以及持仓/未持仓、分数不变/上升/下降、冲突和证伪组合。
+  - 回放 WAIT/ENTER/HOLD/REDUCE/EXIT，旧字段兼容且不会再次全部退化为“观察”。
+- **代码标注要求**：`# [SCORE-005] four_card_stage_resolver`
+
+### SCORE-006: 研究评分接入端到端对抗回放（P1）
+- **描述**：从知识快照读取到 TradeFlow 评分、账户适配、硬门禁、七阶段、TA 报告/API/前端做完整回放，证明分层职责和失败降级真实生效。
+- **优先级**：P1
+- **状态**：blocked-human — 等待 SCORE-005 与 ZCode 发布至少一份真实 `research_score_snapshot` 后人工释放
+- **前置条件**：SCORE-005、REPORT-UX-006、V-014 完成；ZC-RS-005 与 ZC-RS-006 由 ZCode 交付并提供至少一份真实快照，经人工确认。
+- **depends_on**：SCORE-005, REPORT-UX-006, V-014, ZC-RS-005, ZC-RS-006
+- **auto_release**：false
+- **执行约束**：
+  - 先 fixture，再真实知识库只读 smoke；真实目录不可用不得用 fixture 冒充通过。
+  - 不调用 live LLM、不写生产数据库、不修改知识库、不改 prompts。
+  - 验收采用实现、用户操作、风控/数据真实性三视角；Codex 必须对抗审查。
+- **实现要点**：
+  1. 至少回放：高研究低时机、高研究好时机但无权限、高分但超配/缺现金、仅传闻、首次大跌、研究分下降、核心逻辑证伪、数据缺失八类。
+  2. 验证知识快照不携带/不覆盖动作，动态数据变化只影响 timing/fit，静态研究变化有 delta 与原因。
+  3. 报告能同时回答四卡分数、否决项、当前阶段、动作、升级/降级/证伪条件和数据缺口。
+  4. 生成 `docs/knowledge_reports/research-score-integration-acceptance-YYYY-MM-DD.md`。
+- **验收方式**：
+  - 定向测试、API schema、前端 typecheck/build、旧报告回放及 `git diff --check` 全部通过。
+  - 四卡全高 + 任一 veto 仍不得进入禁止阶段；评分缺失不出现伪精确 0 分或默认 HOLD。
+- **代码标注要求**：`# [SCORE-006] research_score_integration_e2e`
 
 ## B. 待办
 
@@ -5835,6 +5986,7 @@
 
 ### C-002: account_capability 配置（P1）
 - **描述**：增加账户能力配置，控制可交易品种
+- **状态**：done — `tradingagents/default_config.py` 已接入 `account_capability`，既有回归持续覆盖
 - **实现要点**：
   - 配置项：`can_buy_kcb`（科创板）、`can_buy_chinext`（创业板）、`can_short`（做空，默认 false）
   - 不设 `max_single_stock_position` 和 `max_daily_new_position`（交给风控 Agent 动态判断）
