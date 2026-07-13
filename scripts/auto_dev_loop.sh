@@ -444,68 +444,15 @@ log "Working tree clean"
 acquire_lock
 
 # --- 1. Parse TASKS.md for highest-priority ready task ---
+# [AUTO-007] dependency_aware_claim
+# Delegate to scripts/task_dependency_resolver.py so the picker honours
+# machine-readable depends_on / auto_release metadata. Output format stays
+# ID|title|priority|test_cmds (or NONE|||) for backward compatibility. A
+# non-zero exit (missing dep on a gating task, cycle touching a gating task)
+# aborts the batch under `set -e` and the reason is on stderr.
 parse_ready_tasks() {
-    python3 - "$TASKS_FILE" <<'PYEOF'
-import re, sys
-
-tasks_file = sys.argv[1]
-with open(tasks_file, "r") as f:
-    content = f.read()
-
-pattern = re.compile(
-    r"###\s+([\w-]+):\s*(.+?)\n(.*?)(?=\n###|\n---|\Z)",
-    re.DOTALL
-)
-
-priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-
-EXCLUDE_KEYWORDS = {"preflight", "checklist", "inspection", "baseline"}
-EXCLUDE_ID_PREFIXES = ("R-",)
-EXCLUDE_IDS = {"T-000"}
-
-tasks = []
-for m in pattern.finditer(content):
-    task_id = m.group(1)
-    title = m.group(2).strip()
-    body = m.group(3)
-
-    if not re.search(r"\*\*(status|状态)\*\*.*?ready", body, re.IGNORECASE):
-        continue
-
-    if "done" in title.lower() or "\u2713" in title:
-        continue
-
-    if task_id in EXCLUDE_IDS:
-        continue
-    if any(task_id.startswith(p) for p in EXCLUDE_ID_PREFIXES):
-        continue
-
-    title_lower = title.lower()
-    if any(kw in title_lower for kw in EXCLUDE_KEYWORDS):
-        continue
-
-    prio_match = re.search(r"P(\d)", body)
-    prio = f"P{prio_match.group(1)}" if prio_match else "P2"
-
-    test_cmds = re.findall(r"`(pytest\s+[^`]+)`", body)
-
-    tasks.append({
-        "id": task_id,
-        "title": title,
-        "priority": prio,
-        "priority_num": priority_order.get(prio, 9),
-        "test_cmds": test_cmds,
-        "body_start": m.start(),
-    })
-
-tasks.sort(key=lambda t: (t["priority_num"], t["body_start"]))
-
-if tasks:
-    t = tasks[0]
-    print(f"{t['id']}|{t['title']}|{t['priority']}|{','.join(t['test_cmds'])}")
-else:
-    print("NONE|||")
-PYEOF
+    python3 "$SCRIPT_DIR/task_dependency_resolver.py" claim \
+        --tasks-file "$TASKS_FILE"
 }
 
 # --- Main loop: execute until no ready tasks remain ---
@@ -1215,6 +1162,28 @@ DEVLOG_EOF
 
     # 4g. After PASS, commit with accurate hash to prevent re-claim.
     update_task_status "done -- commit ${COMMIT_HASH}"
+
+    # [AUTO-007] dependency_aware_claim
+    # Auto-release downstream blocked tasks that opted in via
+    # `auto_release: true` and whose depends_on are now satisfied. Never
+    # touches NEEDS_HUMAN / 战略暂停 / blocked-human / auto_release=false
+    # tasks. Output is logged; failures are non-fatal (worst case: the next
+    # picker iteration just won't see the released task and a human can do
+    # it manually).
+    DEP_RESOLVER="$SCRIPT_DIR/task_dependency_resolver.py"
+    if [ -f "$DEP_RESOLVER" ]; then
+        log "[AUTO-007] releasing downstream tasks of $TASK_ID..."
+        set +e
+        python3 "$DEP_RESOLVER" release \
+            --tasks-file "$TASKS_FILE" \
+            --task-id "$TASK_ID" 2>&1 | tee -a "$RUN_DIR/release.log" | tail -10
+        REL_EXIT=${PIPESTATUS[0]}
+        set -e
+        if [ "$REL_EXIT" -ne 0 ]; then
+            warn "[AUTO-007] release step exited $REL_EXIT, continuing (status update already applied)"
+        fi
+    fi
+
     git add docs/TASKS.md
     git commit -m "docs: mark $TASK_ID done after auto run"
     RESULT_STATUS="DONE"

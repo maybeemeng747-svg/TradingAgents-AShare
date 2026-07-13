@@ -5080,7 +5080,7 @@
 ### HY-008: 半年报知识链路端到端回放验收（P2）
 - **描述**：端到端验收 Tree Work 半年报 wiki → TA 报告 → TradeFlow 候选 → investment-controller briefing 的整条链路。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：in_progress — claimed HY-008-20260713-190756
 - **前置条件**：HY-004、HY-005、HY-006、HY-007 完成。
 - **执行约束**：
   - fixture/dry-run，禁止 live LLM。

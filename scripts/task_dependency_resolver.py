@@ -307,6 +307,21 @@ def unsatisfied_deps(task: Task, done_ids: set[str]) -> list[str]:
     return [d for d in task.depends_on if d not in done_ids]
 
 
+def is_gating_task(task: Task) -> bool:
+    """Tasks whose dependency metadata MUST be consistent because the auto
+    loop could claim or release them on this run.
+
+    Missing deps / cycles on non-gating tasks (e.g. ``blocked-human`` waiting
+    on a ZCode deliverable) are reported as warnings but never hard-stop the
+    batch, otherwise the picker could not co-exist with cross-project refs.
+    """
+    if task.status_kind == "ready":
+        return True
+    if task.status_kind == "blocked_auto" and task.auto_release:
+        return True
+    return False
+
+
 def is_claimable(task: Task, done_ids: set[str]) -> tuple[bool, str]:
     """Decide if ``task`` may be claimed by the auto dev loop right now.
 
@@ -341,13 +356,19 @@ def order_candidates(tasks: list[Task]) -> list[Task]:
 
 
 def pick_next(tasks: list[Task], done_ids: set[str]) -> tuple[Task | None, list[str]]:
-    """Return the next claimable task plus diagnostic lines for the log."""
+    """Return the next claimable task plus diagnostic lines for the log.
+
+    Only emits diagnostics for tasks that the picker could have considered
+    (``ready`` or ``blocked_auto``); terminal / non-dev tasks are skipped
+    silently to keep the shell log readable on large TASKS.md files.
+    """
     diagnostics: list[str] = []
     for task in order_candidates(tasks):
         claimable, reason = is_claimable(task, done_ids)
         if claimable:
             return task, diagnostics
-        diagnostics.append(f"- {task.task_id}: skip ({reason})")
+        if task.status_kind in ("ready", "blocked_auto"):
+            diagnostics.append(f"- {task.task_id}: skip ({reason})")
     return None, diagnostics
 
 
@@ -357,27 +378,51 @@ def cmd_claim(args: argparse.Namespace) -> int:
     tasks_file = Path(args.tasks_file)
     text = tasks_file.read_text(encoding="utf-8")
     tasks = parse_tasks(text)
+    by_id = {t.task_id: t for t in tasks}
 
     missing = find_missing_deps(tasks)
+    blocking_missing: dict[str, list[str]] = {}
     if missing:
-        for tid, deps in sorted(missing.items()):
-            print(f"[AUTO-007] MISSING_DEP {tid} -> {deps}", file=sys.stderr)
-        print(
-            "[AUTO-007] dependency metadata references unknown task IDs; "
-            "stopping batch for human review",
-            file=sys.stderr,
-        )
-        return 1
+        for tid, deps in missing.items():
+            owner = by_id.get(tid)
+            if owner is not None and is_gating_task(owner):
+                blocking_missing[tid] = deps
+            else:
+                # Non-gating task (e.g. blocked-human waiting on a ZCode
+                # deliverable). Warn but do not break the batch.
+                print(
+                    f"[AUTO-007] WARN missing_dep (non-gating) {tid} -> {deps}",
+                    file=sys.stderr,
+                )
+        if blocking_missing:
+            for tid, deps in sorted(blocking_missing.items()):
+                print(f"[AUTO-007] MISSING_DEP {tid} -> {deps}", file=sys.stderr)
+            print(
+                "[AUTO-007] dependency metadata on a claimable/releaseable "
+                "task references unknown IDs; stopping batch for human review",
+                file=sys.stderr,
+            )
+            return 1
 
     cycles = detect_cycles(tasks)
     if cycles:
+        # Only hard-stop when a cycle touches a gating task; otherwise the
+        # cycle is metadata drift on tasks the loop would not touch anyway.
+        gating_ids = {t.task_id for t in tasks if is_gating_task(t)}
+        blocking_cycle = False
         for cyc in cycles:
-            print(f"[AUTO-007] CYCLE {' -> '.join(cyc)}", file=sys.stderr)
-        print(
-            "[AUTO-007] circular dependency detected; stopping batch",
-            file=sys.stderr,
-        )
-        return 1
+            touches_gating = any(node in gating_ids for node in cyc)
+            level = "CYCLE" if touches_gating else "WARN cycle (non-gating)"
+            print(f"[AUTO-007] {level} {' -> '.join(cyc)}", file=sys.stderr)
+            if touches_gating:
+                blocking_cycle = True
+        if blocking_cycle:
+            print(
+                "[AUTO-007] circular dependency touches a claimable task; "
+                "stopping batch",
+                file=sys.stderr,
+            )
+            return 1
 
     done_ids = collect_done_ids(tasks)
     task, diagnostics = pick_next(tasks, done_ids)
