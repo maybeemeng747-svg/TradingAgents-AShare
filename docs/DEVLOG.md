@@ -1,5 +1,137 @@
 # 修改日志
 
+## 2026-07-13 | HY-010 持仓/观察仓半年报待更新清单
+
+- **执行者**:OpenCode
+- **任务**:HY-010 — 持仓/观察仓半年报待更新清单（P2）
+- **类型**:feature / read-only priority queue
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- HY-007 已经把"半年报事实 + 反证 + needs-review"按 symbol 推到 IC context
+  bucket 10（``half_year_facts``），但调用方想知道的是"今晚优先消化哪几份
+  资料"——需要把持仓 / 观察仓 / 昊天候选合并到一个 universe，并对每个 symbol
+  标注它当前的半年报覆盖状态，按资料补全顺序排序。
+- 现有 HY-002 ``half_year_task_pack`` 走的是"直接读知识库 + 列出待补录字段"
+  的路径；HY-010 只基于 HY-003/HY-007 已构建好的 IC context，纯只读、不重查
+  知识库、不调 LLM、不写 DB，是一个**消费层**而不是数据层。
+
+### 改动文件
+
+- `tradingagents/tradeflow/half_year_update_queue.py`（新增，`# [HY-010]
+  half_year_update_queue`）— 主模块。
+  * ``build_half_year_update_queue(context, *, as_of=None) ->
+    HalfYearUpdateQueue`` 把 IC context 的 5 个 bucket（``holdings`` /
+    ``observation_warehouse`` / ``tradeflow_candidates`` /
+    ``mandate_daily_report`` / ``half_year_facts``）合并为统一 symbol
+    universe。
+  * 状态机 6 种：``up_to_date``（fresh + 有披露日）/ ``missing``
+    （universe 中但未 surfacing）/ ``stale``（data_status=stale 或
+    has_stale）/ ``conflict``（has_conflict 或 facts_status=CONFLICT）/
+    ``needs_digest``（thesis contradicted/weakened 或 needs_review）/
+    ``unknown``（fresh 但缺披露日——任务约束：不得猜日期）。
+  * 优先级 tier 0..7 + 9 兜底，严格对应任务描述："持仓冲突 > 持仓缺失 >
+    接近触发观察仓 > 昊天主候选 > 其他"，并把持仓 needs_digest / stale /
+    unknown 自然填补在持仓缺失与观察仓之间，保持持仓 bucket 内部优先于
+    观察仓/候选池。
+  * 同 symbol 多来源时合并 ``origins`` 列表去重保序，``observation_state``
+    / ``candidate_type`` / ``mandate_score`` / ``is_main_candidate`` 各自
+    保留；name 兜底优先级 holding > observation > mandate。
+  * 输出契约：``HalfYearUpdateEntry``（symbol / origins / status /
+    priority_rank / priority_tier / latest_period / latest_disclosure_date
+    / half_year_score / thesis_check_status / observation_state /
+    candidate_type / mandate_score / is_main_candidate / reason /
+    fact_summary / source）+ ``HalfYearUpdateQueue``（items /
+    summary_by_status / summary_by_origin / universe_size /
+    knowledge_root_available / notes）。
+  * ``render_half_year_update_markdown`` 输出顶部摘要（状态分布 / 来源分布
+    / 知识库可用性）+ 10 列表格；reason cell 的 ``|`` 替换成 ``/`` 避免破坏
+    表格。
+  * 强动作词防线：reason / fact_summary 全量扫描禁词表（``买入/卖出/加仓/
+    减仓/止损/强烈推荐/BUY/SELL/...``），上游若 pre-clip 不严会在 build
+    阶段 raise，绝不漏到下游。
+  * 稳定空结构：context 不是 dict / universe 全空 / half_year_facts
+    bucket 缺失或 data_status=skipped/failed 时返回稳定空结构，永不抛异常。
+- `tests/test_hy010_half_year_update_queue.py`（新增）— 52 个用例，覆盖
+  9 大场景：
+  1. universe 合并与去重（三类来源、跨 bucket 重复 symbol、bucket 内重复
+     symbol、空 universe、context 不是 dict）。
+  2. 状态分类（6 种状态 + conflict 优先于 needs_digest 的优先级）。
+  3. half_year_facts 降级（bucket 缺失 / skipped / failed / missing with
+     empty items）。
+  4. 优先级排序（每个 tier 单独验证 + 8 symbol 完整排序 + 同 rank 内
+     half_year_score 升序作为次级 key）。
+  5. 稳定空结构与异常容错（buckets 不是 dict / items 不是 list /
+     item 不是 dict / mandate data_status != fresh 时降级）。
+  6. 强动作词防线（全状态 reason 扫描、fact_summary 继承、reason ≤200 字符
+     裁剪、上游禁词触发 raise）。
+  7. Markdown / JSON 输出（to_dict JSON 可序列化、entry.to_dict、
+     Markdown 表格 / 空 universe / reason pipe 转义 / 全量禁词扫描 /
+     非 queue 入参返回空串 / suggest_report_path）。
+  8. 重复执行稳定性（同 as_of 多次调用一致、deep copy 不影响结果）。
+  9. summary 统计（by_status / by_origin 准确、多来源 symbol 在 origin
+     计数中重复 +1、universe 为空时所有状态 key 仍存在）。
+
+### 关键设计决策
+
+1. **纯只读消费层**：HY-010 不重查知识库、不调 HY-003/HY-005/HY-006——只
+   读 HY-007 已经构建好的 ``half_year_facts`` bucket items。这样保持单一
+   数据源（HY-007 是 IC context 的唯一半年报事实入口），避免 HY-010 与
+   HY-007 出现两份不一致的事实视图。代价：当 HY-007 把某个 stale-only
+   的 symbol 滤掉时，HY-010 只能把它标 ``missing``——但这正是"该 symbol
+   没有 fresh fact 可供 briefing"的正确语义。
+2. **状态分类用优先级链而非 if-elif 阶梯**：conflict > needs_digest >
+   stale > unknown > up_to_date，``missing`` 是"symbol 在 universe 但不在
+   half_year_facts.items"的特殊分支。优先级链保证同一 symbol 同时命中
+   多个条件时（如 conflict + contradicted）有确定的胜出方。
+3. **priority_rank 不重载状态分类**：``_compute_priority`` 只看 origins /
+   observation_state / is_main_candidate / status，避免"持仓+up_to_date"
+   错误地排到"观察仓+near_entry"之前。任务描述只列了 5 个 tier，但实现
+   里 holding bucket 内部按 status 再细分（rank 0..3），保证持仓 universe
+   的所有状态都优先于观察仓/候选池。
+4. **knowledge_root_available 语义**：half_year_facts bucket 缺失或
+   data_status ∈ {skipped, failed} 时为 False；``missing`` 仍为 True
+   （只代表"扫了没结果"，知识根本身仍可访问）。这个区分让 UI 能正确告诉
+   用户"知识库不可用"vs"扫了但没数据"。
+5. **reason ≤200 字符硬保证**：``_clip_text`` 留 1 字符给省略号，裁剪后
+   总长度严格 ≤ max_chars；同时在 build 阶段对 reason / fact_summary 跑
+   ``_assert_no_forbidden_words``，上游 pre-clip 不严会直接 raise 而不是
+   漏到 Markdown 报告。
+6. **不增加任何 DB / LLM / 外网依赖**：所有逻辑都是字典 lookup + 排序，
+   测试无需 fixture 知识库，CI 跑 < 0.1 秒。
+
+### 验收
+
+- ✅ 任务描述实现要点 1（统一 symbol universe，保留 holding / observation /
+  mandate_candidate 来源）— TestUniverseMerging 5 个用例。
+- ✅ 实现要点 2（输出 6 种状态）— TestStatusClassification 9 个用例。
+- ✅ 实现要点 3（排序优先级）— TestPrioritySorting 11 个用例，含 8 symbol
+  完整排序验证。
+- ✅ 实现要点 4（CLI/JSON/Markdown 摘要）— TestOutputSerialization 8 个
+  用例，``render_half_year_update_markdown`` + ``to_dict`` JSON round-trip。
+- ✅ 验收方式 1（fixture 覆盖三类来源、重复 symbol、无知识根、冲突和未知日期）
+  — 全部命中。
+- ✅ 验收方式 2（不读取密钥、不写 DB、重复执行稳定）— TestIdempotent
+  2 个用例 + 纯函数实现（无 DB / LLM / 网络 import）。
+- ✅ 验收方式 3（输出能回答"今晚优先消化哪几份资料以及为什么"）—
+  reason 字段每条都带"为什么"，priority_rank 决定顺序。
+
+### 测试
+
+- ``tests/test_hy010_half_year_update_queue.py``：52 passed / 0 failed（0.06s）。
+- 回归 ``tests/test_hy003..008``：292 passed / 0 failed。
+- 任务指定 smoke ``tests/test_api_smoke.py tests/test_runtime_tier_contract.py``：
+  122 passed / 0 failed。
+
+### 安全 / 红线
+
+- 不读 API Key、不写 ``tradingagents.db``、不修改 ``tradingagents/prompts/``、
+  不删除 ``logs/``、不读 ``eval_results/``。
+- 不调用 LLM、不访问外网、不查生产知识库。
+- reason / fact_summary 全量扫描强动作词，绝不输出买卖建议。
+
+
 ## 2026-07-13 | KB-020 同股研报/半年报证据聚合只读 API
 
 - **执行者**:OpenCode
@@ -13180,3 +13312,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/KB-020-20260713-round1.txt
 - **Run archive**: docs/task_runs/KB-020-20260713-230028/
+
+## 2026-07-13 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-010 - 持仓/观察仓半年报待更新清单（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-010-20260713-round1.txt
+- **Run archive**: docs/task_runs/HY-010-20260713-232612/
