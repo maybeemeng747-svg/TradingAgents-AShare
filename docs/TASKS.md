@@ -5444,7 +5444,7 @@
 ### REPORT-UX-006: TA 报告知识证据来源卡与缺口解释（P2）
 - **描述**：基于现有 `local_knowledge_summary` 与 `half_year_facts_summary`，在 TA 报告中清晰显示“用了哪些本地资料、资料是否过期/冲突、还缺什么”，不等待新的聚合 API。
 - **优先级**：P2
-- **状态**：in_progress — claimed REPORT-UX-006-20260713-234106
+- **状态**：done -- commit b4fa3bc
 - **前置条件**：KB-011、HY-004、REPORT-UX-005 完成。
 - **执行约束**：
   - 复用 ReportViewer，不新增重型页面；不展示长正文。
