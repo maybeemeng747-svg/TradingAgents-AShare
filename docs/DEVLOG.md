@@ -1,5 +1,111 @@
 # 修改日志
 
+## 2026-07-13 | KB-020 同股研报/半年报证据聚合只读 API
+
+- **执行者**:OpenCode
+- **任务**:KB-020 — 同股研报/半年报证据聚合只读 API（P2）
+- **类型**:feature / read-only aggregation API
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- UI-014 证据中心、IC controller briefing、HY-010 待更新清单都需要
+  "同股研报共识矩阵 + citation 审计 + 观点时间线 + 半年报事实"四桶证据，
+  但 KB-016 / KB-017 / KB-018 / HY-003 各自只暴露单一维度，调用方
+  必须重复接线并各自处理失败降级，违反"单一证据契约"原则。
+- KB-020 把四桶聚合成一份只读响应，每桶独立降级，路径全部归一为
+  knowledge_root 内的相对路径，不输出长正文、不调用 LLM、不写 DB。
+
+### 改动文件
+
+- `api/services/research_evidence_service.py`（新增，`# [KB-020]
+  research_evidence_api`）— 聚合服务。主入口
+  ``build_research_evidence(symbol, *, as_of, window_months, knowledge_root,
+  today, disabled)`` 调一次 KB-015 / HY-003（共享给 KB-017），再分别调
+  KB-016 / KB-017 / KB-018；每桶包在 try/except 中失败只标
+  ``data_status=failed`` 不影响其他桶。
+  顶部响应：``symbol / as_of / data_status / source_freshness / consensus /
+  citation_audit / thesis_timeline / half_year_facts / gaps / errors /
+  read_only``，可选 ``runtime_tier_meta``。
+  关键设计：
+  * ``InvalidSymbolError`` → 路由层 400；symbol 必须是 6 位 A 股代码
+    （可选 ``.SH/.SZ/.SS`` 后缀；``.SS`` 归一成 ``.SH``）。
+  * ``_safe_rel_path`` 递归校验 ``rel_path/source_path/fact_source_path/
+    page_rel/first_node_path/last_node_path`` 都 resolve 到 knowledge_root
+    内，绝对路径 / ``..`` 逃逸 / 盘符 / 含 ``\x00`` 全部回退成空串。
+  * HY-003 的 ``missing_facts/missing_period/opinion_only`` 经
+    ``_normalize_hy_data_status`` 统一成 KB-020 canonical token
+    （``fresh/stale/conflict/missing/failed/skipped``），UI 拿到一致词表。
+  * ``_assert_no_strong_action_verbs`` 在 summary/audit_summary/
+    half_year_facts summary 上做防御性扫描，发现"立即买入/清仓/全仓"等
+    强动作词只 log warning 不 raise（上游模块已禁止，这是兜底）。
+  * ``_compute_gaps`` 把桶 missing/failed/stale + KB-016
+    ``needs_fact_check`` + KB-017 ``needs_tree_work_review/contradicted/
+    pending`` + KB-018 ``pending_fact_check_versions`` 聚成可读 gap 清单
+    （最多 10 条，仅研究优先级，不带动作）。
+  * ``_disabled_payload`` 复用 KB-006 ``KNOWLEDGE_CONTEXT_DISABLED`` /
+    ``KNOWLEDGE_LOCAL_DISABLED`` 环境变量，所有桶返回 ``skipped``。
+- `api/main.py` — 新增两条路由（**固定路由必须在动态路由前**）：
+  * ``GET /v1/knowledge/research/evidence/_meta`` — 便宜的固定路由探针，
+    返回 bucket 列表 + 允许的 window_months + runtime_tier_meta，UI 可
+    用它验证证据端点可用而不发起单 symbol 查询；同时也是路由顺序回归
+    锚点（如果未来在同前缀下加固定子路径必须先于 ``{symbol}`` 注册，
+    否则会被 symbol 参数吞掉）。
+  * ``GET /v1/knowledge/research/evidence/{symbol}`` — 主聚合路由，
+    支持 ``as_of`` / ``window_months`` / ``knowledge_root`` query 参数；
+    InvalidSymbolError → HTTP 400。
+- `api/runtime_tier.py` — 把 ``research_evidence_lookup`` 加入
+  ``_TRADEFLOW_FAST_ENDPOINTS``，固定 ``runtime_tier=FAST_RADAR``，
+  ``llm_allowed=False``。
+- `tests/test_kb020_research_evidence_api.py`（新增）— **51 tests**，
+  覆盖：normalize_symbol 9 种边界、InvalidSymbolError、服务契约（顶层键、
+  source_freshness、无 action_label/decision/buy_level/强动作词）、
+  fixture 五态（full / partial / conflict / stale / empty）、四桶失败隔离
+  （mock each upstream to raise → 其他桶仍可用）、路径安全（绝对路径 /
+  ``..`` 逃逸 / 盘符 / 嵌套 dict / 嵌套 list）、disabled 环境短路、
+  JSON 序列化（happy + failure）、路由 smoke（_meta / happy / 4xx /
+  auth / window_months）、**路由顺序回归**（_meta 不被 {symbol} 吞 +
+  app.routes 声明顺序断言）、旧 ``/v1/knowledge/local/search`` 契约
+  无回归、runtime_tier=FAST_RADAR。
+
+### 验收
+
+- **51 tests passed**（`tests/test_kb020_research_evidence_api.py`）。
+- 任务指定回归 `tests/test_api_smoke.py tests/test_runtime_tier_contract.py`
+  **122 passed**，无新增失败。
+- KB-016/KB-017/KB-018/KB-019 上游 **295 passed**；knowledge/HY-003/
+  HY-007/HY-008/KB-01xx 相关 **1250 passed**。
+- 约束验证：READ-ONLY（不调 LLM/不写 DB/不抓正文）/ 不携带
+  ``decision/action_label/buy_level`` / 强动作词全检无泄漏 / 路径全部
+  knowledge_root 内相对化 / 固定路由在动态路由前 + 回归测试 /
+  InvalidSymbolError → 4xx / 子桶失败只降级不清空。
+
+### 关键设计决策
+
+1. **复用 KB-006 disable / resolve_knowledge_root**：避免新加一套 env
+   变量；运营一处关闭 ``KNOWLEDGE_CONTEXT_DISABLED`` 即可同时停掉 KB-006
+   搜索与 KB-020 证据聚合，保证 FAST_RADAR 时延预算。
+2. **每桶 try/except 隔离**：KB-016/KB-017/KB-018/HY-003 任一抛异常，
+   该桶标 ``data_status=failed`` + ``errors`` 累加裁剪后的原因，其他桶
+   原样返回。整体 ``data_status`` 取所有桶中"最坏不过 failed、最优取
+   fresh"。
+3. **路径二次防御**：上游 KB-015/KB-016 已经只返回相对路径，但 KB-020
+   在 service 层再次 resolve + ``relative_to(root)`` 校验，确保即使未来
+   上游模块回归或调用方传入定制 knowledge_root 时，绝对路径 / ``..``
+   逃逸也无法穿过本响应。
+4. **HY-003 数据状态归一**：HY-003 有 6 种 data_status（fresh/stale/
+   conflict/opinion_only/missing_period/missing_facts），UI-014 不应
+   关心 missing_period vs missing_facts 的区别；本层把它们合并到
+   ``missing``，conflict 单独保留以便 UI 标红冲突证据。
+5. **固定路由顺序 + 回归测试**：FastAPI 按 declaration order 匹配，
+   动态 ``{symbol}`` 会吞掉同前缀的固定子路径。所以 ``_meta`` 必须先
+   注册，并在测试里既发起真实请求验证不被吞，也直接读 ``app.routes``
+   断言 declaration order，给未来加新固定路由（如 ``_export``）的
+   场景留硬约束。
+6. **不动 KB-006 旧契约**：``/v1/knowledge/local/search`` 不变，
+   KB-020 在它之前注册（独立前缀，不冲突）；回归测试明确覆盖旧契约
+   仍返回 ``source=local_knowledge_context`` + ``hits`` 字段。
+
 ## 2026-07-13 | KB-019 Tree Work 研报增量摄取清单与重复导入预检
 
 - **执行者**:OpenCode
@@ -13062,3 +13168,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: OpenCode timed out after 1800s
 - **Run archive**: docs/task_runs/KB-019-20260713-191013/
+
+## 2026-07-13 | AUTO-002 Auto Dev Loop
+
+- **Task**: KB-020 - 同股研报/半年报证据聚合只读 API（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/KB-020-20260713-round1.txt
+- **Run archive**: docs/task_runs/KB-020-20260713-230028/

@@ -41,7 +41,7 @@ import pandas as pd
 
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
-from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api
+from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -5065,6 +5065,75 @@ def post_briefing_payload_dry_run(
         scene=body.scene,
         tf_db_path=body.tf_db_path,
     )
+
+
+# [KB-020] research_evidence_api
+# Fixed routes under /v1/knowledge/research/evidence must be declared BEFORE
+# the dynamic {symbol} route so FastAPI matches them first. Regression covered
+# by tests/test_kb020_research_evidence_api.py::TestRouteOrderingRegression.
+@app.get("/v1/knowledge/research/evidence/_meta")
+def research_evidence_meta(
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Cheap fixed-route probe so the UI can verify the evidence endpoint is
+    available without issuing a per-symbol query. ``runtime_tier=FAST_RADAR``.
+
+    Also serves as the route-ordering regression anchor: if a future fixed
+    sub-path is added under this prefix it MUST be declared before
+    ``/v1/knowledge/research/evidence/{symbol}`` or this route will be
+    shadowed by the symbol param.
+    """
+    from api.runtime_tier import tradeflow_meta as _tradeflow_meta  # [PERF-001]
+    return {
+        "source": research_evidence_service.CONTEXT_SOURCE,
+        "task": research_evidence_service.TASK_CODE,
+        "buckets": list(research_evidence_service.ALL_BUCKETS),
+        "allowed_window_months": list(research_evidence_service.ALLOWED_WINDOW_MONTHS),
+        "default_window_months": research_evidence_service.DEFAULT_WINDOW_MONTHS,
+        "runtime_tier_meta": _tradeflow_meta("research_evidence_lookup"),
+        "read_only": True,
+    }
+
+
+# [KB-020] research_evidence_api — dynamic symbol route (MUST stay after _meta).
+@app.get("/v1/knowledge/research/evidence/{symbol}")
+def get_research_evidence(
+    symbol: str,
+    as_of: Optional[str] = Query(
+        None, description="可选时间戳，仅回显，不触发 LLM/网络"
+    ),
+    window_months: int = Query(
+        research_evidence_service.DEFAULT_WINDOW_MONTHS,
+        description="KB-016 时间窗口（3/6/12 个月）",
+    ),
+    knowledge_root: Optional[str] = Query(
+        None, description="可选知识库根目录覆盖（默认走 KB-006 配置）"
+    ),
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Aggregate all read-only research evidence for ``symbol``.
+
+    Bundles KB-016 consensus matrix, KB-017 citation audit, KB-018 thesis
+    timeline and HY-003 half-year facts into one response. Each bucket
+    degrades independently — a single failure does not blank out the
+    others.
+
+    Constraints:
+      - READ-ONLY: no LLM, no network, no DB writes, no full body text.
+      - Never returns ``decision`` / ``action_label`` / ``buy_level``.
+      - Source paths are validated to live inside the knowledge root.
+      - Invalid symbol → 400.
+      - runtime_tier=FAST_RADAR.
+    """
+    try:
+        return research_evidence_service.build_research_evidence(
+            symbol,
+            as_of=as_of,
+            window_months=window_months,
+            knowledge_root=knowledge_root,
+        )
+    except research_evidence_service.InvalidSymbolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # [KB-006] local_knowledge_context_api
