@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { useAnalysisStore } from '@/stores/analysisStore'
 import type { ReportDetail } from '@/types'
 import { sanitizeReportMarkdown } from '@/utils/reportText'
+import { deriveKnowledgeEvidenceCard } from '@/utils/knowledgeContract'
 
 const REPORT_SECTIONS = [
     { key: 'market_report', title: '市场分析报告', team: '分析团队' },
@@ -156,6 +157,93 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
                             </div>
                         )
                     })}
+                    {/* [REPORT-UX-006] knowledge_evidence_card — lightweight
+                        evidence-health strip derived purely from the
+                        local_knowledge_summary + half_year_facts_summary
+                        already attached to the report. It answers "用了哪些
+                        本地资料 / 是否过期冲突 / 还缺什么" without re-parsing
+                        the markdown body and WITHOUT altering
+                        decision/execution_action/action_label. Hidden for
+                        truly legacy reports (no KB fields at all). */}
+                    {(() => {
+                        const card = deriveKnowledgeEvidenceCard({
+                            localKnowledgeSummary: reportData?.local_knowledge_summary,
+                            halfYearFactsSummary: reportData?.half_year_facts_summary,
+                            halfYearFactsStatus: reportData?.half_year_facts_status,
+                        })
+                        if (!card.hasAnySignal) return null
+                        const freshnessLabel: Record<typeof card.freshness, string> = {
+                            fresh: '证据可用',
+                            stale: '证据过期',
+                            conflict: '事实冲突',
+                            disabled: '知识库禁用',
+                            no_data: '暂无命中',
+                        }
+                        const freshnessClass: Record<typeof card.freshness, string> = {
+                            fresh: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300',
+                            stale: 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300',
+                            conflict: 'bg-rose-50 text-rose-600 dark:bg-rose-900/30 dark:text-rose-300',
+                            disabled: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
+                            no_data: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
+                        }
+                        return (
+                            <div className="border border-sky-200/70 dark:border-sky-500/20 rounded-2xl overflow-hidden bg-sky-50/30 dark:bg-sky-900/10">
+                                <div className="flex items-center gap-2 px-4 py-2.5 bg-sky-50/80 dark:bg-sky-900/20">
+                                    <BookOpen className="w-4 h-4 text-sky-500" />
+                                    <span className="font-medium text-slate-900 dark:text-slate-100">知识证据来源</span>
+                                    <span className="text-xs text-slate-500 dark:text-slate-400">仅作研究背景，不影响买卖动作</span>
+                                    <span className={`ml-auto inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ${freshnessClass[card.freshness]}`}>
+                                        {freshnessLabel[card.freshness]}
+                                    </span>
+                                </div>
+                                <div className="p-4 bg-white dark:bg-slate-800/30 space-y-2">
+                                    <div className="flex flex-wrap gap-2">
+                                        {card.localKnowledgeHitCount > 0 && (
+                                            <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                                本地知识命中 {card.localKnowledgeHitCount} 条
+                                            </span>
+                                        )}
+                                        {card.halfYearHitCount > 0 && (
+                                            <span className="inline-flex items-center rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">
+                                                半年报 {card.halfYearHitCount} 页
+                                            </span>
+                                        )}
+                                        {card.halfYearPeriod && (
+                                            <span className="inline-flex items-center rounded bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:bg-sky-900/30 dark:text-sky-300">
+                                                报告期 {card.halfYearPeriod}
+                                            </span>
+                                        )}
+                                        {card.bestSourceTier && (
+                                            <span className="inline-flex items-center rounded bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+                                                来源等级 {card.bestSourceTier}
+                                            </span>
+                                        )}
+                                        {card.latestDate && (
+                                            <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                                                最近更新 {card.latestDate}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {card.sourcePaths.length > 0 && (
+                                        <div className="flex flex-wrap gap-1">
+                                            {card.sourcePaths.slice(0, 5).map((p) => (
+                                                <code key={p} className="inline-block max-w-full truncate rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-800/60 dark:text-slate-400" title={p}>
+                                                    {p}
+                                                </code>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+                                        card.gapCode === 'none'
+                                            ? 'border-slate-100 bg-slate-50/70 text-slate-600 dark:border-slate-700 dark:bg-slate-800/30 dark:text-slate-300'
+                                            : 'border-amber-100 bg-amber-50/60 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200'
+                                    }`}>
+                                        {card.gapExplanation}
+                                    </div>
+                                </div>
+                            </div>
+                        )
+                    })()}
                     {/* [KB-011] knowledge_contract_ui — 本地知识补充 / 研报关注度
                         block rendered from top-level KB fields. Falls back
                         silently when the report predates KB-003 (then the

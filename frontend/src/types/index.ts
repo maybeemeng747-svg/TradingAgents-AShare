@@ -481,6 +481,13 @@ export interface Report {
     knowledge_theme_count?: number | null
     research_attention_summary?: string | null
     research_attention_block?: string | null
+    // [REPORT-UX-006] knowledge_evidence_card — half-year facts fields are
+    // mirrored from result_data by the backend (HY-004) but were missing
+    // from this interface, so the report viewer could not render them.
+    // All optional + nullable so legacy reports keep a compatible empty state.
+    half_year_facts_block?: string | null
+    half_year_facts_summary?: Record<string, unknown> | null
+    half_year_facts_status?: string | null
 }
 
 export interface ReportDetail extends Report {

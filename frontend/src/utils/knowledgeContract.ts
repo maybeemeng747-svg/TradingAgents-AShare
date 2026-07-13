@@ -239,3 +239,267 @@ export function isKnowledgeStrongPositive(
 }
 
 export { asFiniteNumber, asNumberArray, asStringArray }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [REPORT-UX-006] knowledge_evidence_card
+//
+// Pure helpers that derive a lightweight "知识证据来源卡" from the existing
+// ``local_knowledge_summary`` + ``half_year_facts_summary`` dicts already
+// attached to a TA report (KB-003/KB-008 + HY-004). The card answers three
+// questions for the reader without re-parsing markdown bodies or waiting for
+// a new aggregation API:
+//
+//   1. 用了哪些本地资料？(hit counts, latest date, half-year period)
+//   2. 资料是否过期/冲突/禁用？(freshness)
+//   3. 还缺什么？(gapCode + gapExplanation)
+//
+// Hard contract (mirrors REPORT-UX-005):
+//   - The card MUST NOT alter decision / execution_action / action_label.
+//     It is a pure read-only presentation layer over the summary dicts.
+//   - Source paths are sanitized to knowledge-root-relative form before
+//     display; absolute paths are never surfaced (constraint #3).
+//   - Legacy reports (all KB fields null) collapse to a hideable empty card
+//     rather than an error.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Combined freshness label shown as a badge on the card. */
+export type KnowledgeFreshness =
+    | 'fresh'
+    | 'stale'
+    | 'conflict'
+    | 'disabled'
+    | 'no_data'
+
+/**
+ * Gap reason codes — the six states REPORT-UX-006 must distinguish:
+ *   - none                : evidence present and healthy
+ *   - no_hit              : KB queried but no document matched the symbol
+ *   - missing_source      : KB fields entirely absent (legacy report path)
+ *   - stale               : every hit is stale / outdated
+ *   - conflict            : half-year facts carry a data conflict
+ *   - pending_tree_work   : raw research exists but no wiki digested it
+ *                           (signaled via is_to_be_supplemented / LOW_CONFIDENCE)
+ *   - disabled            : KB disabled by operator (KNOWLEDGE_*_DISABLED)
+ */
+export type KnowledgeGapCode =
+    | 'none'
+    | 'no_hit'
+    | 'missing_source'
+    | 'stale'
+    | 'conflict'
+    | 'pending_tree_work'
+    | 'disabled'
+
+export interface KnowledgeEvidenceCard {
+    /** True when any KB field is present (card should render). */
+    hasAnySignal: boolean
+    /** Total local-knowledge matched document count (0 when no hit). */
+    localKnowledgeHitCount: number
+    /** Half-year report matched page count (0 when no half-year data). */
+    halfYearHitCount: number
+    /** Latest half-year financial period, e.g. "2024H1" (null when absent). */
+    halfYearPeriod: string | null
+    /** Latest half-year disclosure date (null when absent). */
+    halfYearDisclosureDate: string | null
+    /** Latest updated_at across local-knowledge hits (null when absent). */
+    latestDate: string | null
+    /** Best source-quality tier observed (KB-014), or null when not surfaced. */
+    bestSourceTier: string | null
+    /** Distinct source tiers seen (empty when the summary omits tier info). */
+    sourceTiers: string[]
+    /** Copyable knowledge-root-relative paths (constraint #3). */
+    sourcePaths: string[]
+    /** Combined freshness badge label. */
+    freshness: KnowledgeFreshness
+    /** Machine-readable gap reason (one of the six required codes). */
+    gapCode: KnowledgeGapCode
+    /** Human-readable one-line gap explanation (Chinese). */
+    gapExplanation: string
+}
+
+const DISABLED_HEADLINE = '本地知识库已被运维禁用，未参与本报告'
+const NO_HIT_HEADLINE = '未命中该标的的本地研报/半年报资料'
+const MISSING_SOURCE_HEADLINE = '本报告未接入本地知识证据'
+const STALE_HEADLINE = '本地知识命中已过期，请优先参考最新公告/财报'
+const CONFLICT_HEADLINE = '半年报事实存在冲突，需人工复核后再用于决策'
+const PENDING_TREE_WORK_HEADLINE = '已有原始研报但尚未被 Tree Work 消化为 wiki，证据不完整'
+const OK_HEADLINE = '本地知识证据已纳入研究背景（不影响买卖动作）'
+
+const TIER_RANK: Record<string, number> = {
+    original_filing: 5,
+    official_notice: 4,
+    broker_research: 3,
+    media: 2,
+    user_note: 1,
+    unknown: 0,
+}
+
+/**
+ * Reduce a knowledge-root-relative path for display.
+ *
+ * Constraint #3: "来源路径仅显示知识根目录内相对路径，可复制但不直接暴露任意
+ * 绝对路径". The provider already stores paths relative to the knowledge root
+ * at the source, so any absolute path arriving here is suspect and is dropped
+ * entirely — we deliberately do NOT attempt to "recover" a tail from an
+ * absolute path, because that could leak an arbitrary filesystem path chosen
+ * by an attacker. Parent-escape sequences are dropped for the same reason.
+ */
+export function sanitizeRelativePath(value: unknown): string {
+    if (typeof value !== 'string') return ''
+    const p = value.trim()
+    if (!p) return ''
+    // Reject anything that looks absolute (posix / windows drive letter).
+    if (p.startsWith('/') || p.startsWith('\\')) return ''
+    if (/^[a-zA-Z]:[\\/]/.test(p)) return ''
+    // Reject parent-escape sequences that would leave the knowledge root.
+    if (p.startsWith('..')) return ''
+    if (p.includes('\\..\\') || p.includes('/../')) return ''
+    return p
+}
+
+/** Coerce a possibly-malformed summary into a plain dict (never throws). */
+function asRecord(value: unknown): KnowledgeDetail {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value as KnowledgeDetail
+    }
+    return {}
+}
+
+function pickLatestDate(...candidates: Array<unknown>): string | null {
+    let best: string | null = null
+    for (const c of candidates) {
+        if (typeof c === 'string' && c.trim() && /\d{4}/.test(c)) {
+            const v = c.trim()
+            if (best === null || v > best) best = v
+        }
+    }
+    return best
+}
+
+/**
+ * Derive the knowledge evidence card from a report's top-level KB fields.
+ *
+ * Inputs are the four optional summary objects already attached to a TA
+ * report response (see Report interface). All inputs may be null/undefined
+ * for legacy reports; the function returns a stable empty card in that case.
+ *
+ * The function is total — it never throws — so the report viewer can call it
+ * unconditionally without wrapping in try/catch (slow query / missing KB must
+ * not block the report body).
+ */
+export function deriveKnowledgeEvidenceCard(params: {
+    localKnowledgeSummary?: Record<string, unknown> | null
+    halfYearFactsSummary?: Record<string, unknown> | null
+    halfYearFactsStatus?: string | null
+}): KnowledgeEvidenceCard {
+    const lk = asRecord(params.localKnowledgeSummary)
+    const hy = asRecord(params.halfYearFactsSummary)
+    const hyStatus = typeof params.halfYearFactsStatus === 'string' ? params.halfYearFactsStatus : ''
+
+    const kbDisabled = lk.kb_disabled === true
+    const lkStatus = typeof lk.status === 'string' ? lk.status : ''
+    const lkHitCount = asFiniteNumber(lk.matched_count ?? lk.knowledge_hit_count)
+    const hyHitCount = asFiniteNumber(hy.matched_count)
+    const hyPeriod = typeof hy.latest_period === 'string' && hy.latest_period ? hy.latest_period : null
+    const hyDisclosure = typeof hy.latest_disclosure_date === 'string' && hy.latest_disclosure_date ? hy.latest_disclosure_date : null
+
+    const latestDate = pickLatestDate(lk.updated_at, hy.updated_at, hyDisclosure)
+
+    // Source tiers / paths are only present when the backend chose to surface
+    // them (currently the report summaries do not, but the helper stays
+    // forward-compatible). matched_pages_brief is the KB-004 shape.
+    const pagesLk = Array.isArray(lk.matched_pages_brief) ? (lk.matched_pages_brief as KnowledgeDetail[]) : []
+    const pagesHy = Array.isArray(hy.pages) ? (hy.pages as KnowledgeDetail[]) : []
+    const tierSet = new Set<string>()
+    const pathSet = new Set<string>()
+    let hasToBeSupplemented = false
+    for (const p of pagesLk) {
+        if (typeof p.source_quality_tier === 'string' && p.source_quality_tier) tierSet.add(p.source_quality_tier)
+        if (p.is_to_be_supplemented) hasToBeSupplemented = true
+        const rel = sanitizeRelativePath(p.rel_path ?? p.path)
+        if (rel) pathSet.add(rel)
+    }
+    for (const p of pagesHy) {
+        const rel = sanitizeRelativePath(p.rel_path ?? p.path)
+        if (rel) pathSet.add(rel)
+    }
+    // Also honor an explicit source_paths list if the summary carries one.
+    for (const sp of asStringArray(lk.source_paths)) {
+        const rel = sanitizeRelativePath(sp)
+        if (rel) pathSet.add(rel)
+    }
+    const sourceTiers = Array.from(tierSet)
+    const bestSourceTier = sourceTiers.length
+        ? sourceTiers.reduce<string | null>((best, t) => {
+            if (best === null) return t
+            return (TIER_RANK[t] ?? -1) > (TIER_RANK[best] ?? -1) ? t : best
+        }, null)
+        : null
+
+    const hasConflict = hy.has_conflict === true || hyStatus === 'CONFLICT'
+    const hasStale =
+        lkStatus === 'STALE' ||
+        hy.has_stale === true ||
+        hyStatus === 'STALE' ||
+        (asFiniteNumber(lk.stale_hit_count ?? lk.stale_mention_count) > 0 && asFiniteNumber(lk.fresh_hit_count) === 0)
+    const isLowConfidence = lkStatus === 'LOW_CONFIDENCE' || hyStatus === 'LOW_CONFIDENCE'
+
+    // ── Freshness badge (priority: disabled > conflict > stale > no_data > fresh)
+    let freshness: KnowledgeFreshness = 'fresh'
+    if (kbDisabled) freshness = 'disabled'
+    else if (hasConflict) freshness = 'conflict'
+    else if (hasStale) freshness = 'stale'
+    else if (lkHitCount === 0 && hyHitCount === 0) freshness = 'no_data'
+
+    // ── Gap code (priority order matters — most actionable first)
+    const hasAnyLkField =
+        lkStatus !== '' || 'matched_count' in lk || 'updated_at' in lk || 'kb_disabled' in lk
+    let gapCode: KnowledgeGapCode
+    let gapExplanation: string
+    if (kbDisabled) {
+        gapCode = 'disabled'
+        gapExplanation = DISABLED_HEADLINE
+    } else if (!hasAnyLkField && hyStatus === '' && !('matched_count' in hy)) {
+        // Truly legacy report — none of the KB fields were ever attached.
+        gapCode = 'missing_source'
+        gapExplanation = MISSING_SOURCE_HEADLINE
+    } else if (hasConflict) {
+        gapCode = 'conflict'
+        gapExplanation = CONFLICT_HEADLINE
+    } else if (hasStale) {
+        gapCode = 'stale'
+        gapExplanation = STALE_HEADLINE
+    } else if (hasToBeSupplemented || isLowConfidence) {
+        // LOW_CONFIDENCE / is_to_be_supplemented signal that raw research
+        // exists but the wiki page is a stub — pending Tree Work digestion.
+        gapCode = 'pending_tree_work'
+        gapExplanation = PENDING_TREE_WORK_HEADLINE
+    } else if (lkHitCount === 0 && hyHitCount === 0) {
+        gapCode = 'no_hit'
+        gapExplanation = NO_HIT_HEADLINE
+    } else {
+        gapCode = 'none'
+        gapExplanation = OK_HEADLINE
+    }
+
+    const hasAnySignal =
+        hasAnyLkField ||
+        hyStatus !== '' ||
+        'matched_count' in hy ||
+        kbDisabled
+
+    return {
+        hasAnySignal,
+        localKnowledgeHitCount: lkHitCount,
+        halfYearHitCount: hyHitCount,
+        halfYearPeriod: hyPeriod,
+        halfYearDisclosureDate: hyDisclosure,
+        latestDate,
+        bestSourceTier,
+        sourceTiers,
+        sourcePaths: Array.from(pathSet),
+        freshness,
+        gapCode,
+        gapExplanation,
+    }
+}

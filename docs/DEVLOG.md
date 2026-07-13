@@ -1,5 +1,73 @@
 # 修改日志
 
+## 2026-07-13 | REPORT-UX-006 TA 报告知识证据来源卡与缺口解释
+
+- **执行者**:OpenCode
+- **任务**:REPORT-UX-006 — TA 报告知识证据来源卡与缺口解释（P2）
+- **类型**:feature / read-only evidence card
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- KB-003/KB-008（`local_knowledge_summary`）和 HY-004（`half_year_facts_summary`）
+  已经把知识证据叠到 TA 报告，但读者只能看到一大段 markdown 正文，无法一眼回答
+  "用了哪些本地资料 / 资料是否过期或冲突 / 还缺什么"。
+- 任务要求基于现有 summary 字段在 ReportViewer 中显示一张轻量来源卡，不等待
+  KB-020 聚合 API，也不改 prompts、不动强动作门禁。
+
+### 设计
+
+- **前端驱动**（剃刀定律）：来源卡完全从已存在的 `local_knowledge_summary` +
+  `half_year_facts_summary` dict 派生，不新增后端聚合 API、不改
+  `ReportResponse` schema。唯一后端改动是让 `attach_report_local_knowledge`
+  真正尊重 KB 禁用 env（之前报告链路不检查该 flag）。
+- **六态缺口**：`none / no_hit / missing_source / stale / conflict /
+  pending_tree_work / disabled`，按可操作性排序，disabled 优先于 conflict 优先于
+  stale。
+- **路径安全**：`sanitizeRelativePath` 永不回吐绝对路径或父目录逃逸路径；provider
+  本就存相对路径，绝对路径一律丢弃（不做危险的尾部恢复）。
+- **旧报告兼容**：所有 KB 字段为 null 时 `hasAnySignal=false`，卡片整段隐藏。
+
+### 改动文件
+
+- `api/services/report_service.py`（`# [REPORT-UX-006] knowledge_evidence_card`）
+  — `attach_report_local_knowledge` 头部新增 `is_local_knowledge_disabled()`
+  检查；禁用时返回最小 summary（`kb_disabled=True / matched_count=0`）+ 空
+  block，跳过 wiki 查询，避免慢查询阻塞报告主体。复用 KB-006
+  `local_knowledge_context_service.is_local_knowledge_disabled` 的 env 定义
+  （`KNOWLEDGE_CONTEXT_DISABLED` / `KNOWLEDGE_LOCAL_DISABLED`）。
+- `frontend/src/types/index.ts` — `Report` 接口补齐缺失的
+  `half_year_facts_block / half_year_facts_summary / half_year_facts_status`
+  字段（后端 HY-004 早已发送，TS 类型之前漏声明）。
+- `frontend/src/utils/knowledgeContract.ts`（`// [REPORT-UX-006]
+  knowledge_evidence_card`）— 新增 `deriveKnowledgeEvidenceCard()` 纯函数、
+  `KnowledgeEvidenceCard` / `KnowledgeFreshness` / `KnowledgeGapCode` 类型、
+  `sanitizeRelativePath()` 路径消毒函数。
+- `frontend/src/components/ReportViewer.tsx`（`// [REPORT-UX-006]
+  knowledge_evidence_card`）— 历史报告模式新增轻量"知识证据来源"卡片：命中数 /
+  半年报期 / 来源等级 / 最近更新 / freshness 徽章 / 缺口解释。卡片置于现有
+  "本地知识补充"正文卡之前；无 KB 数据时整段隐藏。
+
+### 测试
+
+- `frontend/src/utils/knowledgeEvidenceCard.test.ts`（16 tests）— 覆盖六态
+  （complete / empty / stale / conflict / disabled / legacy）+ pending Tree
+  Work + 路径消毒 + 非法输入不抛异常。
+- `tests/test_report_ux006_knowledge_evidence_card.py`（6 tests）— 后端禁用
+  plumbing（两种 env var）、禁用短路不查询、未禁用时正常命中、禁用不覆写
+  ENTER 动作语义、`kb_disabled` 经 `ReportResponse` 序列化往返存活。
+- 回归：KB-003 / REPORT-UX-004 / REPORT-UX-005 / KB-011 / HY-004 共 195
+  passed；KB-006 context + api_smoke + runtime_tier 共 191 passed；前端
+  vitest 全量 92 passed（6 files）；`tsc --noEmit` 与 `npm run build` 通过。
+
+### 硬约束遵守
+
+- 未改 `tradingagents/prompts/`；未写生产 DB（in-memory SQLite）；未调 LLM；
+  未新增聚合 API；来源状态未映射成任何买卖动作，`decision /
+  execution_action / action_label` 在禁用与命中两路径下均逐字保留。
+
+---
+
 ## 2026-07-13 | HY-010 持仓/观察仓半年报待更新清单
 
 - **执行者**:OpenCode
@@ -13324,3 +13392,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-010-20260713-round1.txt
 - **Run archive**: docs/task_runs/HY-010-20260713-232612/
+
+## 2026-07-13 | AUTO-002 Auto Dev Loop
+
+- **Task**: REPORT-UX-006 - TA 报告知识证据来源卡与缺口解释（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/REPORT-UX-006-20260713-round1.txt
+- **Run archive**: docs/task_runs/REPORT-UX-006-20260713-234106/

@@ -312,10 +312,38 @@ def attach_report_local_knowledge(
     try:
         from tradingagents.dataflows.local_knowledge_provider import (
             LocalKnowledgeQueryResult,
+            STATUS_NORMAL_NO_DATA,
             default_knowledge_root,
             query_local_knowledge,
             render_local_knowledge_block,
         )
+
+        # [REPORT-UX-006] knowledge_evidence_card — honor the KB disabled flag
+        # (KNOWLEDGE_CONTEXT_DISABLED / KNOWLEDGE_LOCAL_DISABLED) so the report
+        # surfaces a "知识库已禁用" gap instead of issuing a slow/failed query
+        # against a KB the operator explicitly turned off. Mirrors the check
+        # already used by KB-006 local_knowledge_context_service. Disabled is
+        # a *gap reason*, never an action change.
+        try:
+            from api.services.local_knowledge_context_service import (
+                is_local_knowledge_disabled,
+            )
+            kb_disabled = is_local_knowledge_disabled()
+        except Exception:
+            kb_disabled = False
+        if kb_disabled:
+            enriched = dict(result_data)
+            enriched["local_knowledge_block"] = None
+            enriched["local_knowledge_summary"] = {
+                "status": STATUS_NORMAL_NO_DATA,
+                "matched_count": 0,
+                "confidence": "low",
+                "themes": [],
+                "symbols": [],
+                "updated_at": None,
+                "kb_disabled": True,
+            }
+            return enriched
 
         # 1. Reuse cached raw_evidence entry.
         cached_entry = _cached_local_knowledge_entry(result_data)
