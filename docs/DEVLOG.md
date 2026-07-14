@@ -13404,3 +13404,28 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/REPORT-UX-006-20260713-round1.txt
 - **Run archive**: docs/task_runs/REPORT-UX-006-20260713-234106/
+
+## 2026-07-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-011 - 半年报报告期/披露日/修订版本元数据 sanity check（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode timed out after 1800s
+- **Run archive**: docs/task_runs/HY-011-20260713-235938/
+
+## 2026-07-14 | SCORE-001 release + HY-011 progress audit
+
+- **HY-011 progress**: OpenCode timed out before收口，但磁盘中已存在实现与测试；人工复跑 `tests/test_hy011_half_year_metadata_sanity.py` 为 89 passed，KB-002/HY-001 lint 回归为 123 passed。任务改为 `in_progress`，等待完整 diff review、文档补齐和精确提交，不允许自动重复领取。
+- **ZCode contract accepted**: 知识库侧 `research_score_snapshot` v1.1.0 已通过 Schema/Registry、41 tests、603629 JSON validate 与 MD/JSON validate-pair 验收；603629 仍是 draft，正式发布目录为空。
+- **Task release**: `SCORE-001` 从 `blocked-human` 调整为 `ready`，范围收敛为只读 loader/provider；新增 `SCORE-001B` 承担后续 KB-020/API/TradeFlow 接线，避免首个任务跨层过重。
+- **Safety boundary**: TA 不读取 `drafts/` 作为生产结果，不复制 ZCode 评分公式，不回写知识库；`SCORE-006` 继续等待正式发布的真实快照。
+
+## 2026-07-14 | HY-011 manual closeout + ZCode scorer gap audit
+
+- **HY-011 correctness fixes**: 明确 `period_end_date`（财务期末）、`report_date`（资料发布日期）、`disclosure_date`（实际交易所披露日）和 `scheduled_disclosure_date`（预排期）四类日期语义；未来/非法实际披露日、期末晚于披露日和完整期末日期错配均使用稳定 HYM rule_id 报告。
+- **Adversarial review fix**: 独立 Codex review 发现同一标的/报告期的别名可能绕过跨页版本检查；现已统一 `603296`/`603296.SH` 与 `2025H1`/`2025中报`/`2025Q2` 分组，并补充冲突与修订回归。
+- **Market coverage**: symbol sanity 支持 A 股、港股和美股契约格式，避免 `0700.HK`、`BABA.US` 等合法标的误报。
+- **Verification**: 366 项 HY-011/KB-002/HY-001/KB-014 定向与回归测试通过；`py_compile`、`git diff --check` 通过；真实知识库 115 页只读 lint 的 HYM finding 为 0，最终复验前后知识库哈希均为 `ae09bafe773687a18aac0c688435714394de5fbd1645c607e97456c60a4718fd`。
+- **Independent review**: Codex CLI `gpt-5.5`、reasoning effort `high`；最终结论为 `No actionable correctness issues were found in the reviewed changes.`
+- **ZCode audit**: 已完成 Schema v1.1.0、本地 Registry、双文件校验和 41 项契约测试；仍缺 `/score` 命令清单、确定性证据分、确定性逻辑分、生命周期/delta、正式快照查询器和真实正式快照验收。任务顺序固化在 `docs/zcode_research_scorer_handoff.md`。

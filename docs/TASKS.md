@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-13
+> 最后更新：2026-07-14
 
 ---
 
@@ -22,7 +22,7 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-13 夜间批次）
+### 当前执行队列（2026-07-14）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -33,26 +33,27 @@
 5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，done — commit 0f8789b）。
 6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941）。
 7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
-8. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，ready）。
+8. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；已有初版提交，状态仍待专项收口）。
 9. `HY-008`：半年报知识链路端到端回放验收（P2，done — HY-008-20260713-190756，24 tests passed）。
-10. `KB-019`：Tree Work 研报增量摄取清单与重复导入预检（P2，ready；前置均已完成）。
-11. `KB-020`：同股研报/半年报证据聚合只读 API（P2，ready；前置均已完成）。
-12. `HY-010`：持仓/观察仓半年报待更新清单（P2，ready；只基于现有 HY-003/007）。
-13. `REPORT-UX-006`：TA 报告知识证据来源卡与缺口解释（P2，ready）。
-14. `HY-011`：半年报报告期/披露日/修订版本元数据 sanity check（P2，ready）。
-15. `SCORE-001`：TA 只读 `research_score_snapshot` 契约与安全接入（P1，blocked-human；等待 ZCode 契约与 fixture 人工确认）。
-16. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-17. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-18. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
-19. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
-20. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 真实快照人工确认）。
-21. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
-22. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-23. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 KB-020 人工验收后释放）。
-24. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
-25. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停；SCORE 任务只做阶段判定，不解锁真实仓位规则）。
+10. `KB-019`：Tree Work 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；已有中断产出，等待专项收口）。
+11. `KB-020`：同股研报/半年报证据聚合只读 API（P2，done — commit 77c8921）。
+12. `HY-010`：持仓/观察仓半年报待更新清单（P2，done — commit 1b1b639）。
+13. `REPORT-UX-006`：TA 报告知识证据来源卡与缺口解释（P2，done — commit b4fa3bc）。
+14. `HY-011`：半年报报告期/披露日/修订版本元数据 sanity check（P2，done — 人工收口；366 项定向/回归测试、真实知识库只读 smoke 与独立 Codex review 通过）。
+15. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，ready；ZCode Schema/validator/fixture 已于 2026-07-14 人工验收）。
+16. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+17. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+18. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+19. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+20. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+21. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式发布的真实快照人工确认；draft 不算正式快照）。
+22. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
+23. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+24. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 KB-020 人工验收后释放）。
+25. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+26. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停；SCORE 任务只做阶段判定，不解锁真实仓位规则）。
 
-> 今晚只自动领取原有 7 个 `ready` 任务，它们的代码前置均已满足；SCORE 链等待 ZCode 先发布正式契约与 fixture，不允许 TA 抢先造第二套 schema。任一任务失败时自动循环停止。按近期单任务 20–35 分钟估算，约覆盖 3–4 小时。
+> `SCORE-001` 已解除人工阻塞，但只允许实现只读 loader/validator；不得读取 `drafts/` 作为生产结果，不得复制或重算 ZCode 的评分公式。`SCORE-006` 继续等待至少一份正式发布快照，fixture 与 603629 草案不得冒充跨项目生产验收。任一任务失败时自动循环停止。
 
 ### 历史任务总表（按创建顺序）
 
@@ -229,12 +230,13 @@
 171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
-174. `SCORE-001`：TA 只读 `research_score_snapshot` 契约与安全接入（P1，blocked-human，等待 ZCode 契约与 fixture）。
-175. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
-176. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
-177. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
-178. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
-179. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human，依赖 SCORE-005 与 ZCode 真实快照）。
+174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，ready，ZCode 契约已人工验收）。
+175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto，依赖 SCORE-001/KB-020）。
+176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
+177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
+178. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
+179. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
+180. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human，依赖 SCORE-005 与 ZCode 正式发布的真实快照）。
 
 ### 数据源治理候选队列
 
@@ -5464,14 +5466,14 @@
 ### HY-011: 半年报报告期/披露日/修订版本元数据 sanity check（P2）
 - **描述**：在大量半年报进入 Tree Work 前，对报告期、披露日期、修订版本、symbol/name 和来源类型做轻量校验，阻止错期、未来日期和修订稿覆盖原稿等元数据污染。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 超时半成品已人工收口；366 项定向/回归测试通过，真实知识库 115 页只读 smoke 无 HYM 误报且前后哈希一致，独立 Codex review 无 correctness finding
 - **前置条件**：HY-001、KB-014、KB-002 完成。
 - **执行约束**：
   - 只做 lint/sanity，不修改知识库文件，不调用 LLM。
   - 不猜缺失日期；缺失与非法必须分开。
   - 修订稿优先级只用于事实索引选择，不生成交易动作。
 - **实现要点**：
-  1. 校验 `financial_period/report_date/disclosure_date/source_quality_tier/symbol/name` 的格式与组合关系。
+  1. 校验 `financial_period/period_end_date/disclosure_date/source_quality_tier/symbol/name` 的格式与组合关系；`report_date` 保留给资料发布日期，不作财务期末日。
   2. 识别未来披露日、报告期晚于披露日、非半年报周期、symbol/name 错配、同周期多版本无修订标记。
   3. 输出 `error/warning/info` 与稳定 rule_id，并接入现有 local knowledge lint 报告。
   4. 对修订稿保留原始/修订来源路径，不静默覆盖。
@@ -5488,29 +5490,52 @@
 > **代码归属边界**：`research-scorer` 的公式、证据条目、投资假设和正式快照写入属于 ZCode 知识库接入项目，不在本仓库实现。本仓库的 SCORE-001~006 只负责读取、校验、动态补齐和裁决。现有 Tree Work 知识页继续作为历史上游输入，不做全局改名；新增评分与快照发布统一由 ZCode 负责。知识库侧任务包见 `docs/zcode_research_scorer_handoff.md`。
 
 ### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
-- **描述**：建立 TA 侧只读快照契约和 provider，使 ZCode 后续产出的研究评分快照可被 TA/TradeFlow 稳定消费，但不重新计算知识库分数、不接受知识库给出的交易动作。
+- **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 `research_score_snapshot` v1.1.0 可被稳定读取和降级，但本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
-- **状态**：blocked-human — 等待 ZCode 完成 ZC-RS-001 契约并提供合法 JSON Schema 与 fixture 后人工释放
-- **前置条件**：KB-014、KB-015、KB-016、KB-017、KB-018、KB-020 完成；ZC-RS-001 由 ZCode 交付并经人工确认。
-- **depends_on**：KB-014, KB-015, KB-016, KB-017, KB-018, KB-020, ZC-RS-001
+- **状态**：ready — ZCode v1.1.0 Schema、39+2 补修测试、603629 双文件草案已于 2026-07-14 经 Codex 人工验收；草案仅作契约样本，不视为正式发布快照
+- **前置条件**：KB-001、KB-014 完成；ZCode v1.1.0 Schema/validator/fixture 已人工确认。
+- **depends_on**：KB-001, KB-014
 - **auto_release**：false
 - **执行约束**：
   - 只读知识库；不修改知识库文件，不写生产数据库，不调用 live LLM。
-  - 快照只允许研究字段；即使输入含 `action/stage/planned_position/buy_level` 也必须忽略并记录 schema warning。
+  - 生产读取范围只允许 `research_score_snapshots/<symbol>/` 的正式快照；必须排除 `research_score_snapshots/drafts/`，不存在正式快照时返回显式无数据状态。
+  - 快照只允许研究字段；输入含 `action/execution_action/playbook_stage/planned_position/buy_level/risk_level/entry_timing/portfolio_fit` 时 fail closed 并记录 schema warning，禁止静默消费。
   - 不用 `0` 代替“缺证据/不可评分”；必须区分 `HAS_DATA / STALE / LOW_CONFIDENCE / NORMAL_NO_DATA / FAILED`。
   - 不建立第二套 A-E 来源等级；复用 KB-014 `source_quality_tier` 与 citation 权重。
+  - 不复制 ZCode 评分公式；TA 只校验消费者所需的 v1.1.0 契约和跨字段安全条件。
 - **实现要点**：
-  1. 定义版本化 `ResearchScoreSnapshot`：`symbol/name/as_of/rubric_id/rubric_version/status`。
-  2. 只承载 `research_evidence_confidence`、`thesis_quality`、两者分项、`score_change`、`evidence_refs`、`missing_evidence`、升级/降级/证伪条件。
-  3. 增加本地只读 loader/provider，并校验 symbol、日期、分数范围、rubric 版本、来源路径和 JSON/schema 类型。
-  4. 快照过期、损坏、标的不匹配或版本未知时 fail closed，只返回降级状态，不得沿用上一只股票或默认高分。
-  5. 接入 KB-020 聚合响应与 TradeFlow candidate detail 的可选只读桶；旧数据无字段时保持兼容。
-  6. 不实现证据分/逻辑分公式；fixture 仅用于锁定跨项目契约，正式值必须来自 ZCode 发布的快照。
+  1. 定义版本化消费者模型：`schema_version=1.1.0`、`symbol/name/as_of/created_at/source_cutoff_at/rubric_id/rubric_version/status`。
+  2. 只承载两项核心分数、`thesis_breakdown`、`theses`、`score_change`、`evidence_refs`、缺失证据及升级/降级/证伪条件；`investment_thesis.status` 支持 `active/weakening/invalidated/insufficient_evidence`。
+  3. 增加本地只读 loader/provider；按 `symbol + as_of <= analysis_time` 选择最新合法正式快照，校验路径边界、symbol、时区日期、分数范围、Schema/rubric 版本、thesis 证据闭包和禁止字段。
+  4. 快照过期、损坏、标的不匹配、版本未知、未来数据或 `$ref`/结构不合法时 fail closed，只返回降级状态，不得沿用上一只股票或默认高分。
+  5. fixture 从 ZCode 已验收契约复制为测试专用样本，并保留来源说明；603629 `drafts/` 草案只用于验证“生产 loader 不得读取草案”。
+  6. 不实现证据分/逻辑分公式；不在本任务新增 API、数据库列、TradeFlow 字段或动作映射。
 - **验收方式**：
-  - fixture 覆盖完整、缺字段、过期、损坏、symbol 错配、未知版本、非法分数和夹带动作字段。
-  - 断言 provider 不写知识库/DB、不调用 LLM，旧 API 契约无回归。
+  - fixture 覆盖五类状态、完整/缺字段、过期、损坏、symbol 错配、未知版本、非法分数、未来快照、悬空 evidence ref、invalidated thesis 和夹带动作字段。
+  - 断言 drafts 不会被生产 loader 选中；同标的多版本严格按 analysis_time 选择，未来快照不穿越。
+  - 断言 provider 不写知识库/DB、不调用 LLM；重复读取幂等，路径逃逸/符号链接逃逸失败关闭。
   - 断言知识快照极高分时 `decision/execution_action/action_tier` 仍不发生变化。
 - **代码标注要求**：`# [SCORE-001] research_score_snapshot_contract`
+
+### SCORE-001B: 研究快照接入聚合响应与 TradeFlow candidate detail（P1）
+- **描述**：在 SCORE-001 loader 验收后，把只读摘要接入 KB-020 聚合响应、TA metadata 和 TradeFlow candidate detail；本任务只透传研究卡，不参与候选原分、动作或阶段计算。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待 SCORE-001/KB-020
+- **前置条件**：SCORE-001、KB-020 完成。
+- **depends_on**：SCORE-001, KB-020
+- **auto_release**：true
+- **执行约束**：
+  - API 只输出必要摘要、证据引用和缺口，不返回整篇研报正文或本机绝对路径。
+  - 新字段全部可选；无正式快照时保持旧 API/前端兼容，不输出伪造 0 分。
+  - 不改候选原始 score、Opportunity/Action Tier、decision 或 execution_action。
+- **实现要点**：
+  1. 输出稳定 `research_score_snapshot` 只读桶，包含版本、状态、两项分数、theses 摘要、delta 原因、evidence refs 和缺口。
+  2. 路径只允许知识根目录相对路径；API 层过滤绝对路径、token、cookie、key 等敏感信息。
+  3. 在 TA metadata、KB-020 与 candidate detail 复用同一序列化函数，避免三套字段漂移。
+- **验收方式**：
+  - 覆盖有快照、无快照、LOW_CONFIDENCE、FAILED、旧候选无字段和敏感路径过滤。
+  - API schema/服务层/前端类型回归通过；接入前后候选排序和动作完全一致。
+- **代码标注要求**：`# [SCORE-001B] research_score_snapshot_api_adapter`
 
 ### SCORE-002: 复用 TradeFlow 现有因子生成 entry_timing 评分卡（P1）
 - **描述**：把 TradeFlow 已有技术、资金、事件、拥挤/过热、触发距离和赔率字段组合成独立 `entry_timing` 评分卡，禁止另造一套行情和资金计算。

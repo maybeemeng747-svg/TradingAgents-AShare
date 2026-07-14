@@ -89,6 +89,15 @@ from tradingagents.dataflows.citation_policy import (  # [KB-014] citation_polic
     CitationAssessment,
     classify_source_quality_tier,
 )
+# [HY-011] half_year_metadata_sanity — 跨页与组合校验逻辑放在独立模块，
+# 这里只在 lint_single_page / lint_local_knowledge 调用其纯函数。
+# import 放在 citation_policy 之后，避免循环导入（新模块本身依赖本模块的常量）。
+from tradingagents.dataflows.half_year_metadata_sanity import (  # [HY-011]
+    HYM_RULE_IDS,
+    check_half_year_metadata_cross_page,
+    check_half_year_metadata_sanity_single,
+    detect_revision_marker,
+)
 
 
 # ── 契约常量 ─────────────────────────────────────────────────────────
@@ -240,6 +249,10 @@ class PageLintResult:
     # [KB-014] citation_policy — 来源可信度分层
     source_quality_tier: str = TIER_UNKNOWN
     citation_assessment: Optional[CitationAssessment] = None
+    # [HY-011] 跨页版本检查的内部缓存；不进入 to_dict/API 契约。
+    _hym_symbol_codes: List[str] = field(default_factory=list, repr=False)
+    _hym_is_revision: bool = field(default=False, repr=False)
+    _hym_revision_fields: List[str] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -303,6 +316,14 @@ class KnowledgeLintResult:
     pages_broker_only: List[str] = field(default_factory=list)
     pages_opinion_as_fact: List[str] = field(default_factory=list)
     tier_counts: Dict[str, int] = field(default_factory=dict)
+    # [HY-011] half_year_metadata_sanity — 半年报元数据 sanity 聚合
+    pages_invalid_or_future_disclosure: List[str] = field(default_factory=list)
+    pages_period_end_after_disclosure: List[str] = field(default_factory=list)
+    pages_period_mismatch: List[str] = field(default_factory=list)
+    pages_symbol_name_mismatch: List[str] = field(default_factory=list)
+    pages_multi_version_conflict: List[str] = field(default_factory=list)
+    pages_revision_detected: List[str] = field(default_factory=list)
+    pages_period_end_mismatch: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -335,6 +356,20 @@ class KnowledgeLintResult:
             "pages_broker_only": list(self.pages_broker_only),
             "pages_opinion_as_fact": list(self.pages_opinion_as_fact),
             "tier_counts": dict(self.tier_counts),
+            # HY-011 半年报元数据 sanity
+            "pages_invalid_or_future_disclosure": list(
+                self.pages_invalid_or_future_disclosure
+            ),
+            "pages_period_end_after_disclosure": list(
+                self.pages_period_end_after_disclosure
+            ),
+            "pages_period_mismatch": list(self.pages_period_mismatch),
+            "pages_symbol_name_mismatch": list(self.pages_symbol_name_mismatch),
+            "pages_multi_version_conflict": list(self.pages_multi_version_conflict),
+            "pages_revision_detected": list(self.pages_revision_detected),
+            "pages_period_end_mismatch": list(
+                self.pages_period_end_mismatch
+            ),
         }
 
 
@@ -863,13 +898,22 @@ def lint_single_page(rel_path: str, abs_path: Path) -> PageLintResult:
         frontmatter, page_type, findings
     )
 
+    # [HY-011] half_year_metadata_sanity — 组合关系校验（追加在 KB-014 之后）。
+    # 只对 half_year_report 页跑；非财报页返回空列表。单页规则 HYM-001~004/007。
+    # 跨页规则 HYM-005/006 在 ``lint_local_knowledge`` 阶段二跑（需要全量页集合）。
+    findings.extend(
+        check_half_year_metadata_sanity_single(
+            frontmatter, has_symbols=has_symbols
+        )
+    )
+
     error_count = sum(1 for f in findings if f.severity == SEVERITY_ERROR)
     warning_count = sum(1 for f in findings if f.severity == SEVERITY_WARNING)
     info_count = sum(1 for f in findings if f.severity == SEVERITY_INFO)
 
     readiness = _compute_readiness(error_count, warning_count, is_todo, is_stale)
 
-    return PageLintResult(
+    result = PageLintResult(
         rel_path=rel_path,
         title=title,
         page_type=page_type,
@@ -891,6 +935,51 @@ def lint_single_page(rel_path: str, abs_path: Path) -> PageLintResult:
         source_quality_tier=citation_assessment.tier,
         citation_assessment=citation_assessment,
     )
+
+    # [HY-011] half_year_metadata_sanity — 缓存跨页检查所需的最小元信息。
+    # 仅在 PageLintResult 上挂私有字段（前缀 _hym_），不进入 to_dict 序列化，
+    # 避免污染 API schema。cross-page 阶段读取这些字段做分组。
+    _cache_cross_page_meta(result, frontmatter, is_hy, hy_period)
+
+    return result
+
+
+def _cache_cross_page_meta(
+    result: PageLintResult,
+    frontmatter: Dict[str, Any],
+    is_hy: bool,
+    hy_period: Optional[str],
+) -> None:
+    """[HY-011] 把跨页 HYM-005/006 需要的元信息缓存到 PageLintResult 私有字段。
+
+    - ``_hym_symbol_codes``：解析出的市场代码列表（如 ``["603296.SH"]``）。
+    - ``_hym_is_revision``：是否带修订标记（``revision`` / ``is_revised`` /
+      ``supersedes`` / ``amendment``）。
+    - ``_hym_revision_fields``：实际命中的修订字段名。
+
+    非财报页或缺 symbol/period 的页：缓存空值，跨页检查自动跳过。
+    """
+    symbol_codes: List[str] = []
+    if is_hy and hy_period:
+        symbols_raw = frontmatter.get("symbols")
+        entries: List[Any] = []
+        if isinstance(symbols_raw, str):
+            entries = [symbols_raw]
+        elif isinstance(symbols_raw, (list, tuple)):
+            entries = [s for s in symbols_raw if s is not None]
+        for entry in entries:
+            text = entry.strip() if isinstance(entry, str) else ""
+            if not text:
+                continue
+            # 仅取 CODE 部分（空格前）；NAME 不参与跨页分组。
+            code = text.split(maxsplit=1)[0].strip() if " " in text else text.strip()
+            if code:
+                symbol_codes.append(code)
+
+    is_rev, rev_fields = detect_revision_marker(frontmatter)
+    result._hym_symbol_codes = symbol_codes
+    result._hym_is_revision = is_rev
+    result._hym_revision_fields = rev_fields
 
 
 # ── 整库 lint ─────────────────────────────────────────────────────────
@@ -1000,6 +1089,11 @@ def lint_local_knowledge(knowledge_root: str) -> KnowledgeLintResult:
 
     result.page_count = len(result.page_results)
 
+    # [HY-011] half_year_metadata_sanity — 跨页 HYM-005/006 检查。
+    # 在单页 lint 完成后跑：需要全量页集合做 (symbol, period) 分组。结果会向
+    # 受影响页追加 finding，并重算 readiness/error_count/warning_count/info_count。
+    _apply_cross_page_hym_findings(result)
+
     _aggregate_lint_stats(result)
     _collect_lint_gaps(result)
 
@@ -1015,6 +1109,55 @@ def lint_local_knowledge(knowledge_root: str) -> KnowledgeLintResult:
 
     result.top_fix_priorities = _build_top_fix_priorities(result)
     return result
+
+
+def _apply_cross_page_hym_findings(result: KnowledgeLintResult) -> None:
+    """[HY-011] 跑跨页 HYM-005/006，把 finding 追加到受影响页并重算计数。
+
+    - 调用 ``check_half_year_metadata_cross_page`` 拿到 ``{rel_path: [finding]}``。
+    - 把 finding 追加到对应 PageLintResult.findings。
+    - 重算该页的 error_count / warning_count / info_count / machine_readiness。
+    - 不会抛异常：跨页检查失败只记入 result.errors，不阻塞后续聚合。
+    """
+    try:
+        cross = check_half_year_metadata_cross_page(result.page_results)
+    except Exception as exc:  # pragma: no cover - 容错
+        result.errors.append(f"cross-page HYM 检查失败: {exc!r}")
+        return
+
+    if not cross:
+        return
+
+    # 构建 rel_path → PageLintResult 索引（rel_path 在 investment 分区内唯一）。
+    page_by_path = {p.rel_path: p for p in result.page_results}
+
+    for rel_path, new_findings in cross.items():
+        page = page_by_path.get(rel_path)
+        if page is None:
+            continue
+        # 幂等：避免重复追加（理论上 lint_local_knowledge 只调一次，但保险起见）。
+        existing_ids = {(f.rule_id, f.message) for f in page.findings}
+        for f in new_findings:
+            if (f.rule_id, f.message) not in existing_ids:
+                page.findings.append(f)
+
+        # 重算计数与 readiness。is_to_be_supplemented / is_stale 保持单页阶段
+        # 的判断（跨页检查不改这两个状态）。
+        page.error_count = sum(
+            1 for f in page.findings if f.severity == SEVERITY_ERROR
+        )
+        page.warning_count = sum(
+            1 for f in page.findings if f.severity == SEVERITY_WARNING
+        )
+        page.info_count = sum(
+            1 for f in page.findings if f.severity == SEVERITY_INFO
+        )
+        page.machine_readiness = _compute_readiness(
+            page.error_count,
+            page.warning_count,
+            page.is_to_be_supplemented,
+            page.is_stale,
+        )
 
 
 def _aggregate_lint_stats(result: KnowledgeLintResult) -> None:
@@ -1077,6 +1220,21 @@ def _collect_lint_gaps(result: KnowledgeLintResult) -> None:
             # broker_research 但未触发 CIT-002（非财报页）—— 仍标记为 broker_only，
             # 方便前端 / 报告展示"该页只引用了券商观点"。
             result.pages_broker_only.append(page.rel_path)
+        # [HY-011] half_year_metadata_sanity — 元数据 sanity 聚合
+        if "HYM-001" in finding_rules:
+            result.pages_invalid_or_future_disclosure.append(page.rel_path)
+        if "HYM-002" in finding_rules:
+            result.pages_period_end_after_disclosure.append(page.rel_path)
+        if "HYM-003" in finding_rules:
+            result.pages_period_mismatch.append(page.rel_path)
+        if "HYM-004" in finding_rules:
+            result.pages_symbol_name_mismatch.append(page.rel_path)
+        if "HYM-005" in finding_rules:
+            result.pages_multi_version_conflict.append(page.rel_path)
+        if "HYM-006" in finding_rules:
+            result.pages_revision_detected.append(page.rel_path)
+        if "HYM-007" in finding_rules:
+            result.pages_period_end_mismatch.append(page.rel_path)
 
 
 # ── 报告渲染 ─────────────────────────────────────────────────────────
@@ -1090,8 +1248,9 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
     )
     lines.append("")
     lines.append(
-        "> [KB-002 / HY-001] local_knowledge_contract — 只读 lint，不修改知识库；"
-        "低分页面只降低置信度，不阻塞 TA。契约见 ``docs/local_knowledge_contract.md``。"
+        "> [KB-002 / HY-001 / HY-011] local_knowledge_contract — 只读 lint，"
+        "不修改知识库；低分页面只降低置信度，不阻塞 TA。契约见 "
+        "``docs/local_knowledge_contract.md``。"
     )
     lines.append("")
 
@@ -1141,6 +1300,26 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
             f"- citation_tier: {tier_summary} "
             f"（弱来源 {len(result.pages_weak_source)} / "
             f"观点冒充事实 {len(result.pages_opinion_as_fact)}）"
+        )
+    # [HY-011] half_year_metadata_sanity — 元数据 sanity 概览
+    total_hym_issues = (
+        len(result.pages_invalid_or_future_disclosure)
+        + len(result.pages_period_end_after_disclosure)
+        + len(result.pages_period_mismatch)
+        + len(result.pages_symbol_name_mismatch)
+        + len(result.pages_multi_version_conflict)
+        + len(result.pages_period_end_mismatch)
+    )
+    if total_hym_issues > 0 or result.pages_revision_detected:
+        lines.append(
+            f"- half_year_metadata_sanity: 冲突/错配 **{total_hym_issues}** "
+            f"（非法/未来披露日 {len(result.pages_invalid_or_future_disclosure)} / "
+            f"期末日晚于披露日 {len(result.pages_period_end_after_disclosure)} / "
+            f"周期错配 {len(result.pages_period_mismatch)} / "
+            f"symbol/name 错配 {len(result.pages_symbol_name_mismatch)} / "
+            f"多版本冲突 {len(result.pages_multi_version_conflict)} / "
+            f"period_end-period 不一致 {len(result.pages_period_end_mismatch)}），"
+            f"修订稿 {len(result.pages_revision_detected)}（info，不阻塞）"
         )
     if result.errors:
         lines.append("")
@@ -1221,6 +1400,42 @@ def render_lint_report(result: KnowledgeLintResult) -> str:
         "财报页 tier 为券商/媒体/笔记 (CIT-002 / 观点冒充事实风险)",
         result.pages_opinion_as_fact,
     )
+    # [HY-011] half_year_metadata_sanity — 元数据 sanity 缺口清单
+    _emit_gap_list(
+        lines,
+        "财报页 disclosure_date 非法或是未来日期 (HYM-001)",
+        result.pages_invalid_or_future_disclosure,
+    )
+    _emit_gap_list(
+        lines,
+        "财报页 period_end_date 晚于 disclosure_date (HYM-002 / error)",
+        result.pages_period_end_after_disclosure,
+    )
+    _emit_gap_list(
+        lines,
+        "财报页 report_type=半年报/中报 但 period 非半年报周期 (HYM-003)",
+        result.pages_period_mismatch,
+    )
+    _emit_gap_list(
+        lines,
+        "财报页 symbols CODE/NAME 错配 (HYM-004)",
+        result.pages_symbol_name_mismatch,
+    )
+    _emit_gap_list(
+        lines,
+        "同 symbol+period 多版本无修订标记 (HYM-005 / 跨页冲突)",
+        result.pages_multi_version_conflict,
+    )
+    _emit_gap_list(
+        lines,
+        "同 symbol+period 检测到修订稿 (HYM-006 / info)",
+        result.pages_revision_detected,
+    )
+    _emit_gap_list(
+        lines,
+        "财报页 period_end_date 与 financial_period 不一致 (HYM-007)",
+        result.pages_period_end_mismatch,
+    )
 
     # 5. Top 修复优先级
     lines.append("## 5. Top 修复优先级（按影响面排序）")
@@ -1286,6 +1501,14 @@ _RULE_DESCRIPTIONS: Dict[str, Tuple[str, str]] = {
     "CIT-001": (SEVERITY_WARNING, "页面缺来源字段（unknown tier）"),
     "CIT-002": (SEVERITY_INFO, "财报页 tier 为券商/媒体/笔记（观点冒充事实风险）"),
     "CIT-003": (SEVERITY_INFO, "tier 为 media/user_note/unknown（弱来源）"),
+    # [HY-011] half_year_metadata_sanity — 半年报元数据 sanity 规则
+    "HYM-001": (SEVERITY_WARNING, "disclosure_date 非法或是未来日期"),
+    "HYM-002": (SEVERITY_ERROR, "period_end_date 晚于 disclosure_date"),
+    "HYM-003": (SEVERITY_WARNING, "report_type=半年报/中报 但 period 非半年报周期"),
+    "HYM-004": (SEVERITY_WARNING, "symbols CODE/NAME 格式或一致性错配"),
+    "HYM-005": (SEVERITY_WARNING, "同 symbol+period 多版本无修订标记"),
+    "HYM-006": (SEVERITY_INFO, "同 symbol+period 检测到修订稿"),
+    "HYM-007": (SEVERITY_WARNING, "period_end_date 与 financial_period 不一致"),
 }
 
 

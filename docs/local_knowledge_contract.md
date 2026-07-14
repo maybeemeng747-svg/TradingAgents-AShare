@@ -1,10 +1,10 @@
 # [KB-002 / HY-001] investment wiki 输出协议契约（TA 可消费字段标准）
 
-> **版本**：`kb-002-v1`（含 HY-001 半年报扩展）
+> **版本**：`kb-002-v1`（含 HY-001 半年报扩展与 HY-011 元数据 sanity）
 > **维护方**：TradingAgents-AShare（TA 侧）／执行方：Tree Work / HR Agent
 > **前置**：KB-001 `local_knowledge_audit`（只读审计）已完成；KB-012 Tree Work 任务包导出已完成。
 > **相关代码**：`tradingagents/dataflows/local_knowledge_lint.py`、`scripts/lint_local_knowledge.py`
-> **最后更新**：2026-07-07
+> **最后更新**：2026-07-14
 
 ---
 
@@ -198,7 +198,10 @@ print(render_lint_report(result))
 | 字段 | 必填 | 类型 | 取值 / 示例 | TA 用途 |
 |------|------|------|-------------|---------|
 | `financial_period` | ✅ error | string | `2025H1` / `2025中报` / `2025年报` / `FY26Q1` | 报告期唯一标识；TA 据此判断是否最新、是否过期 |
+| `period_end_date` | optional | date `YYYY-MM-DD` | `2025-06-30` | 财务报告期末日；存在时参与 HY-011 组合校验 |
+| `report_date` | optional | date `YYYY-MM-DD` | `2026-08-29` | 资料/研报发布日期；供 ZCode `evidence_refs` 使用，不参与财务期末校验 |
 | `disclosure_date` | ⚠️ warning | date `YYYY-MM-DD` | `2026-08-30` | 交易所披露日；缺失则 TA 标 `disclosure_unknown` |
+| `scheduled_disclosure_date` | optional | date `YYYY-MM-DD` | `2026-08-30` | 尚未发生的预排期披露日；不得提前写入 `disclosure_date` |
 | `source_type` | ⚠️ warning | 非空 list，至少含一个“事实类”来源 | `[exchange_filing, management_commentary]` | 标注每个事实/观点的来源类型，见下表 |
 | `financial_facts` | ⚠️ warning | 非空 list | `[营收 150亿 (+30%), 毛利率 25% (-2pp)]` | 结构化财务事实；TA/HY-003 据此反证研报观点 |
 | `segment_facts` | optional | list | `[服务器营收 80亿 (+50%)]` | 分业务/分产品事实 |
@@ -267,6 +270,7 @@ source_quality: 高
 stale_risk: 低
 # ── HY-001 半年报扩展字段 ──
 financial_period: 2025H1
+period_end_date: 2025-06-30
 disclosure_date: 2026-08-30
 source_type: [exchange_filing, fact_table, management_commentary]
 financial_facts:
@@ -333,6 +337,24 @@ source_links:
 - HYF-007 命中时 readiness 不强制降到 low，但 TA 在 KB-003/HY-003 接入时会给该页 `OPINION_AS_FACT` 标记，**不进入事实反证**（HY-005），只作为观点源。
 - 待补充页（`is_to_be_supplemented=True`）仍按 KB-002 规则一律 `low`，HYF 规则照常报但不重复降级。
 
+### 10.6 HY-011 元数据组合与修订版本规则
+
+HY-011 不补猜缺失字段，只在字段存在时检查组合关系：
+
+| rule_id | 严重度 | 触发条件 |
+|---------|--------|----------|
+| `HYM-001` | warning | 实际 `disclosure_date` 不是合法日历日或晚于检查日；预排期应写 `scheduled_disclosure_date` |
+| `HYM-002` | error | `period_end_date` 晚于实际披露日 |
+| `HYM-003` | warning | `report_type=半年报/中报`，但 `financial_period` 不是 H1/中报周期 |
+| `HYM-004` | warning | `symbols` 不是 `CODE NAME`，代码非法，或显式 `name` 与简称不一致 |
+| `HYM-005` | warning | 同股票、同报告期存在多个页面，但没有任何修订关系标记 |
+| `HYM-006` | info | 检测到 `revision/is_revised/supersedes/amendment`，保留原稿与修订稿路径 |
+| `HYM-007` | warning | `period_end_date` 非法，或不等于 `financial_period` 对应的完整期末日期（含年份） |
+
+`period_end_date` 与 `report_date` 不得混用：前者是被分析财务周期的期末日，后者是
+资料本身的发布日期，并与 ZCode `evidence_refs.report_date` 保持一致。修订标记只
+影响事实索引选择，不产生交易动作，也不删除原稿来源。
+
 ---
 
 ## 11. 变更记录
@@ -341,3 +363,4 @@ source_links:
 |------|------|------|
 | `kb-002-v1` | 2026-07-01 | 首版契约：定义必填/推荐字段、必含章节、评分表表头、待补充标记、readiness 评分、12 条 lint 规则。 |
 | `kb-002-v1 + HY-001` | 2026-07-07 | HY-001 半年报/财报扩展：新增 9 个 frontmatter 字段、source_type 取值表、7 条 HYF lint 规则、Tree Work ingest 模板。通用规则不变，HYF 规则为追加层。 |
+| `kb-002-v1 + HY-011` | 2026-07-14 | 明确 period_end_date/report_date/disclosure_date 语义，新增 HYM-001~007 组合关系与修订版本 lint。 |

@@ -88,7 +88,8 @@ valid_until: 2099-12-31
 source_quality: 高
 stale_risk: 低
 financial_period: 2025H1
-disclosure_date: 2026-08-30
+period_end_date: 2025-06-30
+disclosure_date: 2026-06-30
 source_type: [exchange_filing, fact_table]
 financial_facts:
   - 营收 100亿 (+20%)
