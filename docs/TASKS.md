@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-14
+> 最后更新：2026-07-15
 
 ---
 
@@ -22,38 +22,35 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-14）
+### 当前执行队列（2026-07-15）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-1. `HY-004`：TA 报告接入“半年报事实对照”区块（P1，done — HY-004-20260711-225740，44 tests passed）。
-2. `HY-005`：旧研报观点 vs 半年报事实反证检测（P1，done — HY-005-20260711-232608，76 tests passed）。
-3. `HY-006`：TradeFlow/昊天候选接入半年报因子与降权规则（P1，done — HY-006-20260711-233936，46 tests passed）。
-4. `KB-016`：多研报一致性/分歧矩阵与关注度去重回放（P1，done — commit 7e1c6af）。
-5. `KB-017`：研报观点 vs 公告/半年报事实 citation 审计（P1，done — commit 0f8789b）。
-6. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941）。
-7. `HY-007`：investment-controller 半年报 briefing payload 与去噪规则（P2，done — base commit 5463b16，P2 补修已通过最终 Codex review）。
-8. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；已有初版提交，状态仍待专项收口）。
-9. `HY-008`：半年报知识链路端到端回放验收（P2，done — HY-008-20260713-190756，24 tests passed）。
-10. `KB-019`：Tree Work 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；已有中断产出，等待专项收口）。
-11. `KB-020`：同股研报/半年报证据聚合只读 API（P2，done — commit 77c8921）。
-12. `HY-010`：持仓/观察仓半年报待更新清单（P2，done — commit 1b1b639）。
-13. `REPORT-UX-006`：TA 报告知识证据来源卡与缺口解释（P2，done — commit b4fa3bc）。
-14. `HY-011`：半年报报告期/披露日/修订版本元数据 sanity check（P2，done — 人工收口；366 项定向/回归测试、真实知识库只读 smoke 与独立 Codex review 通过）。
-15. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，ready；ZCode Schema/validator/fixture 已于 2026-07-14 人工验收）。
-16. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
-17. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-18. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-19. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
-20. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
-21. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式发布的真实快照人工确认；draft 不算正式快照）。
-22. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待 HY-008）。
-23. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-24. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 KB-020 人工验收后释放）。
-25. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
-26. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停；SCORE 任务只做阶段判定，不解锁真实仓位规则）。
+> **执行前置**：当前工作区混有 `SCORE-001` 与 FUND-001~006 未提交实现。2026-07-15 Codex review 已确认 4 个 P1 correctness finding；不得先提交、不得真实重跑 603629。应由人工调度 OpenCode 在现有工作区依次补修，全部通过后再精确拆分提交。自动循环继续遵守 dirty-tree 停止规则。
 
-> `SCORE-001` 已解除人工阻塞，但只允许实现只读 loader/validator；不得读取 `drafts/` 作为生产结果，不得复制或重算 ZCode 的评分公式。`SCORE-006` 继续等待至少一份正式发布快照，fixture 与 603629 草案不得冒充跨项目生产验收。任一任务失败时自动循环停止。
+1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，ready，人工调度优先）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，blocked-auto；等待 FUND-001A）。
+3. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto；等待 FUND-003A）。
+4. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A/FUND-004B）。
+5. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
+6. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A/FUND-004A/FUND-004B/FUND-005A）。
+7. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+8. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+9. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+10. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+11. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+12. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+13. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+14. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
+15. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；等待专项收口）。
+16. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
+17. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
+18. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+19. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
+20. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+21. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+
+> FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
 
 ### 历史任务总表（按创建顺序）
 
@@ -230,13 +227,25 @@
 171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
-174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，ready，ZCode 契约已人工验收）。
+174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，blocked，已有未提交实现等待专项收口）。
 175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto，依赖 SCORE-001/KB-020）。
 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
 178. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
 179. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
 180. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human，依赖 SCORE-005 与 ZCode 正式发布的真实快照）。
+181. `FUND-001`：标的身份与公司画像硬门禁（P0，blocked-review，第一版待 FUND-001A 补修）。
+182. `FUND-002`：财务期间口径结构化与单季度确定性计算（P0，blocked-review，第一版待 FUND-004B 补修）。
+183. `FUND-003`：财务异动官方解释与会计口径证据上下文（P0，blocked-review，第一版待 FUND-003A 补修）。
+184. `FUND-004`：基本面语义质量门禁与 C-006 真实接线（P0，blocked-review，第一版待 FUND-004A/FUND-004B 补修）。
+185. `FUND-005`：逐 Agent 模型与输入契约脱敏 trace（P1，blocked-review，第一版待 FUND-005A 补修）。
+186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
+187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，ready，人工调度优先）。
+188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，blocked-auto，依赖 FUND-001A）。
+189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto，依赖 FUND-003A）。
+190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A/FUND-004B）。
+191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
+192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A/FUND-004A/FUND-004B/FUND-005A）。
 
 ### 数据源治理候选队列
 
@@ -5483,6 +5492,236 @@
   - 真实知识库 dry-run 只读且报告不含正文。
 - **代码标注要求**：`# [HY-011] half_year_metadata_sanity`
 
+## FUND. 财报真实性与基本面语义门禁（2026-07-14 新增）
+
+> 背景：`603629.SH` 在 2026-07-14 的基本面报告把利通电子误写为化工企业，并把 2025 全年累计营收当作 2025Q4。原始财务数字多数可追溯，但公司身份、期间语义和异动原因未被系统约束，形成“真数字 + 假叙事”。本任务线先修事实和语义门禁，再讨论更换模型。
+
+### FUND-001: 标的身份与公司画像硬门禁（P0）
+- **描述**：为基本面分析建立权威、结构化、可追溯的标的身份契约；公司画像缺失或代码/名称/交易所冲突时停止商业模式分析，禁止模型从财务特征猜行业。
+- **优先级**：P0
+- **状态**：done — 本轮直接开发，待专项 Codex review/提交
+- **前置条件**：DATA-004、E-002、KB-014 完成。
+- **depends_on**：DATA-004, E-002, KB-014
+- **auto_release**：false
+- **执行约束**：
+  - 不调用 live LLM，不写生产数据库，不修改 `tradingagents/prompts/`。
+  - 公司名称、交易所、主营业务、行业必须携带来源与状态；弱来源只能补充，不能覆盖官方身份。
+  - AKShare 公司画像失败但财务摘要成功时，必须标记“部分成功/画像缺失”，不得把整项 fundamentals 当成完整 `HAS_DATA`。
+- **实现要点**：
+  1. 定义 `instrument_identity`/`company_profile` 结构：`symbol/security_name/exchange/main_business/industry/source/status/as_of`。
+  2. 修正 A 股 `instrument_context.security_name` 仅等于代码的问题，优先使用缓存代码表与权威 profile；解析失败时保留显式 unknown。
+  3. 基本面 Agent 调用前执行 identity gate；缺主营/行业时只允许输出财务事实，不允许输出商业模式、行业周期和竞争格局判断。
+  4. 扩展 E-002：除错误公司名外，增加“身份缺失”和“主营/行业无证据”状态，但不依靠正则猜行业。
+  5. `raw_evidence` 单独记录 company profile 的成功、部分成功、失败与 fallback，不泄漏 API key。
+- **验收方式**：
+  - fixture 覆盖正确身份、代码名称冲突、profile 主源失败 fallback 成功、全部失败、ETF/港股边界。
+  - 603629 无画像时不能生成“化工品/危化物流/消费电子”等未经证实的主营描述。
+  - 身份失败时报告进入明确 blocker，不得以普通 `completed + 中置信度` 冒充可用。
+- **代码标注要求**：`# [FUND-001] instrument_identity_gate`
+
+### FUND-002: 财务期间口径结构化与单季度确定性计算（P0）
+- **描述**：把利润表/现金流量表的累计期与资产负债表的时点口径结构化，所有同比、环比和单季度值由程序计算，禁止将年度累计值直接当 Q4。
+- **优先级**：P0
+- **状态**：done — 本轮直接开发，待专项 Codex review/提交
+- **前置条件**：DATA-004、HY-011 完成。
+- **depends_on**：DATA-004, HY-011
+- **auto_release**：false
+- **执行约束**：
+  - 不调用 LLM、不联网、不写生产数据库、不改 prompts；使用 fixture 和纯确定性计算。
+  - 保留原始累计值、来源、单位和报告期；派生值必须标记公式与输入 evidence ids。
+  - 缺任一输入时返回 `FIELD_MISSING`，不得猜值或把全年值复制成 Q4。
+- **实现要点**：
+  1. 定义 `period_scope`: `Q1_YTD/H1_YTD/Q3_YTD/FY_YTD/SINGLE_QUARTER/POINT_IN_TIME`。
+  2. 程序计算 Q2=`H1-Q1`、Q3=`Q3YTD-H1`、Q4=`FY-Q3YTD`；同比/环比基于同口径值计算。
+  3. 输出给基本面 Agent 的表格明确展示 `period_scope/is_derived/formula/source/unit`，不再只给 `报告日`。
+  4. 对收入、营业成本、净利润、扣非净利润、经营现金流等核心指标做单位与方向 sanity check。
+  5. 保留 AKShare 原始表，结构化层作为可回放副产物，不改变 provider 原始记录。
+- **验收方式**：
+  - 用 603629 fixture 断言 2025Q4 营收来自 2025FY 减 2025Q3，而不是 33.074 亿元全年值。
+  - 覆盖缺 Q3、负值、修订数据、跨年度、现金流累计和资产负债表时点六类边界。
+  - 所有派生值可追溯且重复执行幂等。
+- **代码标注要求**：`# [FUND-002] financial_period_normalizer`
+
+### FUND-003: 财务异动官方解释与会计口径证据上下文（P0）
+- **描述**：为收入、毛利率、利润、现金流和负债异常建立“公司解释优先”上下文，识别净额法/总额法、主要责任人/代理人、预收款、合同负债和集中交付；无强来源时只输出“原因未确认”。
+- **优先级**：P0
+- **状态**：done — 本轮直接开发，待专项 Codex review/提交
+- **前置条件**：FUND-001、FUND-002、KB-014、HY-003 完成。
+- **depends_on**：FUND-001, FUND-002, KB-014, HY-003
+- **auto_release**：true
+- **执行约束**：
+  - 不把新闻、券商观点或用户笔记当作公司解释；事实优先级沿用 KB-014。
+  - 不修改 `tradingagents/prompts/`；先通过结构化上下文与确定性 post-check 落地。若确需改 prompt，另行人工审批。
+  - 不抓取付费研报正文，不调用 live LLM，不写生产数据库。
+- **实现要点**：
+  1. 从公告/财报事实/半年报事实中抽取 `management_explanations` 与 `accounting_policies`，每项带来源、日期、证据等级和关联指标。
+  2. 对异常指标只允许三态：`officially_explained / evidence_conflict / unexplained`。
+  3. 识别关键词与结构字段：净额法、总额法、主要责任人、代理人、预收款、合同负债、设备经销、集中交付。
+  4. 将正确的公司画像、官方解释和低置信本地知识分层传给基本面 Agent；禁止跨层覆盖。
+  5. 公告查询为正常无数据时标记 `NORMAL_NO_DATA`，不得把 `No announcements found` 记作 `HAS_DATA`。
+- **验收方式**：
+  - 603629 fixture 在有官方说明时能识别算力/设备经销与合同负债；无说明时不猜“原材料下降/化工淡旺季”。
+  - 覆盖强弱来源冲突、无公告、净额法、总额法和合同负债五类场景。
+- **代码标注要求**：`# [FUND-003] official_explanation_context`
+
+### FUND-004: 基本面语义质量门禁与 C-006 真实接线（P0）
+- **描述**：把现有空调用的 C-006 财务异常检测接入结构化事实，并增加身份、期间、计算和因果声明门禁；基础语义失败时报告必须进入 `NEEDS_REVIEW/INVALID`，不能只禁止强动作。
+- **优先级**：P0
+- **状态**：done — 本轮直接开发，待专项 Codex review/提交
+- **前置条件**：FUND-001、FUND-002、FUND-003、C-006、D-002 完成。
+- **depends_on**：FUND-001, FUND-002, FUND-003, C-006, D-002
+- **auto_release**：true
+- **执行约束**：
+  - 复用并收口 C-006，不建立第二套同名财务异常引擎。
+  - 门禁是确定性规则，不调用 LLM、不改 prompts、不写生产数据库测试数据。
+  - 语义失败不得用“降低置信度”掩盖；必须有稳定 blocker code 和失败证据。
+- **实现要点**：
+  1. 把毛利率、经营现金流、净利润、资产负债率、投资/筹资现金流等真实参数传入 `check_financial_anomalies()`，删除当前全 `None` 空调用。
+  2. 增加 blocker：`IDENTITY_UNVERIFIED/PERIOD_SCOPE_INVALID/DERIVATION_CONFLICT/CAUSE_UNSUPPORTED/ACCOUNTING_POLICY_UNKNOWN`。
+  3. 校验核心计算：毛利率、同比/环比、流动/速动比率；合同负债不得自动等同于有息债务。
+  4. `source_coverage` 不再只按报告字符串非空计分；公司画像缺失、公告零记录、结构化期间失败必须反映到质量状态。
+  5. 基本面块无效时，研究经理/风控必须明确剔除该块权重并输出人工复核，而不是继续引用错误叙事。
+- **验收方式**：
+  - 注入 2026-07-14 的错误 603629 基本面文本，至少命中身份/期间/因果 blocker，禁止进入可执行完成态。
+  - 覆盖数值正确但叙事错误、数值与公式冲突、公告正常无数据、C-006 异常真实触发和旧报告兼容。
+- **代码标注要求**：`# [FUND-004] fundamental_semantic_gate`
+
+### FUND-005: 逐 Agent 模型与输入契约脱敏 trace（P1）
+- **描述**：记录每个 Agent 实际使用的 provider、模型、tier、运行时间和输入证据状态，使事后可以确认“哪一个模型基于哪些数据生成了哪一段报告”。
+- **优先级**：P1
+- **状态**：done — 本轮直接开发，待专项 Codex review/提交
+- **前置条件**：PERF-003、DATA-004 完成。
+- **depends_on**：PERF-003, DATA-004
+- **auto_release**：false
+- **执行约束**：
+  - 绝不记录 API key、Authorization、cookie、完整 prompt、长篇原文或本机敏感绝对路径。
+  - 不调用 live LLM；用 mock client/fixture 验证。
+  - 新字段可选，旧报告/API 保持兼容。
+- **实现要点**：
+  1. `analyst_traces` 增加 `provider/model/model_tier/prompt_version/input_contract_digest/input_statuses`。
+  2. `input_contract_digest` 只保存字段名、状态、来源和哈希，不保存正文。
+  3. 报告 metadata 保存运行级配置快照，避免只能根据用户当前配置反推历史模型。
+  4. 对 provider fallback/模型 fallback 明确记录 requested 与 actual。
+- **验收方式**：
+  - fixture 证明 fundamentals 使用 mid tier 时能记录实际模型；用户事后改配置不影响历史 trace。
+  - 脱敏扫描确保无 key/token/Authorization/长 prompt。
+- **代码标注要求**：`# [FUND-005] agent_model_input_trace`
+
+### FUND-006: 603629 与跨行业财报对抗回放验收（P1）
+- **描述**：对 FUND-001~005 做端到端回放，证明系统能拒绝“真数字 + 假公司/假期间/假原因”，再决定是否需要更换基本面模型。
+- **优先级**：P1
+- **状态**：done — 本轮直接开发，待专项 Codex review/提交
+- **前置条件**：FUND-001、FUND-002、FUND-003、FUND-004、FUND-005 完成。
+- **depends_on**：FUND-001, FUND-002, FUND-003, FUND-004, FUND-005
+- **auto_release**：true
+- **执行约束**：
+  - 第一阶段只做 fixture/历史报告回放，不调用 live LLM、不写生产数据库、不改 prompts。
+  - 模型 A/B 属于第二阶段，必须由用户确认 provider、模型和预计调用次数后另行执行。
+- **实现要点**：
+  1. 回放 603629 历史报告中“化工、危化物流、消费电子、工程项目”等互相冲突的主营猜测。
+  2. 增加至少 5 个跨行业样本：制造、软件/算力、金融、周期、ETF；覆盖累计报表、净额法、合同负债和无公告。
+  3. 断言错误报告被门禁拒绝，正确的财务事实仍被保留，不因一处 blocker 丢失全部原始证据。
+  4. 生成 `docs/knowledge_reports/fundamental-integrity-acceptance-YYYY-MM-DD.md`，区分系统修复结果与模型能力结论。
+- **验收方式**：
+  - 对抗回放全部通过；603629 不再出现未经证实的化工/危化物流描述，不再把全年值当 Q4。
+  - 输出能回答：身份来自哪里、期间如何计算、原因由谁披露、哪个 Agent/模型使用了哪些证据、为何被阻断。
+- **代码标注要求**：`# [FUND-006] fundamental_integrity_replay`
+
+## FUND-R. 财报真实性门禁补修链（2026-07-15 Codex review 新增）
+
+> 审核基线：第一版 FUND-001~006 的 103 项专项测试与 226 项 API/readiness/graph 回归均通过，但生产格式与图执行顺序仍有 4 个 P1 correctness finding。补修期间不得把第一版标成可提交完成，也不得消耗 live LLM 重跑 603629。
+
+### FUND-001A: 生产公司画像契约与 provider 格式补修（P0）
+- **描述**：修复公司画像只支持 Markdown 表格、无法消费 `cn_astock` 列表格式，以及常用主源缺主营业务导致 A 股长期全量降级的问题。
+- **优先级**：P0
+- **状态**：ready — 人工调度优先；当前 dirty worktree 下不得由自动循环直接领取
+- **depends_on**：FUND-001
+- **auto_release**：false
+- **实现约束**：
+  - 优先建立 provider-native 结构化 `company_profile` 契约；展示层 Markdown 只作兼容 fallback，不作为唯一真源。
+  - 同时兼容 `cn_akshare` 的 `item/value` 表格与 `cn_astock` 的 `- **字段**: 值` 格式；代码、名称、交易所必须交叉校验。
+  - 主营业务缺失时保持 `PARTIAL`，不得从行业或财务比率猜主营；但不得因为解析器不兼容让本可取得的名称/行业丢失。
+  - 补官方/强来源主营业务 fallback；ETF、港股和无主营字段标的使用明确的 instrument-type 边界，不冒充普通 A 股公司。
+- **验收方式**：
+  - 用两个生产 provider 的原样输出 fixture 验证，不得只用手写理想表格。
+  - 603629 必须稳定得到代码 `603629.SH`、名称“利通电子”和可追溯行业/主营；缺主营时只降级对应字段。
+  - 覆盖主源成功、主源部分成功、fallback 成功、代码冲突、ETF、港股六类场景。
+  - `pytest tests/test_fund001_instrument_identity.py -q` 与相关 provider 回归通过。
+
+### FUND-003A: 财务因果声明与官方证据逐项绑定（P0）
+- **描述**：把当前“公告出现任意关键词即可放行整段解释”改成 claim-level 证据绑定，防止无关合同负债公告放行“原材料下降/化工旺季/净额法”等错误叙事。
+- **优先级**：P0
+- **状态**：blocked-auto — 等待 FUND-001A
+- **depends_on**：FUND-001A, FUND-003, KB-014
+- **auto_release**：true
+- **实现约束**：
+  - 每条解释输出稳定 `claim_id/metric/cause_terms/policy_terms/evidence_ids/source_type/as_of/status`。
+  - 报告中的每个因果或会计口径声明必须命中同指标、同语义的强证据；“合同负债”不得证明“净额法”，“预收款”不得证明“原材料下降”。
+  - 支持 `officially_explained/evidence_conflict/unexplained` 的逐 claim 状态，不得用一个全局布尔值替代。
+  - 无匹配公告时 `fundamental_explanations` 的 raw-evidence 状态必须是 `NORMAL_NO_DATA`，不得固定写 `HAS_DATA`。
+- **验收方式**：
+  - 新增对抗测试：公告仅含“合同负债增加”，报告写“化工旺季/原材料下降”必须命中 `CAUSE_UNSUPPORTED`。
+  - 公告仅含“合同负债”，报告写“采用净额法”必须命中 `ACCOUNTING_POLICY_UNKNOWN`。
+  - 正确的“预收款/合同负债推动经营现金流”可以通过，且保留具体 evidence id。
+
+### FUND-004B: C-006 同日期/同期间口径计算补修（P0）
+- **描述**：修复 C-006 按指标各取最新值导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算的问题。
+- **优先级**：P0
+- **状态**：blocked-auto — 等待 FUND-003A
+- **depends_on**：FUND-002, FUND-003A
+- **auto_release**：true
+- **实现约束**：
+  - 按 `(report_date, period_scope, unit)` 建立完整指标组；毛利率只使用同组收入和营业成本。
+  - 利润表/现金流比较必须同 scope；`FY_YTD` 不得与 `SINGLE_QUARTER` 互作前后期。
+  - 资产负债率只使用同一报告日的 `POINT_IN_TIME` 资产与负债。
+  - 若找不到完整同口径组，返回 `None/FIELD_MISSING`，不得拼接邻近日期。
+  - 明确单位归一化，保留原始单位和选择依据供 trace/测试审计。
+- **验收方式**：
+  - 复现审核样本时不得再产生 `88%/-500%` 的虚假毛利率。
+  - 覆盖同日重复累计值+单季度值、缺成本、跨日期、跨单位、修订值和资产负债表六类边界。
+
+### FUND-004A: 基本面语义门禁前移并剔除无效研究权重（P0）
+- **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
+- **优先级**：P0
+- **状态**：blocked-auto — 等待 FUND-001A/FUND-003A/FUND-004B
+- **depends_on**：FUND-001A, FUND-003A, FUND-004B, FUND-004
+- **auto_release**：true
+- **实现约束**：
+  - 基本面 Agent 输出后立即生成结构化 integrity result；保留可追溯财务事实与原始报告，但决策输入使用 `fundamentals_report_for_decision` 或等价安全字段。
+  - `NEEDS_REVIEW/INVALID` 时 Bull/Bear/Research Manager 必须看到明确“该模块不参与方向权重”，不得继续引用被拒绝叙事。
+  - 最终 Risk Judge 继续保留 D-002 强动作门禁作为第二道防线。
+  - 无效叙事不得写入长期投资记忆；旧报告/API 保持兼容。
+- **验收方式**：
+  - 图级测试注入“603629 是化工股、Q1 化工淡季”，断言 Bull/Bear prompt 与研究经理决策输入不含该叙事，只含 blocker 和保留财务事实。
+  - 断言最终动作门禁失败、报告状态明确为 `NEEDS_REVIEW`，而非普通完成态。
+
+### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
+- **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待 FUND-004A
+- **depends_on**：FUND-004A, FUND-005, PERF-003
+- **auto_release**：true
+- **实现约束**：
+  - 从实际创建/调用的 client 或响应 metadata 获取 provider/model；无法确认时写 `unknown`，不得用 requested 冒充 actual。
+  - 记录 `requested_model/actual_model/model_tier/fallback_from/started_at/finished_at/latency_ms`。
+  - 不记录 key、URL 凭据、完整 prompt、长原文或本机敏感绝对路径。
+- **验收方式**：mock 覆盖无 fallback、模型 fallback、provider fallback、actual 不可知和历史配置变化五类场景。
+
+### FUND-006A: 真实 provider 格式与生产图离线回放验收（P1）
+- **描述**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链；这是 live 603629 前的唯一放行门。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待全部 FUND 补修任务
+- **depends_on**：FUND-001A, FUND-003A, FUND-004A, FUND-004B, FUND-005A
+- **auto_release**：true
+- **实现约束**：
+  - 使用脱敏的 `cn_akshare` 表格、`cn_astock` 列表、无关公告、累计/单季度混合数据 fixture。
+  - 覆盖 DataCollector → Fundamentals Analyst → Bull/Bear → Research Manager → Trader → Risk Judge 全链路，不调用 live LLM。
+  - 排除 4 份仅生成时间变化的 TradeFlow 验收文档；SCORE-001 与 FUND 补修精确拆分提交。
+- **验收方式**：
+  - 专项、API/readiness/graph 回归和 `git diff --check` 全过，独立 Codex review 无 P0/P1/P2 correctness finding。
+  - 验收报告回答身份来源、期间公式、claim-evidence 绑定、研究权重剔除、实际模型 trace 五项。
+  - 通过后只把“真实重跑 603629”改为 `blocked-human` 待用户确认；不得自动消耗模型 Token。
+
 ## SCORE. 研究评分快照接入与四卡裁决链（2026-07-13 新增）
 
 > 目标：知识库只提供慢变量 `research_score_snapshot`（研究证据可信度、投资逻辑质量及变化原因）；TradeFlow 继续负责实时入场时机，账户上下文负责组合适配，TA 统一执行硬门禁并映射到七阶段。禁止生成一个混合总分，也禁止知识分直接覆盖动作语义。
@@ -5492,7 +5731,7 @@
 ### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
 - **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 `research_score_snapshot` v1.1.0 可被稳定读取和降级，但本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
-- **状态**：ready — ZCode v1.1.0 Schema、39+2 补修测试、603629 双文件草案已于 2026-07-14 经 Codex 人工验收；草案仅作契约样本，不视为正式发布快照
+- **状态**：blocked — 自动开发循环异常终止，OpenCode 执行超时或卡住
 - **前置条件**：KB-001、KB-014 完成；ZCode v1.1.0 Schema/validator/fixture 已人工确认。
 - **depends_on**：KB-001, KB-014
 - **auto_release**：false

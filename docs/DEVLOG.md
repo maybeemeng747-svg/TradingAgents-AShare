@@ -1,5 +1,126 @@
 # 修改日志
 
+## 2026-07-15 | FUND 第一版 Codex review 与补修任务释放
+
+- **审核结论**：暂不提交、暂不真实重跑 603629。FUND/SCORE 专项 103 项、API/readiness/graph 回归 226 项通过，`py_compile` 与 `git diff --check` 通过；但发现 4 个 P1 correctness finding。
+- **P1-1 公司画像生产格式**：`cn_astock` 输出 Markdown 列表而解析器只读表格；常用 AKShare 画像又缺主营业务，导致生产标的长期 `commercial_analysis_allowed=False`。
+- **P1-2 因果证据绑定**：任意官方关键词会把全局状态设为 `officially_explained`；无关“合同负债”公告可错误放行“原材料下降/化工旺季/净额法”。
+- **P1-3 门禁执行顺序**：语义门禁只在最终 Risk Judge 生效，Bull/Bear、Research Manager 和 Trader 已先消费原始错误基本面。
+- **P1-4 C-006 期间混算**：异常输入按指标各取最新值，未要求同日期/同 `period_scope`，可组合出虚假毛利率和前期变化。
+- **次要问题**：`actual_model` 静态等于 requested、无解释时 raw evidence 仍写 `HAS_DATA`、TASKS 顶部/历史状态不一致、4 份 TradeFlow 验收文档只有时间戳噪声。
+- **任务释放**：新增串行补修链 `FUND-001A → FUND-003A → FUND-004B → FUND-004A → FUND-005A → FUND-006A`。只有 FUND-006A 离线生产图回放与独立 Codex review 通过后，才允许用户确认一次 live 603629 验收。
+- **边界**：本次仅更新任务治理文档；未修改业务代码、prompt、生产数据库，未调用 live LLM，未提交现有工作区改动。
+
+## 2026-07-15 | FUND-001~006 财报真实性与基本面语义门禁
+
+- 新增 provider-backed `instrument_identity` 契约：公司画像缺失、部分成功或代码冲突时，基本面商业模式分析 fail closed，禁止从财务特征猜行业。
+- 新增财务期间归一化：明确 Q1/H1/Q3/FY 累计范围，Q2/Q3/Q4 仅按可追溯公式派生；缺输入返回 `FIELD_MISSING`。
+- 新增官方解释与会计口径证据上下文；公告零记录统一为 `NORMAL_NO_DATA`，不再当作可用解释。
+- 接通 C-006 财务异常检测的结构化输入，并增加 `IDENTITY_UNVERIFIED`、`PERIOD_SCOPE_INVALID`、`DERIVATION_CONFLICT`、`CAUSE_UNSUPPORTED`、`ACCOUNTING_POLICY_UNKNOWN` 基本面 blocker。
+- 新增脱敏 Agent 模型/输入契约 trace 和 603629/跨行业离线回放验收报告。
+- 未调用 live LLM、未联网、未写生产数据库、未改 prompts。专项测试与静态检查待 Codex review 后一并收口。
+
+## 2026-07-14 | 603629 财报错误根因审计与 FUND 真实性任务线释放
+
+- **类型**：read-only incident audit / task planning
+- **范围**：审计报告 `61123def02544bef90bef44c1fae30c9`、历史 603629 基本面报告、运行模型配置、基本面 Agent 输入、AKShare provider、C-006/E-002/readiness 门禁；仅更新任务文档，未修改业务代码、prompt 或生产数据库。
+- **结论**：主要责任在系统输入与门禁契约，模型自由补全为次要责任。此次故障属于“财务数字多数可追溯，但公司身份、期间语义和异动原因缺少约束，形成真数字 + 假叙事”。
+- **关键证据**：
+  - 本次 fundamentals raw evidence 只有财务摘要，没有 Company Profile；profile 失败被 provider 静默降为部分成功，但整体仍被视为 `HAS_DATA`。
+  - A 股 `instrument_context.security_name` 目前默认等于代码，基本面 Agent 只接收四张财务表，不接收正确的新闻/本地知识公司画像。
+  - 2025-12-31 利润表是全年累计值，但输入只有“报告日”而无 period_scope，模型将全年 33.074 亿元误当 2025Q4。
+  - `check_financial_anomalies(stock_code)` 生产调用未传任何财务参数，C-006 规则实际不会触发。
+  - Source Coverage 主要按 Agent 报告字符串是否非空计分；本次达到 100%，但 Evidence Coverage 仅 61%，公告 0 条仍被标记 `HAS_DATA`，说明现有质量分只能限制强动作，不能证明语义正确。
+  - 用户持久配置为 MiMo quick/deep，fundamentals 路由使用 mid tier 且运行时将 mid 映射到 deep；按配置应为 `mimo-v2.5-pro`，但历史报告未保存逐 Agent 实际模型 trace，无法做运行级百分百证明。
+- **任务释放**：
+  - P0 ready：FUND-001（身份硬门禁）、FUND-002（期间口径结构化）。
+  - P1 ready：FUND-005（逐 Agent 模型/输入契约脱敏 trace）。
+  - blocked-auto：FUND-003（官方解释/会计口径）、FUND-004（语义门禁/C-006 接线）、FUND-006（603629 跨行业对抗回放）。
+- **执行顺序**：先专项收口当前未提交 SCORE-001，恢复干净工作区；随后 FUND-001 → FUND-002 → FUND-005。FUND-003/004/006 由依赖完成后释放。模型 A/B 必须排在系统门禁修复之后，并单独征得 live LLM 调用确认。
+
+---
+
+## 2026-07-14 | SCORE-001 TA 只读 research_score_snapshot 契约与安全接入
+
+- **执行者**:OpenCode
+- **任务**:SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
+- **类型**:feature / read-only snapshot loader
+- **状态**:✅ 完成（待外层 commit）
+
+### 背景
+
+- ZCode 已交付 `research_score_snapshot` v1.1.0 Schema/Registry/validator/fixture
+  并通过人工验收（603629 仍为 `drafts/`，正式发布目录为空）。
+- TA 侧需要一个**只读** loader，按 `symbol + as_of <= analysis_time` 选择最新合法
+  正式快照，校验 v1.1.0 契约与跨字段安全条件，并在过期/损坏/标的不匹配/未知版本/
+  未来数据/路径逃逸时 fail closed。
+- 严格边界：不读取 `drafts/` 作为生产结果，不复制 ZCode 评分公式，不新增 API/DB/
+  TradeFlow 字段/动作映射（这些由 SCORE-001B / SCORE-002~005 承担）。
+
+### 设计
+
+- **版本化消费者模型**：`schema_version=1.1.0`（白名单 `SUPPORTED_SCHEMA_VERSIONS`，
+  未知版本 fail closed）；承载两项核心分数、`thesis_breakdown`、`theses`、
+  `score_change`、`evidence_refs`、缺失证据及升级/降级/证伪条件。
+- **五类状态**：`HAS_DATA / STALE / LOW_CONFIDENCE / NORMAL_NO_DATA / FAILED`；
+  不用 `0` 代替"缺证据/不可评分"（缺失为 `None`）；`0` 是合法低分，不被当缺失。
+- **drafts 排除**：生产 loader 一律排除路径含 `drafts` 组件的文件；正式目录无快照
+  返回 `NORMAL_NO_DATA`。
+- **禁止动作字段**：输入含 `action/execution_action/playbook_stage/planned_position/
+  buy_level/risk_level/entry_timing/portfolio_fit`（顶层 / `scores` /
+  `thesis_breakdown` / 单条 thesis）时 fail closed，禁止静默消费。
+- **fail-closed 降级表**：候选存在但损坏/越界/悬空 ref/未知 tier/路径逃逸/禁止字段 →
+  `FAILED`（不返回错配/污染快照，不沿用上一只股票）；最新候选失败时降级尝试更旧合法版本。
+- **历史回放**：按 `as_of <= analysis_time.date` 过滤未来快照（禁止穿越）；
+  loader 侧 `stale_after_days`（默认 120 天）安全网把 `HAS_DATA/LOW_CONFIDENCE`
+  降级为 `STALE`，不覆盖快照自身声明的 `FAILED/NORMAL_NO_DATA`。
+- **路径安全**：`Path.resolve()` + `relative_to` 校验解析后路径在知识根目录内；
+  符号链接逃逸/路径逃逸 fail closed；`evidence_ref.source_path` 只允许相对路径。
+- **来源等级**：复用 KB-014 `SOURCE_QUALITY_TIERS`（`original_filing/official_notice/
+  broker_research/media/user_note/unknown`），不建第二套 A-E 等级。
+- **证据闭包**：`thesis.supporting/counter_evidence_id` 必须存在于 `evidence_refs`，
+  悬空 ref → `DANGLING_EVIDENCE_REF` fail closed。
+- **只读/幂等**：仅 `open(..., "r")` + `Path.iterdir`；不写知识库/DB，不调用 LLM；
+  重复读取结果一致。
+
+### 改动文件
+
+- `tradingagents/dataflows/research_score_snapshot.py`（新增，`# [SCORE-001]
+  research_score_snapshot_contract`）— 只读 loader/provider：数据类（`ScoreSummary`/
+  `InvestmentThesis`/`EvidenceRef`/`ScoreChange`/`ResearchScoreSnapshot`/
+  `ResearchScoreQueryResult`）、契约校验（`_check_forbidden_fields`/
+  `_validate_score_value`/`_validate_thesis_evidence_closure`/`_validate_snapshot_dict`）、
+  `query_research_score_snapshot()` 主查询、降级表、渲染（`render_research_score_block`/
+  `render_research_score_report`）。
+- `tests/research_score_snapshot_fixtures.py`（新增）— fixture 样本集（21 个
+  `SnapshotFixtureSpec`，覆盖五类状态、损坏、symbol 错配、未知版本、非法分数、未来快照、
+  悬空 ref、invalidated thesis、禁止动作字段（顶层/scores/thesis/breakdown）、
+  603629 drafts、非法 tier、路径逃逸、多版本）；`build_snapshot_fixture_kb()` 写入
+  微型知识库。fixture 来源：ZCode v1.1.0 契约示例，测试专用。
+- `tests/test_score001_research_score_snapshot.py`（新增，72 tests）— 覆盖五类状态、
+  null 语义（0≠缺失）、fail-closed 校验路径、禁止动作字段（8 字段参数化）、drafts 排除、
+  多版本时序/时间穿越、loader 过期安全网、只读/幂等/路径/符号链接逃逸、动作不因高分改变、
+  来源等级复用 KB-014、invalidated thesis、序列化/渲染、降级到更旧合法候选。
+
+### 验证
+
+- `pytest tests/test_score001_research_score_snapshot.py -q`：**72 passed**。
+- 回归：`tests/test_kb014_citation_policy.py tests/test_hy003_half_year_facts_provider.py`
+  **148 passed**；`tests/test_api_smoke.py` **52 passed**。
+- `py_compile` 全部新文件通过；`git diff --check` 干净。
+- 安全红线：`tradingagents/prompts/` 未触碰；`tradingagents.db`（生产）未写入
+  （测试全部用 `tmp_path` + `conftest` DB 隔离）；无 live LLM 调用；无 API/DB 列新增。
+
+### 边界声明
+
+- 本任务**只**实现只读 loader/validator；不接 API/前端/TradeFlow（SCORE-001B）、
+  不生成 `entry_timing`（SCORE-002）、不生成 `portfolio_fit`（SCORE-003）、
+  不做硬门禁（SCORE-004）、不做阶段映射（SCORE-005）。
+- `SCORE-006` 继续等待 ZCode 正式发布的真实快照；fixture 与 603629 草案不冒充跨项目
+  生产验收。
+
+---
+
 ## 2026-07-13 | REPORT-UX-006 TA 报告知识证据来源卡与缺口解释
 
 - **执行者**:OpenCode

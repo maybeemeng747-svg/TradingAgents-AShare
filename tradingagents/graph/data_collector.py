@@ -37,6 +37,14 @@ from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_eviden
     resolve_fallback_info as _resolve_fallback_info_contract,
 )
 from tradingagents.agents.utils.context_utils import infer_instrument_context  # [HK-001] hk_market_boundary
+from tradingagents.dataflows.financial_periods import (  # [FUND-002] financial_period_normalizer
+    derive_single_quarters,
+    normalize_financial_markdown,
+)
+from tradingagents.dataflows.instrument_identity import (  # [FUND-001] instrument_identity_gate
+    build_instrument_identity,
+    extract_profile_from_fundamentals,
+)
 
 INDICATORS = [
     "close_50_sma", "close_200_sma", "close_10_ema",
@@ -60,6 +68,7 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "fund_flow_individual": "fund_flow",
     "lhb": "lhb",
     "fundamentals": "financials",
+    "company_profile": "financials",  # [FUND-001] instrument_identity_gate
     "balance_sheet": "financials",
     "cashflow": "financials",
     "income_statement": "financials",
@@ -544,6 +553,47 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     except Exception as e:
         results["vpa_indicators"] = f"VPA 计算失败：{e}"
 
+    # [FUND-001] instrument_identity_gate — the profile must be explicit.
+    # A financial abstract alone is not a company profile and is never treated
+    # as sufficient evidence for business/industry analysis.
+    profile = extract_profile_from_fundamentals(results.get("fundamentals"))
+    identity = build_instrument_identity(
+        ticker,
+        profile,
+        source="akshare_company_profile" if profile else "provider_profile_missing",
+        as_of=trade_date,
+    )
+    results["instrument_identity"] = identity.to_dict()
+    results["company_profile"] = {
+        "status": identity.status,
+        "raw": profile,
+        "vendor": "akshare" if profile else "provider",
+        "field": "company_profile",
+        "as_of": trade_date,
+        "missing_fields": list(identity.missing_fields),
+        "reason": identity.conflict_reason,
+    }
+
+    # [FUND-002] financial_period_normalizer — preserve raw provider tables
+    # and add a replayable sidecar with only deterministic period semantics.
+    normalized_facts = []
+    for key, statement_type in (
+        ("income_statement", "income_statement"),
+        ("cashflow", "cashflow"),
+        ("balance_sheet", "balance_sheet"),
+    ):
+        normalized_facts.extend(
+            normalize_financial_markdown(
+                results.get(key), statement_type=statement_type, source=f"raw:{key}"
+            )
+        )
+    normalized_facts.extend(derive_single_quarters(normalized_facts))
+    results["financial_period_facts"] = [fact.to_dict() for fact in normalized_facts]
+    from tradingagents.agents.utils.fundamental_integrity import build_official_explanation_context
+    results["fundamental_explanations"] = build_official_explanation_context(
+        announcements=results.get("announcements"), half_year_facts=None
+    )
+
     print(f"[Timer] Total Data Collection for {ticker} took {time.time() - fetch_start:.2f}s")
     return results
 
@@ -642,6 +692,8 @@ class DataCollector:
                 return "FAILED"
             if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
                 return "HAS_DATA"
+            if "No announcements found" in val or "未查询到公告" in val:
+                return "NORMAL_NO_DATA"
             if "获取失败" in val or "不可用" in val or "error" in val.lower():
                 return "FAILED"
             if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
@@ -677,6 +729,7 @@ class DataCollector:
             "stock_data", "news", "global_news",
             "fund_flow_board", "fund_flow_individual", "lhb",
             "fundamentals", "balance_sheet", "cashflow", "income_statement",
+            "company_profile",  # [FUND-001] instrument_identity_gate
             "insider_transactions", "zt_pool", "hot_stocks",
             "indicators", "vpa_indicators",
             "announcements",  # [DATA-P0-603629] astock_source_fallback
@@ -688,7 +741,12 @@ class DataCollector:
         raw_evidence: Dict[str, Any] = {}
         for key in data_source_keys:
             raw_value = pool.get(key)
+            if key == "company_profile" and isinstance(raw_value, dict):
+                raw_value = raw_value.get("raw")
             status = self._infer_source_status(raw_value)
+            if key == "company_profile":
+                identity = pool.get("instrument_identity") or {}
+                status = str(identity.get("status") or status)
 
             entry: Dict[str, Any] = {
                 "status": status,
@@ -798,6 +856,42 @@ class DataCollector:
                 "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
             }
 
+        # [FUND-001/FUND-002] These are deterministic sidecars, not provider
+        # substitutes.  Keeping them in raw_evidence makes the later risk gate
+        # independent from a particular LangGraph node's local cache.
+        identity = pool.get("instrument_identity") or {}
+        raw_evidence["instrument_identity"] = {
+            "raw": identity,
+            "field": "instrument_identity",
+            "status": str(identity.get("status") or "MISSING"),
+            "vendor": identity.get("source", "provider"),
+            "endpoint": "",
+            "as_of": identity.get("as_of") or trade_date,
+            "fetched_at": now_iso,
+            "record_count": 1 if identity else 0,
+            "unit": None,
+            "error": identity.get("conflict_reason"),
+            "fallback_from": None,
+            "source_url": None,
+            "is_realtime_patched": False,
+        }
+        facts = pool.get("financial_period_facts") or []
+        raw_evidence["financial_period_facts"] = {
+            "raw": facts,
+            "field": "financial_period_facts",
+            "status": "HAS_DATA" if facts else "NORMAL_NO_DATA",
+            "vendor": "deterministic_normalizer",
+            "endpoint": "",
+            "as_of": trade_date,
+            "fetched_at": now_iso,
+            "record_count": len(facts),
+            "unit": None,
+            "error": None,
+            "fallback_from": None,
+            "source_url": None,
+            "is_realtime_patched": False,
+        }
+
         # [KB-003] local_knowledge_raw_evidence — wiki 不依赖 data collector pool，
         # 单独注入；失败不阻塞主链路。
         try:
@@ -841,5 +935,27 @@ class DataCollector:
             raw_evidence["half_year_facts"] = _hy_failed_entry(
                 trade_date, now_iso, f"{type(exc).__name__}: {exc}"
             )
+
+        # [FUND-003] official_explanation_context — assembled only from
+        # announcement / structured fact sources, never from an LLM opinion.
+        from tradingagents.agents.utils.fundamental_integrity import build_official_explanation_context
+        raw_evidence["fundamental_explanations"] = {
+            "raw": build_official_explanation_context(
+                announcements=raw_evidence.get("announcements", {}).get("raw"),
+                half_year_facts=raw_evidence.get("half_year_facts", {}).get("raw"),
+            ),
+            "field": "fundamental_explanations",
+            "status": "HAS_DATA",
+            "vendor": "deterministic_evidence_context",
+            "endpoint": "",
+            "as_of": trade_date,
+            "fetched_at": now_iso,
+            "record_count": 0,
+            "unit": None,
+            "error": None,
+            "fallback_from": None,
+            "source_url": None,
+            "is_realtime_patched": False,
+        }
 
         return raw_evidence

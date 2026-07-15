@@ -7,6 +7,8 @@ from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 from tradingagents.agents.utils.context_utils import build_prompt_context_block
 from tradingagents.agents.utils.data_consistency import append_financial_consistency_warnings
+from tradingagents.dataflows.financial_periods import render_financial_period_context
+from tradingagents.dataflows.instrument_identity import render_identity_context
 
 
 def create_fundamentals_analyst(llm, data_collector=None):
@@ -34,6 +36,9 @@ def create_fundamentals_analyst(llm, data_collector=None):
         if pool is not None:
             outputs = {k: pool.get(k, "无数据") for k in
                        ["fundamentals", "balance_sheet", "cashflow", "income_statement"]}
+            identity_context = render_identity_context(pool.get("instrument_identity"))
+            period_context = render_financial_period_context(pool.get("financial_period_facts", []))
+            explanation_context = pool.get("fundamental_explanations") or {}
         else:
             from tradingagents.agents.utils.agent_utils import (
                 get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement,
@@ -47,12 +52,20 @@ def create_fundamentals_analyst(llm, data_collector=None):
             keys = list(tasks.keys())
             results = await asyncio.gather(*[tasks[k] for k in keys])
             outputs = dict(zip(keys, results))
+            identity_context = render_identity_context(None)
+            period_context = render_financial_period_context([])
+            explanation_context = {}
 
         messages = [
             SystemMessage(content=system_message + "\n\n请全程使用中文。"),
             HumanMessage(content=(
                 horizon_ctx + "\n"
                 f"{context_block}\n\n"
+                f"{identity_context}\n\n"
+                f"{period_context}\n\n"
+                "【官方异动解释与会计口径】\n"
+                f"{explanation_context}\n"
+                "若状态为 unexplained，必须写“原因未确认”，不得自行补充因果解释。\n\n"
                 f"以下是 {ticker} 在 {current_date} 的基本面资料。\n\n"
                 f"【get_fundamentals】\n{outputs['fundamentals']}\n\n"
                 f"【get_balance_sheet】\n{outputs['balance_sheet']}\n\n"

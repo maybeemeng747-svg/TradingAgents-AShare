@@ -21,6 +21,10 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
+from tradingagents.agents.utils.agent_trace import (  # [FUND-005] agent_model_input_trace
+    annotate_agent_traces,
+    build_run_model_snapshot,
+)
 from tradingagents.dataflows.config import set_config
 
 # Import the new abstract tool methods from agent_utils
@@ -320,6 +324,8 @@ class TradingAgentsGraph:
             import asyncio
             final_state = asyncio.run(self.graph.ainvoke(init_agent_state, **args))
 
+        self._attach_agent_trace_metadata(final_state)
+
         # Store current state for reflection
         self.curr_state = final_state
 
@@ -395,6 +401,7 @@ class TradingAgentsGraph:
         )
 
         final_state = await self.graph.ainvoke(state, **graph_args)
+        self._attach_agent_trace_metadata(final_state)
 
         # Evict cached data to free memory
         self.data_collector.evict(ticker, trade_date)
@@ -439,6 +446,16 @@ class TradingAgentsGraph:
             "smart_money_report": final_state.get("smart_money_report", ""),
             "volume_price_report": final_state.get("volume_price_report", ""),
         }
+
+    def _attach_agent_trace_metadata(self, final_state: Dict[str, Any]) -> None:
+        """Attach a run-time model snapshot without retaining prompt content."""
+        metadata = dict(final_state.get("metadata") or {})
+        raw_evidence = metadata.get("raw_evidence") or {}
+        final_state["analyst_traces"] = annotate_agent_traces(
+            final_state.get("analyst_traces"), config=self.config, raw_evidence=raw_evidence
+        )
+        metadata["agent_model_snapshot"] = build_run_model_snapshot(self.config)
+        final_state["metadata"] = metadata
 
     @staticmethod
     def _safe_ticker(ticker: str) -> str:

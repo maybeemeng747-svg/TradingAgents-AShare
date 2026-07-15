@@ -18,6 +18,11 @@ from tradingagents.agents.utils.debate_utils import (
 from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
 from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning
 from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
+from tradingagents.agents.utils.fundamental_integrity import (  # [FUND-004] fundamental_semantic_gate
+    evaluate_fundamental_integrity,
+    extract_financial_anomaly_inputs,
+    format_fundamental_integrity_block,
+)
 from tradingagents.agents.utils.readiness_score import (
     calculate_data_completeness,
     calculate_source_coverage,
@@ -147,8 +152,31 @@ def create_risk_manager(llm, memory):
             final_response += format_event_risk_warning(event_risk_info)
             _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
 
-        # [C-006] financial_validator — 检测财报数据异常
-        financial_anomaly_info = check_financial_anomalies(stock_code)
+        # [FUND-004] fundamental_semantic_gate — the integrity check consumes
+        # deterministic sidecars, not a model's interpretation of them.
+        raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
+        identity_entry = raw_evidence.get("instrument_identity") or {}
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+        identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+        fundamental_integrity = evaluate_fundamental_integrity(
+            identity=identity,
+            period_facts=period_facts,
+            explanation_context=explanations,
+            report_text=fundamentals_report,
+        )
+        integrity_block = format_fundamental_integrity_block(fundamental_integrity)
+        if integrity_block:
+            final_response += "\n\n" + integrity_block
+
+        # [C-006] financial_validator — pass real structured facts.  Missing
+        # fields remain None; no fabricated zero is supplied to the validator.
+        financial_anomaly_info = check_financial_anomalies(
+            stock_code,
+            **extract_financial_anomaly_inputs(period_facts),
+        )
         if financial_anomaly_info["has_anomaly"]:
             final_response += format_financial_anomaly_warning(financial_anomaly_info)
             _logger.warning("[C-006] financial_validator: %s 检测到异常: %s", stock_code, financial_anomaly_info["anomalies"])
@@ -301,6 +329,9 @@ def create_risk_manager(llm, memory):
             name_mismatch=is_name_mismatch,
             no_execution_zone_conflict=not signals["execution_zone_conflict"],
         )
+        if not fundamental_integrity["is_valid"]:
+            gate["passed"] = False
+            gate["failures"].append("fundamental_semantic_gate")
 
         risk_result = calculate_risk_level(
             source_coverage=source_coverage,
@@ -475,6 +506,8 @@ def create_risk_manager(llm, memory):
             "strong_action_gate_passed": gate["passed"],
             # [Fix-2]
             "valuation_mismatch": valuation_check["mismatch"],
+            "fundamental_integrity": fundamental_integrity,
+            "financial_anomaly_inputs": extract_financial_anomaly_inputs(period_facts),
         }
 
         return {
