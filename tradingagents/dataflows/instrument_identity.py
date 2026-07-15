@@ -87,6 +87,21 @@ def build_instrument_identity(
     """
     normalized = (symbol or "").strip().upper()
     profile = profile or {}
+
+    # Cross-source conflict: different provider sections returned different codes
+    if profile.get("_cross_source_conflict"):
+        return InstrumentIdentity(
+            symbol=normalized,
+            security_name=_first(profile, "security_name", "name", "company_name", "股票简称", "公司名称"),
+            exchange=infer_exchange(normalized),
+            main_business=_first(profile, "main_business", "business", "主营业务", "经营范围"),
+            industry=_first(profile, "industry", "所属行业", "行业"),
+            source=source,
+            status=IDENTITY_CONFLICT,
+            as_of=as_of,
+            conflict_reason="cross_source_code_mismatch",
+        )
+
     source_symbol = _clean(profile.get("symbol") or profile.get("security_code"))
     name = _first(profile, "security_name", "name", "company_name", "股票简称", "公司名称")
     main_business = _first(profile, "main_business", "business", "主营业务", "经营范围")
@@ -136,27 +151,137 @@ def extract_profile_from_fundamentals(raw: Any) -> dict[str, str]:
 
     Financial Abstract is intentionally ignored.  If the provider did not
     return a ``Company Profile`` section, this returns an empty mapping.
+
+    Supports two formats:
+    - cn_akshare: markdown table with ``| item | value |`` rows
+    - cn_astock:  bullet list with ``- **字段**: 值`` rows
+
+    Also handles ``### Company Profile (巨潮资讯)`` fallback sections
+    appended by cninfo provider fallback.
     """
     if not isinstance(raw, str) or "### Company Profile" not in raw:
         return {}
-    section = raw.split("### Company Profile", 1)[1]
-    section = section.split("### ", 1)[0]
-    values: dict[str, str] = {}
+    # Collect ALL sections that start with "### Company Profile"
+    # (handles both "### Company Profile" and "### Company Profile (巨潮资讯)")
+    sections: list[str] = []
+    idx = 0
+    while True:
+        pos = raw.find("### Company Profile", idx)
+        if pos == -1:
+            break
+        # Skip past the header line
+        line_end = raw.find("\n", pos)
+        section_start = line_end + 1 if line_end != -1 else pos + len("### Company Profile")
+        # Find the next ### header (any level)
+        next_header = raw.find("\n### ", section_start)
+        if next_header == -1:
+            sections.append(raw[section_start:])
+        else:
+            sections.append(raw[section_start:next_header])
+        idx = section_start + 1
     aliases = {
         "security_name": ("股票简称", "公司名称", "名称"),
         "symbol": ("股票代码", "证券代码", "代码"),
         "main_business": ("主营业务", "经营范围", "主营"),
         "industry": ("所属行业", "行业"),
     }
-    for line in section.splitlines():
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) < 2 or all(set(cell) <= {"-", ":", " "} for cell in cells):
-            continue
-        key, value = cells[0], cells[1]
-        for target, labels in aliases.items():
-            if key in labels and value and value.lower() not in {"nan", "none", "-"}:
-                values.setdefault(target, value)
-    return values
+    list_pattern = re.compile(r"^-\s+\*\*(.+?)\*\*[:：]\s*(.+)$")
+
+    def store_field(fields: dict[str, str], target: str, key: str, value: str) -> None:
+        cleaned = _clean(value)
+        if not cleaned:
+            return
+        if target == "main_business":
+            # 经营范围 is deliberately a fallback.  A later, more precise
+            # 主营业务 field must replace it regardless of provider row order.
+            if key in {"主营业务", "主营"} or target not in fields:
+                fields[target] = cleaned
+                if key in {"主营业务", "主营"}:
+                    fields["_main_business_precise"] = "True"
+            return
+        if target == "security_name":
+            if key == "股票简称" or target not in fields:
+                fields[target] = cleaned
+                if key == "股票简称":
+                    fields["_security_name_short"] = "True"
+            return
+        fields.setdefault(target, cleaned)
+
+    # Parse each section independently
+    parsed_sections: list[dict[str, str]] = []
+    for section in sections:
+        section_fields: dict[str, str] = {}
+        for line in section.splitlines():
+            stripped = line.strip()
+            m = list_pattern.match(stripped)
+            if m:
+                key, value = m.group(1).strip(), m.group(2).strip()
+                for target, labels in aliases.items():
+                    if key in labels:
+                        store_field(section_fields, target, key, value)
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if len(cells) < 2 or all(set(cell) <= {"-", ":", " "} for cell in cells):
+                continue
+            key, value = cells[0], cells[1]
+            for target, labels in aliases.items():
+                if key in labels:
+                    store_field(section_fields, target, key, value)
+        if section_fields:
+            parsed_sections.append(section_fields)
+
+    if not parsed_sections:
+        return {}
+    if len(parsed_sections) == 1:
+        return {
+            key: value
+            for key, value in parsed_sections[0].items()
+            if not key.startswith("_")
+        }
+
+    # Cross-source symbol code conflict detection.  Compare every non-empty
+    # code so a code-less first source cannot hide disagreement between later
+    # provider sections.
+    source_codes: set[str] = set()
+    for section_fields in parsed_sections:
+        match = re.search(r"(?<!\d)(\d{6})(?!\d)", section_fields.get("symbol", ""))
+        if match:
+            source_codes.add(match.group(1))
+    if len(source_codes) > 1:
+        # Conflict: return first section's fields only.  In particular, do not
+        # import business/industry fields from a mismatched provider.
+        result = {
+            key: value
+            for key, value in parsed_sections[0].items()
+            if not key.startswith("_")
+        }
+        result["_cross_source_conflict"] = "True"
+        return result
+
+    # No conflict: merge sections while preserving semantic field quality.
+    # A precise 主营业务 beats 经营范围, and a 股票简称 beats 公司名称,
+    # regardless of source order.
+    merged: dict[str, str] = {}
+    main_business_precise = False
+    security_name_short = False
+    for section_fields in parsed_sections:
+        for key, value in section_fields.items():
+            if key.startswith("_"):
+                continue
+            if key == "main_business":
+                section_precise = section_fields.get("_main_business_precise") == "True"
+                if key not in merged or (section_precise and not main_business_precise):
+                    merged[key] = value
+                    main_business_precise = section_precise
+                continue
+            if key == "security_name":
+                section_short = section_fields.get("_security_name_short") == "True"
+                if key not in merged or (section_short and not security_name_short):
+                    merged[key] = value
+                    security_name_short = section_short
+                continue
+            merged.setdefault(key, value)
+    return merged
 
 
 def render_identity_context(identity: Mapping[str, Any] | None) -> str:

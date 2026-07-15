@@ -23,6 +23,9 @@ P3   → 盘后 Review + 策略命中率复盘
 
 ## 运行预算与测试策略
 
+- OpenClaw `自动开发循环` cron 必须使用 Gateway `command` payload 直接运行 `bash scripts/auto_dev_loop.sh 2>&1`，不得再使用 isolated Agent 解释脚本输出或二次派发 OpenCode。任务解析、OpenCode、测试、Codex review、提交和状态回写均由脚本单独负责。
+- cron 总预算为 `14400s`（4 小时），无输出看门狗为 `2100s`（35 分钟），输出上限为 `1048576` bytes。无输出窗口必须大于单轮 OpenCode 的 `1800s`，避免正常复杂任务被 Gateway 提前终止。
+- command payload 固定 `cwd=/Users/maybee/TradingAgents-AShare`，最小 `PATH` 必须包含 `/opt/homebrew/bin`，以保证 `opencode`、`codex` 和 Homebrew 工具可见。调度层本身不调用模型、不读取任务文件、不使用搜索工具。
 - 单轮 OpenCode 默认预算：`AUTO_DEV_OPENCODE_TIMEOUT_SECONDS=1800`（30 分钟）。超时后任务直接进入 `NEEDS_HUMAN`，不再等待外层 cron 强杀。
 - 单条测试命令默认预算：`AUTO_DEV_TEST_TIMEOUT_SECONDS=900`（15 分钟）。
 - 任务写明验收命令时，自动开发只跑任务声明的命令。

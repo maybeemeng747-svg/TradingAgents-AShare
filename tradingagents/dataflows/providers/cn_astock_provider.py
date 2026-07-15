@@ -112,6 +112,40 @@ def _eastmoney_datacenter(
     return []
 
 
+def _cninfo_profile(code: str) -> dict:
+    """巨潮资讯公司概况 — 主营业务/经营范围/行业等 fallback.
+
+    AKShare ``stock_profile_cninfo`` returns a **single-row wide DataFrame**
+    whose columns include ``公司名称``, ``A股代码``, ``A股简称``, ``所属行业``,
+    ``主营业务``, ``经营范围``, ``机构简介``.
+
+    Returns a flat ``{field: value}`` dict with all recoverable identity fields.
+    """
+    try:
+        import akshare as ak  # type: ignore
+        _rate_limit("cninfo_profile")
+        df = ak.stock_profile_cninfo(symbol=code)
+        if df is None or df.empty:
+            return {}
+
+        # Wide format: columns are field names, one row of values
+        row = df.iloc[0]
+        result: dict[str, str] = {}
+        wanted = (
+            "公司名称", "A股代码", "A股简称", "所属行业",
+            "主营业务", "经营范围", "机构简介",
+        )
+        for key in wanted:
+            if key in df.columns:
+                val = str(row[key]).strip()
+                if val and val.lower() not in {"nan", "none", "-", ""}:
+                    result[key] = val
+        return result
+    except Exception as exc:
+        logger.warning("[cninfo_profile] failed for %s: %s", code, exc)
+        return {}
+
+
 class CnAstockProvider(BaseMarketDataProvider):
     """A-share provider backed by direct HTTP APIs (腾讯/东财/新浪/同花顺/财联社)."""
 
@@ -353,6 +387,7 @@ class CnAstockProvider(BaseMarketDataProvider):
         code = _extract_code(ticker)
         parts = [f"## Fundamentals for {ticker}"]
         errors = []
+        info: dict = {}
 
         # Source 1: 东财个股基本面 (push2)
         try:
@@ -380,6 +415,62 @@ class CnAstockProvider(BaseMarketDataProvider):
                 )
         except Exception as exc:
             errors.append(f"tencent quote: {type(exc).__name__}")
+
+        # Source 3: 巨潮资讯 — identity + 主营业务 fallback
+        # 当主源缺少主营业务、或主源全失败时，用巨潮补充完整身份
+        def _present(value: object) -> bool:
+            text = str(value).strip() if value is not None else ""
+            return bool(text and text.lower() not in {"nan", "none", "null", "-", "—"})
+
+        needs_cninfo = not all(
+            (
+                _present(info.get("代码") or info.get("股票代码")),
+                _present(info.get("名称") or info.get("股票简称") or info.get("公司名称")),
+                _present(info.get("行业") or info.get("所属行业")),
+                _present(info.get("主营业务") or info.get("主营")),
+            )
+        )
+        if needs_cninfo:
+            try:
+                cninfo = _cninfo_profile(code)
+                if cninfo:
+                    cninfo_lines = ["### Company Profile (巨潮资讯)"]
+                    returned_code = _extract_code(cninfo["A股代码"]) if cninfo.get("A股代码") else ""
+                    if returned_code and returned_code != code:
+                        # The raw provider payload is passed to the fundamental
+                        # analyst.  Do not leak another issuer's profile into
+                        # that prompt; retain only an auditable conflict marker.
+                        cninfo_lines.extend(
+                            [
+                                f"- **股票代码**: {returned_code}",
+                                f"- **身份冲突**: requested={code}, returned={returned_code}",
+                            ]
+                        )
+                        parts.append("\n".join(cninfo_lines))
+                        cninfo = {}
+                    # 标准化字段名，让 instrument_identity 解析器兼容
+                    field_map = {
+                        "A股代码": "股票代码",
+                        "A股简称": "股票简称",
+                        "所属行业": "所属行业",
+                        "主营业务": "主营业务",
+                        "经营范围": "经营范围",
+                        "公司名称": "公司名称",
+                    }
+                    ordered_keys = (
+                        "A股代码", "A股简称", "公司名称", "所属行业",
+                        "主营业务", "经营范围", "机构简介",
+                    )
+                    for raw_key in ordered_keys:
+                        if raw_key not in cninfo:
+                            continue
+                        val = cninfo[raw_key]
+                        label = field_map.get(raw_key, raw_key)
+                        cninfo_lines.append(f"- **{label}**: {val}")
+                    if cninfo:
+                        parts.append("\n".join(cninfo_lines))
+            except Exception as exc:
+                errors.append(f"cninfo profile: {type(exc).__name__}")
 
         if len(parts) > 1:
             return "\n\n".join(parts)

@@ -640,6 +640,87 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 except Exception as exc:
                     errors.append(f"stock_individual_basic_info_xq: {type(exc).__name__}")
 
+            # cninfo fallback: 仅当公司画像身份字段缺失时才调用巨潮
+            existing_items: set[str] = set()
+            if (
+                info_df is not None
+                and not info_df.empty
+                and {"item", "value"}.issubset(info_df.columns)
+            ):
+                for _, profile_row in info_df[["item", "value"]].iterrows():
+                    value = str(profile_row["value"]).strip()
+                    if value and value.lower() not in {"nan", "none", "null", "-", "—"}:
+                        existing_items.add(str(profile_row["item"]).strip())
+            required_aliases = (
+                {"股票代码", "证券代码", "代码"},
+                {"股票简称", "公司名称", "名称"},
+                {"所属行业", "行业"},
+                {"主营业务", "主营"},
+            )
+            needs_cninfo = not all(existing_items & aliases for aliases in required_aliases)
+            cninfo_df = None
+            if needs_cninfo:
+                try:
+                    cninfo_df = ak.stock_profile_cninfo(symbol=code)
+                except Exception as exc:
+                    errors.append(f"stock_profile_cninfo: {type(exc).__name__}")
+
+            cninfo_profile_df = None
+            if cninfo_df is not None and not cninfo_df.empty:
+                # 巨潮返回单行宽表，列为字段名
+                row = cninfo_df.iloc[0]
+                cninfo_items: dict[str, str] = {}
+                for col in cninfo_df.columns:
+                    val = str(row[col]).strip()
+                    if val and val.lower() not in {"nan", "none", "-", ""}:
+                        cninfo_items[col] = val
+
+                # 主营业务优先于经营范围
+                main_biz = cninfo_items.get("主营业务") or cninfo_items.get("经营范围")
+                cninfo_name = cninfo_items.get("A股简称") or cninfo_items.get("公司名称")
+                cninfo_industry = cninfo_items.get("所属行业")
+                cninfo_code = cninfo_items.get("A股代码")
+
+                # Keep CNInfo as an independent profile section.  Flattening
+                # providers into one table would discard a mismatched CNInfo
+                # code while retaining that other company's business fields.
+                rows = []
+                cninfo_code_match = re.search(r"(\d{6})", cninfo_code or "")
+                normalized_cninfo_code = cninfo_code_match.group(1) if cninfo_code_match else ""
+                if normalized_cninfo_code and normalized_cninfo_code != code:
+                    # Fail closed before raw fundamentals reach the LLM.  Keep
+                    # only enough information for the identity contract to
+                    # detect and audit the mismatch; never expose the other
+                    # company's name, industry, or business description.
+                    rows.extend(
+                        [
+                            {"item": "股票代码", "value": normalized_cninfo_code},
+                            {
+                                "item": "身份冲突",
+                                "value": f"requested={code}, returned={normalized_cninfo_code}",
+                            },
+                        ]
+                    )
+                    cninfo_name = None
+                    cninfo_industry = None
+                    main_biz = None
+                    scope = None
+                else:
+                    scope = cninfo_items.get("经营范围")
+
+                if cninfo_code and not rows:
+                    rows.append({"item": "股票代码", "value": cninfo_code})
+                if cninfo_name:
+                    rows.append({"item": "股票简称", "value": cninfo_name})
+                if cninfo_industry:
+                    rows.append({"item": "所属行业", "value": cninfo_industry})
+                if main_biz:
+                    rows.append({"item": "主营业务", "value": main_biz})
+                if scope:
+                    rows.append({"item": "经营范围", "value": scope})
+                if rows:
+                    cninfo_profile_df = pd.DataFrame(rows)
+
             abstract_df = None
             try:
                 abstract_df = ak.stock_financial_abstract(symbol=code)
@@ -652,6 +733,9 @@ class CnAkshareProvider(BaseMarketDataProvider):
                     info_df[c] = info_df[c].astype(str).str.slice(0, 220)
                 parts.append("### Company Profile")
                 parts.append(info_df.head(40).to_markdown(index=False))
+            if cninfo_profile_df is not None and not cninfo_profile_df.empty:
+                parts.append("### Company Profile (巨潮资讯)")
+                parts.append(cninfo_profile_df.to_markdown(index=False))
             if abstract_df is not None and not abstract_df.empty:
                 parts.append("### Financial Abstract (latest available columns)")
                 metric_cols = [c for c in abstract_df.columns if c not in ("选项", "指标")]

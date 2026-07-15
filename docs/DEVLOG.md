@@ -13550,3 +13550,25 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Verification**: 366 项 HY-011/KB-002/HY-001/KB-014 定向与回归测试通过；`py_compile`、`git diff --check` 通过；真实知识库 115 页只读 lint 的 HYM finding 为 0，最终复验前后知识库哈希均为 `ae09bafe773687a18aac0c688435714394de5fbd1645c607e97456c60a4718fd`。
 - **Independent review**: Codex CLI `gpt-5.5`、reasoning effort `high`；最终结论为 `No actionable correctness issues were found in the reviewed changes.`
 - **ZCode audit**: 已完成 Schema v1.1.0、本地 Registry、双文件校验和 41 项契约测试；仍缺 `/score` 命令清单、确定性证据分、确定性逻辑分、生命周期/delta、正式快照查询器和真实正式快照验收。任务顺序固化在 `docs/zcode_research_scorer_handoff.md`。
+## 2026-07-16 | FUND 3-hour nightly batch release
+
+- **Scope**: Reorganized the existing FUND correctness repair chain into a bounded 3-hour serial batch; no duplicate feature tasks were added.
+- **Current blocker**: FUND-001A Round 3 fixed the real CNInfo wide-table schema and the all-primary-sources-failed fallback, but Codex adversarial replay proved that `603629` primary identity plus a mismatched `600000` CNInfo profile can be silently merged into `HAS_DATA`.
+- **Round 4 acceptance**: Parse profile sources independently, return `IDENTITY_CONFLICT` on normalized code mismatch, reject cross-company business/industry fields, and preserve valid same-code enrichment.
+- **Batch order**: FUND-001A -> FUND-003A -> FUND-004B -> FUND-004A -> FUND-005A -> FUND-006A, estimated at 190-250 minutes total.
+- **Stop policy**: Any P0/P1 correctness finding, failed test, unexpected dirty tree, or timeout stops the entire batch. No live LLM calls, production DB writes, prompt edits, or automatic 603629 rerun are allowed.
+
+## 2026-07-16 | OpenClaw cron command-mode repair
+
+- **Root cause**: The cron used an isolated Agent prompt that both launched `auto_dev_loop.sh` and instructed the Agent to inspect `TASK_ID`, read TASKS.md, and dispatch OpenCode again. The second scheduler path ignored the prompt's own search restriction and treated a failed `task_runs/AUTO-007...` search as the whole cron result. This was agent drift and duplicated orchestration, not a filesystem permission failure.
+- **Runtime mismatch**: The cron total timeout had regressed to `1800s`, while the script permits one OpenCode round of `1800s`, tests of `900s`, and Codex review of `1200s`; the outer budget could terminate a valid task before closeout.
+- **Fix**: Converted job `d4c444bb-dd77-4bcf-b750-debb3efa1791` to Gateway `command` payload with fixed cwd, minimal PATH, `14400s` total timeout, `2100s` no-output timeout, 1 MiB output cap, explicit Feishu delivery, and failure alert after the first error.
+- **Token behavior**: The cron scheduler no longer invokes GLM or any other model. OpenCode and Codex usage occurs only inside `auto_dev_loop.sh` after preflight and ready-task selection.
+- **Verification**: A minimal-environment dry-run reached project preflight successfully. It exited only because the current FUND-001A worktree is intentionally dirty; no file-list/search permission error occurred.
+## 2026-07-16 FUND-001A 人工复审收口
+
+- 公司画像解析兼容 AKShare `item/value` 表格、cn_astock 列表和巨潮单行宽表。
+- 跨来源证券代码不一致时在 provider 出口截断错公司的名称、行业、主营和经营范围，只保留可审计冲突标记；identity contract 返回 `CONFLICT`。
+- 空值/占位符不再阻止巨潮 fallback，也不参与跨源代码冲突；同代码场景优先股票简称和精确主营业务。
+- 修复 cn_astock 全来源失败测试，使其显式 mock 巨潮 fallback，禁止测试访问 live CNInfo。
+- 定向与关联回归通过；Codex 多轮 review 的 P1/P2 均逐项修复，FUND-003A 已释放为 `ready`。

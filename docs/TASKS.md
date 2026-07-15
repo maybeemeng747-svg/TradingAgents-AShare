@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-15
+> 最后更新：2026-07-16
 
 ---
 
@@ -22,14 +22,14 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-15）
+### 当前执行队列（2026-07-16）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-> **执行前置**：当前工作区混有 `SCORE-001` 与 FUND-001~006 未提交实现。2026-07-15 Codex review 已确认 4 个 P1 correctness finding；不得先提交、不得真实重跑 603629。应由人工调度 OpenCode 在现有工作区依次补修，全部通过后再精确拆分提交。自动循环继续遵守 dirty-tree 停止规则。
+> **执行前置**：FUND-001A 已完成人工实现、对抗修复和 Codex 多轮复审；提交并恢复 clean tree 后，从 FUND-003A 开始按依赖串行自动领取。自动循环继续遵守 dirty-tree 停止规则。
 
-1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，ready，人工调度优先）。
-2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，blocked-auto；等待 FUND-001A）。
+1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，ready）。
 3. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto；等待 FUND-003A）。
 4. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A/FUND-004B）。
 5. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
@@ -51,6 +51,21 @@
 21. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
 
 > FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
+
+### 今晚 3 小时执行包（2026-07-16）
+
+> 目标预算约 190-250 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
+
+| 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
+|---|---|---:|---|
+| 1 | `FUND-001A` Round 4 | 20-30 分钟 | 多来源代码冲突返回 `IDENTITY_CONFLICT`；不得混合另一公司的主营；同代码正常补全保持 `HAS_DATA`；40 项 FUND 回归通过 |
+| 2 | `FUND-003A` | 35-45 分钟 | 因果声明逐 claim 绑定同指标、同语义强证据；无关公告不能放行错误原因 |
+| 3 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
+| 4 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
+| 5 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
+| 6 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
+
+> **夜间终点**：只完成离线确定性修复和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 3 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
 
 ### 历史任务总表（按创建顺序）
 
@@ -240,8 +255,8 @@
 184. `FUND-004`：基本面语义质量门禁与 C-006 真实接线（P0，blocked-review，第一版待 FUND-004A/FUND-004B 补修）。
 185. `FUND-005`：逐 Agent 模型与输入契约脱敏 trace（P1，blocked-review，第一版待 FUND-005A 补修）。
 186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
-187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，ready，人工调度优先）。
-188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，blocked-auto，依赖 FUND-001A）。
+187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，ready，FUND-001A 已完成）。
 189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto，依赖 FUND-003A）。
 190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A/FUND-004B）。
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
@@ -5634,24 +5649,29 @@
 ### FUND-001A: 生产公司画像契约与 provider 格式补修（P0）
 - **描述**：修复公司画像只支持 Markdown 表格、无法消费 `cn_astock` 列表格式，以及常用主源缺主营业务导致 A 股长期全量降级的问题。
 - **优先级**：P0
-- **状态**：ready — 人工调度优先；当前 dirty worktree 下不得由自动循环直接领取
+- **状态**：done — 真实巨潮宽表、主源全失败 fallback、跨源冲突截断、占位符容错和字段优先级均已通过对抗复审
+- **预计耗时**：20-30 分钟（仅 Round 4 收口，不扩大范围）
 - **depends_on**：FUND-001
 - **auto_release**：false
 - **实现约束**：
   - 优先建立 provider-native 结构化 `company_profile` 契约；展示层 Markdown 只作兼容 fallback，不作为唯一真源。
   - 同时兼容 `cn_akshare` 的 `item/value` 表格与 `cn_astock` 的 `- **字段**: 值` 格式；代码、名称、交易所必须交叉校验。
+  - 多个 `Company Profile` 来源必须独立解析后再合并；证券代码不一致时返回 `IDENTITY_CONFLICT`，禁止从冲突来源补入名称、行业或主营。
+  - 同一代码的公司全称/简称差异不得误报冲突；`主营业务` 必须优先于宽泛的 `经营范围`。
   - 主营业务缺失时保持 `PARTIAL`，不得从行业或财务比率猜主营；但不得因为解析器不兼容让本可取得的名称/行业丢失。
   - 补官方/强来源主营业务 fallback；ETF、港股和无主营字段标的使用明确的 instrument-type 边界，不冒充普通 A 股公司。
 - **验收方式**：
   - 用两个生产 provider 的原样输出 fixture 验证，不得只用手写理想表格。
   - 603629 必须稳定得到代码 `603629.SH`、名称“利通电子”和可追溯行业/主营；缺主营时只降级对应字段。
   - 覆盖主源成功、主源部分成功、fallback 成功、代码冲突、ETF、港股六类场景。
+  - 新增对抗样本：东财 `603629` + 巨潮 `600000` 必须 `IDENTITY_CONFLICT` 且 `commercial_analysis_allowed=false`；同代码正常补主营必须保持 `HAS_DATA`。
   - `pytest tests/test_fund001_instrument_identity.py -q` 与相关 provider 回归通过。
 
 ### FUND-003A: 财务因果声明与官方证据逐项绑定（P0）
 - **描述**：把当前“公告出现任意关键词即可放行整段解释”改成 claim-level 证据绑定，防止无关合同负债公告放行“原材料下降/化工旺季/净额法”等错误叙事。
 - **优先级**：P0
-- **状态**：blocked-auto — 等待 FUND-001A
+- **状态**：ready — FUND-001A 已完成，可由自动循环领取
+- **预计耗时**：35-45 分钟
 - **depends_on**：FUND-001A, FUND-003, KB-014
 - **auto_release**：true
 - **实现约束**：
@@ -5668,6 +5688,7 @@
 - **描述**：修复 C-006 按指标各取最新值导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算的问题。
 - **优先级**：P0
 - **状态**：blocked-auto — 等待 FUND-003A
+- **预计耗时**：30-40 分钟
 - **depends_on**：FUND-002, FUND-003A
 - **auto_release**：true
 - **实现约束**：
@@ -5684,6 +5705,7 @@
 - **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
 - **优先级**：P0
 - **状态**：blocked-auto — 等待 FUND-001A/FUND-003A/FUND-004B
+- **预计耗时**：40-50 分钟
 - **depends_on**：FUND-001A, FUND-003A, FUND-004B, FUND-004
 - **auto_release**：true
 - **实现约束**：
@@ -5699,6 +5721,7 @@
 - **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
 - **优先级**：P1
 - **状态**：blocked-auto — 等待 FUND-004A
+- **预计耗时**：25-35 分钟
 - **depends_on**：FUND-004A, FUND-005, PERF-003
 - **auto_release**：true
 - **实现约束**：
@@ -5711,6 +5734,7 @@
 - **描述**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链；这是 live 603629 前的唯一放行门。
 - **优先级**：P1
 - **状态**：blocked-auto — 等待全部 FUND 补修任务
+- **预计耗时**：40-50 分钟
 - **depends_on**：FUND-001A, FUND-003A, FUND-004A, FUND-004B, FUND-005A
 - **auto_release**：true
 - **实现约束**：

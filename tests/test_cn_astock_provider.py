@@ -224,7 +224,8 @@ class TestFailureDegradation:
     def test_get_fundamentals_http_failure(self):
         provider = CnAstockProvider()
         with patch.object(provider, "_eastmoney_stock_info", side_effect=Exception("error")), \
-             patch.object(provider, "_tencent_quote", side_effect=Exception("error")):
+             patch.object(provider, "_tencent_quote", side_effect=Exception("error")), \
+             patch("tradingagents.dataflows.providers.cn_astock_provider._cninfo_profile", return_value={}):
             with pytest.raises(NotImplementedError):
                 provider.get_fundamentals("002138")
 
