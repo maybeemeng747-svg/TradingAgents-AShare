@@ -29,7 +29,7 @@
 > **执行前置**：FUND-001A 已完成人工实现、对抗修复和 Codex 多轮复审；提交并恢复 clean tree 后，从 FUND-003A 开始按依赖串行自动领取。自动循环继续遵守 dirty-tree 停止规则。
 
 1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，ready）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress）。
 3. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto；等待 FUND-003A）。
 4. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A/FUND-004B）。
 5. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
@@ -256,7 +256,7 @@
 185. `FUND-005`：逐 Agent 模型与输入契约脱敏 trace（P1，blocked-review，第一版待 FUND-005A 补修）。
 186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
 187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，ready，FUND-001A 已完成）。
+188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress，FUND-001A 已完成）。
 189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto，依赖 FUND-003A）。
 190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A/FUND-004B）。
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。

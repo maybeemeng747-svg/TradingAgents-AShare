@@ -1,5 +1,17 @@
 # 修改日志
 
+## 2026-07-16 | FUND-003A 财务因果声明与官方证据逐项绑定
+
+- **问题**：`build_official_explanation_context` 使用全局 `status: "officially_explained"`，任意关键词匹配即放行所有因果/会计声明。"合同负债"公告可错误放行"原材料下降/化工旺季/净额法"。
+- **修复**：
+  - `build_official_explanation_context` 每条 entry 携带 `evidence_id`、`cause_terms`、`accounting_terms`；新增 `data_status` 字段（`HAS_DATA`/`NORMAL_NO_DATA`），保留 `status` 用于 prompt 兼容。
+  - 新增 `bind_claims()` 函数：逐条匹配报告中的因果/会计关键词与证据，返回每条 claim 的 `status`（`officially_explained`/`evidence_conflict`/`unexplained`）、`evidence_ids`、`source_type`、`as_of`。
+  - `evaluate_fundamental_integrity` 改为 claim-level 检查：每条 cause/accounting 关键词独立匹配证据，不再依赖全局 status。
+  - `data_collector.py` 的 `fundamental_explanations` 状态改为从 `data_status` 派生，无证据时为 `NORMAL_NO_DATA`。
+  - 新增 `_ACCOUNTING_CANONICAL` 映射（"预收货款"→"预收款"）处理术语变体归一化。
+- **新增对抗测试**：合同负债公告不能放行因果声明（CAUSE_UNSUPPORTED）、合同负债公告不能放行净额法声明（ACCOUNTING_POLICY_UNKNOWN）、正确的预收款/合同负债驱动现金流可通过并保留 evidence ID。
+- **61 项测试全部通过**，未改 prompts、未调 live LLM、未写生产数据库。
+
 ## 2026-07-15 | FUND 第一版 Codex review 与补修任务释放
 
 - **审核结论**：暂不提交、暂不真实重跑 603629。FUND/SCORE 专项 103 项、API/readiness/graph 回归 226 项通过，`py_compile` 与 `git diff --check` 通过；但发现 4 个 P1 correctness finding。

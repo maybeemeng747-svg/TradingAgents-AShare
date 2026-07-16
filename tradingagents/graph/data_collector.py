@@ -590,9 +590,11 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     normalized_facts.extend(derive_single_quarters(normalized_facts))
     results["financial_period_facts"] = [fact.to_dict() for fact in normalized_facts]
     from tradingagents.agents.utils.fundamental_integrity import build_official_explanation_context
-    results["fundamental_explanations"] = build_official_explanation_context(
+    _explanation = build_official_explanation_context(
         announcements=results.get("announcements"), half_year_facts=None
     )
+    _explanation["as_of"] = trade_date
+    results["fundamental_explanations"] = _explanation
 
     print(f"[Timer] Total Data Collection for {ticker} took {time.time() - fetch_start:.2f}s")
     return results
@@ -939,18 +941,20 @@ class DataCollector:
         # [FUND-003] official_explanation_context — assembled only from
         # announcement / structured fact sources, never from an LLM opinion.
         from tradingagents.agents.utils.fundamental_integrity import build_official_explanation_context
+        _explanation = build_official_explanation_context(
+            announcements=raw_evidence.get("announcements", {}).get("raw"),
+            half_year_facts=raw_evidence.get("half_year_facts", {}).get("raw"),
+        )
+        _explanation["as_of"] = trade_date
         raw_evidence["fundamental_explanations"] = {
-            "raw": build_official_explanation_context(
-                announcements=raw_evidence.get("announcements", {}).get("raw"),
-                half_year_facts=raw_evidence.get("half_year_facts", {}).get("raw"),
-            ),
+            "raw": _explanation,
             "field": "fundamental_explanations",
-            "status": "HAS_DATA",
+            "status": _explanation.get("data_status", "NORMAL_NO_DATA"),
             "vendor": "deterministic_evidence_context",
             "endpoint": "",
             "as_of": trade_date,
             "fetched_at": now_iso,
-            "record_count": 0,
+            "record_count": len(_explanation.get("entries") or []),
             "unit": None,
             "error": None,
             "fallback_from": None,
