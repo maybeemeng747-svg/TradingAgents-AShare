@@ -249,3 +249,141 @@ def test_entries_have_evidence_id_and_term_fields():
     assert entry["evidence_id"].startswith("E")
     assert isinstance(entry.get("cause_terms"), list)
     assert isinstance(entry.get("accounting_terms"), list)
+
+
+# ── FUND-003A adversarial tests (补修) ───────────────────────────────────────
+
+
+def test_reverse_raw_material_cause_is_caught():
+    """[P1] 公告含"原材料成本上涨"，报告写"原材料下降推动毛利率"
+    → 必须命中 CAUSE_UNSUPPORTED（反向证据）。"""
+    ctx = build_official_explanation_context(
+        announcements="公司公告显示原材料成本上涨，对毛利率造成压力。",
+        half_year_facts=None,
+    )
+    assert ctx["entries"], "should have entries"
+    # Evidence direction should be "up"
+    assert ctx["entries"][0]["direction"] == "up"
+
+    integrity = evaluate_fundamental_integrity(
+        identity=_identity(),
+        period_facts=_facts(),
+        explanation_context=ctx,
+        report_text="原材料下降推动毛利率提升。",
+    )
+    codes = {item["code"] for item in integrity["blockers"]}
+    assert CAUSE_UNSUPPORTED in codes, (
+        "reverse direction: evidence says '上涨' but claim says '下降' must be caught"
+    )
+
+
+def test_negation_net_method_is_caught():
+    """[P1] 公告含"未采用净额法"，报告写"采用净额法"
+    → 必须命中 ACCOUNTING_POLICY_UNKNOWN（否定证据）。"""
+    ctx = build_official_explanation_context(
+        announcements="公司说明本年度未采用净额法确认收入，仍采用总额法。",
+        half_year_facts=None,
+    )
+    assert ctx["entries"], "should have entries"
+    # Evidence should be negated
+    assert ctx["entries"][0]["negation"] is True
+
+    integrity = evaluate_fundamental_integrity(
+        identity=_identity(),
+        period_facts=_facts(),
+        explanation_context=ctx,
+        report_text="公司采用净额法确认设备经销收入。",
+    )
+    codes = {item["code"] for item in integrity["blockers"]}
+    assert ACCOUNTING_POLICY_UNKNOWN in codes, (
+        "negation: evidence says '未采用净额法' but claim says '采用净额法' must be caught"
+    )
+
+
+def test_reverse_contract_liability_is_caught():
+    """[P1] 公告含"合同负债增加"，报告写"合同负债下降"
+    → 必须命中 CAUSE_UNSUPPORTED（反向证据）。"""
+    ctx = build_official_explanation_context(
+        announcements="公司合同负债较上期增加30%，主要系预收客户货款增加所致。",
+        half_year_facts=None,
+    )
+    assert ctx["entries"], "should have entries"
+
+    integrity = evaluate_fundamental_integrity(
+        identity=_identity(),
+        period_facts=_facts(),
+        explanation_context=ctx,
+        report_text="合同负债下降表明收入质量改善。",
+    )
+    codes = {item["code"] for item in integrity["blockers"]}
+    assert ACCOUNTING_POLICY_UNKNOWN in codes, (
+        "reverse: evidence says '增加' but claim says '下降' must be caught"
+    )
+
+
+def test_synonym_advance_receipts_passes():
+    """[P2] 公告含"预收货款增加"，报告写"预收款驱动现金流"
+    → 必须通过，保留 evidence ID（同义词）。"""
+    ctx = build_official_explanation_context(
+        announcements="公司经营现金流增加主要由于预收货款增加。",
+        half_year_facts=None,
+    )
+    assert ctx["entries"], "should have entries"
+    assert "预收款" in ctx["accounting_policy_terms"], "预收货款 should canonicalize to 预收款"
+
+    integrity = evaluate_fundamental_integrity(
+        identity=_identity(),
+        period_facts=_facts(),
+        explanation_context=ctx,
+        report_text="经营现金流由预收款驱动。",
+    )
+    codes = {item["code"] for item in integrity["blockers"]}
+    assert CAUSE_UNSUPPORTED not in codes
+    assert ACCOUNTING_POLICY_UNKNOWN not in codes
+    assert integrity["is_valid"] is True
+
+    # Verify evidence IDs are present
+    claims = integrity.get("claims") or []
+    acct_claims = [c for c in claims if c["metric"] == "预收款"]
+    assert acct_claims, "should have a 预收款 claim"
+    assert acct_claims[0]["evidence_ids"], "evidence IDs must be preserved"
+
+
+def test_claim_id_stability():
+    """[P2] 同一输入运行两次，claim_id 必须完全一致。"""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料采购成本同比下降。",
+        half_year_facts=None,
+    )
+    report = "原材料下降推动毛利率提升。"
+
+    claims1 = bind_claims(report, ctx)
+    claims2 = bind_claims(report, ctx)
+
+    assert len(claims1) == len(claims2) == 1
+    assert claims1[0]["claim_id"] == claims2[0]["claim_id"], (
+        f"claim_id must be deterministic: {claims1[0]['claim_id']} != {claims2[0]['claim_id']}"
+    )
+    # Also verify it's a hash format
+    assert claims1[0]["claim_id"].startswith("CAUSE-")
+    assert len(claims1[0]["claim_id"]) == len("CAUSE-xxxxxxxx")
+
+
+def test_long_evidence_context_preserves_keyword():
+    """[P2] 关键词在文本后半段，evidence_id 的证据片段必须包含该关键词。"""
+    # Build a long announcement with keyword near the end
+    padding = "这是无关的填充文字。" * 50  # ~500 chars of padding
+    long_announcement = f"{padding}公司公告显示原材料成本下降，主要系采购策略优化所致。"
+    assert len(long_announcement) > 500, "test requires text longer than 500 chars"
+
+    ctx = build_official_explanation_context(
+        announcements=long_announcement,
+        half_year_facts=None,
+    )
+    assert ctx["entries"], "should have entries"
+
+    # The evidence text should contain "原材料" even though it's past 500 chars
+    entry = ctx["entries"][0]
+    assert "原材料" in entry["text"], (
+        f"evidence text must contain the matched keyword, got: ...{entry['text'][-100:]}"
+    )
