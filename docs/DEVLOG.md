@@ -13591,3 +13591,20 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - 空值/占位符不再阻止巨潮 fallback，也不参与跨源代码冲突；同代码场景优先股票简称和精确主营业务。
 - 修复 cn_astock 全来源失败测试，使其显式 mock 巨潮 fallback，禁止测试访问 live CNInfo。
 - 定向与关联回归通过；Codex 多轮 review 的 P1/P2 均逐项修复，FUND-003A 已释放为 `ready`。
+
+## 2026-07-17 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-003A-B - 因果证据按术语/出现位置绑定补修（P0）
+- **Priority**: P0
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode failed with exit 1
+- **Run archive**: docs/task_runs/FUND-003A-B-20260717-190003/
+
+## 2026-07-17 | AUTO-OPENCODE-BIN OpenCode Binary Resolution
+
+- **Root cause**: isolated cron PATH selected legacy `/usr/local/bin/opencode` 0.0.55, which has no `run` subcommand and emitted the misleading `no valid provider available for agent coder` error.
+- **Fix**: `auto_dev_loop.sh` now resolves a CLI whose help explicitly exposes `opencode run`, supports `AUTO_DEV_OPENCODE_BIN`, and records the selected path/version in each task archive.
+- **Verified**: with `/usr/local/bin` placed first in PATH, the resolver skips 0.0.55 and selects `/opt/homebrew/bin/opencode` 1.15.12.
+- **Task recovery**: preserved the failed FUND-003A-B run archive and restored the task to `ready` for a clean retry.
+- **Tests**: `bash -n scripts/auto_dev_loop.sh`; `pytest tests/test_auto_dev_loop_static.py -q` (9 passed); `git diff --check`.

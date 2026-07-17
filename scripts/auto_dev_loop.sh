@@ -125,6 +125,44 @@ except subprocess.TimeoutExpired:
 ' "$seconds" "$@"
 }
 
+# Resolve the current TypeScript OpenCode CLI instead of relying on cron's
+# PATH order. An older Go binary (0.0.x) may also be installed as `opencode`;
+# it has no `run` subcommand and fails with a misleading "agent coder" error.
+resolve_opencode_bin() {
+    local configured="${AUTO_DEV_OPENCODE_BIN:-}"
+    local path_candidate=""
+    local candidate=""
+    local seen="|"
+    local candidates=()
+
+    if [ -n "$configured" ]; then
+        candidates+=("$configured")
+    fi
+    if path_candidate=$(command -v opencode 2>/dev/null); then
+        candidates+=("$path_candidate")
+    fi
+    candidates+=(
+        "/opt/homebrew/bin/opencode"
+        "$HOME/.local/bin/opencode"
+        "/usr/local/bin/opencode"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        [ -n "$candidate" ] || continue
+        case "$seen" in
+            *"|$candidate|"*) continue ;;
+        esac
+        seen="${seen}${candidate}|"
+        [ -x "$candidate" ] || continue
+        if "$candidate" --help 2>&1 | grep -Fq "opencode run"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 redact_log() {
     # Redact API keys before persisting logs.
     sed -E \
@@ -608,7 +646,7 @@ check_local_knowledge_access() {
 
     local permission_state
     permission_state=$(
-        opencode debug config 2>/dev/null | python3 -c '
+        "$OPENCODE_BIN" debug config 2>/dev/null | python3 -c '
 import json, sys
 try:
     cfg = json.load(sys.stdin)
@@ -705,6 +743,17 @@ if [ "$DRY_RUN" = true ]; then
     break
 fi
 
+# [AUTO-OPENCODE-BIN] Pin a CLI that supports the non-interactive `run`
+# command. This prevents isolated cron sessions from selecting the legacy
+# /usr/local/bin/opencode 0.0.x binary ahead of the current Homebrew CLI.
+if ! OPENCODE_BIN=$(resolve_opencode_bin); then
+    err "No compatible OpenCode CLI found (required command: opencode run)."
+    err "Set AUTO_DEV_OPENCODE_BIN to the absolute path of OpenCode 1.x."
+    exit 127
+fi
+OPENCODE_VERSION=$("$OPENCODE_BIN" --version 2>/dev/null | tail -1 | tr -d '\r')
+log "OpenCode CLI: $OPENCODE_BIN (version=${OPENCODE_VERSION:-unknown})"
+
 # --- 2a. Create task run archive ---
 RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
@@ -722,6 +771,8 @@ cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 - OpenCode timeout seconds: $OPENCODE_TIMEOUT_SECONDS
 - Test timeout seconds: $TEST_TIMEOUT_SECONDS
 - Codex review timeout seconds: $CODEX_REVIEW_TIMEOUT_SECONDS
+- OpenCode binary: $OPENCODE_BIN
+- OpenCode version: ${OPENCODE_VERSION:-unknown}
 - Full tests enabled: $AUTO_DEV_FULL_TESTS
 - Runner: scripts/auto_dev_loop.sh
 
@@ -838,7 +889,7 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     fi
     
     set +e
-    run_with_timeout "$OPENCODE_TIMEOUT_SECONDS" opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
+    run_with_timeout "$OPENCODE_TIMEOUT_SECONDS" "$OPENCODE_BIN" run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
     OPENCODE_EXIT=$?
     set -e
     log "OpenCode exit=${OPENCODE_EXIT}"

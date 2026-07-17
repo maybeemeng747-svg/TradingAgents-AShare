@@ -92,6 +92,19 @@ def test_runner_continues_after_success_for_cron_batch_window():
     assert "stopping (one task per run)" not in script_text
 
 
+def test_runner_resolves_modern_opencode_cli_before_execution():
+    script_text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "resolve_opencode_bin()" in script_text
+    assert 'AUTO_DEV_OPENCODE_BIN' in script_text
+    assert 'grep -Fq "opencode run"' in script_text
+    assert '"$OPENCODE_BIN" run' in script_text
+    assert '"$OPENCODE_BIN" debug config' in script_text
+    assert 'run_with_timeout "$OPENCODE_TIMEOUT_SECONDS" opencode run' not in script_text
+    assert "opencode debug config" not in script_text
+    assert "/opt/homebrew/bin/opencode" in script_text
+
+
 def test_stale_lock_recovery_pid_alive(tmp_path):
     """Lock held by a live process must NOT be cleaned."""
     import os, signal, time
