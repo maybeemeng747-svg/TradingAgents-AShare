@@ -13608,3 +13608,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Verified**: with `/usr/local/bin` placed first in PATH, the resolver skips 0.0.55 and selects `/opt/homebrew/bin/opencode` 1.15.12.
 - **Task recovery**: preserved the failed FUND-003A-B run archive and restored the task to `ready` for a clean retry.
 - **Tests**: `bash -n scripts/auto_dev_loop.sh`; `pytest tests/test_auto_dev_loop_static.py -q` (9 passed); `git diff --check`.
+
+## 2026-07-17 | FUND 4-hour nightly batch release
+
+- **Scope**: extended the deterministic FUND repair chain to a 200-265 minute serial package: FUND-003A-B -> FUND-004B -> FUND-004A -> FUND-005A -> FUND-006A -> FUND-007A.
+- **New closeout task**: FUND-007A turns the 603629 and cross-industry failure patterns into a reusable benchmark with machine-readable outcomes, positive controls and a human-readable regression report.
+- **Dependency behavior**: only FUND-003A-B is immediately `ready`; every downstream task remains `blocked-auto` and is released only after its declared dependency passes tests, Codex review and precise commit.
+- **Task-pool hygiene**: removed external ZCode IDs from SCORE-006 machine dependencies; those remain explicit human prerequisites instead of producing unknown-dependency noise in the TA resolver.
+- **Safety boundary**: the batch is offline-only; no live provider/LLM calls, no production DB writes, no prompt edits and no automatic 603629 rerun.
+- **Stop policy**: any P0/P1/P2 correctness finding, failed test, timeout or unexpected dirty tree stops the batch for human review.

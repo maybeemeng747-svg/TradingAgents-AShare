@@ -35,38 +35,39 @@
 5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004B）。
 6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
-8. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
-9. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
-10. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
-11. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-12. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-13. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
-14. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
-15. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
-16. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；等待专项收口）。
-17. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
-18. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
-19. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-20. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
-21. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
-22. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto；等待 FUND-006A）。
+9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+15. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+16. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
+17. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；等待专项收口）。
+18. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
+19. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
+20. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+21. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
+22. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+23. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
 
 > FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
 
-### 今晚 3 小时执行包（2026-07-17）
+### 今晚 4 小时执行包（2026-07-17）
 
-> 目标预算约 190-250 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
+> 目标预算约 200-265 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1/P2 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
 
 | 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
 |---|---|---:|---|
-| 1 | `FUND-001A` Round 4 | 20-30 分钟 | 多来源代码冲突返回 `IDENTITY_CONFLICT`；不得混合另一公司的主营；同代码正常补全保持 `HAS_DATA`；40 项 FUND 回归通过 |
-| 2 | `FUND-003A-B` | 35-50 分钟 | 按术语和每次出现分别绑定方向/否定/因果关系；复审无 P0/P1/P2 |
-| 3 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
-| 4 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
-| 5 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
-| 6 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
+| 1 | `FUND-003A-B` | 35-50 分钟 | 按术语和每次出现分别绑定方向/否定/因果关系；复审无 P0/P1/P2 |
+| 2 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
+| 3 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
+| 4 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
+| 5 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
+| 6 | `FUND-007A` | 30-40 分钟 | 形成可重复执行的财报错误模式基准集、机器结果和人读回归报告；不得把一次性样本写死为交易结论 |
 
-> **夜间终点**：只完成离线确定性修复和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 3 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
+> **夜间终点**：只完成离线确定性修复、基准沉淀和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 4 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
 
 #### FUND-003A-B 补修验收口径
 
@@ -273,6 +274,7 @@
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
 192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
 193. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，ready，收口 `aac9add` + `f5fc13f` 复审发现）。
+194. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto，依赖 FUND-006A）。
 
 ### 数据源治理候选队列
 
@@ -5775,6 +5777,25 @@
   - 验收报告回答身份来源、期间公式、claim-evidence 绑定、研究权重剔除、实际模型 trace 五项。
   - 通过后只把“真实重跑 603629”改为 `blocked-human` 待用户确认；不得自动消耗模型 Token。
 
+### FUND-007A: 财报错误模式基准集与持续回归报告（P2）
+- **描述**：把 603629 及跨行业财报回放中已经暴露的错误模式固化为确定性基准集和回归报告，使后续 provider、解析器或模型路由调整都能先证明没有重新引入“数字大体正确、因果解释错误”的故障。
+- **优先级**：P2
+- **状态**：blocked-auto — 等待 FUND-006A
+- **预计耗时**：30-40 分钟
+- **depends_on**：FUND-006A
+- **auto_release**：true
+- **实现约束**：
+  - 复用 FUND-001A~006A 已有 fixture、完整性结果和生产图离线回放，不复制第二套身份、期间或因果判定器。
+  - 基准至少覆盖：证券身份错配、年度累计冒充 Q4、跨日期/跨单位计算、无官方解释的季节性猜测、净额法/总额法误判、预收款与经营现金流误读、来源缺失和证据冲突。
+  - 每个 case 必须保存稳定 `case_id/input_fixture/expected_gate/expected_rule_ids/actual_result`；失败时指出具体规则，不只输出 PASS/FAIL。
+  - 同时提供正向控制样本，确保合法主营补全、同口径计算和有官方证据的因果解释不会被误杀。
+  - 生成机器可读结果和简洁 Markdown 报告；不得包含 API Key、完整研报原文、本机敏感路径或交易动作建议。
+  - 只运行离线 fixture；不调用 live provider、live LLM，不写生产数据库，不修改 prompts。
+- **验收方式**：
+  - 新增独立 benchmark runner 或等价测试入口，一条命令可重复执行并返回非零失败码。
+  - 至少 8 个负向样本和 3 个正向控制样本全部符合预期；故意篡改 expected rule 时测试必须失败。
+  - 运行 FUND-001A~006A 相关回归、`git diff --check` 和独立 Codex review；无 P0/P1/P2 correctness finding 才可标记 done。
+
 ## SCORE. 研究评分快照接入与四卡裁决链（2026-07-13 新增）
 
 > 目标：知识库只提供慢变量 `research_score_snapshot`（研究证据可信度、投资逻辑质量及变化原因）；TradeFlow 继续负责实时入场时机，账户上下文负责组合适配，TA 统一执行硬门禁并映射到七阶段。禁止生成一个混合总分，也禁止知识分直接覆盖动作语义。
@@ -5921,7 +5942,7 @@
 - **优先级**：P1
 - **状态**：blocked-human — 等待 SCORE-005 与 ZCode 发布至少一份真实 `research_score_snapshot` 后人工释放
 - **前置条件**：SCORE-005、REPORT-UX-006、V-014 完成；ZC-RS-005 与 ZC-RS-006 由 ZCode 交付并提供至少一份真实快照，经人工确认。
-- **depends_on**：SCORE-005, REPORT-UX-006, V-014, ZC-RS-005, ZC-RS-006
+- **depends_on**：SCORE-005, REPORT-UX-006, V-014
 - **auto_release**：false
 - **执行约束**：
   - 先 fixture，再真实知识库只读 smoke；真实目录不可用不得用 fixture 冒充通过。
