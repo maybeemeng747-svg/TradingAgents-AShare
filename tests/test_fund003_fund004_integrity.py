@@ -183,7 +183,6 @@ def test_correct_cashflow_driven_by_advance_receipts_passes():
     assert ACCOUNTING_POLICY_UNKNOWN not in codes
     assert integrity["is_valid"] is True
 
-    # Verify evidence IDs are preserved in claims
     claims = integrity.get("claims") or []
     acct_claims = [c for c in claims if c["claim_id"].startswith("ACCT")]
     for c in acct_claims:
@@ -194,38 +193,40 @@ def test_correct_cashflow_driven_by_advance_receipts_passes():
 def test_bind_claims_returns_unexplained_when_no_evidence():
     """bind_claims: no entries → all claims are 'unexplained'."""
     claims = bind_claims("原材料下降导致毛利率提升。", {"entries": []})
-    assert len(claims) == 1
-    assert claims[0]["metric"] == "原材料"
-    assert claims[0]["status"] == "unexplained"
-    assert claims[0]["evidence_ids"] == []
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    assert len(cause_claims) == 1
+    assert cause_claims[0]["metric"] == "原材料下降"
+    assert cause_claims[0]["status"] == "unexplained"
+    assert cause_claims[0]["evidence_ids"] == []
 
 
 def test_bind_claims_returns_evidence_conflict_for_mismatched_terms():
     """bind_claims: evidence has '合同负债' but report claims '原材料下降'
-    → 'evidence_conflict' (evidence exists, but for different claim)."""
+    → 'evidence_conflict'."""
     ctx = _contract_liability_context()
     claims = bind_claims("原材料下降导致毛利率提升。", ctx)
-    assert len(claims) == 1
-    assert claims[0]["metric"] == "原材料"
-    assert claims[0]["status"] == "evidence_conflict"
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    assert len(cause_claims) == 1
+    assert cause_claims[0]["metric"] == "原材料下降"
+    assert cause_claims[0]["status"] == "evidence_conflict"
 
 
 def test_bind_claims_returns_officially_explained_for_matching_terms():
-    """bind_claims: evidence has '原材料' and report claims '原材料下降'
+    """bind_claims: evidence has '原材料下降' synonym and report claims '原材料下降'
     → 'officially_explained'."""
     ctx = build_official_explanation_context(
-        announcements="公司原材料采购成本同比下降。",
+        announcements="公司原材料成本下降，主要系采购策略优化所致。",
         half_year_facts=None,
     )
     claims = bind_claims("原材料下降推动毛利率提升。", ctx)
-    assert len(claims) == 1
-    assert claims[0]["metric"] == "原材料"
-    assert claims[0]["status"] == "officially_explained"
-    assert claims[0]["evidence_ids"]
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    assert len(cause_claims) == 1
+    assert cause_claims[0]["metric"] == "原材料下降"
+    assert cause_claims[0]["status"] == "officially_explained"
+    assert cause_claims[0]["evidence_ids"]
 
 
 def test_explanation_context_has_data_status_field():
-    """build_official_explanation_context returns 'data_status' for data pipeline."""
     ctx_with = build_official_explanation_context(
         announcements="合同负债增加。", half_year_facts=None
     )
@@ -237,8 +238,8 @@ def test_explanation_context_has_data_status_field():
     assert ctx_without["data_status"] == "NORMAL_NO_DATA"
 
 
-def test_entries_have_evidence_id_and_term_fields():
-    """Each entry carries evidence_id, cause_terms, accounting_terms."""
+def test_entries_have_evidence_id_and_term_details():
+    """Each entry carries evidence_id and term_details dict."""
     ctx = build_official_explanation_context(
         announcements="公司原材料成本下降，合同负债增加。",
         half_year_facts=None,
@@ -249,6 +250,8 @@ def test_entries_have_evidence_id_and_term_fields():
     assert entry["evidence_id"].startswith("E")
     assert isinstance(entry.get("cause_terms"), list)
     assert isinstance(entry.get("accounting_terms"), list)
+    assert "term_details" in entry
+    assert isinstance(entry["term_details"], dict)
 
 
 # ── FUND-003A adversarial tests (补修) ───────────────────────────────────────
@@ -262,8 +265,11 @@ def test_reverse_raw_material_cause_is_caught():
         half_year_facts=None,
     )
     assert ctx["entries"], "should have entries"
-    # Evidence direction should be "up"
-    assert ctx["entries"][0]["direction"] == "up"
+    entry = ctx["entries"][0]
+    occs = entry.get("occurrences") or []
+    cause_occs = [o for o in occs if o["canonical"] == "原材料上涨"]
+    assert cause_occs, "should have cause occurrence"
+    assert cause_occs[0]["direction"] == "up"
 
     integrity = evaluate_fundamental_integrity(
         identity=_identity(),
@@ -285,8 +291,10 @@ def test_negation_net_method_is_caught():
         half_year_facts=None,
     )
     assert ctx["entries"], "should have entries"
-    # Evidence should be negated
-    assert ctx["entries"][0]["negation"] is True
+    entry = ctx["entries"][0]
+    occs = entry.get("occurrences") or []
+    net_occs = [o for o in occs if o["canonical"] == "净额法" and o["negation"]]
+    assert net_occs, "should have negated 净额法 occurrence"
 
     integrity = evaluate_fundamental_integrity(
         identity=_identity(),
@@ -302,7 +310,7 @@ def test_negation_net_method_is_caught():
 
 def test_reverse_contract_liability_is_caught():
     """[P1] 公告含"合同负债增加"，报告写"合同负债下降"
-    → 必须命中 CAUSE_UNSUPPORTED（反向证据）。"""
+    → 必须命中 ACCOUNTING_POLICY_UNKNOWN（反向证据）。"""
     ctx = build_official_explanation_context(
         announcements="公司合同负债较上期增加30%，主要系预收客户货款增加所致。",
         half_year_facts=None,
@@ -329,7 +337,7 @@ def test_synonym_advance_receipts_passes():
         half_year_facts=None,
     )
     assert ctx["entries"], "should have entries"
-    assert "预收款" in ctx["accounting_policy_terms"], "预收货款 should canonicalize to 预收款"
+    assert "预收款" in ctx["accounting_policy_terms"]
 
     integrity = evaluate_fundamental_integrity(
         identity=_identity(),
@@ -342,7 +350,6 @@ def test_synonym_advance_receipts_passes():
     assert ACCOUNTING_POLICY_UNKNOWN not in codes
     assert integrity["is_valid"] is True
 
-    # Verify evidence IDs are present
     claims = integrity.get("claims") or []
     acct_claims = [c for c in claims if c["metric"] == "预收款"]
     assert acct_claims, "should have a 预收款 claim"
@@ -352,7 +359,7 @@ def test_synonym_advance_receipts_passes():
 def test_claim_id_stability():
     """[P2] 同一输入运行两次，claim_id 必须完全一致。"""
     ctx = build_official_explanation_context(
-        announcements="公司原材料采购成本同比下降。",
+        announcements="公司原材料成本下降，主要系采购策略优化所致。",
         half_year_facts=None,
     )
     report = "原材料下降推动毛利率提升。"
@@ -360,21 +367,21 @@ def test_claim_id_stability():
     claims1 = bind_claims(report, ctx)
     claims2 = bind_claims(report, ctx)
 
-    assert len(claims1) == len(claims2) == 1
-    assert claims1[0]["claim_id"] == claims2[0]["claim_id"], (
-        f"claim_id must be deterministic: {claims1[0]['claim_id']} != {claims2[0]['claim_id']}"
+    cause1 = [c for c in claims1 if c["claim_id"].startswith("CAUSE")]
+    cause2 = [c for c in claims2 if c["claim_id"].startswith("CAUSE")]
+    assert len(cause1) == len(cause2) == 1
+    assert cause1[0]["claim_id"] == cause2[0]["claim_id"], (
+        f"claim_id must be deterministic: {cause1[0]['claim_id']} != {cause2[0]['claim_id']}"
     )
-    # Also verify it's a hash format
-    assert claims1[0]["claim_id"].startswith("CAUSE-")
-    assert len(claims1[0]["claim_id"]) == len("CAUSE-xxxxxxxx")
+    assert cause1[0]["claim_id"].startswith("CAUSE-")
+    assert len(cause1[0]["claim_id"]) == len("CAUSE-xxxxxxxx")
 
 
 def test_long_evidence_context_preserves_keyword():
     """[P2] 关键词在文本后半段，evidence_id 的证据片段必须包含该关键词。"""
-    # Build a long announcement with keyword near the end
-    padding = "这是无关的填充文字。" * 50  # ~500 chars of padding
+    padding = "这是无关的填充文字。" * 50
     long_announcement = f"{padding}公司公告显示原材料成本下降，主要系采购策略优化所致。"
-    assert len(long_announcement) > 500, "test requires text longer than 500 chars"
+    assert len(long_announcement) > 500
 
     ctx = build_official_explanation_context(
         announcements=long_announcement,
@@ -382,8 +389,165 @@ def test_long_evidence_context_preserves_keyword():
     )
     assert ctx["entries"], "should have entries"
 
-    # The evidence text should contain "原材料" even though it's past 500 chars
     entry = ctx["entries"][0]
     assert "原材料" in entry["text"], (
         f"evidence text must contain the matched keyword, got: ...{entry['text'][-100:]}"
     )
+
+
+# ── FUND-003A-B: per-term binding adversarial tests ────────────────────────
+
+
+def test_neutral_first_mention_plus_later_positive():
+    """Adversarial: 报告首次提到"原材料"是中性描述，后文写"原材料下降推动毛利率"
+    → 两个 occurrence 都应匹配到证据（方向不冲突）。"""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料成本下降，主要系采购策略优化所致。",
+        half_year_facts=None,
+    )
+    report = "原材料方面保持关注。后文原材料下降推动毛利率提升。"
+    claims = bind_claims(report, ctx)
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    # "原材料" at pos 0 (neutral) + "原材料下降" at later pos → 2 claims
+    assert len(cause_claims) == 2
+    assert cause_claims[0]["status"] == "officially_explained"
+    assert cause_claims[1]["status"] == "officially_explained"
+
+
+def test_raw_material_decline_plus_contract_liability_increase():
+    """Adversarial: 报告同时写"原材料下降"和"合同负债增加"，
+    公告只有"合同负债增加" → 原材料 claim 必须 evidence_conflict，
+    合同负债 claim 必须 officially_explained。"""
+    ctx = build_official_explanation_context(
+        announcements="公司合同负债增加，主要系预收客户货款增加所致。",
+        half_year_facts=None,
+    )
+    report = "原材料下降推动毛利率提升，同时合同负债增加表明订单增长。"
+    claims = bind_claims(report, ctx)
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    assert len(cause_claims) == 1
+    assert cause_claims[0]["status"] == "evidence_conflict"
+    acct_claims = [c for c in claims if c["metric"] == "合同负债"]
+    assert len(acct_claims) == 1
+    assert acct_claims[0]["status"] == "officially_explained"
+
+
+def test_same_indicator_opposite_claims_in_report():
+    """Adversarial: 报告写"原材料下降"和"原材料上涨"（矛盾声明），
+    公告含"原材料成本下降" → 第一个 occurrence 应通过，第二个应被拒。"""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料成本下降，主要系采购策略优化所致。",
+        half_year_facts=None,
+    )
+    report = "原材料下降推动毛利率提升，但近期原材料上涨带来成本压力。"
+    claims = bind_claims(report, ctx)
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    assert len(cause_claims) == 2
+    assert cause_claims[0]["status"] == "officially_explained"
+    assert cause_claims[1]["status"] == "evidence_conflict"
+
+
+def test_different_causes_sharing_same_indicator():
+    """Adversarial: 公告含"原材料下降"，报告写两个"原材料下降" → 都应通过。"""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料成本下降，主要系采购策略优化所致。",
+        half_year_facts=None,
+    )
+    report = "原材料下降主要因为采购策略优化，同时行业周期也导致原材料下降。"
+    claims = bind_claims(report, ctx)
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    # "原材料下降" appears twice → 2 claims
+    down_claims = [c for c in cause_claims if c["metric"] == "原材料下降"]
+    assert len(down_claims) == 2
+    for c in down_claims:
+        assert c["status"] == "officially_explained"
+    # "行业周期" also appears → 1 more claim
+    cycle_claims = [c for c in cause_claims if c["metric"] == "行业周期"]
+    assert len(cycle_claims) == 1
+
+
+def test_multi_term_long_evidence():
+    """Adversarial: 公告含多个术语（原材料+合同负债+预收款），
+    报告写多个声明 → 每个声明独立匹配正确的证据。"""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料成本下降，合同负债增加主要系预收货款增加所致。",
+        half_year_facts=None,
+    )
+    report = "原材料下降推动毛利率提升，同时合同负债和预收款驱动现金流改善。"
+    claims = bind_claims(report, ctx)
+    cause_claims = [c for c in claims if c["claim_id"].startswith("CAUSE")]
+    assert len(cause_claims) == 1
+    assert cause_claims[0]["status"] == "officially_explained"
+    acct_claims = [c for c in claims if c["claim_id"].startswith("ACCT")]
+    assert len(acct_claims) >= 1
+    for c in acct_claims:
+        assert c["status"] == "officially_explained"
+
+
+def test_occurrences_have_direction_negation_per_term():
+    """Each entry's occurrences must have direction, negation per term."""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料采购成本同比下降，未采用净额法确认收入。",
+        half_year_facts=None,
+    )
+    assert ctx["entries"], "should have entries"
+    entry = ctx["entries"][0]
+    assert "occurrences" in entry
+    occs = entry["occurrences"]
+    cause_occs = [o for o in occs if o["canonical"] == "原材料下降"]
+    assert cause_occs, "should have cause occurrence"
+    assert cause_occs[0]["direction"] == "down"
+    assert cause_occs[0]["negation"] is False
+    net_occs = [o for o in occs if o["canonical"] == "净额法"]
+    assert net_occs, "should have accounting occurrence"
+    assert net_occs[0]["negation"] is True
+
+
+def test_evidence_occurrences_audit_trail():
+    """Each evidence entry's occurrences provide audit trail."""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料采购成本同比下降。",
+        half_year_facts=None,
+    )
+    entry = ctx["entries"][0]
+    occs = entry.get("occurrences") or []
+    assert occs, "should have occurrences"
+    occ = occs[0]
+    assert "canonical" in occ
+    assert "direction" in occ
+    assert "negation" in occ
+    assert occ["direction"] == "down"
+    assert occ["negation"] is False
+
+
+def test_claim_id_occurrence_distinction():
+    """Multiple occurrences of the same keyword produce distinct claim_ids."""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料采购成本同比下降。",
+        half_year_facts=None,
+    )
+    report = "原材料下降推动毛利率提升。后文原材料下降进一步确认趋势。"
+    claims = bind_claims(report, ctx)
+    cause_claims = [c for c in claims if c["metric"] == "原材料下降"]
+    assert len(cause_claims) == 2
+    assert cause_claims[0]["claim_id"] != cause_claims[1]["claim_id"]
+
+    claims2 = bind_claims(report, ctx)
+    cause_claims2 = [c for c in claims2 if c["metric"] == "原材料下降"]
+    assert cause_claims[0]["claim_id"] == cause_claims2[0]["claim_id"]
+    assert cause_claims[1]["claim_id"] == cause_claims2[1]["claim_id"]
+
+
+def test_claim_id_still_deterministic_for_single_occurrence():
+    """Single occurrence still produces deterministic claim_id."""
+    ctx = build_official_explanation_context(
+        announcements="公司原材料采购成本同比下降。",
+        half_year_facts=None,
+    )
+    report = "原材料下降推动毛利率提升。"
+    claims1 = bind_claims(report, ctx)
+    claims2 = bind_claims(report, ctx)
+    cause1 = [c for c in claims1 if c["metric"] == "原材料下降"]
+    cause2 = [c for c in claims2 if c["metric"] == "原材料下降"]
+    assert len(cause1) == 1
+    assert cause1[0]["claim_id"] == cause2[0]["claim_id"]

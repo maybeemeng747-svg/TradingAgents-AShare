@@ -1,5 +1,16 @@
 # 修改日志
 
+## 2026-07-18 | FUND-003A-B 因果证据按术语/出现位置绑定补修
+
+- **问题**：`aac9add` + `f5fc13f` 的 entry 级 `direction`/`negation` 会被多指标共享，"原材料下降，合同负债增加"会把原材料的方向应用到合同负债；"未采用净额法，仍采用总额法"会把整条 entry 标为否定；cause 同义词（"采购成本下降"→"原材料下降"）未接入匹配。
+- **修复**：
+  - `build_official_explanation_context` 每条 entry 携带 `occurrences` 列表，每个 occurrence 独立保存 `canonical`、`direction`、`negation`、`position`、`context`，替代 entry 级单值。
+  - `bind_claims` 改为逐 occurrence 扫描报告文本中的每个关键词出现，按 position + canonical 去重，通过 `_CAUSE_SYNONYM_MAP` 匹配同义词（"采购成本下降"↔"原材料下降"）。
+  - `claim_id` 改为基于 `keyword@position:context` 的确定性 hash，同一指标多次出现产生不同 ID。
+  - cause 关键词扩展含同义词变体（"原材料成本下降"、"采购成本下降"等），按长度降序处理避免子串误匹配。
+- **对抗测试覆盖**：中性首次出现+后文上涨、未采用净额法+仍采用总额法、原材料下降+合同负债增加、同指标相反声明、原因不同但共享指标、多术语长证据。
+- **230 项测试全部通过**，未改 prompts、未调 live LLM、未写生产数据库。
+
 ## 2026-07-17 | FUND-003A Round 2 复审与任务重排
 
 - 将 detached HEAD 上的 `f5fc13f` fast-forward 接回 `local/tradingagents-custom`，避免补修 commit 悬空丢失。
