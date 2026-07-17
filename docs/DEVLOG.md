@@ -1,5 +1,12 @@
 # 修改日志
 
+## 2026-07-17 | FUND-003A Round 2 复审与任务重排
+
+- 将 detached HEAD 上的 `f5fc13f` fast-forward 接回 `local/tradingagents-custom`，避免补修 commit 悬空丢失。
+- 现有 FUND 专项与相关回归 `221 passed`，但独立 Codex review 仍发现 1 个 P1 和 2 个 P2，人工对抗也证实多指标方向共享会误放行。
+- 新增 `FUND-003A-B` 为唯一 ready 任务，要求按术语和每次出现绑定方向/否定/因果关系；`FUND-004B` 继续阻塞。
+- 本次未调用 live LLM，未写生产数据库，未修改 prompts。
+
 ## 2026-07-16 | FUND-003A 财务因果声明与官方证据逐项绑定
 
 - **问题**：`build_official_explanation_context` 使用全局 `status: "officially_explained"`，任意关键词匹配即放行所有因果/会计声明。"合同负债"公告可错误放行"原材料下降/化工旺季/净额法"。

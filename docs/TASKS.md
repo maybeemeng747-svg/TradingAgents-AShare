@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-16
+> 最后更新：2026-07-17
 
 ---
 
@@ -22,50 +22,61 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-16）
+### 当前执行队列（2026-07-17）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-> **执行前置**：FUND-001A 已完成人工实现、对抗修复和 Codex 多轮复审；提交并恢复 clean tree 后，从 FUND-003A 开始按依赖串行自动领取。自动循环继续遵守 dirty-tree 停止规则。
+> **执行前置**：FUND-001A 已完成人工实现、对抗修复和 Codex 多轮复审；提交并恢复 clean tree 后，从 FUND-003A-B 开始按依赖串行自动领取。自动循环继续遵守 dirty-tree 停止规则。
 
 1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress）。
-3. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto；等待 FUND-003A）。
-4. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A/FUND-004B）。
-5. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
-6. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A/FUND-004A/FUND-004B/FUND-005A）。
-7. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
-8. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
-9. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
-10. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-11. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-12. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
-13. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
-14. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
-15. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；等待专项收口）。
-16. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
-17. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
-18. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-19. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
-20. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
-21. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress；已有 `aac9add` + `f5fc13f`，复审仍有 P1/P2）。
+3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，ready；收口 FUND-003A）。
+4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto；等待 FUND-003A-B）。
+5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004B）。
+6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
+7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
+8. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+9. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+10. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+11. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+12. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+13. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+14. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+15. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
+16. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，in_progress；等待专项收口）。
+17. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
+18. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
+19. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+20. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
+21. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+22. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
 
 > FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
 
-### 今晚 3 小时执行包（2026-07-16）
+### 今晚 3 小时执行包（2026-07-17）
 
 > 目标预算约 190-250 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
 
 | 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
 |---|---|---:|---|
 | 1 | `FUND-001A` Round 4 | 20-30 分钟 | 多来源代码冲突返回 `IDENTITY_CONFLICT`；不得混合另一公司的主营；同代码正常补全保持 `HAS_DATA`；40 项 FUND 回归通过 |
-| 2 | `FUND-003A` | 35-45 分钟 | 因果声明逐 claim 绑定同指标、同语义强证据；无关公告不能放行错误原因 |
+| 2 | `FUND-003A-B` | 35-50 分钟 | 按术语和每次出现分别绑定方向/否定/因果关系；复审无 P0/P1/P2 |
 | 3 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
 | 4 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
 | 5 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
 | 6 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
 
 > **夜间终点**：只完成离线确定性修复和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 3 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
+
+#### FUND-003A-B 补修验收口径
+
+- 证据的 `direction`/`negation`/因果关系必须属于具体术语及其出现位置，禁止挂在整条 entry 上被其他指标复用。
+- 同一指标多次出现时不得只读第一次；存在相反方向或语义不明时 fail closed。
+- 因果同义词必须同时应用于证据侧和 claim 侧；`采购成本下降` 可支持 `原材料成本下降`，但不得只因同时出现“原材料”就证明任意因果。
+- `claim_id` 必须确定性且能区分同一报告内同指标的多条声明，不得只对 keyword 做 hash。
+- 每个 `evidence_id` 的审计片段必须包含它所支持的具体术语、方向与否定信息。
+- 必测对抗样例：中性首次出现+后文上涨；`未采用净额法，仍采用总额法`；`原材料下降+合同负债增加`；同指标多条相反声明；多术语长证据片段。
+- 完成标准：专项与相关回归全绿，`codex review --uncommitted` 无 P0/P1/P2 correctness finding；不调 live LLM，不写生产数据库。
 
 ### 历史任务总表（按创建顺序）
 
@@ -256,11 +267,12 @@
 185. `FUND-005`：逐 Agent 模型与输入契约脱敏 trace（P1，blocked-review，第一版待 FUND-005A 补修）。
 186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
 187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress，FUND-001A 已完成）。
-189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto，依赖 FUND-003A）。
-190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A/FUND-004B）。
+188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress，已有 `aac9add` + `f5fc13f`，等待 FUND-003A-B 收口）。
+189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto，依赖 FUND-003A-B）。
+190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004B）。
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
-192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A/FUND-004A/FUND-004B/FUND-005A）。
+192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
+193. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，ready，收口 `aac9add` + `f5fc13f` 复审发现）。
 
 ### 数据源治理候选队列
 
@@ -5670,7 +5682,7 @@
 ### FUND-003A: 财务因果声明与官方证据逐项绑定（P0）
 - **描述**：把当前“公告出现任意关键词即可放行整段解释”改成 claim-level 证据绑定，防止无关合同负债公告放行“原材料下降/化工旺季/净额法”等错误叙事。
 - **优先级**：P0
-- **状态**：ready — FUND-001A 已完成，可由自动循环领取
+- **状态**：in_progress — 已有 `aac9add` + `f5fc13f`，Round 2 复审仍有 P1/P2，由 FUND-003A-B 收口
 - **预计耗时**：35-45 分钟
 - **depends_on**：FUND-001A, FUND-003, KB-014
 - **auto_release**：true
@@ -5684,12 +5696,29 @@
   - 公告仅含“合同负债”，报告写“采用净额法”必须命中 `ACCOUNTING_POLICY_UNKNOWN`。
   - 正确的“预收款/合同负债推动经营现金流”可以通过，且保留具体 evidence id。
 
+### FUND-003A-B: 因果证据按术语/出现位置绑定补修（P0）
+- **描述**：收口 `aac9add` + `f5fc13f` 的复审问题，将证据方向、否定和因果关系从 entry 全局属性下沉到具体术语及每次出现，防止多指标/多句子误绑定。
+- **优先级**：P0
+- **状态**：ready
+- **预计耗时**：35-50 分钟
+- **depends_on**：FUND-001A
+- **auto_release**：true
+- **实现约束**：
+  - 按具体术语及出现 span 保存 `direction/negation/relation/evidence_id`，不得用 entry 级单值支持多个指标。
+  - 扫描同一术语的每次出现；冲突、模糊或未形成同一因果关系时 fail closed。
+  - cause/accounting 同义词在证据侧与 claim 侧共用同一规范化映射。
+  - `claim_id` 同时具备确定性和发生次数区分能力；审计片段必须展示该 evidence 支持的具体术语与语义。
+- **验收方式**：
+  - 覆盖“中性首次出现+后文上涨”、“未采用净额法+仍采用总额法”、“原材料下降+合同负债增加”、同指标相反声明、原因不同但共享指标、多术语长证据六类对抗样例。
+  - `pytest tests/test_fund003_fund004_integrity.py tests/test_fund006_integrity_replay.py tests/test_data_collector.py tests/test_data004_evidence_contract.py tests/test_readiness_score.py -q`
+  - `codex review --uncommitted` 无 P0/P1/P2 correctness finding；不调 live LLM、不写生产数据库。
+
 ### FUND-004B: C-006 同日期/同期间口径计算补修（P0）
 - **描述**：修复 C-006 按指标各取最新值导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算的问题。
 - **优先级**：P0
-- **状态**：blocked-auto — 等待 FUND-003A
+- **状态**：blocked-auto — 等待 FUND-003A-B
 - **预计耗时**：30-40 分钟
-- **depends_on**：FUND-002, FUND-003A
+- **depends_on**：FUND-002, FUND-003A-B
 - **auto_release**：true
 - **实现约束**：
   - 按 `(report_date, period_scope, unit)` 建立完整指标组；毛利率只使用同组收入和营业成本。
@@ -5704,9 +5733,9 @@
 ### FUND-004A: 基本面语义门禁前移并剔除无效研究权重（P0）
 - **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
 - **优先级**：P0
-- **状态**：blocked-auto — 等待 FUND-001A/FUND-003A/FUND-004B
+- **状态**：blocked-auto — 等待 FUND-001A/FUND-003A-B/FUND-004B
 - **预计耗时**：40-50 分钟
-- **depends_on**：FUND-001A, FUND-003A, FUND-004B, FUND-004
+- **depends_on**：FUND-001A, FUND-003A-B, FUND-004B, FUND-004
 - **auto_release**：true
 - **实现约束**：
   - 基本面 Agent 输出后立即生成结构化 integrity result；保留可追溯财务事实与原始报告，但决策输入使用 `fundamentals_report_for_decision` 或等价安全字段。
@@ -5735,7 +5764,7 @@
 - **优先级**：P1
 - **状态**：blocked-auto — 等待全部 FUND 补修任务
 - **预计耗时**：40-50 分钟
-- **depends_on**：FUND-001A, FUND-003A, FUND-004A, FUND-004B, FUND-005A
+- **depends_on**：FUND-001A, FUND-003A-B, FUND-004A, FUND-004B, FUND-005A
 - **auto_release**：true
 - **实现约束**：
   - 使用脱敏的 `cn_akshare` 表格、`cn_astock` 列表、无关公告、累计/单季度混合数据 fixture。
