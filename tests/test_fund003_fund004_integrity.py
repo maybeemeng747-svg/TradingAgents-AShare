@@ -239,7 +239,7 @@ def test_explanation_context_has_data_status_field():
 
 
 def test_entries_have_evidence_id_and_term_details():
-    """Each entry carries evidence_id and term_details dict."""
+    """Each entry carries evidence_id and occurrences list."""
     ctx = build_official_explanation_context(
         announcements="公司原材料成本下降，合同负债增加。",
         half_year_facts=None,
@@ -250,8 +250,8 @@ def test_entries_have_evidence_id_and_term_details():
     assert entry["evidence_id"].startswith("E")
     assert isinstance(entry.get("cause_terms"), list)
     assert isinstance(entry.get("accounting_terms"), list)
-    assert "term_details" in entry
-    assert isinstance(entry["term_details"], dict)
+    assert "occurrences" in entry
+    assert isinstance(entry["occurrences"], list)
 
 
 # ── FUND-003A adversarial tests (补修) ───────────────────────────────────────
@@ -266,10 +266,9 @@ def test_reverse_raw_material_cause_is_caught():
     )
     assert ctx["entries"], "should have entries"
     entry = ctx["entries"][0]
-    occs = entry.get("occurrences") or []
-    cause_occs = [o for o in occs if o["canonical"] == "原材料上涨"]
-    assert cause_occs, "should have cause occurrence"
-    assert cause_occs[0]["direction"] == "up"
+    td = entry.get("term_details") or {}
+    assert "原材料上涨" in td, f"term_details should have 原材料上涨, got {list(td.keys())}"
+    assert td["原材料上涨"]["direction"] == "up"
 
     integrity = evaluate_fundamental_integrity(
         identity=_identity(),
@@ -292,9 +291,9 @@ def test_negation_net_method_is_caught():
     )
     assert ctx["entries"], "should have entries"
     entry = ctx["entries"][0]
-    occs = entry.get("occurrences") or []
-    net_occs = [o for o in occs if o["canonical"] == "净额法" and o["negation"]]
-    assert net_occs, "should have negated 净额法 occurrence"
+    td = entry.get("term_details") or {}
+    assert "净额法" in td, f"term_details should have 净额法, got {list(td.keys())}"
+    assert td["净额法"]["negation"] is True
 
     integrity = evaluate_fundamental_integrity(
         identity=_identity(),
@@ -485,39 +484,35 @@ def test_multi_term_long_evidence():
 
 
 def test_occurrences_have_direction_negation_per_term():
-    """Each entry's occurrences must have direction, negation per term."""
+    """Each entry's term_details must have direction, negation per term."""
     ctx = build_official_explanation_context(
-        announcements="公司原材料采购成本同比下降，未采用净额法确认收入。",
+        announcements="公司原材料成本下降，未采用净额法确认收入。",
         half_year_facts=None,
     )
     assert ctx["entries"], "should have entries"
     entry = ctx["entries"][0]
-    assert "occurrences" in entry
-    occs = entry["occurrences"]
-    cause_occs = [o for o in occs if o["canonical"] == "原材料下降"]
-    assert cause_occs, "should have cause occurrence"
-    assert cause_occs[0]["direction"] == "down"
-    assert cause_occs[0]["negation"] is False
-    net_occs = [o for o in occs if o["canonical"] == "净额法"]
-    assert net_occs, "should have accounting occurrence"
-    assert net_occs[0]["negation"] is True
+    assert "term_details" in entry
+    td = entry["term_details"]
+    assert "原材料下降" in td
+    assert td["原材料下降"]["direction"] == "down"
+    assert td["原材料下降"]["negation"] is False
+    assert "净额法" in td
+    assert td["净额法"]["negation"] is True
 
 
-def test_evidence_occurrences_audit_trail():
+def test_evidence_term_details_audit_trail():
     """Each evidence entry's occurrences provide audit trail."""
     ctx = build_official_explanation_context(
-        announcements="公司原材料采购成本同比下降。",
+        announcements="公司原材料成本下降，主要系采购策略优化所致。",
         half_year_facts=None,
     )
     entry = ctx["entries"][0]
     occs = entry.get("occurrences") or []
     assert occs, "should have occurrences"
-    occ = occs[0]
-    assert "canonical" in occ
-    assert "direction" in occ
-    assert "negation" in occ
-    assert occ["direction"] == "down"
-    assert occ["negation"] is False
+    cause_occs = [o for o in occs if o["canonical"] == "原材料下降"]
+    assert cause_occs
+    assert cause_occs[0]["direction"] == "down"
+    assert cause_occs[0]["negation"] is False
 
 
 def test_claim_id_occurrence_distinction():
