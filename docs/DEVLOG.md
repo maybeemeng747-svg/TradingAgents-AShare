@@ -1,5 +1,20 @@
 # 修改日志
 
+## 2026-07-22 | FUND-006A 真实 provider 格式与生产图离线回放验收
+
+- **目标**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链，作为 live 603629 前的唯一放行门。
+- **实现**：新增 `tests/test_fund006a_provider_replay.py`（52 项），覆盖五条验证轴：
+  1. **身份来源**（9 项）：AKShare 表格格式、Eastmoney 列表格式、CNInfo 跨源冲突、HAS_DATA/PARTIAL/MISSING/CONFLICT 状态、render_identity_context 约束注入。
+  2. **期间公式**（7 项）：累计收入识别（Q1/H1/Q3/FY）、单季度推导（Q2=H1-Q1, Q3=Q3-H1, Q4=FY-Q3）、现金流量表 scope、资产负债表 POINT_IN_TIME、混合累计/单季度分组（FUND-004B 回归）。
+  3. **claim-evidence 绑定**（8 项）：公告解释上下文构建、因果 claim 匹配、不支持 claim 检测、会计政策检测、否定处理、方向冲突、同义词归一化、per-occurrence 绑定（FUND-003A-B 回归）。
+  4. **研究权重剔除**（6 项）：gate 替换报告、共识排除被门禁基本面、gate 存储 integrity 到 metadata、完整 integrity 评估（真实 fixture）、有效报告通过。
+  5. **实际模型 trace**（7 项）：routing facts 注入（provider/model/tier/digest）、tier fallback、snapshot 不可变性、actual_model 从响应提取、隐私安全（secrets/URLs 不泄漏）。
+  6. **全链路离线回放**（9 项）：identity 注入分析师上下文、period context 注入、gate 替换缺失身份报告、Risk Judge 消费 integrity、共识排除、trace 注入、跨行业重放（4 只股票）、603629 历史化工猜测回归、财务事实保留。
+  7. **对抗边界**（6 项）：空 profile、缺失 period facts、未来报告日、重复报告日、单位不匹配、malformed state。
+- **Provider fixture**：使用脱敏的 AKShare 表格格式、Eastmoney 列表格式、CNInfo 跨源格式、真实 income_statement/cashflow/balance_sheet markdown 表格（603629-like 数据），累计/单季度混合。
+- **验证**：FUND-006A 专项 52 项通过；FUND 组合 215 项通过；API/runtime smoke 122 项通过；readiness/data_source/evidence 320 项通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-22 | FUND-005A 逐 Agent 真实模型与运行时 trace 补修
 
 - **问题**：`annotate_agent_traces()` 中 `actual_model` 静态等于 `requested_model`（config 派生），从未从 LLM 响应元数据提取真实模型；无 fallback 追踪；无逐 Agent 计时。
@@ -13725,3 +13740,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/FUND-005A-20260722-round1.txt
 - **Run archive**: docs/task_runs/FUND-005A-20260722-203834/
+
+## 2026-07-22 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-006A - 真实 provider 格式与生产图离线回放验收（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/FUND-006A-20260722-round1.txt
+- **Run archive**: docs/task_runs/FUND-006A-20260722-205540/
