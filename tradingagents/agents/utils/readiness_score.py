@@ -203,7 +203,7 @@ _EVIDENCE_WEIGHTS = {
 _RISK_LABELS = {0: "风险观察", 1: "禁止开仓", 2: "条件减仓", 3: "触发止损", 4: "立即清仓"}
 _BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
 
-# [Fix-9] A-share short-selling filter patterns
+# [Fix-9] + [C-003] A-share short-selling filter patterns
 _SHORT_SELLING_PATTERNS = [
     (r'做空策略', '看空信号'),
     (r'空头开仓', '离场信号'),
@@ -213,6 +213,20 @@ _SHORT_SELLING_PATTERNS = [
     (r'考虑做空', '考虑减仓/止损'),
     (r'建议做空', '建议回避'),
     (r'可以做空', '应考虑离场'),
+    # [C-003] expanded patterns
+    (r'反手做空', '反手离场'),
+    (r'开空仓', '离场观望'),
+    (r'融券做空', '回避'),
+    (r'融券卖出', '回避'),
+    (r'逢高做空', '逢高减仓'),
+    (r'加空[仓]?', '减仓'),
+    (r'空头加仓', '减仓'),
+    (r'试空', '试探离场'),
+    (r'平空', '平仓离场'),
+    (r'做空仓位', '空仓观望'),
+    (r'short\s*position', '回避'),
+    (r'short\s*sel(?:l|ling)', '回避'),
+    (r'open\s*(?:a\s*)?short', '回避'),
 ]
 
 
@@ -759,6 +773,25 @@ def _sanitize_short_selling_text(text: str) -> tuple:
             changes.append(f'"{matches[0].group(0)}" → "{replacement}"')
             result = re.sub(pattern, replacement, result)
     return result, changes
+
+
+def filter_short_strategy(text: str, *, can_short: bool = False) -> dict:
+    """[C-003] Filter short-selling strategies from output text.
+
+    When can_short=False, replaces all short-selling language with safe
+    alternatives. Returns a dict with the filtered text and metadata.
+
+    Args:
+        text: The output text to filter.
+        can_short: Whether short selling is allowed. Default False (A-share).
+
+    Returns:
+        {"text": str, "filtered": bool, "changes": list[str]}
+    """
+    if can_short or not text:
+        return {"text": text, "filtered": False, "changes": []}
+    sanitized, changes = _sanitize_short_selling_text(text)
+    return {"text": sanitized, "filtered": bool(changes), "changes": changes}
 
 
 def check_valuation_mismatch(

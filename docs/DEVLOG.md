@@ -1,5 +1,25 @@
 # 修改日志
 
+## 2026-07-23 | C-003 禁止做空策略输出
+
+- **任务**：C-003 — 如果 can_short=false，做空相关策略在生成阶段就不进入候选池（P1）
+- **实现**：
+  - `tradingagents/agents/utils/readiness_score.py` — 扩展 `_SHORT_SELLING_PATTERNS`，新增 13 个做空相关模式（反手做空、开空仓、融券做空、融券卖出、逢高做空、加空、空头加仓、试空、平空、做空仓位、short position/selling/open short）；新增 `filter_short_strategy()` 便捷函数。
+  - `tradingagents/agents/managers/research_manager.py` — 新增 [C-003] 过滤：
+    - 读取 `config.account_capability.can_short`。
+    - `can_short=False` 时，在 prompt 末尾追加做空约束指令（生成阶段过滤）。
+    - LLM 输出后，调用 `filter_short_strategy()` 做后处理文本替换（兜底过滤）。
+  - `tradingagents/agents/researchers/bear_researcher.py` — 已有运行时 can_short 检查，无需修改。
+  - `tradingagents/agents/managers/risk_manager.py` — 已有 `_sanitize_short_selling_text` 后处理，无需修改。
+- **测试**：
+  - `tests/test_c003_short_strategy_filter.py`（新增）— **23 tests passed**。
+  - 覆盖 5 个测试类：扩展模式匹配（12）、filter_short_strategy 便捷函数（7）、Research Manager 集成（2）、Bear Researcher 集成（1）、Risk Manager 集成（1）。
+- **回归**：
+  - `pytest tests/test_f001_report_execution_fixes.py tests/test_readiness_score.py tests/test_decision_semantics.py tests/test_research_manager_consensus.py tests/test_e_series_fixes.py -q`：**276 passed**。
+  - `pytest tests/test_c001_position_validation_gate.py tests/test_decision_replay.py tests/test_v006_decision_e2e_replay.py tests/test_p11_has_position.py tests/test_g001_three_layer.py -q`：**146 passed**。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | C-001 position_validation_gate 持仓状态动作门禁
 
 - **任务**：C-001 — 每份报告生成前读取持仓状态，根据持仓状态约束可输出的动作类型（P2）
@@ -14083,3 +14103,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/C-001-20260723-round1.txt
 - **Run archive**: docs/task_runs/C-001-20260723-031813/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: C-003 - 禁止做空策略输出（P1）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/C-003-20260723-round1.txt
+- **Run archive**: docs/task_runs/C-003-20260723-033007/

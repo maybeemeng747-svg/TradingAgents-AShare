@@ -11,6 +11,8 @@ from tradingagents.agents.utils.debate_utils import (
     format_claims_for_prompt,
 )
 from tradingagents.agents.utils.trade_actions import validate_action, TradeAction
+# [C-003] short_filter
+from tradingagents.agents.utils.readiness_score import filter_short_strategy
 
 _logger = logging.getLogger(__name__)
 
@@ -191,11 +193,15 @@ def create_research_manager(llm, memory):
         unresolved_claims_text = format_claim_subset_for_prompt(claims, unresolved_claim_ids)
         round_summary_text = round_summary or "暂无轮次摘要。"
 
+        # [C-003] short_filter — check can_short
+        config = get_config()
+        can_short = config.get('account_capability', {}).get('can_short', False)
+
         # [G-003] consensus_weight_fix — inject conflict summary after context_block
         consensus_block = _build_consensus_block(state)
         consensus_section = ("\n\n" + consensus_block + "\n\n") if consensus_block else "\n\n"
 
-        prompt = context_block + consensus_section + get_prompt("research_manager_prompt", config=get_config()).format(
+        prompt = context_block + consensus_section + get_prompt("research_manager_prompt", config=config).format(
             past_memory_str=past_memory_str,
             history=history,
             smart_money_report=smart_money_report,
@@ -205,6 +211,15 @@ def create_research_manager(llm, memory):
             unresolved_claims_text=unresolved_claims_text,
             round_summary=round_summary_text,
         )
+
+        # [C-003] short_filter — append constraint when short selling not allowed
+        if not can_short:
+            prompt += (
+                "\n\n⚠️ 重要约束：当前账户不允许做空（can_short=false）。\n"
+                "请不要输出任何做空、试空、平空、融券卖出等策略方向。\n"
+                "如果分析结论是看空，请改为输出：不买/回避/等待重新评估。\n"
+                "不要在投资方案中使用 SHORT、SELL、EXIT 等做空方向的动作。"
+            )
 
         _logger.info(
             "[research_manager] prompt size: total=%d chars | "
@@ -288,6 +303,12 @@ def create_research_manager(llm, memory):
         gate_result = validate_position_actions(full_content, user_context)
         if not gate_result["passed"]:
             full_content += format_position_validation_warning(gate_result)
+
+        # [C-003] short_filter — sanitize short-selling language from output
+        short_result = filter_short_strategy(full_content, can_short=can_short)
+        if short_result["filtered"]:
+            full_content = short_result["text"]
+            _logger.warning("[C-003] short_selling_filter applied: %s", short_result["changes"])
 
         new_investment_debate_state = {
             "judge_decision": full_content,
