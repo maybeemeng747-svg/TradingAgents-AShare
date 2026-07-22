@@ -16,7 +16,7 @@ from tradingagents.agents.utils.debate_utils import (
     safe_int,
 )
 from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
-from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning
+from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning, extract_event_risk_inputs
 from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
 from tradingagents.agents.utils.fundamental_integrity import (  # [FUND-004] fundamental_semantic_gate
     evaluate_fundamental_integrity,
@@ -147,7 +147,13 @@ def create_risk_manager(llm, memory):
         save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
 
         # [C-007] event_risk_gate — 检查重大风险事件
-        event_risk_info = check_event_risk(stock_code)
+        # Extract raw_evidence early so event_risk_gate can use it
+        raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
+        event_risk_info = check_event_risk(
+            stock_code,
+            raw_evidence=raw_evidence,
+            news_text=news_report or "",
+        )
         if event_risk_info["has_risk"]:
             final_response += format_event_risk_warning(event_risk_info)
             _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
@@ -156,7 +162,6 @@ def create_risk_manager(llm, memory):
         # deterministic sidecars, not a model's interpretation of them.
         # [FUND-004A] Use pre-computed integrity from gate node if available,
         # otherwise compute here (fallback for runs without the gate node).
-        raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
         pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
         if pre_computed_integrity is not None:
             fundamental_integrity = pre_computed_integrity

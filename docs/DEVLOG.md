@@ -1,5 +1,42 @@
 # 修改日志
 
+## 2026-07-23 | C-007 event_risk_gate 重大事件风控门禁
+
+- **任务**：C-007 — 重大事件发生时，进入风控优先模式（P1）
+- **实现**：
+  - `tradingagents/agents/utils/event_risk_gate.py` — 完整重写事件风控门禁模块。
+    - **文本检测**（`detect_events_from_text()`）：从公告/新闻文本中检测 10 类重大风险事件：
+      - `large_unlock`：大比例解禁（解禁/限售/减持关键词）
+      - `major_ma`：重大并购/重组（并购/重组/借壳/要约收购）
+      - `suspension`：停复牌（停牌/复牌/临时停牌）
+      - `earnings_crash`：业绩暴雷（净利润下降/预亏/由盈转亏）
+      - `major_litigation`：重大诉讼/仲裁（诉讼/仲裁/虚假陈述赔偿）
+      - `regulatory_investigation`：监管立案/调查（立案调查/行政处罚/监管函/警示函）
+      - `major_write_off`：大额资产减值（商誉减值/大额计提）
+      - `control_change`：控制权变更（实控人变更/要约收购）
+      - `risk_warning`：风险警示/ST（ST/*ST/退市）
+    - **结构化数据检测**：从 `raw_evidence` 提取解禁比例、杠杆率、净利润变化等量化指标，与文本检测互补。
+    - **`extract_event_risk_inputs()`**：类似 `extract_financial_anomaly_inputs()`，从 raw_evidence 提取事件风险相关字段（公告文本、新闻文本、财务事实中的杠杆率等）。
+    - **三级风险响应**：
+      - `critical`（严重）：earnings_crash / regulatory_investigation / risk_warning → 阻断所有开仓
+      - `high`（高风险）：large_unlock / major_ma / suspension / major_litigation / major_write_off / control_change → 阻断开仓
+      - `medium`（中风险）：high_leverage → 警告但不阻断
+    - **风控优先模式**（`risk_first_mode`）：CRITICAL/HIGH 事件激活时，禁止强买入动作（建仓/买入/加仓/追涨/BUY/ENTER）。
+    - **`format_event_risk_warning()`**：格式化输出包含风险等级标识、事件详情、风控优先模式说明和禁止动作列表。
+    - **`format_event_risk_block()`**：输出结构化系统区块，可被 `_split_body()` 识别。
+  - `tradingagents/agents/managers/risk_manager.py` — 更新 C-007 集成点。
+    - 将 `raw_evidence` 提取提前到 event_risk_gate 调用之前。
+    - 传入 `raw_evidence` 和 `news_text` 给 `check_event_risk()`，使门禁能从公告/新闻文本中检测事件。
+    - 新增 `extract_event_risk_inputs` 导入。
+- **测试**：
+  - `tests/test_c007_event_risk_gate.py`（新增）— **85 tests passed**。
+  - 覆盖 16 个测试类：文本检测-解禁（4）、文本检测-并购（3）、文本检测-停牌（2）、文本检测-业绩暴雷（3）、文本检测-诉讼（2）、文本检测-监管（3）、文本检测-减值（2）、文本检测-控制权（2）、文本检测-ST（3）、文本检测-多事件（4）、结构化检测（10）、风险等级（5）、开仓阻断（4）、风控优先模式（5）、组合检测（3）、输入提取（8）、格式化警告（6）、格式化区块（3）、边界条件（11）、确定性（2）。
+- **回归**：
+  - `pytest tests/test_c001_position_validation_gate.py tests/test_c005_delta_check.py tests/test_c006_financial_validator.py -q`：**163 passed**。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | C-006 financial_data_validator Phase 2 异常检测扩展
 
 - **任务**：C-006 — 财报数据异常检测，分期实现（P2）
@@ -14218,3 +14255,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/C-006-20260723-round1.txt
 - **Run archive**: docs/task_runs/C-006-20260723-040537/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: C-007 - event_risk_gate（P1）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/C-007-20260723-round1.txt
+- **Run archive**: docs/task_runs/C-007-20260723-041643/
