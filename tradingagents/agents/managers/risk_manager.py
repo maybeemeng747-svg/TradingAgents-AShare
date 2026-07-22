@@ -64,8 +64,6 @@ def create_risk_manager(llm, memory):
     async def risk_manager_node(state) -> dict:
         # [C-001] position_validation_gate
         user_context = state.get('user_context', {})
-        current_position = user_context.get('current_position', 0)
-        has_position = current_position is not None and current_position > 0
 
         company_name = state["company_of_interest"]
 
@@ -132,11 +130,13 @@ def create_risk_manager(llm, memory):
         final_response = cleaned_response + "\n\n" + format_trade_quality_check(trade_quality_check)
 
         # [C-001] position_validation_gate — 校验输出动作
-        if not has_position:
-            reduce_keywords = ['减仓', '清仓', '止损', '止盈', '卖出', 'SELL', 'EXIT', 'REDUCE']
-            if any(kw in final_response for kw in reduce_keywords):
-                final_response += "\n\n⚠️ [C-001] 未持仓状态，已将减仓/清仓建议自动转换为观望（WAIT）。"
-                _logger.warning("[C-001] position_validation_gate: 未持仓但输出了减仓/清仓建议，已自动转换")
+        from tradingagents.agents.utils.position_validation_gate import (
+            validate_position_actions,
+            format_position_validation_warning,
+        )
+        gate_result = validate_position_actions(final_response, user_context)
+        if not gate_result["passed"]:
+            final_response += format_position_validation_warning(gate_result)
 
         # [C-005] delta_check — 检测结论是否翻转
         stock_code = state.get("ticker", company_name)

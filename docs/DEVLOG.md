@@ -1,5 +1,32 @@
 # 修改日志
 
+## 2026-07-23 | C-001 position_validation_gate 持仓状态动作门禁
+
+- **任务**：C-001 — 每份报告生成前读取持仓状态，根据持仓状态约束可输出的动作类型（P2）
+- **实现**：
+  - `tradingagents/agents/utils/position_validation_gate.py`（新增）— 持仓状态动作门禁模块。
+    - `validate_position_actions(text, user_context)` 主入口：解析持仓状态（has_position/no_position/unknown），检测报告文本中违反持仓约束的动作关键词。
+    - 未持仓禁止动作：减仓/清仓/止损/止盈/卖出/HOLD/SELL/EXIT/REDUCE 等（30+ 模式）。
+    - 已持仓禁止动作：建仓/买入/入场/BUY/ENTER 等（15+ 模式）。
+    - 未知持仓状态：不约束（与现有行为一致）。
+    - 字段名保护：止损价/止损位/止损条件/止损线/止损红线不误判为违规。
+    - 系统区块排除：⚠️ [C-001]/[D-002]/📊/--- 标记后的内容不参与检测。
+    - `format_position_validation_warning(result)` 将违规结果格式化为追加警告文本。
+    - 返回结构化 dict：`{passed, position_status, violations, allowed_actions, forbidden_actions, has_position}`。
+  - `tradingagents/agents/managers/research_manager.py` — 替换原软警告为 `validate_position_actions()` 门禁调用，清理未使用的 `has_position` 变量。
+  - `tradingagents/agents/managers/risk_manager.py` — 同上，替换原软警告为门禁调用。
+  - `tradingagents/graph/signal_processing.py` — 未修改，`_has_gate_failure()` 仍能识别新门禁输出的 `[C-001]` 标记。
+  - `tradingagents/agents/utils/trade_actions.py` — 未修改，复用现有 `POSITION_STATE_ACTIONS` 枚举。
+- **测试**：
+  - `tests/test_c001_position_validation_gate.py`（新增）— **46 tests passed**。
+  - 覆盖 10 个测试类：未持仓违规检测（9）、已持仓违规检测（8）、未知持仓不约束（4）、字段名保护（5）、系统区块排除（4）、多违规检测（2）、警告格式化（4）、边界条件（7）、集成验证（3）。
+- **回归**：
+  - `pytest tests/test_decision_semantics.py tests/test_decision_replay.py tests/test_e_series_fixes.py tests/test_readiness_score.py -q`：**194 passed**。
+  - `pytest tests/test_fund004a_integrity_gate.py tests/test_p11_has_position.py -q`：**35 passed**。
+  - `py_compile` 全部修改文件通过。
+- **向后兼容**：新门禁输出仍包含 `[C-001]` 标记，`signal_processing._has_gate_failure()` 和 `test_e_series_fixes.py`/`test_decision_semantics.py` 中的断言不受影响。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | B-001 接入小米 MiMo 模型到 TA 系统
 
 - **任务**：B-001 — 在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro（高优先级）
@@ -14044,3 +14071,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/B-001-20260723-round1.txt
 - **Run archive**: docs/task_runs/B-001-20260723-030842/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: C-001 - position_validation_gate（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/C-001-20260723-round1.txt
+- **Run archive**: docs/task_runs/C-001-20260723-031813/
