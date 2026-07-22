@@ -199,6 +199,9 @@ def get_investment_controller_context(
         notes=notes,
     )
 
+    # --- [B-004] holdings_sync_status ---
+    holdings_sync_status = _collect_holdings_sync_status(db, user_id, as_of, notes)
+
     return {
         "schema_version": CONTEXT_SCHEMA_VERSION,
         "as_of": as_of,
@@ -216,6 +219,7 @@ def get_investment_controller_context(
         "recent_report_data_blockers": report_blockers,  # [IC-TA-002]
         "local_knowledge_hits": local_knowledge_hits,  # [KB-006]
         "half_year_facts": half_year_facts,  # [HY-007]
+        "holdings_sync_status": holdings_sync_status,  # [B-004]
         "controller_hints": controller_hints,  # [IC-TA-002]
         "notes": notes,
         "runtime_tier_meta": _tradeflow_meta("investment_controller_context"),
@@ -1563,6 +1567,63 @@ def _build_half_year_alert_lane(
             "as_of": as_of,
         })
     return alerts
+
+
+def _collect_holdings_sync_status(
+    db: Session,
+    user_id: str,
+    as_of: str,
+    notes: list[str],
+) -> dict[str, Any]:
+    """[B-004] Lightweight sync status for the external holdings file.
+
+    Read-only — does not trigger sync, only reports whether the external
+    file exists and how it differs from TA holdings.
+    """
+    try:
+        from api.services import holdings_sync_service
+        status = holdings_sync_service.get_sync_status(db, user_id)
+    except Exception as exc:
+        logger.warning("[b-004] holdings sync status check failed: %s", exc)
+        return {
+            "source": "holdings_sync",
+            "as_of": as_of,
+            "data_status": DATA_STATUS_FAILED,
+            "file_exists": False,
+            "ta_count": 0,
+            "external_count": 0,
+        }
+
+    file_exists = status.get("file_exists", False)
+    file_error = status.get("file_error")
+    diff = status.get("diff", {})
+
+    if file_error and file_error != "file_not_found":
+        data_status = DATA_STATUS_FAILED
+    elif not file_exists:
+        data_status = DATA_STATUS_MISSING
+    else:
+        ta_count = status.get("ta_count", 0)
+        ext_count = status.get("external_count", 0)
+        if ta_count == 0 and ext_count == 0:
+            data_status = DATA_STATUS_MISSING
+        else:
+            data_status = DATA_STATUS_FRESH
+
+    return {
+        "source": "holdings_sync",
+        "as_of": as_of,
+        "data_status": data_status,
+        "file_path": status.get("file_path", ""),
+        "file_exists": file_exists,
+        "file_error": file_error,
+        "ta_count": status.get("ta_count", 0),
+        "external_count": status.get("external_count", 0),
+        "ta_only_count": diff.get("ta_only_count", 0),
+        "external_only_count": diff.get("external_only_count", 0),
+        "both_changed_count": diff.get("both_changed_count", 0),
+        "identical_count": diff.get("identical_count", 0),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

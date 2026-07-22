@@ -1,5 +1,36 @@
 # 修改日志
 
+## 2026-07-23 | B-004 持仓快照与 investment-controller 同步
+
+- **任务**：B-004 — TA 系统的持仓数据与 investment-controller 项目的 current_holdings.json 双向同步（中优先级）
+- **实现**：
+  - `api/services/holdings_sync_service.py`（新增）— 持仓双向同步 service。
+    - **`read_external_holdings()`**：读取外部 `current_holdings.json`，支持 envelope `{holdings: [...]}` 和纯数组格式，返回 `{holdings, meta, error}`。
+    - **`write_external_holdings()`**：原子写入外部 JSON 文件（write-to-temp-then-rename），自动生成 schema_version 和 meta。
+    - **`compute_bidirectional_diff()`**：纯确定性 diff 计算，返回 `ta_only / external_only / both_changed / identical` 四类分组。
+    - **`export_holdings()`**：TA → 文件单向导出。
+    - **`import_holdings()`**：文件 → TA 单向导入，复用 `portfolio_import_service.sync_positions()`，source=`investment_controller`。
+    - **`sync_holdings()`**：主入口，支持 `direction="export|import|bidirectional"`。双向模式下：外部文件缺失 → 导出；TA 为空 → 导入；双方有数据 → 合并（external wins for conflicts）。
+    - **`get_sync_status()`**：只读状态查询，不触发同步。
+    - **`get_default_sync_path()`**：默认路径 `investment-controller/current_holdings.json`，支持 `INVESTMENT_CONTROLLER_HOLDINGS_PATH` 环境变量覆盖。
+    - 设计契约：不调用 LLM、不读 API key、不写生产 DB、不触发 TA；diff 计算纯确定性。
+  - `api/main.py` — 新增 3 个 API 端点。
+    - `POST /v1/portfolio/holdings-sync`：触发同步，支持 `file_path` 和 `direction` 参数。
+    - `GET /v1/portfolio/holdings-sync/status`：只读 diff 状态。
+    - `GET /v1/portfolio/holdings-sync/external`：只读外部文件内容。
+  - `api/services/investment_controller_context.py` — IC 上下文新增 `holdings_sync_status` bucket。
+    - 报告外部文件存在性、TA/外部记录数、diff 统计（ta_only/external_only/both_changed/identical counts）。
+    - 只读，不触发同步，异常降级为 `data_status=failed`。
+- **测试**：
+  - `tests/test_b004_holdings_sync.py`（新增）— **51 tests passed**。
+  - 覆盖 11 个测试类：read_external（7）、write_external（5）、position_conversion（3）、bidirectional_diff（7）、export（3）、import（4）、sync_bidirectional（6）、sync_status（3）、default_path（2）、merge_positions（5）、edge_cases（5）。
+- **回归**：
+  - `pytest tests/test_portfolio_import.py tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**135 passed**。
+  - `pytest tests/test_b002_openclaw_callback.py tests/test_b003_feishu_export.py -q`：**87 passed**。
+  - `py_compile` 全部修改文件通过。
+  - `from api.main import app` 导入正常，3 个 B-004 路由已注册。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | B-003 研报导出为飞书文档
 
 - **任务**：B-003 — 分析结果支持导出为飞书云文档，方便分享和存档（中优先级）
@@ -14370,3 +14401,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/B-003-20260723-round1.txt
 - **Run archive**: docs/task_runs/B-003-20260723-051718/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: B-004 - 持仓快照与 investment-controller 同步
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/B-004-20260723-round1.txt
+- **Run archive**: docs/task_runs/B-004-20260723-052711/

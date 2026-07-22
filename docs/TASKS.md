@@ -191,7 +191,7 @@
 ### B-004: 持仓快照与 investment-controller 同步
 - **描述**：TA 系统的持仓数据与 investment-controller 项目的 current_holdings.json 双向同步
 - **优先级**：中
-- **状态**：ready
+- **状态**：in_progress — claimed B-004-20260723-052711
 - **预计耗时**：30-40 分钟
 - **depends_on**：无
 - **auto_release**：true

@@ -43,6 +43,7 @@ from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, Impo
 from api.job_store import get_job_store as _new_job_store
 from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
 from api.services import feishu_export_service  # [B-003] feishu_doc_export
+from api.services import holdings_sync_service  # [B-004] holdings_sync
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -5005,6 +5006,58 @@ async def parse_position_image_endpoint(
     except Exception as exc:
         logger.warning("[parse-image] VLM parsing failed: %s", exc)
         raise HTTPException(500, "图片解析失败，请稍后重试") from exc
+
+
+# [B-004] holdings_sync — TA ↔ investment-controller holdings sync
+class HoldingsSyncRequest(BaseModel):
+    file_path: str = ""
+    direction: str = "bidirectional"
+
+
+@app.post("/v1/portfolio/holdings-sync")
+def sync_holdings_with_controller(
+    body: HoldingsSyncRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """Bidirectional holdings sync between TA and investment-controller.
+
+    ``direction``: ``"export"`` (TA→file), ``"import"`` (file→TA),
+    or ``"bidirectional"`` (both, default). Runtime tier=FAST_RADAR.
+    """
+    try:
+        return holdings_sync_service.sync_holdings(
+            db=db,
+            user_id=current_user.id,
+            file_path=body.file_path or None,
+            direction=body.direction,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/portfolio/holdings-sync/status")
+def get_holdings_sync_status(
+    file_path: str = "",
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """Read-only sync status: diff between TA and external file."""
+    return holdings_sync_service.get_sync_status(
+        db=db,
+        user_id=current_user.id,
+        file_path=file_path or None,
+    )
+
+
+@app.get("/v1/portfolio/holdings-sync/external")
+def read_external_holdings_file(
+    file_path: str = "",
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Read the external current_holdings.json (read-only)."""
+    path = file_path or holdings_sync_service.get_default_sync_path()
+    return holdings_sync_service.read_external_holdings(path)
 
 
 @app.get("/v1/dashboard/tracking-board")
