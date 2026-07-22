@@ -1,0 +1,804 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m✱ [0mGrep "C-006"[90m in . · 6 matches[0m
+[0m✱ [0mGrep "financial_data_validator"[90m in . · 0 matches[0m
+[0m✱ [0mGrep "check_financial_anomalies"[90m in . · 8 matches[0m
+Let me find more details about C-006 and understand the existing codebase:
+[0m→ [0mRead tradingagents/agents/utils/financial_validator.py
+[0m→ [0mRead tradingagents/agents/managers/risk_manager.py[90m [offset=170, limit=40][0m
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [limit=100, offset=1][0m
+[0m✱ [0mGrep "extract_financial_anomaly_inputs"[90m in . · 216 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [offset=835, limit=250][0m
+[0m→ [0mRead tests/test_fund003_fund004_integrity.py[90m [limit=100][0m
+[0m
+[0m# [0mTodos
+[•] Understand current C-006 state and design Phase 2 rules
+[ ] Implement Phase 2 anomaly detection rules in financial_validator.py
+[ ] Update extract_financial_anomaly_inputs to feed new fields
+[ ] Write comprehensive tests for Phase 2
+[ ] Run tests and regression suite
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tests/test_fund003_fund004_integrity.py[90m [offset=900, limit=190][0m
+[0m✱ [0mGlob "tests/test_c006*.py"[90m 0 matches[0m
+Let me look at the existing test patterns and understand what data fields are available:
+[0m✱ [0mGrep "accounts_receivable|inventory|operating_profit|total_equity|non_recurring"[90m in tradingagents · 2 matches[0m
+Now I have a clear picture. Let me check what additional metrics are available in the data model:
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "from tradingagents.agents.utils.financial_validator import check_financial_anomalies; print('Import OK')"
+Import OK
+[0m
+[0m# [0mTodos
+[✓] Understand current C-006 state and design Phase 2 rules
+[•] Implement Phase 2 anomaly detection rules in financial_validator.py
+[ ] Update extract_financial_anomaly_inputs to feed new fields
+[ ] Write comprehensive tests for Phase 2
+[ ] Run tests and regression suite
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/agents/utils/financial_validator.py
+Now I'll implement Phase 2 of the financial validator. Let me first update `financial_validator.py`:
+[0m
+[0m← [0mEdit tradingagents/agents/utils/financial_validator.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/financial_validator.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/financial_validator.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/financial_validator.py
+@@ -1,23 +1,35 @@
+ # [C-006] financial_validator
+-"""财报数据异常检测（一期：规则检测）"""
++"""财报数据异常检测（一期 + 二期：规则检测）
+ 
++Phase 1: 毛利率跳变、现金流/利润背离、资产负债率异常、大额投资/筹资异动。
++Phase 2: ROE 异常、营收-成本剪刀差、现金流质量、应收账款/营收背离、存货/成本背离。
++"""
++
+ import logging
+ from typing import Optional
+ 
+ _logger = logging.getLogger(__name__)
+ 
+ 
+ def check_financial_anomalies(
+     stock_code: str,
++    # Phase 1 fields
+     gross_margin: Optional[float] = None,
+     gross_margin_prev: Optional[float] = None,
+     operating_cashflow: Optional[float] = None,
+     net_profit: Optional[float] = None,
+     debt_ratio: Optional[float] = None,
+     debt_ratio_prev: Optional[float] = None,
+     total_invest_cashflow: Optional[float] = None,
+     total_finance_cashflow: Optional[float] = None,
++    # Phase 2 fields
++    roe: Optional[float] = None,
++    roe_prev: Optional[float] = None,
++    revenue_growth: Optional[float] = None,
++    operating_cost_growth: Optional[float] = None,
++    accounts_receivable_growth: Optional[float] = None,
++    inventory_growth: Optional[float] = None,
+ ) -> dict:
+     """
+     检测财报数据异常。
+ 
+@@ -31,8 +43,10 @@
+     """
+     anomalies = []
+     anomaly_details = {}
+ 
++    # ── Phase 1 ──────────────────────────────────────────────────────────────
++
+     # 1. 毛利率跳变 > 20%
+     if gross_margin is not None and gross_margin_prev is not None:
+         margin_change = abs(gross_margin - gross_margin_prev)
+         if margin_change > 20:
+@@ -76,8 +90,87 @@
+         anomaly_details["large_finance_cashflow"] = (
+             f"筹资活动现金流异动：{total_finance_cashflow:.2f}亿"
+         )
+ 
++    # ── Phase 2 ──────────────────────────────────────────────────────────────
++
++    # 5. ROE 异常：极端值或大幅跳变
++    if roe is not None:
++        if abs(roe) > 50:
++            anomalies.append("extreme_roe")
++            anomaly_details["extreme_roe"] = (
++                f"净资产收益率 {roe:.1f}% 极端（|ROE| > 50%）"
++            )
++        if roe_prev is not None:
++            roe_change = abs(roe - roe_prev)
++            if roe_change > 20:
++                anomalies.append("roe_jump")
++                anomaly_details["roe_jump"] = (
++                    f"ROE 从 {roe_prev:.1f}% 跳变至 {roe:.1f}%，"
++                    f"变化 {roe_change:.1f} 个百分点"
++                )
++
++    # 6. 营收-成本剪刀差：营收增长但毛利率下降（成本增速 > 营收增速）
++    if (
++        revenue_growth is not None
++        and operating_cost_growth is not None
++        and gross_margin is not None
++        and gross_margin_prev is not None
++    ):
++        if revenue_growth > 0 and operating_cost_growth > revenue_growth and gross_margin < gross_margin_prev:
++            cost_excess = operating_cost_growth - revenue_growth
++            margin_drop = gross_margin_prev - gross_margin
++            if cost_excess > 5 and margin_drop > 3:
++                anomalies.append("margin_squeeze")
++                anomaly_details["margin_squeeze"] = (
++                    f"营收增长 {revenue_growth:.1f}% 但成本增长 {operating_cost_growth:.1f}%，"
++                    f"毛利率下降 {margin_drop:.1f} 个百分点"
++                )
++
++    # 7. 现金流质量：经营现金流/净利润比值异常
++    if operating_cashflow is not None and net_profit is not None and net_profit != 0:
++        cf_ratio = operating_cashflow / net_profit
++        if cf_ratio < 0:
++            anomalies.append("negative_cashflow_quality")
++            anomaly_details["negative_cashflow_quality"] = (
++                f"经营现金流/净利润 = {cf_ratio:.2f}，"
++                f"利润未转化为实际现金流入"
++            )
++        elif cf_ratio > 5:
++            anomalies.append("excessive_cashflow_quality")
++            anomaly_details["excessive_cashflow_quality"] = (
++                f"经营现金流/净利润 = {cf_ratio:.2f}，"
++                f"现金流远超利润，可能存在非经常性因素"
++            )
++
++    # 8. 应收账款/营收背离：应收增速远超营收增速
++    if (
++        accounts_receivable_growth is not None
++        and revenue_growth is not None
++        and accounts_receivable_growth > 30
++        and revenue_growth < 10
++    ):
++        ar_excess = accounts_receivable_growth - revenue_growth
++        anomalies.append("ar_revenue_divergence")
++        anomaly_details["ar_revenue_divergence"] = (
++            f"应收账款增长 {accounts_receivable_growth:.1f}% 但营收仅增长 {revenue_growth:.1f}%，"
++            f"差异 {ar_excess:.1f} 个百分点"
++        )
++
++    # 9. 存货/成本背离：存货增速远超营业成本增速
++    if (
++        inventory_growth is not None
++        and operating_cost_growth is not None
++        and inventory_growth > 30
++        and operating_cost_growth < 10
++    ):
++        inv_excess = inventory_growth - operating_cost_growth
++        anomalies.append("inventory_cost_divergence")
++        anomaly_details["inventory_cost_divergence"] = (
++            f"存货增长 {inventory_growth:.1f}% 但营业成本仅增长 {operating_cost_growth:.1f}%，"
++            f"差异 {inv_excess:.1f} 个百分点"
++        )
++
+     has_anomaly = len(anomalies) > 0
+ 
+     if has_anomaly:
+         _logger.warning(
+
+[0m
+[0m# [0mTodos
+[✓] Understand current C-006 state and design Phase 2 rules
+[✓] Implement Phase 2 anomaly detection rules in financial_validator.py
+[•] Update extract_financial_anomaly_inputs to feed new fields
+[ ] Write comprehensive tests for Phase 2
+[ ] Run tests and regression suite
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [limit=40, offset=955][0m
+Now let me update `extract_financial_anomaly_inputs` to feed the new Phase 2 fields:
+[0m
+[0m← [0mEdit tradingagents/agents/utils/fundamental_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+@@ -957,8 +957,60 @@
+     cashflow_group = _find_best_group({"operating_cashflow"})
+     invest_group = _find_best_group({"investing_cashflow"})
+     finance_group = _find_best_group({"financing_cashflow"})
+ 
++    # --- Phase 2: ROE from net_profit + total_equity same-group ---
++    roe_group = _find_best_group({"net_profit", "total_equity"})
++    if roe_group:
++        roe_np = _value(roe_group["net_profit"])
++        roe_eq = _value(roe_group["total_equity"])
++        roe_date = str(roe_group["net_profit"].get("report_date") or "")
++    else:
++        roe_np, roe_eq, roe_date = None, None, ""
++
++    roe = roe_np / roe_eq * 100 if roe_np is not None and roe_eq not in (None, 0) else None
++
++    prev_roe_group = _find_previous_group({"net_profit", "total_equity"}, roe_date)
++    if prev_roe_group:
++        prev_roe_np = _value(prev_roe_group["net_profit"])
++        prev_roe_eq = _value(prev_roe_group["total_equity"])
++    else:
++        prev_roe_np, prev_roe_eq = None, None
++
++    roe_prev = prev_roe_np / prev_roe_eq * 100 if prev_roe_np is not None and prev_roe_eq not in (None, 0) else None
++
++    # --- Phase 2: Revenue / cost growth from current vs prior income group ---
++    def _growth_rate(current: float | None, prior: float | None) -> float | None:
++        if current is not None and prior is not None and prior != 0:
++            return (current - prior) / abs(prior) * 100
++        return None
++
++    revenue_growth = _growth_rate(revenue, prior_revenue)
++    operating_cost_growth = _growth_rate(cost, prior_cost)
++
++    # --- Phase 2: AR / inventory growth from current vs prior group ---
++    ar_group = _find_best_group({"accounts_receivable"})
++    if ar_group:
++        ar_current = _value(ar_group["accounts_receivable"])
++        ar_date = str(ar_group["accounts_receivable"].get("report_date") or "")
++    else:
++        ar_current, ar_date = None, ""
++
++    prev_ar_group = _find_previous_group({"accounts_receivable"}, ar_date)
++    ar_prev = _value(prev_ar_group["accounts_receivable"]) if prev_ar_group else None
++    accounts_receivable_growth = _growth_rate(ar_current, ar_prev)
++
++    inv_group = _find_best_group({"inventory"})
++    if inv_group:
++        inv_current = _value(inv_group["inventory"])
++        inv_date = str(inv_group["inventory"].get("report_date") or "")
++    else:
++        inv_current, inv_date = None, ""
++
++    prev_inv_group = _find_previous_group({"inventory"}, inv_date)
++    inv_prev = _value(prev_inv_group["inventory"]) if prev_inv_group else None
++    inventory_growth = _growth_rate(inv_current, inv_prev)
++
+     return {
+         "gross_margin": gross_margin,
+         "gross_margin_prev": gross_margin_prev,
+         "operating_cashflow": _to_yi(cashflow_group.get("operating_cashflow") if cashflow_group else None),
+@@ -966,8 +1018,15 @@
+         "debt_ratio": debt_ratio,
+         "debt_ratio_prev": debt_ratio_prev,
+         "total_invest_cashflow": _to_yi(invest_group.get("investing_cashflow") if invest_group else None),
+         "total_finance_cashflow": _to_yi(finance_group.get("financing_cashflow") if finance_group else None),
++        # Phase 2
++        "roe": roe,
++        "roe_prev": roe_prev,
++        "revenue_growth": revenue_growth,
++        "operating_cost_growth": operating_cost_growth,
++        "accounts_receivable_growth": accounts_receivable_growth,
++        "inventory_growth": inventory_growth,
+     }
+ 
+ 
+ def _to_yi(fact: Mapping[str, Any] | None) -> float | None:
+
+[0m
+[0m# [0mTodos
+[✓] Understand current C-006 state and design Phase 2 rules
+[✓] Implement Phase 2 anomaly detection rules in financial_validator.py
+[✓] Update extract_financial_anomaly_inputs to feed new fields
+[•] Write comprehensive tests for Phase 2
+[ ] Run tests and regression suite
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mWrite tests/test_c006_financial_validator.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Understand current C-006 state and design Phase 2 rules
+[✓] Implement Phase 2 anomaly detection rules in financial_validator.py
+[✓] Update extract_financial_anomaly_inputs to feed new fields
+[✓] Write comprehensive tests for Phase 2
+[•] Run tests and regression suite
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_c006_financial_validator.py -v 2>&1 | head -100
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 69 items
+
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_gross_margin_jump PASSED [  1%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_cashflow_profit_divergence PASSED [  2%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_high_debt_ratio PASSED [  4%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_debt_ratio_jump PASSED [  5%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_large_invest_cashflow PASSED [  7%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_large_finance_cashflow PASSED [  8%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_no_anomaly_clean_input PASSED [ 10%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_all_none_returns_no_anomaly PASSED [ 11%]
+tests/test_c006_financial_validator.py::TestPhase1BackwardCompatibility::test_backward_compat_new_params_default_none PASSED [ 13%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_extreme_roe_positive PASSED [ 14%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_extreme_roe_negative PASSED [ 15%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_within_normal_range PASSED [ 17%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_at_boundary_50 PASSED [ 18%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_just_above_boundary PASSED [ 20%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_jump PASSED [ 21%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_jump_within_threshold PASSED [ 23%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_jump_negative_to_positive PASSED [ 24%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_none_skips_check PASSED [ 26%]
+tests/test_c006_financial_validator.py::TestROEAnomaly::test_roe_prev_none_skips_jump FAILED [ 27%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_detected PASSED [ 28%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_cost_excess_too_small PASSED [ 30%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_margin_drop_too_small PASSED [ 31%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_revenue_declining PASSED [ 33%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_margin_improving PASSED [ 34%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_none_fields_skip PASSED [ 36%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_exactly_at_thresholds PASSED [ 37%]
+tests/test_c006_financial_validator.py::TestMarginSqueeze::test_margin_squeeze_just_above_thresholds PASSED [ 39%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_negative_cashflow_quality PASSED [ 40%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_excessive_cashflow_quality PASSED [ 42%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_normal_cashflow_quality PASSED [ 43%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_cashflow_quality_ratio_at_5 PASSED [ 44%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_cashflow_quality_ratio_just_above_5 PASSED [ 46%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_cashflow_quality_zero_profit_skips PASSED [ 47%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_cashflow_quality_none_skips PASSED [ 49%]
+tests/test_c006_financial_validator.py::TestCashflowQuality::test_cashflow_quality_both_positive_ratio_1 PASSED [ 50%]
+tests/test_c006_financial_validator.py::TestARRevenueDivergence::test_ar_revenue_divergence PASSED [ 52%]
+tests/test_c006_financial_validator.py::TestARRevenueDivergence::test_ar_growth_below_threshold PASSED [ 53%]
+tests/test_c006_financial_validator.py::TestARRevenueDivergence::test_revenue_growth_above_threshold PASSED [ 55%]
+tests/test_c006_financial_validator.py::TestARRevenueDivergence::test_ar_none_skips PASSED [ 56%]
+tests/test_c006_financial_validator.py::TestARRevenueDivergence::test_revenue_none_skips PASSED [ 57%]
+tests/test_c006_financial_validator.py::TestARRevenueDivergence::test_ar_declining_no_divergence PASSED [ 59%]
+tests/test_c006_financial_validator.py::TestInventoryCostDivergence::test_inventory_cost_divergence PASSED [ 60%]
+tests/test_c006_financial_validator.py::TestInventoryCostDivergence::test_inventory_growth_below_threshold PASSED [ 62%]
+tests/test_c006_financial_validator.py::TestInventoryCostDivergence::test_cost_growth_above_threshold PASSED [ 63%]
+tests/test_c006_financial_validator.py::TestInventoryCostDivergence::test_inventory_none_skips PASSED [ 65%]
+tests/test_c006_financial_validator.py::TestInventoryCostDivergence::test_cost_none_skips PASSED [ 66%]
+tests/test_c006_financial_validator.py::TestInventoryCostDivergence::test_inventory_declining_no_divergence PASSED [ 68%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_roe_extracted FAILED [ 69%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_roe_none_when_no_equity PASSED [ 71%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_roe_prev_from_prior_period FAILED [ 72%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_revenue_growth_extracted PASSED [ 73%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_operating_cost_growth_extracted PASSED [ 75%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_growth_none_when_no_prior PASSED [ 76%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_accounts_receivable_growth_extracted PASSED [ 78%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_inventory_growth_extracted PASSED [ 79%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_ar_growth_none_when_no_data PASSED [ 81%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_inventory_growth_none_when_no_data PASSED [ 82%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_phase2_fields_backward_compat PASSED [ 84%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_roe_extreme_via_pipeline FAILED [ 85%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_margin_squeeze_via_pipeline PASSED [ 86%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_ar_revenue_divergence_via_pipeline PASSED [ 88%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_inventory_cost_divergence_via_pipeline PASSED [ 89%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_clean_financials_no_anomaly PASSED [ 91%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_multiple_anomalies_accumulate FAILED [ 92%]
+tests/test_c006_financial_validator.py::TestFormatWarning::test_empty_when_no_anomaly PASSED [ 94%]
+tests/test_c006_financial_validator.py::TestFormatWarning::test_contains_all_detected_anomalies PASSED [ 95%]
+tests/test_c006_financial_validator.py::TestFormatWarning::test_multiple_anomalies_in_warning PASSED [ 97%]
+tests/test_c006_financial_validator.py::TestDeterminism::test_deterministic_output PASSED [ 98%]
+tests/test_c006_financial_validator.py::TestDeterminism::test_deterministic_extraction PASSED [100%]
+
+=================================== FAILURES ===================================
+_________________ TestROEAnomaly.test_roe_prev_none_skips_jump _________________
+
+self = <tests.test_c006_financial_validator.TestROEAnomaly object at 0x110d37740>
+
+    def test_roe_prev_none_skips_jump(self):
+        r = check_financial_anomalies("X", roe=30.0, roe_prev=None)
+>       assert "extreme_roe" in r["anomalies"]
+E       AssertionError: assert 'extreme_roe' in []
+
+tests/test_c006_financial_validator.py:146: AssertionError
+___________________ TestPhase2Extraction.test_roe_extracted ____________________
+
+self = <tests.test_c006_financial_validator.TestPhase2Extraction object at 0x110d61940>
+
+    def test_roe_extracted(self):
+        facts = self._facts_with_equity(equity=4000.0)
+        inputs = extract_financial_anomaly_inputs(facts)
+        # net_profit=2000, equity=4000 -> ROE = 50%
+>       assert inputs["roe"] == 50.0
+E       assert None == 50.0
+[0m
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [limit=30, offset=955][0m
+I see the issues — ROE extraction requires `net_profit` and `total_equity` in the same group key (same `period_scope`). Let me fix the tests and the ROE extraction logic:
+[0m
+[0m← [0mEdit tradingagents/agents/utils/fundamental_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+@@ -957,28 +957,54 @@
+ cashflow_group = _find_best_group({"operating_cashflow"})
+ invest_group = _find_best_group({"investing_cashflow"})
+ finance_group = _find_best_group({"financing_cashflow"})
+ 
+-# --- Phase 2: ROE from net_profit + total_equity same-group ---
+-roe_group = _find_best_group({"net_profit", "total_equity"})
+-if roe_group:
+-    roe_np = _value(roe_group["net_profit"])
+-    roe_eq = _value(roe_group["total_equity"])
+-    roe_date = str(roe_group["net_profit"].get("report_date") or "")
+-else:
+-    roe_np, roe_eq, roe_date = None, None, ""
++# --- Phase 2: ROE from net_profit (income) + total_equity (balance) ---
++# These live in different period_scope groups, so we match by report_date.
++equity_items: list[Mapping[str, Any]] = []
++for item in facts or []:
++    if str(item.get("metric") or "") == "total_equity" and item.get("value") is not None:
++        equity_items.append(item)
++equity_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+ 
+-roe = roe_np / roe_eq * 100 if roe_np is not None and roe_eq not in (None, 0) else None
++equity_by_date: dict[str, float] = {}
++for item in equity_items:
++    d = str(item.get("report_date") or "")
++    if d and d not in equity_by_date:
++        equity_by_date[d] = _value(item) or 0.0
+ 
+-prev_roe_group = _find_previous_group({"net_profit", "total_equity"}, roe_date)
+-if prev_roe_group:
+-    prev_roe_np = _value(prev_roe_group["net_profit"])
+-    prev_roe_eq = _value(prev_roe_group["total_equity"])
+-else:
+-    prev_roe_np, prev_roe_eq = None, None
++profit_items: list[Mapping[str, Any]] = []
++for item in facts or []:
++    if str(item.get("metric") or "") == "net_profit" and item.get("value") is not None:
++        profit_items.append(item)
++profit_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+ 
+-roe_prev = prev_roe_np / prev_roe_eq * 100 if prev_roe_np is not None and prev_roe_eq not in (None, 0) else None
++def _find_roe_pair() -> tuple[float | None, str]:
++    """Find latest (net_profit, total_equity) sharing the same report_date."""
++    for pi in profit_items:
++        pd = str(pi.get("report_date") or "")
++        if pd and pd in equity_by_date:
++            np_val = _value(pi)
++            eq_val = equity_by_date[pd]
++            if np_val is not None and eq_val:
++                return np_val / eq_val * 100, pd
++    return None, ""
+ 
++roe, roe_date = _find_roe_pair()
++
++def _find_prev_roe_pair(before_date: str) -> float | None:
++    """Find latest ROE pair strictly before before_date."""
++    for pi in profit_items:
++        pd = str(pi.get("report_date") or "")
++        if pd and pd < before_date and pd in equity_by_date:
++            np_val = _value(pi)
++            eq_val = equity_by_date[pd]
++            if np_val is not None and eq_val:
++                return np_val / eq_val * 100
++    return None
++
++roe_prev = _find_prev_roe_pair(roe_date) if roe_date else None
++
+ # --- Phase 2: Revenue / cost growth from current vs prior income group ---
+ def _growth_rate(current: float | None, prior: float | None) -> float | None:
+     if current is not None and prior is not None and prior != 0:
+         return (current - prior) / abs(prior) * 100
+
+[0m
+The issue is that `net_profit` (FY_YTD) and `total_equity` (POINT_IN_TIME) have different `period_scope` so they're never in the same group. I need to fix the ROE extraction to look across groups by report_date:
+Now fix the failing test — `roe=30.0` is not extreme (>50), so the test expectation was wrong:
+[0m← [0mEdit tests/test_c006_financial_validator.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+@@ -141,9 +141,9 @@
+     assert "extreme_roe" not in r["anomalies"]
+     assert "roe_jump" not in r["anomalies"]
+ 
+ def test_roe_prev_none_skips_jump(self):
+-    r = check_financial_anomalies("X", roe=30.0, roe_prev=None)
++    r = check_financial_anomalies("X", roe=60.0, roe_prev=None)
+     assert "extreme_roe" in r["anomalies"]
+     assert "roe_jump" not in r["anomalies"]
+ 
+ 
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_c006_financial_validator.py -v 2>&1 | tail -30
+____________ TestPhase2EndToEnd.test_multiple_anomalies_accumulate _____________
+
+self = <tests.test_c006_financial_validator.TestPhase2EndToEnd object at 0x1113eea20>
+
+    def test_multiple_anomalies_accumulate(self):
+        """Multiple Phase 2 anomalies can be detected simultaneously."""
+        r = check_financial_anomalies(
+            "X",
+            roe=60.0,
+            revenue_growth=10.0,
+            operating_cost_growth=25.0,
+            gross_margin=25.0,
+            gross_margin_prev=35.0,
+            accounts_receivable_growth=50.0,
+            inventory_growth=40.0,
+            net_profit=10.0,
+            operating_cashflow=-5.0,
+        )
+        assert "extreme_roe" in r["anomalies"]
+        assert "margin_squeeze" in r["anomalies"]
+        assert "negative_cashflow_quality" in r["anomalies"]
+>       assert "ar_revenue_divergence" in r["anomalies"]
+E       AssertionError: assert 'ar_revenue_divergence' in ['cashflow_profit_divergence', 'extreme_roe', 'margin_squeeze', 'negative_cashflow_quality']
+
+tests/test_c006_financial_validator.py:620: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  tradingagents.agents.utils.financial_validator:financial_validator.py:176 [C-006] financial_validator: X 检测到异常: cashflow_profit_divergence, extreme_roe, margin_squeeze, negative_cashflow_quality
+=========================== short test summary info ============================
+FAILED tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_multiple_anomalies_accumulate
+========================= 1 failed, 68 passed in 0.93s =========================
+[0m
+[0m← [0mEdit tests/test_c006_financial_validator.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+@@ -604,9 +604,9 @@
+ """Multiple Phase 2 anomalies can be detected simultaneously."""
+ r = check_financial_anomalies(
+     "X",
+     roe=60.0,
+-    revenue_growth=10.0,
++    revenue_growth=5.0,
+     operating_cost_growth=25.0,
+     gross_margin=25.0,
+     gross_margin_prev=35.0,
+     accounts_receivable_growth=50.0,
+
+[0m
+The test has `revenue_growth=10.0` which is NOT `< 10`. Fix the test:
+[0m← [0mEdit tests/test_c006_financial_validator.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+@@ -605,9 +605,9 @@
+ r = check_financial_anomalies(
+     "X",
+     roe=60.0,
+     revenue_growth=5.0,
+-    operating_cost_growth=25.0,
++    operating_cost_growth=8.0,
+     gross_margin=25.0,
+     gross_margin_prev=35.0,
+     accounts_receivable_growth=50.0,
+     inventory_growth=40.0,
+
+[0m
+Wait, `inventory_cost_divergence` needs `operating_cost_growth < 10` but test has 25. Let me fix that too:
+[0m← [0mEdit tests/test_c006_financial_validator.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_c006_financial_validator.py
+@@ -604,9 +604,9 @@
+ """Multiple Phase 2 anomalies can be detected simultaneously."""
+ r = check_financial_anomalies(
+     "X",
+     roe=60.0,
+-    revenue_growth=5.0,
++    revenue_growth=2.0,
+     operating_cost_growth=8.0,
+     gross_margin=25.0,
+     gross_margin_prev=35.0,
+     accounts_receivable_growth=50.0,
+
+[0m
+Actually, `margin_squeeze` needs `cost_excess > 5`. With `revenue_growth=5.0` and `operating_cost_growth=8.0`, cost_excess is only 3. Let me fix:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_c006_financial_validator.py -v 2>&1 | tail -20
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_operating_cost_growth_extracted PASSED [ 75%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_growth_none_when_no_prior PASSED [ 76%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_accounts_receivable_growth_extracted PASSED [ 78%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_inventory_growth_extracted PASSED [ 79%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_ar_growth_none_when_no_data PASSED [ 81%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_inventory_growth_none_when_no_data PASSED [ 82%]
+tests/test_c006_financial_validator.py::TestPhase2Extraction::test_phase2_fields_backward_compat PASSED [ 84%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_roe_extreme_via_pipeline PASSED [ 85%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_margin_squeeze_via_pipeline PASSED [ 86%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_ar_revenue_divergence_via_pipeline PASSED [ 88%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_inventory_cost_divergence_via_pipeline PASSED [ 89%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_clean_financials_no_anomaly PASSED [ 91%]
+tests/test_c006_financial_validator.py::TestPhase2EndToEnd::test_multiple_anomalies_accumulate PASSED [ 92%]
+tests/test_c006_financial_validator.py::TestFormatWarning::test_empty_when_no_anomaly PASSED [ 94%]
+tests/test_c006_financial_validator.py::TestFormatWarning::test_contains_all_detected_anomalies PASSED [ 95%]
+tests/test_c006_financial_validator.py::TestFormatWarning::test_multiple_anomalies_in_warning PASSED [ 97%]
+tests/test_c006_financial_validator.py::TestDeterminism::test_deterministic_output PASSED [ 98%]
+tests/test_c006_financial_validator.py::TestDeterminism::test_deterministic_extraction PASSED [100%]
+
+============================== 69 passed in 0.85s ==============================
+[0m
+All 69 C-006 tests pass. Now run the regression suite:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund003_fund004_integrity.py -v -q 2>&1 | tail -20
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collected 79 items
+
+tests/test_fund003_fund004_integrity.py ................................ [ 40%]
+...............................................                          [100%]
+
+============================== 79 passed in 0.85s ==============================
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q 2>&1 | tail -10
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 24.37s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py -q 2>&1 | tail -10
+....................................................                     [100%]
+52 passed in 0.94s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund007a_error_benchmark.py -q 2>&1 | tail -10
+.....................                                                    [100%]
+21 passed in 0.89s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "import py_compile; py_compile.compile('tradingagents/agents/utils/financial_validator.py', doraise=True); py_compile.compile('tradingagents/agents/utils/fundamental_integrity.py', doraise=True); print('py_compile OK')"
+py_compile OK
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund003_fund004_integrity.py tests/test_fund004a_integrity_gate.py tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py tests/test_c006_financial_validator.py -q 2>&1 | tail -10
+........................................................................ [ 27%]
+........................................................................ [ 54%]
+........................................................................ [ 81%]
+.................................................                        [100%]
+265 passed in 1.05s
+[0m
+[0m# [0mTodos
+[✓] Understand current C-006 state and design Phase 2 rules
+[✓] Implement Phase 2 anomaly detection rules in financial_validator.py
+[✓] Update extract_financial_anomaly_inputs to feed new fields
+[✓] Write comprehensive tests for Phase 2
+[✓] Run tests and regression suite
+[•] Update docs/DEVLOG.md
+[0m
+All tests pass. Now update DEVLOG.md:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,39 @@
+ # 修改日志
+ 
++## 2026-07-23 | C-006 financial_data_validator Phase 2 异常检测扩展
++
++- **任务**：C-006 — 财报数据异常检测，分期实现（P2）
++- **实现**：
++  - `tradingagents/agents/utils/financial_validator.py` — 扩展 Phase 2 异常检测规则。
++    - 新增 5 个 Phase 2 异常类型（共 11 个）：
++      - `extreme_roe`：ROE 绝对值 > 50%
++      - `roe_jump`：ROE 期间跳变 > 20 个百分点
++      - `margin_squeeze`：营收正增长但成本增速更快，毛利率下降（cost_excess > 5pp 且 margin_drop > 3pp）
++      - `negative_cashflow_quality`：经营现金流/净利润 < 0（利润未转化为现金）
++      - `excessive_cashflow_quality`：经营现金流/净利润 > 5（现金流远超利润，可能非经常性因素）
++      - `ar_revenue_divergence`：应收账款增速 > 30% 且营收增速 < 10%
++      - `inventory_cost_divergence`：存货增速 > 30% 且营业成本增速 < 10%
++    - 新增 Phase 2 参数：`roe`, `roe_prev`, `revenue_growth`, `operating_cost_growth`, `accounts_receivable_growth`, `inventory_growth`（全部 Optional，向后兼容）
++    - Phase 1 参数与行为完全不变。
++  - `tradingagents/agents/utils/fundamental_integrity.py` — `extract_financial_anomaly_inputs()` 扩展 Phase 2 字段提取。
++    - ROE：从同 report_date 的 `net_profit`（income）+ `total_equity`（balance）跨 period_scope 匹配计算
++    - ROE prev：从上一报告日的配对计算
++    - revenue_growth / operating_cost_growth：当前 vs 前期收入组的增速
++    - accounts_receivable_growth / inventory_growth：当前 vs 前期同日 POINT_IN_TIME 的增速
++    - 所有新字段缺失时返回 None，不破坏 Phase 1 调用方
++- **测试**：
++  - `tests/test_c006_financial_validator.py`（新增）— **69 tests passed**。
++  - 覆盖 11 个测试类：Phase 1 向后兼容（9）、ROE 异常（10）、营收-成本剪刀差（8）、现金流质量（8）、应收/营收背离（6）、存货/成本背离（6）、Phase 2 字段提取（11）、端到端管道（6）、格式化输出（3）、确定性（2）。
++- **回归**：
++  - `pytest tests/test_fund003_fund004_integrity.py -q`：**79 passed**。
++  - `pytest tests/test_fund006a_provider_replay.py -q`：**52 passed**。
++  - `pytest tests/test_fund007a_error_benchmark.py -q`：**21 passed**。
++  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**。
++  - FUND + C-006 组合回归：**265 passed**。
++  - `py_compile` 全部修改文件通过。
++- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-23 | C-005 same_symbol_delta_check 结论翻转检测增强
+ 
+ - **任务**：C-005 — 同一股票结论翻转时，必须输出对比信息（P2）
+ - **实现**：
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat
+docs/DEVLOG.md                                     | 33 ++++++++
+ docs/TASKS.md                                      |  2 +-
+ tradingagents/agents/utils/financial_validator.py  | 95 +++++++++++++++++++++-
+ .../agents/utils/fundamental_integrity.py          | 85 +++++++++++++++++++
+ 4 files changed, 213 insertions(+), 2 deletions(-)
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff docs/TASKS.md
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 25c6471..1f4fb93 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -151,7 +151,7 @@
+ ### C-006: financial_data_validator — 分期实现（P2）
+ - **描述**：财报数据异常检测，分两期做
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：in_progress — claimed C-006-20260723-040537
+ - **预计耗时**：40-50 分钟
+ - **depends_on**：无
+ - **auto_release**：true
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat HEAD 2>&1; echo "---"; ls -la tests/test_c006_financial_validator.py
+docs/DEVLOG.md                                     | 33 ++++++++
+ docs/TASKS.md                                      |  2 +-
+ tradingagents/agents/utils/financial_validator.py  | 95 +++++++++++++++++++++-
+ .../agents/utils/fundamental_integrity.py          | 85 +++++++++++++++++++
+ 4 files changed, 213 insertions(+), 2 deletions(-)
+---
+-rw-------@ 1 maybee  staff  28305 Jul 23 04:10 tests/test_c006_financial_validator.py
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short
+M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/agents/utils/financial_validator.py
+ M tradingagents/agents/utils/fundamental_integrity.py
+?? docs/task_runs/C-006-20260723-040537/
+?? tests/test_c006_financial_validator.py
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_c006_financial_validator.py -q 2>&1
+.....................................................................    [100%]
+69 passed in 1.01s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --check 2>&1 || true
+(no output)
+[0m
+[0m# [0mTodos
+[✓] Understand current C-006 state and design Phase 2 rules
+[✓] Implement Phase 2 anomaly detection rules in financial_validator.py
+[✓] Update extract_financial_anomaly_inputs to feed new fields
+[✓] Write comprehensive tests for Phase 2
+[✓] Run tests and regression suite
+[✓] Update docs/DEVLOG.md
+[0m
+## C-006 完成总结
+
+### 修改文件
+
+| 文件 | 变更 |
+|---|---|
+| `tradingagents/agents/utils/financial_validator.py` | +95 行：新增 5 个 Phase 2 异常检测规则 |
+| `tradingagents/agents/utils/fundamental_integrity.py` | +85 行：`extract_financial_anomaly_inputs()` 提取 Phase 2 字段 |
+| `tests/test_c006_financial_validator.py` | 新增：69 项专项测试 |
+| `docs/DEVLOG.md` | +33 行：C-006 实现记录 |
+
+### 关键逻辑
+
+**Phase 2 新增 5 个异常检测规则**（总计 11 个）：
+
+1. **`extreme_roe`** — ROE 绝对值 > 50%
+2. **`roe_jump`** — ROE 期间跳变 > 20pp
+3. **`margin_squeeze`** — 营收正增长但成本增速更快（cost_excess > 5pp 且 margin_drop > 3pp）
+4. **`negative_cashflow_quality`** — 经营现金流/净利润 < 0（有利润无现金）
+5. **`excessive_cashflow_quality`** — 经营现金流/净利润 > 5（现金流远超利润）
+6. **`ar_revenue_divergence`** — 应收账款增速 > 30% 且营收增速 < 10%
+7. **`inventory_cost_divergence`** — 存货增速 > 30% 且营业成本增速 < 10%
+
+ROE 通过跨 `period_scope` 按 `report_date` 匹配 `net_profit`（income）与 `total_equity`（balance）计算，不要求同组。
+
+### 测试结果
+
+- **C-006 专项**：69 passed
+- **FUND-003/004 回归**：79 passed
+- **FUND-006A 回归**：52 passed
+- **FUND-007A 回归**：21 passed
+- **API smoke + runtime tier**：122 passed
+- **FUND + C-006 组合**：265 passed
+- `py_compile` 通过，`git diff --check` 无错误
+
+### 约束遵守
+
+- 未修改 `tradingagents/prompts/`
+- 未调用 live LLM
+- 未写生产数据库
+- 未提交 commit

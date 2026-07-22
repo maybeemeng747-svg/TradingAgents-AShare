@@ -958,6 +958,84 @@ def extract_financial_anomaly_inputs(
     invest_group = _find_best_group({"investing_cashflow"})
     finance_group = _find_best_group({"financing_cashflow"})
 
+    # --- Phase 2: ROE from net_profit (income) + total_equity (balance) ---
+    # These live in different period_scope groups, so we match by report_date.
+    equity_items: list[Mapping[str, Any]] = []
+    for item in facts or []:
+        if str(item.get("metric") or "") == "total_equity" and item.get("value") is not None:
+            equity_items.append(item)
+    equity_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+
+    equity_by_date: dict[str, float] = {}
+    for item in equity_items:
+        d = str(item.get("report_date") or "")
+        if d and d not in equity_by_date:
+            equity_by_date[d] = _value(item) or 0.0
+
+    profit_items: list[Mapping[str, Any]] = []
+    for item in facts or []:
+        if str(item.get("metric") or "") == "net_profit" and item.get("value") is not None:
+            profit_items.append(item)
+    profit_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+
+    def _find_roe_pair() -> tuple[float | None, str]:
+        """Find latest (net_profit, total_equity) sharing the same report_date."""
+        for pi in profit_items:
+            pd = str(pi.get("report_date") or "")
+            if pd and pd in equity_by_date:
+                np_val = _value(pi)
+                eq_val = equity_by_date[pd]
+                if np_val is not None and eq_val:
+                    return np_val / eq_val * 100, pd
+        return None, ""
+
+    roe, roe_date = _find_roe_pair()
+
+    def _find_prev_roe_pair(before_date: str) -> float | None:
+        """Find latest ROE pair strictly before before_date."""
+        for pi in profit_items:
+            pd = str(pi.get("report_date") or "")
+            if pd and pd < before_date and pd in equity_by_date:
+                np_val = _value(pi)
+                eq_val = equity_by_date[pd]
+                if np_val is not None and eq_val:
+                    return np_val / eq_val * 100
+        return None
+
+    roe_prev = _find_prev_roe_pair(roe_date) if roe_date else None
+
+    # --- Phase 2: Revenue / cost growth from current vs prior income group ---
+    def _growth_rate(current: float | None, prior: float | None) -> float | None:
+        if current is not None and prior is not None and prior != 0:
+            return (current - prior) / abs(prior) * 100
+        return None
+
+    revenue_growth = _growth_rate(revenue, prior_revenue)
+    operating_cost_growth = _growth_rate(cost, prior_cost)
+
+    # --- Phase 2: AR / inventory growth from current vs prior group ---
+    ar_group = _find_best_group({"accounts_receivable"})
+    if ar_group:
+        ar_current = _value(ar_group["accounts_receivable"])
+        ar_date = str(ar_group["accounts_receivable"].get("report_date") or "")
+    else:
+        ar_current, ar_date = None, ""
+
+    prev_ar_group = _find_previous_group({"accounts_receivable"}, ar_date)
+    ar_prev = _value(prev_ar_group["accounts_receivable"]) if prev_ar_group else None
+    accounts_receivable_growth = _growth_rate(ar_current, ar_prev)
+
+    inv_group = _find_best_group({"inventory"})
+    if inv_group:
+        inv_current = _value(inv_group["inventory"])
+        inv_date = str(inv_group["inventory"].get("report_date") or "")
+    else:
+        inv_current, inv_date = None, ""
+
+    prev_inv_group = _find_previous_group({"inventory"}, inv_date)
+    inv_prev = _value(prev_inv_group["inventory"]) if prev_inv_group else None
+    inventory_growth = _growth_rate(inv_current, inv_prev)
+
     return {
         "gross_margin": gross_margin,
         "gross_margin_prev": gross_margin_prev,
@@ -967,6 +1045,13 @@ def extract_financial_anomaly_inputs(
         "debt_ratio_prev": debt_ratio_prev,
         "total_invest_cashflow": _to_yi(invest_group.get("investing_cashflow") if invest_group else None),
         "total_finance_cashflow": _to_yi(finance_group.get("financing_cashflow") if finance_group else None),
+        # Phase 2
+        "roe": roe,
+        "roe_prev": roe_prev,
+        "revenue_growth": revenue_growth,
+        "operating_cost_growth": operating_cost_growth,
+        "accounts_receivable_growth": accounts_receivable_growth,
+        "inventory_growth": inventory_growth,
     }
 
 

@@ -151,7 +151,7 @@
 ### C-006: financial_data_validator — 分期实现（P2）
 - **描述**：财报数据异常检测，分两期做
 - **优先级**：P2
-- **状态**：ready
+- **状态**：in_progress — claimed C-006-20260723-040537
 - **预计耗时**：40-50 分钟
 - **depends_on**：无
 - **auto_release**：true

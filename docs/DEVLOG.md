@@ -1,5 +1,38 @@
 # 修改日志
 
+## 2026-07-23 | C-006 financial_data_validator Phase 2 异常检测扩展
+
+- **任务**：C-006 — 财报数据异常检测，分期实现（P2）
+- **实现**：
+  - `tradingagents/agents/utils/financial_validator.py` — 扩展 Phase 2 异常检测规则。
+    - 新增 5 个 Phase 2 异常类型（共 11 个）：
+      - `extreme_roe`：ROE 绝对值 > 50%
+      - `roe_jump`：ROE 期间跳变 > 20 个百分点
+      - `margin_squeeze`：营收正增长但成本增速更快，毛利率下降（cost_excess > 5pp 且 margin_drop > 3pp）
+      - `negative_cashflow_quality`：经营现金流/净利润 < 0（利润未转化为现金）
+      - `excessive_cashflow_quality`：经营现金流/净利润 > 5（现金流远超利润，可能非经常性因素）
+      - `ar_revenue_divergence`：应收账款增速 > 30% 且营收增速 < 10%
+      - `inventory_cost_divergence`：存货增速 > 30% 且营业成本增速 < 10%
+    - 新增 Phase 2 参数：`roe`, `roe_prev`, `revenue_growth`, `operating_cost_growth`, `accounts_receivable_growth`, `inventory_growth`（全部 Optional，向后兼容）
+    - Phase 1 参数与行为完全不变。
+  - `tradingagents/agents/utils/fundamental_integrity.py` — `extract_financial_anomaly_inputs()` 扩展 Phase 2 字段提取。
+    - ROE：从同 report_date 的 `net_profit`（income）+ `total_equity`（balance）跨 period_scope 匹配计算
+    - ROE prev：从上一报告日的配对计算
+    - revenue_growth / operating_cost_growth：当前 vs 前期收入组的增速
+    - accounts_receivable_growth / inventory_growth：当前 vs 前期同日 POINT_IN_TIME 的增速
+    - 所有新字段缺失时返回 None，不破坏 Phase 1 调用方
+- **测试**：
+  - `tests/test_c006_financial_validator.py`（新增）— **69 tests passed**。
+  - 覆盖 11 个测试类：Phase 1 向后兼容（9）、ROE 异常（10）、营收-成本剪刀差（8）、现金流质量（8）、应收/营收背离（6）、存货/成本背离（6）、Phase 2 字段提取（11）、端到端管道（6）、格式化输出（3）、确定性（2）。
+- **回归**：
+  - `pytest tests/test_fund003_fund004_integrity.py -q`：**79 passed**。
+  - `pytest tests/test_fund006a_provider_replay.py -q`：**52 passed**。
+  - `pytest tests/test_fund007a_error_benchmark.py -q`：**21 passed**。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**。
+  - FUND + C-006 组合回归：**265 passed**。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | C-005 same_symbol_delta_check 结论翻转检测增强
 
 - **任务**：C-005 — 同一股票结论翻转时，必须输出对比信息（P2）
@@ -14173,3 +14206,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/C-005-20260723-round1.txt
 - **Run archive**: docs/task_runs/C-005-20260723-035736/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: C-006 - financial_data_validator — 分期实现（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/C-006-20260723-round1.txt
+- **Run archive**: docs/task_runs/C-006-20260723-040537/
