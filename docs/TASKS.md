@@ -143,7 +143,7 @@
 ### C-005: same_symbol_delta_check（P2）
 - **描述**：同一股票结论翻转时，必须输出对比信息
 - **优先级**：P2
-- **状态**：done — C-005-20260723-035736，48 tests passed
+- **状态**：done -- commit 38e3261
 - **预计耗时**：25-35 分钟
 - **depends_on**：无
 - **auto_release**：true
