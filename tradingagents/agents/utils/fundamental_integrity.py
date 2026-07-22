@@ -821,49 +821,138 @@ def evaluate_fundamental_integrity(
 def extract_financial_anomaly_inputs(
     facts: Iterable[Mapping[str, Any]] | None,
 ) -> dict[str, float | None]:
-    latest: dict[str, Mapping[str, Any]] = {}
-    previous: dict[str, Mapping[str, Any]] = {}
-    for item in sorted(
-        (item for item in facts or [] if item.get("value") is not None),
-        key=lambda item: str(item.get("report_date") or ""),
-    ):
+    # [FUND-004B] Group facts by (report_date, period_scope, unit) so that
+    # gross_margin, debt_ratio and cashflow comparisons only use values from
+    # the same report date, same cumulative/single-quarter scope and same unit.
+    # Mixing across groups produced fabricated 88%/-500% gross margins.
+
+    _INCOME_METRICS = {"revenue", "operating_cost", "net_profit"}
+    _CASHFLOW_METRICS = {"operating_cashflow", "investing_cashflow", "financing_cashflow"}
+    _BALANCE_METRICS = {"total_assets", "total_liabilities"}
+
+    def _group_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(item.get("report_date") or ""),
+            str(item.get("period_scope") or ""),
+            str(item.get("unit") or "元"),
+        )
+
+    def _value(item: Mapping[str, Any] | None) -> float | None:
+        if not item:
+            return None
+        raw = item.get("value")
+        return float(raw) if isinstance(raw, (int, float)) else None
+
+    # Build groups keyed by (report_date, period_scope, unit).
+    # For each group, track the latest value per metric (last occurrence wins
+    # when the same metric appears multiple times with the same key).
+    groups: dict[tuple[str, str, str], dict[str, Mapping[str, Any]]] = {}
+    for item in facts or []:
+        if item.get("value") is None:
+            continue
         metric = str(item.get("metric") or "")
-        if metric:
-            if metric in latest:
-                previous[metric] = latest[metric]
-            latest[metric] = item
+        if not metric:
+            continue
+        key = _group_key(item)
+        groups.setdefault(key, {})[metric] = item
 
-    def value(metric: str) -> float | None:
-        raw = latest.get(metric, {}).get("value")
-        return float(raw) if isinstance(raw, (int, float)) else None
+    # Sort groups by report_date descending (latest first).
+    sorted_keys = sorted(groups.keys(), key=lambda k: k[0], reverse=True)
 
-    def previous_value(metric: str) -> float | None:
-        raw = previous.get(metric, {}).get("value")
-        return float(raw) if isinstance(raw, (int, float)) else None
+    def _find_best_group(
+        required_metrics: set[str],
+    ) -> dict[str, Mapping[str, Any]] | None:
+        """Return the latest group that contains ALL required metrics."""
+        for key in sorted_keys:
+            group = groups[key]
+            if all(m in group for m in required_metrics):
+                return group
+        return None
 
-    revenue, cost = value("revenue"), value("operating_cost")
-    prior_revenue, prior_cost = previous_value("revenue"), previous_value("operating_cost")
-    gross_margin = ((revenue - cost) / revenue * 100) if revenue not in (None, 0) and cost is not None else None
+    def _find_previous_group(
+        required_metrics: set[str],
+        current_date: str,
+    ) -> dict[str, Mapping[str, Any]] | None:
+        """Return the latest group before current_date with all required metrics."""
+        for key in sorted_keys:
+            if key[0] >= current_date:
+                continue
+            group = groups[key]
+            if all(m in group for m in required_metrics):
+                return group
+        return None
+
+    # --- Income group: gross_margin from same-date/same-scope revenue + cost ---
+    income_group = _find_best_group({"revenue", "operating_cost"})
+    if income_group:
+        revenue = _value(income_group["revenue"])
+        cost = _value(income_group["operating_cost"])
+        income_date = str(income_group["revenue"].get("report_date") or "")
+    else:
+        revenue, cost, income_date = None, None, ""
+
+    gross_margin = (
+        (revenue - cost) / revenue * 100
+        if revenue not in (None, 0) and cost is not None
+        else None
+    )
+
+    prev_income = _find_previous_group({"revenue", "operating_cost"}, income_date)
+    if prev_income:
+        prior_revenue = _value(prev_income["revenue"])
+        prior_cost = _value(prev_income["operating_cost"])
+    else:
+        prior_revenue, prior_cost = None, None
+
     gross_margin_prev = (
         (prior_revenue - prior_cost) / prior_revenue * 100
-        if prior_revenue not in (None, 0) and prior_cost is not None else None
+        if prior_revenue not in (None, 0) and prior_cost is not None
+        else None
     )
-    assets, liabilities = value("total_assets"), value("total_liabilities")
-    prior_assets, prior_liabilities = previous_value("total_assets"), previous_value("total_liabilities")
-    debt_ratio = liabilities / assets * 100 if assets not in (None, 0) and liabilities is not None else None
+
+    # --- Balance group: debt_ratio from same-date POINT_IN_TIME assets + liabilities ---
+    balance_group = _find_best_group({"total_assets", "total_liabilities"})
+    if balance_group:
+        assets = _value(balance_group["total_assets"])
+        liabilities = _value(balance_group["total_liabilities"])
+        balance_date = str(balance_group["total_assets"].get("report_date") or "")
+    else:
+        assets, liabilities, balance_date = None, None, ""
+
+    debt_ratio = (
+        liabilities / assets * 100
+        if assets not in (None, 0) and liabilities is not None
+        else None
+    )
+
+    prev_balance = _find_previous_group({"total_assets", "total_liabilities"}, balance_date)
+    if prev_balance:
+        prior_assets = _value(prev_balance["total_assets"])
+        prior_liabilities = _value(prev_balance["total_liabilities"])
+    else:
+        prior_assets, prior_liabilities = None, None
+
     debt_ratio_prev = (
         prior_liabilities / prior_assets * 100
-        if prior_assets not in (None, 0) and prior_liabilities is not None else None
+        if prior_assets not in (None, 0) and prior_liabilities is not None
+        else None
     )
+
+    # --- Cashflow/profit: latest group with net_profit for cashflow comparison ---
+    profit_group = _find_best_group({"net_profit"})
+    cashflow_group = _find_best_group({"operating_cashflow"})
+    invest_group = _find_best_group({"investing_cashflow"})
+    finance_group = _find_best_group({"financing_cashflow"})
+
     return {
         "gross_margin": gross_margin,
         "gross_margin_prev": gross_margin_prev,
-        "operating_cashflow": _to_yi(latest.get("operating_cashflow")),
-        "net_profit": _to_yi(latest.get("net_profit")),
+        "operating_cashflow": _to_yi(cashflow_group.get("operating_cashflow") if cashflow_group else None),
+        "net_profit": _to_yi(profit_group.get("net_profit") if profit_group else None),
         "debt_ratio": debt_ratio,
         "debt_ratio_prev": debt_ratio_prev,
-        "total_invest_cashflow": _to_yi(latest.get("investing_cashflow")),
-        "total_finance_cashflow": _to_yi(latest.get("financing_cashflow")),
+        "total_invest_cashflow": _to_yi(invest_group.get("investing_cashflow") if invest_group else None),
+        "total_finance_cashflow": _to_yi(finance_group.get("financing_cashflow") if finance_group else None),
     }
 
 

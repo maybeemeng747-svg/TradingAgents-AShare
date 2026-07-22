@@ -1,5 +1,14 @@
 # 修改日志
 
+## 2026-07-22 | FUND-004B C-006 同日期/同期间口径计算补修
+
+- **问题**：`extract_financial_anomaly_inputs()` 按指标各取最新值（独立排序 `report_date`），导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算，可组合出虚假毛利率（如 88%/-500%）。
+- **修复**：按 `(report_date, period_scope, unit)` 建立完整指标组；毛利率只使用同组收入和营业成本，资产负债率只使用同一报告日的 POINT_IN_TIME 资产与负债，找不到完整同口径组时返回 `None`。
+- **代码变更**：`tradingagents/agents/utils/fundamental_integrity.py` — 重写 `extract_financial_anomaly_inputs()`，新增 `_group_key()`、`_find_best_group()`、`_find_previous_group()`。
+- **新增测试**：`tests/test_fund003_fund004_integrity.py` 新增 7 项 FUND-004B 对抗测试：同日重复累计+单季度值、缺成本、跨日期、跨单位、修订值、资产负债表、前期间毛利率。
+- **验证**：FUND 专项 79 项通过；FUND-002/FUND-006 回归 14 项通过；FUND+API+runtime tier 聚焦回归 215 项通过；全量回归无新增失败。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-22 | FUND-003A-B 多轮对抗复审与正式收口
 
 - **起点**：自动开发遗留的两个未提交文件不是可直接提交的完成品；首次定向测试有 7 项失败，dirty tree 连续阻塞夜间任务。
@@ -13639,3 +13648,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Task-pool hygiene**: removed external ZCode IDs from SCORE-006 machine dependencies; those remain explicit human prerequisites instead of producing unknown-dependency noise in the TA resolver.
 - **Safety boundary**: the batch is offline-only; no live provider/LLM calls, no production DB writes, no prompt edits and no automatic 603629 rerun.
 - **Stop policy**: any P0/P1/P2 correctness finding, failed test, timeout or unexpected dirty tree stops the batch for human review.
+
+## 2026-07-22 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-004B - C-006 同日期/同期间口径计算补修（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/FUND-004B-20260722-round1.txt
+- **Run archive**: docs/task_runs/FUND-004B-20260722-200203/

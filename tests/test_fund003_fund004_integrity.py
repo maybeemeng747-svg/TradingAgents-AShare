@@ -927,3 +927,164 @@ def test_claim_id_still_deterministic_for_single_occurrence():
     cause2 = [c for c in c2 if c["metric"] == "原材料下降"]
     assert len(cause1) == 1
     assert cause1[0]["claim_id"] == cause2[0]["claim_id"]
+
+
+# ── FUND-004B: same-date/same-period/same-unit grouping ──────────────────────
+
+
+def test_c006_same_date_repeated_cumulative_and_single_quarter():
+    """Same date with both FY_YTD and SINGLE_QUARTER values: group picks
+    matching scope for each computation independently."""
+    facts = [
+        # FY_YTD revenue (cumulative)
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        # FY_YTD operating_cost
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        # SINGLE_QUARTER revenue (Q4 only)
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "SINGLE_QUARTER",
+         "value": 8451.0, "unit": "万元", "status": "HAS_DATA"},
+        # SINGLE_QUARTER operating_cost
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "SINGLE_QUARTER",
+         "value": 5400.0, "unit": "万元", "status": "HAS_DATA"},
+        # Net profit + cashflow for anomaly check
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # FY_YTD group has both revenue and operating_cost: gross_margin = (33074-19844)/33074*100 ≈ 40%
+    assert inputs["gross_margin"] is not None
+    assert 35 < inputs["gross_margin"] < 45
+    # No fabricated 88% from mixing FY_YTD revenue with missing cost
+    anomaly = check_financial_anomalies("603629.SH", **inputs)
+    assert "gross_margin_jump" not in anomaly["anomalies"]
+
+
+def test_c006_missing_cost_returns_none_not_fabricated():
+    """When operating_cost is absent, gross_margin must be None, not derived
+    from mixing revenue with a cost from a different date."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        # operating_cost only available at Q3
+        {"metric": "operating_cost", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": 15000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # No same-date/same-scope group with both revenue + cost -> None
+    assert inputs["gross_margin"] is None
+    assert inputs["gross_margin_prev"] is None
+
+
+def test_c006_cross_date_revenue_and_cost_not_mixed():
+    """Revenue from 12-31 and cost from 09-30 must NOT be combined."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": 3300.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # If this were mixed: (33074 - 3300) / 33074 * 100 ≈ 90% -- a fabricated margin
+    assert inputs["gross_margin"] is None
+
+
+def test_c006_cross_unit_revenue_and_cost_not_mixed():
+    """Revenue in 万元 and cost in 亿元 must NOT be combined even on same date."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19.844, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Cross-unit group incomplete -> None
+    assert inputs["gross_margin"] is None
+
+
+def test_c006_revised_values_use_latest_in_same_group():
+    """When same metric appears twice in the same group key, the last one wins
+    (simulating a revised/amended filing)."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 30000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},  # revised
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Uses revised revenue 33074, not original 30000
+    expected_margin = (33074 - 19844) / 33074 * 100
+    assert abs(inputs["gross_margin"] - expected_margin) < 0.01
+
+
+def test_c006_balance_sheet_same_date_assets_and_liabilities():
+    """Assets and liabilities must come from the same report_date for debt_ratio."""
+    facts = [
+        # Assets from 12-31
+        {"metric": "total_assets", "report_date": "2025-12-31", "period_scope": "POINT_IN_TIME",
+         "value": 100000.0, "unit": "万元", "status": "HAS_DATA"},
+        # Liabilities from 09-30 (different date)
+        {"metric": "total_liabilities", "report_date": "2025-09-30", "period_scope": "POINT_IN_TIME",
+         "value": 60000.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Cross-date -> None
+    assert inputs["debt_ratio"] is None
+
+    # Now add same-date liabilities
+    facts.append(
+        {"metric": "total_liabilities", "report_date": "2025-12-31", "period_scope": "POINT_IN_TIME",
+         "value": 75000.0, "unit": "万元", "status": "HAS_DATA"},
+    )
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["debt_ratio"] == 75.0
+
+
+def test_c006_previous_period_gross_margin_from_prior_date():
+    """Previous gross_margin uses the latest prior complete income group."""
+    facts = [
+        # Current period
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        # Prior period (Q3)
+        {"metric": "revenue", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": 24623.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": 15000.0, "unit": "万元", "status": "HAS_DATA"},
+        # Required for cashflow/profit
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    expected_current = (33074 - 19844) / 33074 * 100
+    expected_prev = (24623 - 15000) / 24623 * 100
+    assert abs(inputs["gross_margin"] - expected_current) < 0.01
+    assert abs(inputs["gross_margin_prev"] - expected_prev) < 0.01
+    # No cross-date mixing in either direction
+    anomaly = check_financial_anomalies("603629.SH", **inputs)
+    assert "gross_margin_jump" not in anomaly["anomalies"]
