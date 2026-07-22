@@ -102,7 +102,7 @@
 ### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
 - **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 research_score_snapshot v1.1.0 可被稳定读取和降级。本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
-- **状态**：done — commit 87dcd44 + 24881f6，73 tests passed
+- **状态**：done -- commit c6f6ea7
 - **预计耗时**：35-45 分钟
 - **depends_on**：KB-001, KB-014
 - **auto_release**：true
@@ -5987,7 +5987,7 @@
 ### SCORE-001B: 研究快照接入聚合响应与 TradeFlow candidate detail（P1）
 - **描述**：在 SCORE-001 loader 验收后，把只读摘要接入 KB-020 聚合响应、TA metadata 和 TradeFlow candidate detail；本任务只透传研究卡，不参与候选原分、动作或阶段计算。
 - **优先级**：P1
-- **状态**：blocked-auto — 等待 SCORE-001/KB-020
+- **状态**：ready
 - **前置条件**：SCORE-001、KB-020 完成。
 - **depends_on**：SCORE-001, KB-020
 - **auto_release**：true
@@ -6007,7 +6007,7 @@
 ### SCORE-002: 复用 TradeFlow 现有因子生成 entry_timing 评分卡（P1）
 - **描述**：把 TradeFlow 已有技术、资金、事件、拥挤/过热、触发距离和赔率字段组合成独立 `entry_timing` 评分卡，禁止另造一套行情和资金计算。
 - **优先级**：P1
-- **状态**：blocked-auto — 等待 SCORE-001
+- **状态**：ready
 - **前置条件**：SCORE-001、TF-QUALITY-004、TF-RISK-001 完成。
 - **depends_on**：SCORE-001, TF-QUALITY-004, TF-RISK-001
 - **auto_release**：true
@@ -6028,7 +6028,7 @@
 ### SCORE-003: 账户上下文 portfolio_fit 评分卡（P1）
 - **描述**：基于账户权限、真实持仓、可用现金、行业集中度、标的流动性和风险预算生成独立 `portfolio_fit`，回答“这只票是否适合当前账户参与”。
 - **优先级**：P1
-- **状态**：blocked-auto — 等待 SCORE-001
+- **状态**：ready
 - **前置条件**：SCORE-001、C-002、TF-RISK-001、IC-TA-001 完成。
 - **depends_on**：SCORE-001, C-002, TF-RISK-001, IC-TA-001
 - **auto_release**：true
