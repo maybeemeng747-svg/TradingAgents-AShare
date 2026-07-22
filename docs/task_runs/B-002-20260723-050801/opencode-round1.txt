@@ -1,0 +1,879 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead scheduler
+[0m→ [0mRead api/services
+[0m✱ [0mGlob "scheduler/**/*.py"[90m 2 matches[0m
+[0m→ [0mRead scheduler/main.py
+[0m→ [0mRead api/services/scheduled_service.py
+[0m→ [0mRead api/services/notification_draft_service.py
+[0m→ [0mRead skills
+[0m✱ [0mGlob "skills/**/*"[90m 2 matches[0m
+[0m✱ [0mGrep "openclaw|OpenClaw"[90m 57 matches[0m
+Now let me explore the OpenClaw skills and related infrastructure to understand how to integrate with OpenClaw.
+[0m→ [0mRead skills/tradingagents-analysis/SKILL.md
+[0m→ [0mRead skills/tradingagents-analysis/scripts/analyze.sh
+[0m✱ [0mGrep "openclaw_hook|notify_openclaw|scheduled.*openclaw|openclaw.*callback|openclaw.*webhook"[90m 0 matches[0m
+[0m→ [0mRead api/services/wecom_notification_service.py
+[0m→ [0mRead api/services/bark_notification_service.py[90m [limit=60][0m
+[0m✱ [0mGrep "webhook|callback_url|OPENCLAW_WEBHOOK|openclaw.*notify|notify.*openclaw"[90m 100 matches[0m
+[0m→ [0mRead api/services/controller_briefing_payload_service.py[90m [limit=80][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=60][0m
+[0m✱ [0mGrep "report_id.*result_data|result_data.*report"[90m in scheduler · 0 matches[0m
+[0m✱ [0mGlob "tests/test_*scheduler*"[90m 0 matches[0m
+[0m✱ [0mGlob "tests/test_*notification*"[90m 3 matches[0m
+[0m→ [0mRead tests/test_wecom_notification_service.py[90m [limit=60][0m
+[0m→ [0mRead api/database.py[90m [limit=60, offset=460][0m
+[0m
+[0m# [0mTodos
+[ ] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[ ] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[ ] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m# [0mTodos
+[•] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[ ] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[ ] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m→ [0mRead api/database.py[90m [limit=80, offset=380][0m
+[0m
+[0m← [0mWrite api/services/openclaw_callback_service.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[•] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[ ] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m→ [0mRead scheduler/main.py[90m [offset=95, limit=30][0m
+Now I need to integrate the callback into the scheduler. I'll add the import and a new callback function, then call it after successful completion.
+[0m→ [0mRead scheduler/main.py[90m [limit=60, offset=155][0m
+[0m
+[0m← [0mEdit scheduler/main.py
+Index: /Users/maybee/TradingAgents-AShare/scheduler/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scheduler/main.py
++++ /Users/maybee/TradingAgents-AShare/scheduler/main.py
+@@ -209,8 +209,48 @@
+     except Exception as e:
+         logger.warning(f"[Scheduler] Notification send failed for {symbol}: {e}")
+ 
+ 
++async def _send_openclaw_callback(
++    user_id: str, report_id: str, symbol: str, trade_date: str, horizon: str, source: str
++) -> None:
++    """Send OpenClaw callback after scheduled analysis completion.
++
++    [B-002] Loads report result_data and sends a structured payload to the
++    configured OpenClaw callback URL.  OpenClaw (主控 AI) decides whether
++    to push to 飞书 / 企业微信.
++    """
++    try:
++        from api.services.openclaw_callback_service import (
++            is_openclaw_callback_enabled,
++            notify_openclaw_on_report_completion,
++        )
++
++        if not is_openclaw_callback_enabled():
++            return
++
++        def _load_result_data() -> dict | None:
++            with get_db_ctx() as db:
++                report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
++                if report and isinstance(report.result_data, dict):
++                    return report.result_data
++                return None
++
++        result_data = await asyncio.to_thread(_load_result_data)
++        notify_openclaw_on_report_completion(
++            report_id=report_id,
++            symbol=symbol,
++            trade_date=trade_date,
++            user_id=user_id,
++            horizon=horizon,
++            source=source,
++            result_data=result_data,
++        )
++        _log(f"[Scheduler] OpenClaw callback queued for {symbol}")
++    except Exception as e:
++        logger.warning(f"[Scheduler] OpenClaw callback failed for {symbol}: {e}")
++
++
+ # ── Single scheduled analysis execution ──────────────────────────────────────
+ 
+ async def _run_scheduled_analysis_once(
+     task: dict,
+
+[0m
+[0m→ [0mRead scheduler/main.py[90m [limit=40, offset=265][0m
+Now I need to call the callback after successful completion in `_run_scheduled_analysis_once`:
+[0m→ [0mRead scheduler/main.py[90m [limit=30, offset=305][0m
+[0m
+[0m← [0mEdit scheduler/main.py
+Index: /Users/maybee/TradingAgents-AShare/scheduler/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scheduler/main.py
++++ /Users/maybee/TradingAgents-AShare/scheduler/main.py
+@@ -315,8 +315,14 @@
+     await asyncio.to_thread(_record_success_sync)
+     _log(f"[Scheduler] Completed {symbol}")
+ 
+     await _send_scheduled_report_notifications(user_id, job_id, symbol)
++
++    # [B-002] OpenClaw callback: notify 主控 AI so it can decide whether to push to 飞书
++    await _send_openclaw_callback(
++        user_id, job_id, symbol, actual_trade_date, horizon,
++        "scheduled" if mark_schedule_run else "scheduled_manual",
++    )
+ except Exception as e:
+     logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
+     try:
+         await asyncio.to_thread(_record_failure_sync)
+
+[0m
+[0m# [0mTodos
+[✓] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[✓] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[•] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m← [0mWrite tests/test_b002_openclaw_callback.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[✓] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[✓] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[•] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_b002_openclaw_callback.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 40 items
+
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_full_result_data_extracts_all_fields PASSED [  2%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_minimal_result_data FAILED [  5%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_none_result_data PASSED [  7%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_empty_result_data PASSED [ 10%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_user_id_included_when_provided PASSED [ 12%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_user_id_omitted_when_empty PASSED [ 15%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_horizon_and_source_defaults PASSED [ 17%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_risk_items_capped_at_5 PASSED [ 20%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_key_metrics_capped_at_8 PASSED [ 22%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_fallback_to_decision_when_no_action_label PASSED [ 25%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_fallback_to_direction_when_no_research_direction PASSED [ 27%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_summary_from_trader_investment_plan PASSED [ 30%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_summary_from_investment_plan PASSED [ 32%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_summary_clipping PASSED [ 35%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_json_serializable PASSED [ 37%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_malformed_risk_items_ignored FAILED [ 40%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_malformed_key_metrics_ignored FAILED [ 42%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_disabled_by_default PASSED [ 45%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_enabled_but_no_url PASSED [ 47%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_url_set_but_not_enabled PASSED [ 50%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_both_enabled PASSED [ 52%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_enabled_with_truthy_values PASSED [ 55%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_enabled_with_falsy_values PASSED [ 57%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_empty_url_treated_as_disabled PASSED [ 60%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_success PASSED [ 62%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_success_201 PASSED [ 65%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_no_url_returns_false PASSED [ 67%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_http_error_returns_false FAILED [ 70%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_request_exception_returns_false FAILED [ 72%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_includes_auth_header PASSED [ 75%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_no_auth_header_when_token_empty PASSED [ 77%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_json_body_contains_symbol PASSED [ 80%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_retry_on_failure FAILED [ 82%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_exhausts_retries FAILED [ 85%]
+tests/test_b002_openclaw_callback.py::TestSendCallbackAsync::test_async_delegates_to_sync FAILED [ 87%]
+tests/test_b002_openclaw_callback.py::TestNotifyOpenclawOnReportCompletion::test_does_nothing_when_disabled PASSED [ 90%]
+tests/test_b002_openclaw_callback.py::TestNotifyOpenclawOnReportCompletion::test_sends_when_enabled PASSED [ 92%]
+tests/test_b002_openclaw_callback.py::TestConstants::test_schema_version PASSED [ 95%]
+tests/test_b002_openclaw_callback.py::TestConstants::test_source PASSED  [ 97%]
+tests/test_b002_openclaw_callback.py::TestExports::test_all_exports_present PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ TestBuildCallbackPayload.test_minimal_result_data _______________
+
+self = <tests.test_b002_openclaw_callback.TestBuildCallbackPayload object at 0x1087715e0>
+
+    def test_minimal_result_data(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+    
+        payload = build_callback_payload(
+            report_id="rpt-002",
+            symbol="000001.SZ",
+            trade_date="2026-07-23",
+            result_data=_MINIMAL_RESULT_DATA,
+        )
+    
+        assert payload["decision"]["action"] == ""  # no action_label or decision
+        assert payload["decision"]["direction"] == "中性"
+        assert payload["decision"]["confidence"] == 50
+        assert payload["summary"] == ""  # no trade decision text
+        assert payload["risk_items"] == []
+        assert payload["key_metrics"] == []
+>       assert "readiness_score" not in payload  # no readiness → omitted
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'readiness_score' not in {'decision': {'action': '', 'confidence': 50, 'direction': '中性', 'execution_action': ''}, 'event': 'scheduled_analysis_completed', 'key_metrics': [], 'readiness_score': {'confidence': None, 'data_completeness': None}, ...}
+
+tests/test_b002_openclaw_callback.py:130: AssertionError
+__________ TestBuildCallbackPayload.test_malformed_risk_items_ignored __________
+
+self = <tests.test_b002_openclaw_callback.TestBuildCallbackPayload object at 0x1087726f0>
+
+    def test_malformed_risk_items_ignored(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+    
+        payload = build_callback_payload(
+            report_id="rpt-016",
+            symbol="600519.SH",
+            trade_date="2026-07-23",
+            result_data={"risk_items": ["not_a_dict", 42, None, {"name": "ok", "level": "high"}]},
+        )
+        # Only dict items with name/level are extracted; non-dicts produce empty dicts
+>       assert len(payload["risk_items"]) == 4  # all iterated, non-dicts produce {}
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 1 == 4
+E        +  where 1 = len([{'level': 'high', 'name': 'ok'}])
+
+tests/test_b002_openclaw_callback.py:300: AssertionError
+_________ TestBuildCallbackPayload.test_malformed_key_metrics_ignored __________
+
+self = <tests.test_b002_openclaw_callback.TestBuildCallbackPayload object at 0x108771df0>
+
+    def test_malformed_key_metrics_ignored(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+    
+        payload = build_callback_payload(
+            report_id="rpt-017",
+            symbol="600519.SH",
+            trade_date="2026-07-23",
+            result_data={"key_metrics": ["bad", {"name": "ok", "value": "1", "status": "good"}]},
+        )
+>       assert len(payload["key_metrics"]) == 2
+E       AssertionError: assert 1 == 2
+E        +  where 1 = len([{'name': 'ok', 'status': 'good', 'value': '1'}])
+
+tests/test_b002_openclaw_callback.py:311: AssertionError
+_____________ TestSendCallback.test_send_http_error_returns_false ______________
+
+self = <tests.test_b002_openclaw_callback.TestSendCallback object at 0x108794f50>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11040ede0>
+
+    def test_send_http_error_returns_false(self, monkeypatch):
+        from api.services.openclaw_callback_service import send_callback
+    
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+    
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
+    
+        with patch("api.services.openclaw_callback_service.requests.post", return_value=mock_response), \
+>            patch("api.services.openclaw_callback_service.time"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_b002_openclaw_callback.py:438: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x11040d9d0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'api.services.openclaw_callback_service' from '/Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py'> does not have the attribute 'time'
+
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1437: AttributeError
+__________ TestSendCallback.test_send_request_exception_returns_false __________
+
+self = <tests.test_b002_openclaw_callback.TestSendCallback object at 0x108795220>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11040dd60>
+
+    def test_send_request_exception_returns_false(self, monkeypatch):
+        import requests as real_requests
+        from api.services.openclaw_callback_service import send_callback
+    
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+    
+        with patch("api.services.openclaw_callback_service.requests.post", side_effect=real_requests.ConnectionError("refused")), \
+>            patch("api.services.openclaw_callback_service.time"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_b002_openclaw_callback.py:450: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x11040dd90>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'api.services.openclaw_callback_service' from '/Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py'> does not have the attribute 'time'
+
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1437: AttributeError
+_________________ TestSendCallback.test_send_retry_on_failure __________________
+
+self = <tests.test_b002_openclaw_callback.TestSendCallback object at 0x108771af0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1105a8aa0>
+
+    def test_send_retry_on_failure(self, monkeypatch):
+        from api.services.openclaw_callback_service import send_callback
+    
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+    
+        mock_fail = MagicMock()
+        mock_fail.status_code = 503
+        mock_fail.text = "Service Unavailable"
+    
+        mock_ok = MagicMock()
+        mock_ok.status_code = 200
+    
+        with patch("api.services.openclaw_callback_service.requests.post", side_effect=[mock_fail, mock_ok]), \
+>            patch("api.services.openclaw_callback_service.time"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_b002_openclaw_callback.py:515: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x11040f0e0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'api.services.openclaw_callback_service' from '/Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py'> does not have the attribute 'time'
+
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1437: AttributeError
+_________________ TestSendCallback.test_send_exhausts_retries __________________
+
+self = <tests.test_b002_openclaw_callback.TestSendCallback object at 0x108772b10>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11040f590>
+
+    def test_send_exhausts_retries(self, monkeypatch):
+        from api.services.openclaw_callback_service import send_callback
+    
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+    
+        mock_fail = MagicMock()
+        mock_fail.status_code = 500
+        mock_fail.text = "error"
+    
+        with patch("api.services.openclaw_callback_service.requests.post", return_value=mock_fail), \
+>            patch("api.services.openclaw_callback_service.time"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_b002_openclaw_callback.py:530: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x110423170>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'api.services.openclaw_callback_service' from '/Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py'> does not have the attribute 'time'
+
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1437: AttributeError
+______________ TestSendCallbackAsync.test_async_delegates_to_sync ______________
+async def functions are not natively supported.
+You need to install a suitable plugin for your async framework, for example:
+  - anyio
+  - pytest-asyncio
+  - pytest-tornasync
+  - pytest-trio
+  - pytest-twisted
+=============================== warnings summary ===============================
+tests/test_b002_openclaw_callback.py:544
+  /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py:544: PytestUnknownMarkWarning: Unknown pytest.mark.asyncio - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.asyncio
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_minimal_result_data
+FAILED tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_malformed_risk_items_ignored
+FAILED tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_malformed_key_metrics_ignored
+FAILED tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_http_error_returns_false
+FAILED tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_request_exception_returns_false
+FAILED tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_retry_on_failure
+FAILED tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_exhausts_retries
+FAILED tests/test_b002_openclaw_callback.py::TestSendCallbackAsync::test_async_delegates_to_sync
+=================== 8 failed, 32 passed, 1 warning in 1.39s ====================
+[0m
+[0m← [0mEdit api/services/openclaw_callback_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+@@ -17,8 +17,9 @@
+ import asyncio
+ import json
+ import logging
+ import os
++import time
+ from datetime import datetime, timezone
+ from typing import Any, Optional
+ 
+ import requests
+
+[0m
+I need to fix several issues. Let me fix the service code and tests:
+[0m← [0mEdit api/services/openclaw_callback_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+@@ -131,12 +131,15 @@
+ # Readiness score
+ readiness = result.get("readiness_score") or {}
+ readiness_score = None
+ if isinstance(readiness, dict):
+-    readiness_score = {
+-        "data_completeness": readiness.get("data_completeness"),
+-        "confidence": readiness.get("confidence"),
+-    }
++    dc = readiness.get("data_completeness")
++    conf = readiness.get("confidence")
++    if dc is not None or conf is not None:
++        readiness_score = {
++            "data_completeness": dc,
++            "confidence": conf,
++        }
+ 
+ now = datetime.now(timezone.utc)
+ 
+ payload: dict[str, Any] = {
+
+[0m
+[0m← [0mEdit api/services/openclaw_callback_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+@@ -230,10 +230,8 @@
+             exc,
+         )
+ 
+     if attempt < _MAX_RETRIES:
+-        # Use a short delay for retries (async-friendly)
+-        import time
+         time.sleep(_RETRY_DELAY_SECONDS)
+ 
+ logger.error(
+     "[B-002] OpenClaw callback exhausted retries for symbol=%s",
+
+[0m
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -295,10 +295,11 @@
+             symbol="600519.SH",
+             trade_date="2026-07-23",
+             result_data={"risk_items": ["not_a_dict", 42, None, {"name": "ok", "level": "high"}]},
+         )
+-        # Only dict items with name/level are extracted; non-dicts produce empty dicts
+-        assert len(payload["risk_items"]) == 4  # all iterated, non-dicts produce {}
++        # Only dict items are extracted; non-dicts are skipped
++        assert len(payload["risk_items"]) == 1
++        assert payload["risk_items"][0]["name"] == "ok"
+ 
+     def test_malformed_key_metrics_ignored(self):
+         from api.services.openclaw_callback_service import build_callback_payload
+ 
+@@ -307,9 +308,11 @@
+             symbol="600519.SH",
+             trade_date="2026-07-23",
+             result_data={"key_metrics": ["bad", {"name": "ok", "value": "1", "status": "good"}]},
+         )
+-        assert len(payload["key_metrics"]) == 2
++        # Only dict items are extracted; non-dicts are skipped
++        assert len(payload["key_metrics"]) == 1
++        assert payload["key_metrics"][0]["name"] == "ok"
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # Test: is_openclaw_callback_enabled
+
+[0m
+Now fix the tests:
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -437,9 +437,9 @@
+ mock_response.status_code = 500
+ mock_response.text = "Internal Server Error"
+ 
+ with patch("api.services.openclaw_callback_service.requests.post", return_value=mock_response), \
+-     patch("api.services.openclaw_callback_service.time"):
++     patch("api.services.openclaw_callback_service.time.sleep"):
+     result = send_callback(self._make_payload())
+ 
+ assert result is False
+ 
+@@ -449,9 +449,9 @@
+ 
+ monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+ 
+ with patch("api.services.openclaw_callback_service.requests.post", side_effect=real_requests.ConnectionError("refused")), \
+-     patch("api.services.openclaw_callback_service.time"):
++     patch("api.services.openclaw_callback_service.time.sleep"):
+     result = send_callback(self._make_payload())
+ 
+ assert result is False
+ 
+
+[0m
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -514,9 +514,9 @@
+ mock_ok = MagicMock()
+ mock_ok.status_code = 200
+ 
+ with patch("api.services.openclaw_callback_service.requests.post", side_effect=[mock_fail, mock_ok]), \
+-     patch("api.services.openclaw_callback_service.time"):
++     patch("api.services.openclaw_callback_service.time.sleep"):
+     result = send_callback(self._make_payload())
+ 
+ assert result is True
+ 
+@@ -529,9 +529,9 @@
+ mock_fail.status_code = 500
+ mock_fail.text = "error"
+ 
+ with patch("api.services.openclaw_callback_service.requests.post", return_value=mock_fail), \
+-     patch("api.services.openclaw_callback_service.time"):
++     patch("api.services.openclaw_callback_service.time.sleep"):
+     result = send_callback(self._make_payload())
+ 
+ assert result is False
+ 
+
+[0m
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -543,16 +543,15 @@
+ 
+ class TestSendCallbackAsync:
+     """Async wrapper tests."""
+ 
+-    @pytest.mark.asyncio
+-    async def test_async_delegates_to_sync(self, monkeypatch):
++    def test_async_delegates_to_sync(self, monkeypatch):
+         from api.services.openclaw_callback_service import send_callback_async
+ 
+         monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+ 
+         with patch("api.services.openclaw_callback_service.send_callback", return_value=True) as mock_send:
+-            result = await send_callback_async({"test": True})
++            result = asyncio.run(send_callback_async({"test": True}))
+ 
+         assert result is True
+         mock_send.assert_called_once_with({"test": True})
+ 
+
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_b002_openclaw_callback.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 40 items
+
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_full_result_data_extracts_all_fields PASSED [  2%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_minimal_result_data PASSED [  5%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_none_result_data PASSED [  7%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_empty_result_data PASSED [ 10%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_user_id_included_when_provided PASSED [ 12%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_user_id_omitted_when_empty PASSED [ 15%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_horizon_and_source_defaults PASSED [ 17%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_risk_items_capped_at_5 PASSED [ 20%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_key_metrics_capped_at_8 PASSED [ 22%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_fallback_to_decision_when_no_action_label PASSED [ 25%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_fallback_to_direction_when_no_research_direction PASSED [ 27%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_summary_from_trader_investment_plan PASSED [ 30%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_summary_from_investment_plan PASSED [ 32%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_summary_clipping PASSED [ 35%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_json_serializable PASSED [ 37%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_malformed_risk_items_ignored PASSED [ 40%]
+tests/test_b002_openclaw_callback.py::TestBuildCallbackPayload::test_malformed_key_metrics_ignored PASSED [ 42%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_disabled_by_default PASSED [ 45%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_enabled_but_no_url PASSED [ 47%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_url_set_but_not_enabled PASSED [ 50%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_both_enabled PASSED [ 52%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_enabled_with_truthy_values PASSED [ 55%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_enabled_with_falsy_values PASSED [ 57%]
+tests/test_b002_openclaw_callback.py::TestIsOpenclawCallbackEnabled::test_empty_url_treated_as_disabled PASSED [ 60%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_success PASSED [ 62%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_success_201 PASSED [ 65%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_no_url_returns_false PASSED [ 67%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_http_error_returns_false PASSED [ 70%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_request_exception_returns_false PASSED [ 72%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_includes_auth_header PASSED [ 75%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_no_auth_header_when_token_empty PASSED [ 77%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_json_body_contains_symbol PASSED [ 80%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_retry_on_failure PASSED [ 82%]
+tests/test_b002_openclaw_callback.py::TestSendCallback::test_send_exhausts_retries PASSED [ 85%]
+tests/test_b002_openclaw_callback.py::TestSendCallbackAsync::test_async_delegates_to_sync PASSED [ 87%]
+tests/test_b002_openclaw_callback.py::TestNotifyOpenclawOnReportCompletion::test_does_nothing_when_disabled PASSED [ 90%]
+tests/test_b002_openclaw_callback.py::TestNotifyOpenclawOnReportCompletion::test_sends_when_enabled PASSED [ 92%]
+tests/test_b002_openclaw_callback.py::TestConstants::test_schema_version PASSED [ 95%]
+tests/test_b002_openclaw_callback.py::TestConstants::test_source PASSED  [ 97%]
+tests/test_b002_openclaw_callback.py::TestExports::test_all_exports_present PASSED [100%]
+
+============================== 40 passed in 0.96s ==============================
+[0m
+All 40 tests pass. Now let me compile-check the modified files and run regression tests:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m py_compile api/services/openclaw_callback_service.py && python -m py_compile scheduler/main.py && echo "py_compile OK"
+py_compile OK
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_wecom_notification_service.py tests/test_bark_notification_service.py -q 2>&1
+...........................                                              [100%]
+27 passed in 0.96s
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q 2>&1
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 23.57s
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_track_notify001_notification_draft.py tests/test_notify003_noise_replay.py -q 2>&1
+.............................................................            [100%]
+61 passed in 30.08s
+[0m
+[0m# [0mTodos
+[✓] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[✓] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[✓] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[✓] Run tests and verify no regressions
+[•] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=10][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,34 @@
+ # 修改日志
+ 
++## 2026-07-23 | B-002 定时任务与 OpenClaw 联动
++
++- **任务**：B-002 — 定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书（中优先级）
++- **实现**：
++  - `api/services/openclaw_callback_service.py`（新增）— OpenClaw 定时任务完成回调 service。
++    - **`build_callback_payload()`**：从完成的报告 result_data 中提取决策摘要（action/direction/confidence/summary/risk_items/key_metrics/readiness_score），构建结构化 JSON payload。
++    - **`send_callback()`**：POST payload 到 `OPENCLAW_CALLBACK_URL`，支持 Bearer token 认证，最多重试 2 次（每次间隔 10 秒），失败静默降级。
++    - **`is_openclaw_callback_enabled()`**：检查 `OPENCLAW_CALLBACK_ENABLED` + `OPENCLAW_CALLBACK_URL` 环境变量，两者都配置才启用。
++    - **`notify_openclaw_on_report_completion()`**：fire-and-forget 入口，在 async 上下文中调度为 background task，sync 上下文中启动 daemon thread。
++    - 设计契约：不读取/打印 API key/token，不写数据库，不调 LLM，不改 prompts；失败不阻塞主流程。
++  - `scheduler/main.py` — 新增 `_send_openclaw_callback()` 函数，在 `_run_scheduled_analysis_once()` 完成后调用。
++    - 从 DB 加载报告 `result_data`，传给 `notify_openclaw_on_report_completion()`。
++    - 与现有 email/WeCom 通知并行（非阻塞），独立 try/except 隔离。
++    - 配置禁用时（`OPENCLAW_CALLBACK_ENABLED=false` 或 URL 未设置）零开销跳过。
++- **环境变量**：
++  - `OPENCLAW_CALLBACK_ENABLED`：是否启用回调（默认 false）
++  - `OPENCLAW_CALLBACK_URL`：OpenClaw 接收 webhook 的地址
++  - `OPENCLAW_CALLBACK_TOKEN`：可选 Bearer token 认证
++- **测试**：
++  - `tests/test_b002_openclaw_callback.py`（新增）— **40 tests passed**。
++  - 覆盖 8 个测试类：payload 构建（17）、env var 组合（7）、HTTP 发送（9）、async 包装（1）、fire-and-forget 入口（2）、常量（1）、导出（1）。
++- **回归**：
++  - `pytest tests/test_wecom_notification_service.py tests/test_bark_notification_service.py -q`：**27 passed**（通知服务回归）。
++  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
++  - `pytest tests/test_track_notify001_notification_draft.py tests/test_notify003_noise_replay.py -q`：**61 passed**（通知草稿回归）。
++  - `py_compile` 全部修改文件通过。
++- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-23 | C-008 execution_readiness_score 简化版
+ 
+ - **任务**：C-008 — 每份报告输出两个核心质量指标（P2）
+ - **实现**：
+
+[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=10, offset=175][0m
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -174,9 +174,9 @@
+ 
+ ### B-002: 定时任务与 OpenClaw 联动
+ - **描述**：定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书
+ - **优先级**：中
+-- **状态**：in_progress — claimed B-002-20260723-050801
++- **状态**：done — B-002-20260723-050801
+ - **预计耗时**：30-40 分钟
+ - **depends_on**：无
+ - **auto_release**：true
+ 
+
+[0m
+[0m# [0mTodos
+[✓] Create api/services/openclaw_callback_service.py — payload builder + callback sender
+[✓] Integrate OpenClaw callback into scheduler/main.py _run_scheduled_analysis_once()
+[✓] Create tests/test_b002_openclaw_callback.py — payload/callback/scheduler tests
+[✓] Run tests and verify no regressions
+[✓] Update docs/DEVLOG.md with B-002 changes
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && git diff --stat 2>&1
+docs/DEVLOG.md    | 28 ++++++++++++++++++++++++++++
+ docs/TASKS.md     |  2 +-
+ scheduler/main.py | 46 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 75 insertions(+), 1 deletion(-)
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && git status --short 2>&1
+M docs/DEVLOG.md
+ M docs/TASKS.md
+ M scheduler/main.py
+?? api/services/openclaw_callback_service.py
+?? docs/task_runs/B-002-20260723-050801/
+?? tests/test_b002_openclaw_callback.py
+[0m
+## B-002 Complete — Summary
+
+### Files Changed
+
+| File | Status | Description |
+|------|--------|-------------|
+| `api/services/openclaw_callback_service.py` | **new** | OpenClaw callback service (payload builder + HTTP sender) |
+| `tests/test_b002_openclaw_callback.py` | **new** | 40 tests covering payload/env/HTTP/retry/async |
+| `scheduler/main.py` | modified | Added `_send_openclaw_callback()` + call in `_run_scheduled_analysis_once()` |
+| `docs/DEVLOG.md` | modified | Added B-002 entry |
+| `docs/TASKS.md` | modified | B-002 status → done |
+
+### Key Logic
+
+1. **`openclaw_callback_service.py`** — Builds a structured JSON payload from completed report `result_data` (decision/direction/action/confidence/summary/risk_items/key_metrics/readiness_score) and POSTs it to `OPENCLAW_CALLBACK_URL`. Gated by `OPENCLAW_CALLBACK_ENABLED` + URL being set. Supports optional `OPENCLAW_CALLBACK_TOKEN` Bearer auth. Retries 2x with 10s delay on failure. All failures are silent (no-throw).
+
+2. **`scheduler/main.py`** — After email/WeCom notifications complete, `_send_openclaw_callback()` loads report `result_data` from DB and calls `notify_openclaw_on_report_completion()` as fire-and-forget. Wrapped in independent try/except so it never blocks the scheduler.
+
+3. **Configuration**: `OPENCLAW_CALLBACK_ENABLED=true` + `OPENCLAW_CALLBACK_URL=https://...` to activate. Disabled by default (zero overhead when off).
+
+### Test Results
+
+- **B-002专项**: 40 passed
+- **通知服务回归**: 27 passed (wecom + bark)
+- **API smoke 回归**: 122 passed
+- **通知草稿回归**: 61 passed
+- **py_compile**: all modified files pass
+
+### Constraints Respected
+
+- No changes to `tradingagents/prompts/`
+- No writes to production `tradingagents.db`
+- No live LLM calls
+- No git commit

@@ -210,6 +210,46 @@ async def _send_scheduled_report_notifications(
         logger.warning(f"[Scheduler] Notification send failed for {symbol}: {e}")
 
 
+async def _send_openclaw_callback(
+    user_id: str, report_id: str, symbol: str, trade_date: str, horizon: str, source: str
+) -> None:
+    """Send OpenClaw callback after scheduled analysis completion.
+
+    [B-002] Loads report result_data and sends a structured payload to the
+    configured OpenClaw callback URL.  OpenClaw (主控 AI) decides whether
+    to push to 飞书 / 企业微信.
+    """
+    try:
+        from api.services.openclaw_callback_service import (
+            is_openclaw_callback_enabled,
+            notify_openclaw_on_report_completion,
+        )
+
+        if not is_openclaw_callback_enabled():
+            return
+
+        def _load_result_data() -> dict | None:
+            with get_db_ctx() as db:
+                report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
+                if report and isinstance(report.result_data, dict):
+                    return report.result_data
+                return None
+
+        result_data = await asyncio.to_thread(_load_result_data)
+        notify_openclaw_on_report_completion(
+            report_id=report_id,
+            symbol=symbol,
+            trade_date=trade_date,
+            user_id=user_id,
+            horizon=horizon,
+            source=source,
+            result_data=result_data,
+        )
+        _log(f"[Scheduler] OpenClaw callback queued for {symbol}")
+    except Exception as e:
+        logger.warning(f"[Scheduler] OpenClaw callback failed for {symbol}: {e}")
+
+
 # ── Single scheduled analysis execution ──────────────────────────────────────
 
 async def _run_scheduled_analysis_once(
@@ -276,6 +316,12 @@ async def _run_scheduled_analysis_once(
         _log(f"[Scheduler] Completed {symbol}")
 
         await _send_scheduled_report_notifications(user_id, job_id, symbol)
+
+        # [B-002] OpenClaw callback: notify 主控 AI so it can decide whether to push to 飞书
+        await _send_openclaw_callback(
+            user_id, job_id, symbol, actual_trade_date, horizon,
+            "scheduled" if mark_schedule_run else "scheduled_manual",
+        )
     except Exception as e:
         logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
         try:

@@ -1,5 +1,33 @@
 # 修改日志
 
+## 2026-07-23 | B-002 定时任务与 OpenClaw 联动
+
+- **任务**：B-002 — 定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书（中优先级）
+- **实现**：
+  - `api/services/openclaw_callback_service.py`（新增）— OpenClaw 定时任务完成回调 service。
+    - **`build_callback_payload()`**：从完成的报告 result_data 中提取决策摘要（action/direction/confidence/summary/risk_items/key_metrics/readiness_score），构建结构化 JSON payload。
+    - **`send_callback()`**：POST payload 到 `OPENCLAW_CALLBACK_URL`，支持 Bearer token 认证，最多重试 2 次（每次间隔 10 秒），失败静默降级。
+    - **`is_openclaw_callback_enabled()`**：检查 `OPENCLAW_CALLBACK_ENABLED` + `OPENCLAW_CALLBACK_URL` 环境变量，两者都配置才启用。
+    - **`notify_openclaw_on_report_completion()`**：fire-and-forget 入口，在 async 上下文中调度为 background task，sync 上下文中启动 daemon thread。
+    - 设计契约：不读取/打印 API key/token，不写数据库，不调 LLM，不改 prompts；失败不阻塞主流程。
+  - `scheduler/main.py` — 新增 `_send_openclaw_callback()` 函数，在 `_run_scheduled_analysis_once()` 完成后调用。
+    - 从 DB 加载报告 `result_data`，传给 `notify_openclaw_on_report_completion()`。
+    - 与现有 email/WeCom 通知并行（非阻塞），独立 try/except 隔离。
+    - 配置禁用时（`OPENCLAW_CALLBACK_ENABLED=false` 或 URL 未设置）零开销跳过。
+- **环境变量**：
+  - `OPENCLAW_CALLBACK_ENABLED`：是否启用回调（默认 false）
+  - `OPENCLAW_CALLBACK_URL`：OpenClaw 接收 webhook 的地址
+  - `OPENCLAW_CALLBACK_TOKEN`：可选 Bearer token 认证
+- **测试**：
+  - `tests/test_b002_openclaw_callback.py`（新增）— **40 tests passed**。
+  - 覆盖 8 个测试类：payload 构建（17）、env var 组合（7）、HTTP 发送（9）、async 包装（1）、fire-and-forget 入口（2）、常量（1）、导出（1）。
+- **回归**：
+  - `pytest tests/test_wecom_notification_service.py tests/test_bark_notification_service.py -q`：**27 passed**（通知服务回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `pytest tests/test_track_notify001_notification_draft.py tests/test_notify003_noise_replay.py -q`：**61 passed**（通知草稿回归）。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | C-008 execution_readiness_score 简化版
 
 - **任务**：C-008 — 每份报告输出两个核心质量指标（P2）
@@ -14289,3 +14317,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/C-007-20260723-round1.txt
 - **Run archive**: docs/task_runs/C-007-20260723-041643/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: B-002 - 定时任务与 OpenClaw 联动
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/B-002-20260723-round1.txt
+- **Run archive**: docs/task_runs/B-002-20260723-050801/
