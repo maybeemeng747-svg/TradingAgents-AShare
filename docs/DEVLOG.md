@@ -1,5 +1,39 @@
 # 修改日志
 
+## 2026-07-23 | PLAYBOOK-002 计划仓位上限与上车三笔法规则引擎
+
+- **目标**：实现"计划最大仓位 + 试错仓/确认仓/进攻仓"可测试规则引擎，禁止系统因下跌简单提示补仓。
+- **实现**：
+  - 新增 `tradingagents/tradeflow/staged_entry_rules.py`（`# [PLAYBOOK-002] staged_entry_rules`）— 纯确定性规则引擎，不调用 LLM / 数据库 / 网络。
+  - **标的类型推断**（`classify_asset_type`）：按 strategy_tags 推断 ETF / 龙头 / 题材 / 未验证 / 高波动 / unknown，支持显式 override。
+  - **计划仓位上限**（`compute_planned_max_position`）：ETF 10-20%、龙头 10-25%、题材 5-15%、未验证 3-10%、高波动 1-5%，单票绝对上限 40%，默认取区间中值。
+  - **三笔法仓位拆分**（`compute_tranche_sizes`）：计划仓位 ÷ 3 = 试错仓 / 确认仓 / 进攻仓各 1/3。
+  - **试错仓评估**（`evaluate_trial_lot`）：投资假设清晰 + 非极端高位 + 板块未退潮 + 未跌停；禁止条件：纯传闻、爆量冲高回落、板块退潮、跌停封死。
+  - **确认仓评估**（`evaluate_confirm_lot`）：产业 / 业绩 / 资金三类证据评分 ≥ 3/5 且至少两类满足；前置：试错仓已建且成功。
+  - **进攻仓评估**（`evaluate_attack_lot`）：回踩缩量不破支撑 或 突破放量站稳且板块同步；禁止：跌停、放量破位、板块退潮、第一次大跌。
+  - **操作许可**：`allow_add` 检查仓位不超限；`allow_replenish` 禁止跌停 / 放量破位 / 板块退潮 / 第一次大跌；`allow_chase` 禁止爆量冲高回落。
+  - **安全约束**："跌了 / 便宜 / 回调 / 补仓 / 抄底 / 越跌越买" 单独出现不触发加仓；`detect_forbidden_replenish_keywords` 扫描 reason 文本。
+  - **便捷入口**（`apply_rules_to_contract`）：直接填充 `PlaybookContract` 字段，保留上游已设置的评分 / 阶段。
+- **新增测试**：`tests/test_playbook002_staged_entry_rules.py`（124 项），覆盖 17 个测试类：
+  - 标的类型推断（12 项）：ETF / 龙头 / 题材 / 未验证 / 高波动 / ST / 空 tags / override / 优先级
+  - 计划仓位上限（10 项）：全部类型默认值 / 区间中值 / override / 绝对上限 / NaN/Inf/负值
+  - 三笔法仓位拆分（6 项）：等分 / 总和 / 零 / 负 / NaN / 小仓位
+  - 试错仓（11 项）：可试错 / 纯传闻禁止 / 爆量禁止 / 板块退潮禁止 / 跌停禁止 / 极端高位禁止 / 已建跳过 / 无价格保守通过
+  - 确认仓（8 项）：2 类证据 / 3 类证据 / 1 类不足 / 0 类不足 / 低分不足 / 未建试错仓 / 试错未成功 / 已加
+  - 进攻仓（9 项）：回踩进攻 / 突破进攻 / 未加确认仓 / 跌停禁止 / 放量破位禁止 / 板块退潮禁止 / 第一次大跌禁止 / 爆量禁止 / 无条件
+  - allow_add（6 项）：低于上限 / 等于上限 / 超过上限 / 无计划仓位 / 无当前仓位
+  - allow_replenish（6 项）：全部通过 / 跌停 / 放量破位 / 板块退潮 / 第一次大跌 / 多条件
+  - allow_chase（2 项）：正常 / 爆量冲高回落
+  - 禁止关键词检测（9 项）：None / 空 / 干净文本 / 跌了 / 便宜 / 回调 / 补仓 / 抄底 / 越跌越买
+  - 跌了/便宜/回调安全约束（3 项）：单独出现不触发加仓
+  - 主入口编排（12 项）：完整流程覆盖
+  - Contract 集成（7 项）：创建 / 保留 / 更新 / 超限 / 安全词检查
+  - 边界情况（8 项）：空上下文 / Inf / NaN / 零仓位 / 全零分 / 满分 / 不可变 / 确定性
+  - 资产类型默认值（4 项）：全部类型有默认 / 区间有序 / 上限不超
+  - 强动作词安全（2 项）：reason 文本无违规 / contract 安全验证
+- **验证**：PLAYBOOK-002 专项 124 项通过；PLAYBOOK-001 回归 + API smoke + runtime_tier 244 项通过；`py_compile` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | F-001 Codex review 补修：models_cache 缺失字段
 
 - **问题**：Codex CLI v0.144.1 启动时报错 `failed to load models cache: missing field 'supports_reasoning_summaries' at line 88 column 5`，导致 review 无法正常执行。
@@ -13818,3 +13852,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/F-001-20260723-round2.txt
 - **Run archive**: docs/task_runs/F-001-20260723-015057/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: PLAYBOOK-002 - 计划仓位上限与上车三笔法规则引擎（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/PLAYBOOK-002-20260723-round1.txt
+- **Run archive**: docs/task_runs/PLAYBOOK-002-20260723-020942/

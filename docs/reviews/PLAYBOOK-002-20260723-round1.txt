@@ -1,0 +1,2973 @@
+Task: PLAYBOOK-002 - 计划仓位上限与上车三笔法规则引擎（P1）
+Date: 2026-07-23_02:21:17
+Codex exit code: 0
+Round: 1
+---
+2026-07-22T18:18:25.857269Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8b0c-e705-7c91-91b8-16774740af25
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git status --branch --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/task_runs/PLAYBOOK-002-20260723-020942/
+?? tests/test_playbook002_staged_entry_rules.py
+?? tradingagents/tradeflow/staged_entry_rules.py
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 358]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/task_runs/PLAYBOOK-002-20260723-020942/
+?? tests/test_playbook002_staged_entry_rules.py
+?? tradingagents/tradeflow/staged_entry_rules.py
+
+exec
+/bin/zsh -lc "git diff -- docs/DEVLOG.md docs/TASKS.md && find docs/task_runs/PLAYBOOK-002-20260723-020942 -maxdepth 2 -type f -print && sed -n '1,240p' tradingagents/tradeflow/staged_entry_rules.py && sed -n '1,240p' tests/test_playbook002_staged_entry_rules.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 996c89b..63c56b9 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,39 @@
+ # 修改日志
+ 
++## 2026-07-23 | PLAYBOOK-002 计划仓位上限与上车三笔法规则引擎
++
++- **目标**：实现"计划最大仓位 + 试错仓/确认仓/进攻仓"可测试规则引擎，禁止系统因下跌简单提示补仓。
++- **实现**：
++  - 新增 `tradingagents/tradeflow/staged_entry_rules.py`（`# [PLAYBOOK-002] staged_entry_rules`）— 纯确定性规则引擎，不调用 LLM / 数据库 / 网络。
++  - **标的类型推断**（`classify_asset_type`）：按 strategy_tags 推断 ETF / 龙头 / 题材 / 未验证 / 高波动 / unknown，支持显式 override。
++  - **计划仓位上限**（`compute_planned_max_position`）：ETF 10-20%、龙头 10-25%、题材 5-15%、未验证 3-10%、高波动 1-5%，单票绝对上限 40%，默认取区间中值。
++  - **三笔法仓位拆分**（`compute_tranche_sizes`）：计划仓位 ÷ 3 = 试错仓 / 确认仓 / 进攻仓各 1/3。
++  - **试错仓评估**（`evaluate_trial_lot`）：投资假设清晰 + 非极端高位 + 板块未退潮 + 未跌停；禁止条件：纯传闻、爆量冲高回落、板块退潮、跌停封死。
++  - **确认仓评估**（`evaluate_confirm_lot`）：产业 / 业绩 / 资金三类证据评分 ≥ 3/5 且至少两类满足；前置：试错仓已建且成功。
++  - **进攻仓评估**（`evaluate_attack_lot`）：回踩缩量不破支撑 或 突破放量站稳且板块同步；禁止：跌停、放量破位、板块退潮、第一次大跌。
++  - **操作许可**：`allow_add` 检查仓位不超限；`allow_replenish` 禁止跌停 / 放量破位 / 板块退潮 / 第一次大跌；`allow_chase` 禁止爆量冲高回落。
++  - **安全约束**："跌了 / 便宜 / 回调 / 补仓 / 抄底 / 越跌越买" 单独出现不触发加仓；`detect_forbidden_replenish_keywords` 扫描 reason 文本。
++  - **便捷入口**（`apply_rules_to_contract`）：直接填充 `PlaybookContract` 字段，保留上游已设置的评分 / 阶段。
++- **新增测试**：`tests/test_playbook002_staged_entry_rules.py`（124 项），覆盖 17 个测试类：
++  - 标的类型推断（12 项）：ETF / 龙头 / 题材 / 未验证 / 高波动 / ST / 空 tags / override / 优先级
++  - 计划仓位上限（10 项）：全部类型默认值 / 区间中值 / override / 绝对上限 / NaN/Inf/负值
++  - 三笔法仓位拆分（6 项）：等分 / 总和 / 零 / 负 / NaN / 小仓位
++  - 试错仓（11 项）：可试错 / 纯传闻禁止 / 爆量禁止 / 板块退潮禁止 / 跌停禁止 / 极端高位禁止 / 已建跳过 / 无价格保守通过
++  - 确认仓（8 项）：2 类证据 / 3 类证据 / 1 类不足 / 0 类不足 / 低分不足 / 未建试错仓 / 试错未成功 / 已加
++  - 进攻仓（9 项）：回踩进攻 / 突破进攻 / 未加确认仓 / 跌停禁止 / 放量破位禁止 / 板块退潮禁止 / 第一次大跌禁止 / 爆量禁止 / 无条件
++  - allow_add（6 项）：低于上限 / 等于上限 / 超过上限 / 无计划仓位 / 无当前仓位
++  - allow_replenish（6 项）：全部通过 / 跌停 / 放量破位 / 板块退潮 / 第一次大跌 / 多条件
++  - allow_chase（2 项）：正常 / 爆量冲高回落
++  - 禁止关键词检测（9 项）：None / 空 / 干净文本 / 跌了 / 便宜 / 回调 / 补仓 / 抄底 / 越跌越买
++  - 跌了/便宜/回调安全约束（3 项）：单独出现不触发加仓
++  - 主入口编排（12 项）：完整流程覆盖
++  - Contract 集成（7 项）：创建 / 保留 / 更新 / 超限 / 安全词检查
++  - 边界情况（8 项）：空上下文 / Inf / NaN / 零仓位 / 全零分 / 满分 / 不可变 / 确定性
++  - 资产类型默认值（4 项）：全部类型有默认 / 区间有序 / 上限不超
++  - 强动作词安全（2 项）：reason 文本无违规 / contract 安全验证
++- **验证**：PLAYBOOK-002 专项 124 项通过；PLAYBOOK-001 回归 + API smoke + runtime_tier 244 项通过；`py_compile` 通过。
++- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-23 | F-001 Codex review 补修：models_cache 缺失字段
+ 
+ - **问题**：Codex CLI v0.144.1 启动时报错 `failed to load models cache: missing field 'supports_reasoning_summaries' at line 88 column 5`，导致 review 无法正常执行。
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index aeb2f87..5f1e93e 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -92,7 +92,7 @@
+ ### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+ - **描述**：把"计划最大仓位 + 试错仓/确认仓/进攻仓"写成可测试规则，禁止系统因为下跌简单提示补仓。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed PLAYBOOK-002-20260723-020942
+ - **预计耗时**：40-50 分钟
+ - **depends_on**：PLAYBOOK-001
+ - **auto_release**：true
+docs/task_runs/PLAYBOOK-002-20260723-020942/tests-round1.txt
+docs/task_runs/PLAYBOOK-002-20260723-020942/codegraph-status.json
+docs/task_runs/PLAYBOOK-002-20260723-020942/prompt-round1.md
+docs/task_runs/PLAYBOOK-002-20260723-020942/codegraph-context.txt
+docs/task_runs/PLAYBOOK-002-20260723-020942/opencode-round1.txt
+docs/task_runs/PLAYBOOK-002-20260723-020942/task.md
+docs/task_runs/PLAYBOOK-002-20260723-020942/codegraph-impact.txt
+# [PLAYBOOK-002] staged_entry_rules
+"""
+计划仓位上限与上车三笔法规则引擎.
+
+纯确定性规则，不调用 LLM / 数据库 / 网络。所有输入通过 ``StagedEntryContext``
+数据类传入，输出通过 ``StagedEntryResult`` 数据类返回，并可直接填入
+``PlaybookContract`` 字段。
+
+核心规则
+--------
+1. **计划仓位上限**：按标的类型（ETF / 龙头 / 题材 / 试错 / 高波动）给默认
+   上限，单票绝对上限 40%。
+2. **三笔法**：计划仓位拆三等份（试错仓 / 确认仓 / 进攻仓），越确定越买，
+   不是越跌越买。
+3. **试错仓**：投资假设清晰 + 非极端高位 + 板块未退潮 + 可接受亏损。
+4. **确认仓**：产业 / 业绩 / 资金三类证据至少两类增强。
+5. **进攻仓**：确认仓之后，回踩缩量不破平台 或 突破放量站稳。
+6. **禁止补仓**：跌停 / 放量破位 / 龙头退潮 时 allow_replenish = False。
+7. **安全约束**："跌了 / 便宜 / 回调" 单独出现不能触发加仓。
+
+参考契约：``docs/trade_playbook_lifecycle.md`` §3-4
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import math
+from typing import Any, Dict, List, Optional, Tuple
+
+from tradingagents.tradeflow.playbook_contract import (
+    ATTACK_LOT_BREAKOUT,
+    ATTACK_LOT_NONE,
+    ATTACK_LOT_PULLBACK,
+    CONFIRM_LOT_ELIGIBLE,
+    CONFIRM_LOT_NONE,
+    STAGE_CONFIRM,
+    STAGE_TRIAL,
+    TRIAL_LOT_NONE,
+    PlaybookContract,
+)
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 标的类型常量 ──────────────────────────────────────────────────────────────
+ASSET_TYPE_ETF = "etf"
+ASSET_TYPE_BLUE_CHIP = "blue_chip"         # 硬逻辑主板龙头
+ASSET_TYPE_THEME = "theme"                 # 题材弹性股
+ASSET_TYPE_UNVERIFIED = "unverified"       # 业绩未验证但想试错
+ASSET_TYPE_HIGH_VOLATILITY = "high_vol"    # 高波动 / 监管风险 / 传闻票
+ASSET_TYPE_UNKNOWN = "unknown"
+
+ALL_ASSET_TYPES: List[str] = [
+    ASSET_TYPE_ETF,
+    ASSET_TYPE_BLUE_CHIP,
+    ASSET_TYPE_THEME,
+    ASSET_TYPE_UNVERIFIED,
+    ASSET_TYPE_HIGH_VOLATILITY,
+    ASSET_TYPE_UNKNOWN,
+]
+
+# ── 计划仓位上限（%，区间取中值作为默认） ────────────────────────────────────
+# 对应 docs/trade_playbook_lifecycle.md §3
+DEFAULT_MAX_POSITION_BY_TYPE: Dict[str, Tuple[float, float]] = {
+    ASSET_TYPE_ETF: (10.0, 20.0),
+    ASSET_TYPE_BLUE_CHIP: (10.0, 25.0),
+    ASSET_TYPE_THEME: (5.0, 15.0),
+    ASSET_TYPE_UNVERIFIED: (3.0, 10.0),
+    ASSET_TYPE_HIGH_VOLATILITY: (1.0, 5.0),
+    ASSET_TYPE_UNKNOWN: (3.0, 10.0),  # 保守默认
+}
+
+#: 默认取区间中值
+DEFAULT_MAX_POSITION_MIDPOINT: Dict[str, float] = {
+    k: (v[0] + v[1]) / 2.0 for k, v in DEFAULT_MAX_POSITION_BY_TYPE.items()
+}
+
+#: 单票绝对上限 (%)
+ABSOLUTE_MAX_POSITION_PCT = 40.0
+
+# ── 三笔法比例 ──────────────────────────────────────────────────────────────
+TRANCHE_FRACTION = 1.0 / 3.0  # 每笔 1/3
+
+# ── 连续暴涨后高位阈值 ──────────────────────────────────────────────────────
+# 当前价 > entry_high * (1 + 此系数) 视为"极端高位"
+EXTREME_HIGH_RATIO = 0.15  # 高于区间上限 15%
+
+# ── 试错仓可接受亏损 ─────────────────────────────────────────────────────────
+TRIAL_ACCEPTABLE_LOSS_PCT = 8.0  # 5%-8% 取上限
+
+# ── 禁止补仓条件关键词（用于 reason 文本扫描） ──────────────────────────────
+_FORBIDDEN_REPLENISH_KEYWORDS = (
+    "跌了", "便宜", "回调", "下跌", "打折", "便宜了", "跌到位",
+    "补仓", "抄底", "越跌越买",
+)
+
+
+# [PLAYBOOK-002] staged_entry_rules
+@dataclass(frozen=True)
+class StagedEntryContext:
+    """三笔法规则引擎的输入上下文.
+
+    所有字段默认 ``None``，表示"数据缺失"。规则引擎对缺失数据采取
+    保守策略：缺失证据不计分，缺失价格不触发。
+    """
+
+    # ── 标的识别 ──
+    symbol: Optional[str] = None
+    name: Optional[str] = None
+    strategy_tags: List[str] = field(default_factory=list)
+
+    # ── 价格 ──
+    current_price: Optional[float] = None
+    entry_low: Optional[float] = None       # 入场区间下沿
+    entry_high: Optional[float] = None      # 入场区间上沿
+    recent_high: Optional[float] = None     # 近期高点
+    recent_low: Optional[float] = None      # 近期低点
+    support_price: Optional[float] = None   # 关键支撑位
+    invalid_price: Optional[float] = None   # 失效价
+
+    # ── 量价 ──
+    volume_ratio: Optional[float] = None    # 量比（今日成交量 / 5日均量）
+    volume_breakdown: bool = False          # 放量破位
+    volume_shrink_pullback: bool = False    # 回调缩量
+    volume_blowoff_top: bool = False        # 爆量冲高回落
+
+    # ── 板块 ──
+    sector_retreat: bool = False            # 板块明显退潮
+    sector_leader_sync: bool = False        # 板块龙头同步走强
+    limit_down: bool = False                # 跌停封死
+
+    # ── 证据评分 (0-5) ──
+    industry_evidence_score: Optional[float] = None
+    earnings_validation_score: Optional[float] = None
+    fund_confirmation_score: Optional[float] = None
+    risk_pressure_score: Optional[float] = None
+
+    # ── 仓位 ──
+    current_position_pct: Optional[float] = None
+    planned_max_position_pct: Optional[float] = None  # 若已知，直接使用
+    asset_type: Optional[str] = None                   # 若已知，跳过推断
+
+    # ── 试错仓状态 ──
+    trial_lot_built: bool = False           # 已建试错仓
+    trial_lot_succeeded: bool = False       # 试错仓成功
+
+    # ── 确认仓状态 ──
+    confirm_lot_added: bool = False         # 已加确认仓
+
+    # ── 平台/趋势 ──
+    above_support: bool = False             # 价格在支撑位之上
+    below_entry_zone: bool = False          # 价格跌破入场区间下沿
+    breakout_confirmed: bool = False        # 突破关键平台且站稳
+    pullback_shrink_volume: bool = False    # 回调缩量（量价配合）
+    first_big_drop: bool = False            # 第一次大跌
+
+    # ── 投资假设 ──
+    investment_thesis_clear: bool = False   # 投资假设清晰
+
+
+# [PLAYBOOK-002] staged_entry_rules
+@dataclass
+class StagedEntryResult:
+    """三笔法规则引擎的输出结果.
+
+    所有字段可直接映射到 ``PlaybookContract``。
+    """
+
+    # ── 仓位计算 ──
+    asset_type: str = ASSET_TYPE_UNKNOWN
+    planned_max_position_pct: Optional[float] = None
+    trial_pct: Optional[float] = None       # 试错仓计划占比
+    confirm_pct: Optional[float] = None     # 确认仓计划占比
+    attack_pct: Optional[float] = None      # 进攻仓计划占比
+
+    # ── 试错仓 ──
+    trial_lot_eligible: bool = False
+    trial_lot_forbidden: bool = False
+    trial_lot_reason: str = ""
+    trial_lot_forbidden_reason: str = ""
+
+    # ── 确认仓 ──
+    confirm_lot_eligible: bool = False
+    confirm_evidence_categories: int = 0
+    confirm_lot_reason: str = ""
+
+    # ── 进攻仓 ──
+    attack_lot_eligible: bool = False
+    attack_type: Optional[str] = None       # "pullback" / "breakout"
+    attack_lot_reason: str = ""
+
+    # ── 操作许可 ──
+    allow_add: bool = False
+    allow_add_reason: str = ""
+    allow_replenish: bool = False
+    allow_replenish_reason: str = ""
+    allow_chase: bool = False
+    allow_chase_reason: str = ""
+
+    # ── 安全标记 ──
+    forbidden_replenish_detected: bool = False
+    forbidden_replenish_keywords: List[str] = field(default_factory=list)
+
+    # ── Notes ──
+    notes: str = ""
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 标的类型推断 ──────────────────────────────────────────────────────────────
+
+def classify_asset_type(context: StagedEntryContext) -> str:
+    """根据 strategy_tags 推断标的类型.
+
+    优先级：ETF > 高波动 > 题材 > 龙头 > 未验证 > unknown.
+    若 ``context.asset_type`` 已设置且合法，直接返回。
+    """
+    if context.asset_type and context.asset_type in ALL_ASSET_TYPES:
+        return context.asset_type
+
+    tags_lower = {t.lower() for t in context.strategy_tags}
+
+    # ETF / 指数类
+    if tags_lower & {"etf", "指数", "index", "宽基", "行业etf"}:
+        return ASSET_TYPE_ETF
+
+    # 高波动 / 监管风险 / 传闻票
+    if tags_lower & {"高波动", "监管风险", "传闻", "st", "*st", "退市风险"}:
+        return ASSET_TYPE_HIGH_VOLATILITY
+
+    # 题材弹性股
+    if tags_lower & {"题材", "弹性", "短线", "事件驱动", "政策题材", "概念"}:
+        return ASSET_TYPE_THEME
+
+    # 硬逻辑主板龙头
+    if tags_lower & {"龙头", "主板龙头", "行业龙头", "蓝筹", "白马", "核心资产"}:
+        return ASSET_TYPE_BLUE_CHIP
+
+    # 业绩未验证
+    if tags_lower & {"未验证", "试错", "业绩未验证", "新股", "次新"}:
+        return ASSET_TYPE_UNVERIFIED
+
+    return ASSET_TYPE_UNKNOWN
+# [PLAYBOOK-002] staged_entry_rules
+"""Tests for PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎.
+
+Covers:
+- Asset type classification (ETF / blue_chip / theme / unverified / high_vol / unknown)
+- Planned max position by type + override + absolute cap
+- Tranche sizing (1/3 each)
+- Trial lot: eligible / forbidden (multiple scenarios)
+- Confirm lot: eligible / not eligible (evidence categories, prerequisite chain)
+- Attack lot: pullback / breakout / forbidden
+- allow_add: over position / under position / unknown
+- allow_replenish: limit-down / volume breakdown / sector retreat / first big drop
+- allow_chase: blowoff top / normal
+- Forbidden keyword detection ("跌了/便宜/回调" alone cannot trigger add)
+- Main orchestrator (apply_staged_entry_rules)
+- Contract integration (apply_rules_to_contract)
+- Edge cases: None inputs, missing data, infinite values, zero position
+- Safety: no strong action words in any output text
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.playbook_contract import (
+    FORBIDDEN_STRONG_WORDS,
+    PlaybookContract,
+    validate_playbook_contract_safety,
+)
+from tradingagents.tradeflow.staged_entry_rules import (
+    ABSOLUTE_MAX_POSITION_PCT,
+    ASSET_TYPE_BLUE_CHIP,
+    ASSET_TYPE_ETF,
+    ASSET_TYPE_HIGH_VOLATILITY,
+    ASSET_TYPE_THEME,
+    ASSET_TYPE_UNKNOWN,
+    ASSET_TYPE_UNVERIFIED,
+    DEFAULT_MAX_POSITION_BY_TYPE,
+    DEFAULT_MAX_POSITION_MIDPOINT,
+    ALL_ASSET_TYPES,
+    StagedEntryContext,
+    StagedEntryResult,
+    apply_rules_to_contract,
+    apply_staged_entry_rules,
+    check_allow_add,
+    check_allow_chase,
+    check_allow_replenish,
+    classify_asset_type,
+    compute_planned_max_position,
+    compute_tranche_sizes,
+    detect_forbidden_replenish_keywords,
+    evaluate_attack_lot,
+    evaluate_confirm_lot,
+    evaluate_trial_lot,
+)
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+def _make_trial_context(**overrides) -> StagedEntryContext:
+    """试错仓基础 fixture: 投资假设清晰、非极端高位、板块未退潮."""
+    defaults = dict(
+        symbol="600001",
+        name="测试股票",
+        strategy_tags=["题材"],
+        current_price=10.0,
+        entry_low=9.0,
+        entry_high=11.0,
+        investment_thesis_clear=True,
+        sector_retreat=False,
+        volume_blowoff_top=False,
+        limit_down=False,
+    )
+    defaults.update(overrides)
+    return StagedEntryContext(**defaults)
+
+
+def _make_confirm_context(**overrides) -> StagedEntryContext:
+    """确认仓基础 fixture: 试错仓已建且成功、三类证据充足."""
+    defaults = dict(
+        symbol="600001",
+        name="测试股票",
+        strategy_tags=["龙头"],
+        current_price=10.5,
+        trial_lot_built=True,
+        trial_lot_succeeded=True,
+        industry_evidence_score=4.0,
+        earnings_validation_score=3.5,
+        fund_confirmation_score=4.0,
+    )
+    defaults.update(overrides)
+    return StagedEntryContext(**defaults)
+
+
+def _make_attack_context(**overrides) -> StagedEntryContext:
+    """进攻仓基础 fixture: 确认仓已加、回踩缩量不破支撑."""
+    defaults = dict(
+        symbol="600001",
+        name="测试股票",
+        strategy_tags=["龙头"],
+        current_price=11.0,
+        trial_lot_built=True,
+        trial_lot_succeeded=True,
+        confirm_lot_added=True,
+        pullback_shrink_volume=True,
+        above_support=True,
+        first_big_drop=False,
+        limit_down=False,
+        volume_breakdown=False,
+        sector_retreat=False,
+    )
+    defaults.update(overrides)
+    return StagedEntryContext(**defaults)
+
+
+# ── Asset Type Classification ─────────────────────────────────────────────────
+
+class TestClassifyAssetType:
+    def test_etf(self):
+        ctx = StagedEntryContext(strategy_tags=["ETF", "宽基"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_ETF
+
+    def test_blue_chip(self):
+        ctx = StagedEntryContext(strategy_tags=["龙头", "蓝筹"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_BLUE_CHIP
+
+    def test_theme(self):
+        ctx = StagedEntryContext(strategy_tags=["题材", "弹性"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_THEME
+
+    def test_unverified(self):
+        ctx = StagedEntryContext(strategy_tags=["未验证", "试错"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_UNVERIFIED
+
+    def test_high_volatility(self):
+        ctx = StagedEntryContext(strategy_tags=["高波动", "监管风险"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_HIGH_VOLATILITY
+
+    def test_st_tag(self):
+        ctx = StagedEntryContext(strategy_tags=["ST", "退市风险"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_HIGH_VOLATILITY
+
+    def test_unknown_empty_tags(self):
+        ctx = StagedEntryContext(strategy_tags=[])
+        assert classify_asset_type(ctx) == ASSET_TYPE_UNKNOWN
+
+    def test_unknown_no_tags_field(self):
+        ctx = StagedEntryContext()
+        assert classify_asset_type(ctx) == ASSET_TYPE_UNKNOWN
+
+    def test_override_asset_type(self):
+        ctx = StagedEntryContext(strategy_tags=["题材"], asset_type=ASSET_TYPE_ETF)
+        assert classify_asset_type(ctx) == ASSET_TYPE_ETF
+
+    def test_invalid_override_falls_back(self):
+        ctx = StagedEntryContext(strategy_tags=["龙头"], asset_type="bogus")
+        assert classify_asset_type(ctx) == ASSET_TYPE_BLUE_CHIP
+
+    def test_priority_etf_over_others(self):
+        ctx = StagedEntryContext(strategy_tags=["龙头", "ETF"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_ETF
+
+    def test_priority_high_vol_over_theme(self):
+        ctx = StagedEntryContext(strategy_tags=["题材", "高波动"])
+        assert classify_asset_type(ctx) == ASSET_TYPE_HIGH_VOLATILITY
+
+
+# ── Max Position ──────────────────────────────────────────────────────────────
+
+class TestComputePlannedMaxPosition:
+    def test_all_types_have_default(self):
+        for asset_type in ALL_ASSET_TYPES:
+            pct = compute_planned_max_position(asset_type)
+            assert 0 < pct <= ABSOLUTE_MAX_POSITION_PCT, f"{asset_type} => {pct}"
+
+    @pytest.mark.parametrize("asset_type,lo_hi", DEFAULT_MAX_POSITION_BY_TYPE.items())
+    def test_default_is_midpoint(self, asset_type, lo_hi):
+        expected = (lo_hi[0] + lo_hi[1]) / 2.0
+        assert compute_planned_max_position(asset_type) == pytest.approx(expected)
+
+    def test_override_within_range(self):
+        pct = compute_planned_max_position(ASSET_TYPE_THEME, override_pct=12.0)
+        assert pct == pytest.approx(12.0)
+
+    def test_override_above_absolute_cap(self):
+        pct = compute_planned_max_position(ASSET_TYPE_THEME, override_pct=99.0)
+        assert pct == pytest.approx(ABSOLUTE_MAX_POSITION_PCT)
+
+    def test_override_zero(self):
+        pct = compute_planned_max_position(ASSET_TYPE_THEME, override_pct=0.0)
+        assert pct == pytest.approx(0.0)
+
+    def test_override_negative_clamps_to_zero(self):
+        pct = compute_planned_max_position(ASSET_TYPE_THEME, override_pct=-5.0)
+        assert pct == pytest.approx(0.0)
+
+    def test_override_nan_uses_default(self):
+        pct = compute_planned_max_position(ASSET_TYPE_THEME, override_pct=float("nan"))
+        assert pct == pytest.approx(DEFAULT_MAX_POSITION_MIDPOINT[ASSET_TYPE_THEME])
+
+    def test_override_inf_uses_default(self):
+        pct = compute_planned_max_position(ASSET_TYPE_THEME, override_pct=float("inf"))
+        assert pct == pytest.approx(DEFAULT_MAX_POSITION_MIDPOINT[ASSET_TYPE_THEME])
+
+    def test_etf_range(self):
+        lo, hi = DEFAULT_MAX_POSITION_BY_TYPE[ASSET_TYPE_ETF]
+        assert lo == 10.0
+        assert hi == 20.0
+
+    def test_high_vol_range(self):
+        lo, hi = DEFAULT_MAX_POSITION_BY_TYPE[ASSET_TYPE_HIGH_VOLATILITY]
+        assert lo == 1.0
+        assert hi == 5.0
+
+    def test_absolute_cap_never_exceeded(self):
+        for asset_type in ALL_ASSET_TYPES:
+            pct = compute_planned_max_position(asset_type)
+            assert pct <= ABSOLUTE_MAX_POSITION_PCT
+
+
+# ── Tranche Sizing ────────────────────────────────────────────────────────────
+
+class TestComputeTrancheSizes:
+    def test_three_equal_parts(self):
+        t, c, a = compute_tranche_sizes(15.0)
+        assert t == pytest.approx(5.0)
+        assert c == pytest.approx(5.0)
+        assert a == pytest.approx(5.0)
+
+    def test_sum_equals_planned(self):
+        planned = 10.0
+        t, c, a = compute_tranche_sizes(planned)
+        assert t + c + a == pytest.approx(planned)
+
+
+exec
+/bin/zsh -lc "sed -n '1,400p' tradingagents/tradeflow/staged_entry_rules.py && sed -n '401,800p' tradingagents/tradeflow/staged_entry_rules.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [PLAYBOOK-002] staged_entry_rules
+"""
+计划仓位上限与上车三笔法规则引擎.
+
+纯确定性规则，不调用 LLM / 数据库 / 网络。所有输入通过 ``StagedEntryContext``
+数据类传入，输出通过 ``StagedEntryResult`` 数据类返回，并可直接填入
+``PlaybookContract`` 字段。
+
+核心规则
+--------
+1. **计划仓位上限**：按标的类型（ETF / 龙头 / 题材 / 试错 / 高波动）给默认
+   上限，单票绝对上限 40%。
+2. **三笔法**：计划仓位拆三等份（试错仓 / 确认仓 / 进攻仓），越确定越买，
+   不是越跌越买。
+3. **试错仓**：投资假设清晰 + 非极端高位 + 板块未退潮 + 可接受亏损。
+4. **确认仓**：产业 / 业绩 / 资金三类证据至少两类增强。
+5. **进攻仓**：确认仓之后，回踩缩量不破平台 或 突破放量站稳。
+6. **禁止补仓**：跌停 / 放量破位 / 龙头退潮 时 allow_replenish = False。
+7. **安全约束**："跌了 / 便宜 / 回调" 单独出现不能触发加仓。
+
+参考契约：``docs/trade_playbook_lifecycle.md`` §3-4
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import math
+from typing import Any, Dict, List, Optional, Tuple
+
+from tradingagents.tradeflow.playbook_contract import (
+    ATTACK_LOT_BREAKOUT,
+    ATTACK_LOT_NONE,
+    ATTACK_LOT_PULLBACK,
+    CONFIRM_LOT_ELIGIBLE,
+    CONFIRM_LOT_NONE,
+    STAGE_CONFIRM,
+    STAGE_TRIAL,
+    TRIAL_LOT_NONE,
+    PlaybookContract,
+)
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 标的类型常量 ──────────────────────────────────────────────────────────────
+ASSET_TYPE_ETF = "etf"
+ASSET_TYPE_BLUE_CHIP = "blue_chip"         # 硬逻辑主板龙头
+ASSET_TYPE_THEME = "theme"                 # 题材弹性股
+ASSET_TYPE_UNVERIFIED = "unverified"       # 业绩未验证但想试错
+ASSET_TYPE_HIGH_VOLATILITY = "high_vol"    # 高波动 / 监管风险 / 传闻票
+ASSET_TYPE_UNKNOWN = "unknown"
+
+ALL_ASSET_TYPES: List[str] = [
+    ASSET_TYPE_ETF,
+    ASSET_TYPE_BLUE_CHIP,
+    ASSET_TYPE_THEME,
+    ASSET_TYPE_UNVERIFIED,
+    ASSET_TYPE_HIGH_VOLATILITY,
+    ASSET_TYPE_UNKNOWN,
+]
+
+# ── 计划仓位上限（%，区间取中值作为默认） ────────────────────────────────────
+# 对应 docs/trade_playbook_lifecycle.md §3
+DEFAULT_MAX_POSITION_BY_TYPE: Dict[str, Tuple[float, float]] = {
+    ASSET_TYPE_ETF: (10.0, 20.0),
+    ASSET_TYPE_BLUE_CHIP: (10.0, 25.0),
+    ASSET_TYPE_THEME: (5.0, 15.0),
+    ASSET_TYPE_UNVERIFIED: (3.0, 10.0),
+    ASSET_TYPE_HIGH_VOLATILITY: (1.0, 5.0),
+    ASSET_TYPE_UNKNOWN: (3.0, 10.0),  # 保守默认
+}
+
+#: 默认取区间中值
+DEFAULT_MAX_POSITION_MIDPOINT: Dict[str, float] = {
+    k: (v[0] + v[1]) / 2.0 for k, v in DEFAULT_MAX_POSITION_BY_TYPE.items()
+}
+
+#: 单票绝对上限 (%)
+ABSOLUTE_MAX_POSITION_PCT = 40.0
+
+# ── 三笔法比例 ──────────────────────────────────────────────────────────────
+TRANCHE_FRACTION = 1.0 / 3.0  # 每笔 1/3
+
+# ── 连续暴涨后高位阈值 ──────────────────────────────────────────────────────
+# 当前价 > entry_high * (1 + 此系数) 视为"极端高位"
+EXTREME_HIGH_RATIO = 0.15  # 高于区间上限 15%
+
+# ── 试错仓可接受亏损 ─────────────────────────────────────────────────────────
+TRIAL_ACCEPTABLE_LOSS_PCT = 8.0  # 5%-8% 取上限
+
+# ── 禁止补仓条件关键词（用于 reason 文本扫描） ──────────────────────────────
+_FORBIDDEN_REPLENISH_KEYWORDS = (
+    "跌了", "便宜", "回调", "下跌", "打折", "便宜了", "跌到位",
+    "补仓", "抄底", "越跌越买",
+)
+
+
+# [PLAYBOOK-002] staged_entry_rules
+@dataclass(frozen=True)
+class StagedEntryContext:
+    """三笔法规则引擎的输入上下文.
+
+    所有字段默认 ``None``，表示"数据缺失"。规则引擎对缺失数据采取
+    保守策略：缺失证据不计分，缺失价格不触发。
+    """
+
+    # ── 标的识别 ──
+    symbol: Optional[str] = None
+    name: Optional[str] = None
+    strategy_tags: List[str] = field(default_factory=list)
+
+    # ── 价格 ──
+    current_price: Optional[float] = None
+    entry_low: Optional[float] = None       # 入场区间下沿
+    entry_high: Optional[float] = None      # 入场区间上沿
+    recent_high: Optional[float] = None     # 近期高点
+    recent_low: Optional[float] = None      # 近期低点
+    support_price: Optional[float] = None   # 关键支撑位
+    invalid_price: Optional[float] = None   # 失效价
+
+    # ── 量价 ──
+    volume_ratio: Optional[float] = None    # 量比（今日成交量 / 5日均量）
+    volume_breakdown: bool = False          # 放量破位
+    volume_shrink_pullback: bool = False    # 回调缩量
+    volume_blowoff_top: bool = False        # 爆量冲高回落
+
+    # ── 板块 ──
+    sector_retreat: bool = False            # 板块明显退潮
+    sector_leader_sync: bool = False        # 板块龙头同步走强
+    limit_down: bool = False                # 跌停封死
+
+    # ── 证据评分 (0-5) ──
+    industry_evidence_score: Optional[float] = None
+    earnings_validation_score: Optional[float] = None
+    fund_confirmation_score: Optional[float] = None
+    risk_pressure_score: Optional[float] = None
+
+    # ── 仓位 ──
+    current_position_pct: Optional[float] = None
+    planned_max_position_pct: Optional[float] = None  # 若已知，直接使用
+    asset_type: Optional[str] = None                   # 若已知，跳过推断
+
+    # ── 试错仓状态 ──
+    trial_lot_built: bool = False           # 已建试错仓
+    trial_lot_succeeded: bool = False       # 试错仓成功
+
+    # ── 确认仓状态 ──
+    confirm_lot_added: bool = False         # 已加确认仓
+
+    # ── 平台/趋势 ──
+    above_support: bool = False             # 价格在支撑位之上
+    below_entry_zone: bool = False          # 价格跌破入场区间下沿
+    breakout_confirmed: bool = False        # 突破关键平台且站稳
+    pullback_shrink_volume: bool = False    # 回调缩量（量价配合）
+    first_big_drop: bool = False            # 第一次大跌
+
+    # ── 投资假设 ──
+    investment_thesis_clear: bool = False   # 投资假设清晰
+
+
+# [PLAYBOOK-002] staged_entry_rules
+@dataclass
+class StagedEntryResult:
+    """三笔法规则引擎的输出结果.
+
+    所有字段可直接映射到 ``PlaybookContract``。
+    """
+
+    # ── 仓位计算 ──
+    asset_type: str = ASSET_TYPE_UNKNOWN
+    planned_max_position_pct: Optional[float] = None
+    trial_pct: Optional[float] = None       # 试错仓计划占比
+    confirm_pct: Optional[float] = None     # 确认仓计划占比
+    attack_pct: Optional[float] = None      # 进攻仓计划占比
+
+    # ── 试错仓 ──
+    trial_lot_eligible: bool = False
+    trial_lot_forbidden: bool = False
+    trial_lot_reason: str = ""
+    trial_lot_forbidden_reason: str = ""
+
+    # ── 确认仓 ──
+    confirm_lot_eligible: bool = False
+    confirm_evidence_categories: int = 0
+    confirm_lot_reason: str = ""
+
+    # ── 进攻仓 ──
+    attack_lot_eligible: bool = False
+    attack_type: Optional[str] = None       # "pullback" / "breakout"
+    attack_lot_reason: str = ""
+
+    # ── 操作许可 ──
+    allow_add: bool = False
+    allow_add_reason: str = ""
+    allow_replenish: bool = False
+    allow_replenish_reason: str = ""
+    allow_chase: bool = False
+    allow_chase_reason: str = ""
+
+    # ── 安全标记 ──
+    forbidden_replenish_detected: bool = False
+    forbidden_replenish_keywords: List[str] = field(default_factory=list)
+
+    # ── Notes ──
+    notes: str = ""
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 标的类型推断 ──────────────────────────────────────────────────────────────
+
+def classify_asset_type(context: StagedEntryContext) -> str:
+    """根据 strategy_tags 推断标的类型.
+
+    优先级：ETF > 高波动 > 题材 > 龙头 > 未验证 > unknown.
+    若 ``context.asset_type`` 已设置且合法，直接返回。
+    """
+    if context.asset_type and context.asset_type in ALL_ASSET_TYPES:
+        return context.asset_type
+
+    tags_lower = {t.lower() for t in context.strategy_tags}
+
+    # ETF / 指数类
+    if tags_lower & {"etf", "指数", "index", "宽基", "行业etf"}:
+        return ASSET_TYPE_ETF
+
+    # 高波动 / 监管风险 / 传闻票
+    if tags_lower & {"高波动", "监管风险", "传闻", "st", "*st", "退市风险"}:
+        return ASSET_TYPE_HIGH_VOLATILITY
+
+    # 题材弹性股
+    if tags_lower & {"题材", "弹性", "短线", "事件驱动", "政策题材", "概念"}:
+        return ASSET_TYPE_THEME
+
+    # 硬逻辑主板龙头
+    if tags_lower & {"龙头", "主板龙头", "行业龙头", "蓝筹", "白马", "核心资产"}:
+        return ASSET_TYPE_BLUE_CHIP
+
+    # 业绩未验证
+    if tags_lower & {"未验证", "试错", "业绩未验证", "新股", "次新"}:
+        return ASSET_TYPE_UNVERIFIED
+
+    return ASSET_TYPE_UNKNOWN
+
+
+def compute_planned_max_position(
+    asset_type: str,
+    *,
+    override_pct: Optional[float] = None,
+) -> float:
+    """计算计划最大仓位 (%).
+
+    若 ``override_pct`` 已提供且在合法范围内，直接使用（尊重用户/系统配置）。
+    否则取标的类型默认区间的中值，上限为 ``ABSOLUTE_MAX_POSITION_PCT``。
+    """
+    if override_pct is not None:
+        if not math.isfinite(override_pct):
+            return DEFAULT_MAX_POSITION_MIDPOINT.get(asset_type, 6.5)
+        clamped = max(0.0, min(override_pct, ABSOLUTE_MAX_POSITION_PCT))
+        return clamped
+
+    mid = DEFAULT_MAX_POSITION_MIDPOINT.get(asset_type, 6.5)
+    return min(mid, ABSOLUTE_MAX_POSITION_PCT)
+
+
+def compute_tranche_sizes(
+    planned_max_pct: float,
+) -> Tuple[float, float, float]:
+    """把计划仓位拆三等份（试错 / 确认 / 进攻）.
+
+    返回 ``(trial_pct, confirm_pct, attack_pct)``，每份 = planned_max / 3.
+    """
+    if not math.isfinite(planned_max_pct) or planned_max_pct <= 0:
+        return (0.0, 0.0, 0.0)
+    tranche = planned_max_pct * TRANCHE_FRACTION
+    return (tranche, tranche, tranche)
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 试错仓评估 ────────────────────────────────────────────────────────────────
+
+def evaluate_trial_lot(context: StagedEntryContext) -> Tuple[bool, str, bool, str]:
+    """评估试错仓资格.
+
+    Returns:
+        ``(eligible, reason, forbidden, forbidden_reason)``
+    """
+    # 已建试错仓，不需要重新评估资格
+    if context.trial_lot_built:
+        return (False, "已建试错仓", False, "")
+
+    # ── 禁止条件（任一命中即禁止） ──
+    # 1. 纯传闻，无公告、订单、产业证据
+    if not context.investment_thesis_clear:
+        return (False, "投资假设不清晰", True, "纯传闻，无公告、订单、产业证据")
+
+    # 2. 连续涨停后高开追入
+    if context.volume_blowoff_top:
+        return (False, "爆量冲高回落", True, "当天爆量冲高回落，禁止试错")
+
+    # 3. 板块明显退潮
+    if context.sector_retreat:
+        return (False, "板块退潮", True, "板块明显退潮，禁止试错")
+
+    # 4. 跌停封死
+    if context.limit_down:
+        return (False, "跌停封死", True, "跌停封死，禁止试错")
+
+    # ── 允许条件（全部满足才允许） ──
+    reasons: List[str] = []
+
+    # 1. 投资假设清晰（已检查）
+    reasons.append("投资假设清晰")
+
+    # 2. 当前价格不是连续暴涨后的极端高位
+    if context.current_price is not None and context.entry_high is not None:
+        extreme_threshold = context.entry_high * (1.0 + EXTREME_HIGH_RATIO)
+        if context.current_price > extreme_threshold:
+            return (False, "价格处于极端高位", False,
+                    f"当前价 {context.current_price:.2f} > 入场上沿 "
+                    f"{context.entry_high:.2f} × {1 + EXTREME_HIGH_RATIO:.0%}")
+        reasons.append("非极端高位")
+    else:
+        reasons.append("价格信息不足，保守通过")
+
+    # 3. 板块没有明显退潮（已检查）
+    reasons.append("板块未退潮")
+
+    # 4. 仓位足够小（通过三笔法自然保证）
+    reasons.append("仓位通过三笔法控制")
+
+    return (True, "；".join(reasons), False, "")
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 确认仓评估 ────────────────────────────────────────────────────────────────
+
+def evaluate_confirm_lot(context: StagedEntryContext) -> Tuple[bool, int, str]:
+    """评估确认仓资格.
+
+    需要产业 / 业绩 / 资金三类证据中至少两类增强。
+
+    Returns:
+        ``(eligible, evidence_categories_met, reason)``
+    """
+    # 已加确认仓
+    if context.confirm_lot_added:
+        return (False, 0, "已加确认仓")
+
+    # 必须先建试错仓
+    if not context.trial_lot_built:
+        return (False, 0, "未建试错仓，不可跳到确认仓")
+
+    # 试错仓必须成功
+    if not context.trial_lot_succeeded:
+        return (False, 0, "试错仓未成功，不可加确认仓")
+
+    # ── 三类证据评估 ──
+    categories_met = 0
+    category_details: List[str] = []
+
+    # 1. 产业证据：必需环节、客户认证、订单/中标、产能投放、收入传导
+    if context.industry_evidence_score is not None and context.industry_evidence_score >= 3.0:
+        categories_met += 1
+        category_details.append(f"产业证据({context.industry_evidence_score:.1f}/5)")
+
+    # 2. 业绩确认：预告超预期、财报改善、毛利率改善、主营增长
+    if context.earnings_validation_score is not None and context.earnings_validation_score >= 3.0:
+        categories_met += 1
+        category_details.append(f"业绩确认({context.earnings_validation_score:.1f}/5)")
+
+    # 3. 资金确认：放量上涨未快速砸回、回调缩量、板块龙头同步走强
+    if context.fund_confirmation_score is not None and context.fund_confirmation_score >= 3.0:
+        categories_met += 1
+        category_details.append(f"资金确认({context.fund_confirmation_score:.1f}/5)")
+
+    if categories_met >= 2:
+        return (True, categories_met,
+                f"证据增强：{', '.join(category_details)}（{categories_met}/3 类）")
+    else:
+        detail = ', '.join(category_details) if category_details else "无有效证据"
+        return (False, categories_met,
+                f"证据不足：{detail}（{categories_met}/3 类，需 ≥2）")
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 进攻仓评估 ────────────────────────────────────────────────────────────────
+
+def evaluate_attack_lot(context: StagedEntryContext) -> Tuple[bool, Optional[str], str]:
+    """评估进攻仓资格.
+
+    进攻仓必须建立在确认仓之后。分回踩进攻和突破进攻两种。
+
+    Returns:
+        ``(eligible, attack_type, reason)``
+        ``attack_type``: ``"pullback"`` / ``"breakout"`` / ``None``
+    """
+    # 必须先加确认仓
+    if not context.confirm_lot_added:
+        return (False, None, "未加确认仓，不可跳到进攻仓")
+
+    # ── 禁止条件 ──
+    # 第一次大跌、跌停封死、放量破位、板块龙头集体退潮
+    if context.limit_down:
+        return (False, None, "跌停封死，禁止进攻")
+    if context.volume_breakdown:
+        return (False, None, "放量破位，禁止进攻")
+    if context.sector_retreat:
+        return (False, None, "板块龙头集体退潮，禁止进攻")
+
+    # ── 回踩进攻 ──
+    # 条件：逻辑已确认、上涨后回调、回调缩量、不破平台、再次放量转强、板块健康
+    if (context.pullback_shrink_volume
+            and context.above_support
+            and not context.first_big_drop):
+        return (True, "pullback",
+                "回踩缩量不破支撑，板块健康，回踩进攻窗口")
+
+    # ── 突破进攻 ──
+    # 条件：逻辑已确认、板块同步走强、突破关键平台、放量但不爆量失控
+    if (context.breakout_confirmed
+            and context.sector_leader_sync
+            and not context.volume_blowoff_top):
+        return (True, "breakout",
+                "突破关键平台，板块同步走强，突破进攻窗口")
+
+    return (False, None, "不满足回踩或突破进攻条件")
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 操作许可 ──────────────────────────────────────────────────────────────────
+
+def check_allow_add(context: StagedEntryContext) -> Tuple[bool, str]:
+    """检查是否允许加仓.
+
+    超过计划仓位时不得提示继续加仓，只能提示持有、减仓或等待确认。
+    """
+    if context.planned_max_position_pct is None:
+        # 未设置计划仓位，无法判断；保守不允许
+        return (False, "计划仓位未设置，保守不允许加仓")
+
+    if context.current_position_pct is None:
+        return (False, "当前仓位未知，保守不允许加仓")
+
+    if context.current_position_pct >= context.planned_max_position_pct:
+        return (False,
+                f"当前仓位 {context.current_position_pct:.1f}% ≥ 计划上限 "
+                f"{context.planned_max_position_pct:.1f}%，不得继续加仓")
+
+    return (True,
+            f"当前仓位 {context.current_position_pct:.1f}% < 计划上限 "
+            f"{context.planned_max_position_pct:.1f}%，可继续加仓")
+
+
+def check_allow_replenish(context: StagedEntryContext) -> Tuple[bool, str]:
+    """检查是否允许补仓.
+
+    禁止在第一次大跌、跌停封死、放量破位、板块龙头集体退潮时补仓。
+    """
+    # 跌停封死
+    if context.limit_down:
+        return (False, "跌停封死，禁止补仓")
+
+    # 放量破位
+    if context.volume_breakdown:
+        return (False, "放量破位，禁止补仓")
+
+    # 板块龙头集体退潮
+    if context.sector_retreat:
+        return (False, "板块龙头集体退潮，禁止补仓")
+
+    # 第一次大跌
+    if context.first_big_drop:
+        return (False, "第一次大跌，禁止补仓")
+
+    return (True, "无禁止条件")
+
+
+def check_allow_chase(context: StagedEntryContext) -> Tuple[bool, str]:
+    """检查是否允许追高.
+
+    爆量冲高回落时禁止追入。
+    """
+    if context.volume_blowoff_top:
+        return (False, "爆量冲高回落，禁止追入")
+    return (True, "无禁止追高条件")
+
+
+def detect_forbidden_replenish_keywords(text: Optional[str]) -> List[str]:
+    """检测文本中的禁止补仓关键词.
+
+    "跌了 / 便宜 / 回调" 单独出现不能触发补仓，此处用于扫描上游
+    reason / notes 文本，发现时标记 ``forbidden_replenish_detected``。
+    """
+    if not text:
+        return []
+    found = [kw for kw in _FORBIDDEN_REPLENISH_KEYWORDS if kw in text]
+    return found
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 主入口 ────────────────────────────────────────────────────────────────────
+
+def apply_staged_entry_rules(context: StagedEntryContext) -> StagedEntryResult:
+    """应用三笔法规则引擎，计算仓位、资格和操作许可.
+
+    主入口函数。纯确定性，不修改 ``context``，返回新的 ``StagedEntryResult``。
+    """
+    result = StagedEntryResult()
+
+    # ── 1. 标的类型 ──
+    result.asset_type = classify_asset_type(context)
+
+    # ── 2. 计划仓位上限 ──
+    result.planned_max_position_pct = compute_planned_max_position(
+        result.asset_type,
+        override_pct=context.planned_max_position_pct,
+    )
+
+    # ── 3. 三笔法仓位拆分 ──
+    result.trial_pct, result.confirm_pct, result.attack_pct = compute_tranche_sizes(
+        result.planned_max_position_pct,
+    )
+
+    # ── 4. 试错仓 ──
+    eligible, reason, forbidden, forbidden_reason = evaluate_trial_lot(context)
+    result.trial_lot_eligible = eligible
+    result.trial_lot_reason = reason
+    result.trial_lot_forbidden = forbidden
+    result.trial_lot_forbidden_reason = forbidden_reason
+
+    # ── 5. 确认仓 ──
+    eligible, cats, reason = evaluate_confirm_lot(context)
+    result.confirm_lot_eligible = eligible
+    result.confirm_evidence_categories = cats
+    result.confirm_lot_reason = reason
+
+    # ── 6. 进攻仓 ──
+    eligible, attack_type, reason = evaluate_attack_lot(context)
+    result.attack_lot_eligible = eligible
+    result.attack_type = attack_type
+    result.attack_lot_reason = reason
+
+    # ── 7. 操作许可 ──
+    allow, reason = check_allow_add(context)
+    result.allow_add = allow
+    result.allow_add_reason = reason
+
+    allow, reason = check_allow_replenish(context)
+    result.allow_replenish = allow
+    result.allow_replenish_reason = reason
+
+    allow, reason = check_allow_chase(context)
+    result.allow_chase = allow
+    result.allow_chase_reason = reason
+
+    # ── 8. 安全扫描 ──
+    # 扫描 reason 文本中是否存在"跌了/便宜/回调"等暗示"因为跌所以买"的关键词
+    all_reasons = " ".join([
+        result.trial_lot_reason,
+        result.confirm_lot_reason,
+        result.attack_lot_reason,
+        result.allow_add_reason,
+        result.allow_replenish_reason,
+        result.allow_chase_reason,
+    ])
+    result.forbidden_replenish_keywords = detect_forbidden_replenish_keywords(all_reasons)
+    result.forbidden_replenish_detected = len(result.forbidden_replenish_keywords) > 0
+
+    # ── 9. Notes ──
+    notes_parts: List[str] = []
+    if result.trial_lot_forbidden:
+        notes_parts.append(f"试错仓禁止：{result.trial_lot_forbidden_reason}")
+    if not result.allow_replenish:
+        notes_parts.append(f"禁止补仓：{result.allow_replenish_reason}")
+    result.notes = "；".join(notes_parts) if notes_parts else ""
+
+    return result
+
+
+# [PLAYBOOK-002] staged_entry_rules
+# ── 便捷入口：直接填充 PlaybookContract ──────────────────────────────────────
+
+def apply_rules_to_contract(
+    context: StagedEntryContext,
+    *,
+    existing: Optional[PlaybookContract] = None,
+) -> Tuple[PlaybookContract, StagedEntryResult]:
+    """应用规则并返回 ``(updated_contract, raw_result)``.
+
+    若 ``existing`` 非空，在其基础上更新；否则创建新 contract。
+    只更新本模块负责的字段，不覆盖上游已设置的评分/阶段。
+    """
+    result = apply_staged_entry_rules(context)
+
+    if existing is not None:
+        contract = PlaybookContract(
+            playbook_stage=existing.playbook_stage,
+            industry_evidence_score=existing.industry_evidence_score,
+            earnings_validation_score=existing.earnings_validation_score,
+            fund_confirmation_score=existing.fund_confirmation_score,
+            risk_pressure_score=existing.risk_pressure_score,
+            planned_max_position_pct=result.planned_max_position_pct,
+            current_position_pct=existing.current_position_pct,
+            unrealized_pnl_pct=existing.unrealized_pnl_pct,
+            core_position_qty=existing.core_position_qty,
+            tactical_position_qty=existing.tactical_position_qty,
+            defensive_cash_required_pct=existing.defensive_cash_required_pct,
+            trial_lot_status=existing.trial_lot_status,
+            confirm_lot_status=existing.confirm_lot_status,
+            attack_lot_status=existing.attack_lot_status,
+            allow_add=result.allow_add,
+            allow_replenish=result.allow_replenish,
+            allow_chase=result.allow_chase,
+            add_trigger=existing.add_trigger,
+            reduce_trigger=existing.reduce_trigger,
+            exit_trigger=existing.exit_trigger,
+            investment_thesis=existing.investment_thesis,
+            last_operation=existing.last_operation,
+            next_action=existing.next_action,
+            notes=result.notes or existing.notes,
+            stage_updated_at=existing.stage_updated_at,
+        )
+    else:
+        contract = PlaybookContract(
+            planned_max_position_pct=result.planned_max_position_pct,
+            allow_add=result.allow_add,
+            allow_replenish=result.allow_replenish,
+            allow_chase=result.allow_chase,
+            notes=result.notes or None,
+        )
+
+    return contract, result
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/playbook_contract.py && grep -R \"apply_rules_to_contract\\|staged_entry_rules\\|planned_max_position_pct\\|trial_lot_status\" -n . --exclude-dir=.git --exclude-dir=.venv | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 10734ms:
+./.pytest_cache/v/cache/nodeids:7030:  "tests/test_playbook001_lifecycle_contract.py::TestLotStatusEnums::test_trial_lot_statuses",
+./.pytest_cache/v/cache/nodeids:7132:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_creates_new_contract",
+./.pytest_cache/v/cache/nodeids:7133:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_notes_no_forbidden_replenish_keywords",
+./.pytest_cache/v/cache/nodeids:7134:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_over_position_sets_allow_add_false",
+./.pytest_cache/v/cache/nodeids:7135:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_preserves_existing_fields",
+./.pytest_cache/v/cache/nodeids:7136:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_safety_contract_no_strong_words",
+./.pytest_cache/v/cache/nodeids:7137:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_safety_contract_with_forbidden",
+./.pytest_cache/v/cache/nodeids:7138:  "tests/test_playbook002_staged_entry_rules.py::TestApplyRulesToContract::test_updates_allow_fields",
+./.pytest_cache/v/cache/nodeids:7139:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_asset_type_populated",
+./.pytest_cache/v/cache/nodeids:7140:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_attack_breakout_full_flow",
+./.pytest_cache/v/cache/nodeids:7141:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_attack_pullback_full_flow",
+./.pytest_cache/v/cache/nodeids:7142:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_confirm_eligible_full_flow",
+./.pytest_cache/v/cache/nodeids:7143:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_confirm_not_eligible_full_flow",
+./.pytest_cache/v/cache/nodeids:7144:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_empty_context_conservative",
+./.pytest_cache/v/cache/nodeids:7145:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_limit_down_no_replenish",
+./.pytest_cache/v/cache/nodeids:7146:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_notes_empty_when_all_ok",
+./.pytest_cache/v/cache/nodeids:7147:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_notes_populated_when_forbidden",
+./.pytest_cache/v/cache/nodeids:7148:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_planned_max_populated",
+./.pytest_cache/v/cache/nodeids:7149:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_returns_staged_entry_result",
+./.pytest_cache/v/cache/nodeids:7150:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_tranches_populated",
+./.pytest_cache/v/cache/nodeids:7151:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_trial_eligible_full_flow",
+./.pytest_cache/v/cache/nodeids:7152:  "tests/test_playbook002_staged_entry_rules.py::TestApplyStagedEntryRules::test_trial_forbidden_full_flow",
+./.pytest_cache/v/cache/nodeids:7153:  "tests/test_playbook002_staged_entry_rules.py::TestAssetTypeDefaults::test_absolute_cap_respected_by_all_midpoints",
+./.pytest_cache/v/cache/nodeids:7154:  "tests/test_playbook002_staged_entry_rules.py::TestAssetTypeDefaults::test_all_types_in_midpoint_dict",
+./.pytest_cache/v/cache/nodeids:7155:  "tests/test_playbook002_staged_entry_rules.py::TestAssetTypeDefaults::test_all_types_in_range_dict",
+./.pytest_cache/v/cache/nodeids:7156:  "tests/test_playbook002_staged_entry_rules.py::TestAssetTypeDefaults::test_ranges_ordered",
+./.pytest_cache/v/cache/nodeids:7157:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowAdd::test_at_position_limit",
+./.pytest_cache/v/cache/nodeids:7158:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowAdd::test_both_none",
+./.pytest_cache/v/cache/nodeids:7159:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowAdd::test_no_current_position",
+./.pytest_cache/v/cache/nodeids:7160:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowAdd::test_no_planned_max",
+./.pytest_cache/v/cache/nodeids:7161:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowAdd::test_over_position",
+./.pytest_cache/v/cache/nodeids:7162:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowAdd::test_under_position",
+./.pytest_cache/v/cache/nodeids:7163:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowChase::test_blowoff_top",
+./.pytest_cache/v/cache/nodeids:7164:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowChase::test_normal",
+./.pytest_cache/v/cache/nodeids:7165:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowReplenish::test_all_clear",
+./.pytest_cache/v/cache/nodeids:7166:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowReplenish::test_first_big_drop",
+./.pytest_cache/v/cache/nodeids:7167:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowReplenish::test_limit_down",
+./.pytest_cache/v/cache/nodeids:7168:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowReplenish::test_multiple_forbidden",
+./.pytest_cache/v/cache/nodeids:7169:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowReplenish::test_sector_retreat",
+./.pytest_cache/v/cache/nodeids:7170:  "tests/test_playbook002_staged_entry_rules.py::TestCheckAllowReplenish::test_volume_breakdown",
+./.pytest_cache/v/cache/nodeids:7171:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_blue_chip",
+./.pytest_cache/v/cache/nodeids:7172:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_etf",
+./.pytest_cache/v/cache/nodeids:7173:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_high_volatility",
+./.pytest_cache/v/cache/nodeids:7174:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_invalid_override_falls_back",
+./.pytest_cache/v/cache/nodeids:7175:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_override_asset_type",
+./.pytest_cache/v/cache/nodeids:7176:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_priority_etf_over_others",
+./.pytest_cache/v/cache/nodeids:7177:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_priority_high_vol_over_theme",
+./.pytest_cache/v/cache/nodeids:7178:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_st_tag",
+./.pytest_cache/v/cache/nodeids:7179:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_theme",
+./.pytest_cache/v/cache/nodeids:7180:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_unknown_empty_tags",
+./.pytest_cache/v/cache/nodeids:7181:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_unknown_no_tags_field",
+./.pytest_cache/v/cache/nodeids:7182:  "tests/test_playbook002_staged_entry_rules.py::TestClassifyAssetType::test_unverified",
+./.pytest_cache/v/cache/nodeids:7183:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_absolute_cap_never_exceeded",
+./.pytest_cache/v/cache/nodeids:7184:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_all_types_have_default",
+./.pytest_cache/v/cache/nodeids:7185:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_default_is_midpoint[blue_chip-lo_hi1]",
+./.pytest_cache/v/cache/nodeids:7186:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_default_is_midpoint[etf-lo_hi0]",
+./.pytest_cache/v/cache/nodeids:7187:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_default_is_midpoint[high_vol-lo_hi4]",
+./.pytest_cache/v/cache/nodeids:7188:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_default_is_midpoint[theme-lo_hi2]",
+./.pytest_cache/v/cache/nodeids:7189:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_default_is_midpoint[unknown-lo_hi5]",
+./.pytest_cache/v/cache/nodeids:7190:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_default_is_midpoint[unverified-lo_hi3]",
+./.pytest_cache/v/cache/nodeids:7191:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_etf_range",
+./.pytest_cache/v/cache/nodeids:7192:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_high_vol_range",
+./.pytest_cache/v/cache/nodeids:7193:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_override_above_absolute_cap",
+./.pytest_cache/v/cache/nodeids:7194:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_override_inf_uses_default",
+./.pytest_cache/v/cache/nodeids:7195:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_override_nan_uses_default",
+./.pytest_cache/v/cache/nodeids:7196:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_override_negative_clamps_to_zero",
+./.pytest_cache/v/cache/nodeids:7197:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_override_within_range",
+./.pytest_cache/v/cache/nodeids:7198:  "tests/test_playbook002_staged_entry_rules.py::TestComputePlannedMaxPosition::test_override_zero",
+./.pytest_cache/v/cache/nodeids:7199:  "tests/test_playbook002_staged_entry_rules.py::TestComputeTrancheSizes::test_nan_planned",
+./.pytest_cache/v/cache/nodeids:7200:  "tests/test_playbook002_staged_entry_rules.py::TestComputeTrancheSizes::test_negative_planned",
+./.pytest_cache/v/cache/nodeids:7201:  "tests/test_playbook002_staged_entry_rules.py::TestComputeTrancheSizes::test_small_position",
+./.pytest_cache/v/cache/nodeids:7202:  "tests/test_playbook002_staged_entry_rules.py::TestComputeTrancheSizes::test_sum_equals_planned",
+./.pytest_cache/v/cache/nodeids:7203:  "tests/test_playbook002_staged_entry_rules.py::TestComputeTrancheSizes::test_three_equal_parts",
+./.pytest_cache/v/cache/nodeids:7204:  "tests/test_playbook002_staged_entry_rules.py::TestComputeTrancheSizes::test_zero_planned",
+./.pytest_cache/v/cache/nodeids:7205:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_clean_text",
+./.pytest_cache/v/cache/nodeids:7206:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_detect_bu_cang",
+./.pytest_cache/v/cache/nodeids:7207:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_detect_chao_di",
+./.pytest_cache/v/cache/nodeids:7208:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_detect_died",
+./.pytest_cache/v/cache/nodeids:7209:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_detect_huidiao",
+./.pytest_cache/v/cache/nodeids:7210:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_detect_pianyi",
+./.pytest_cache/v/cache/nodeids:7211:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_detect_yue_die_yue_mai",
+./.pytest_cache/v/cache/nodeids:7212:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_empty_text",
+./.pytest_cache/v/cache/nodeids:7213:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_no_false_positive_on_normal_text",
+./.pytest_cache/v/cache/nodeids:7214:  "tests/test_playbook002_staged_entry_rules.py::TestDetectForbiddenReplenishKeywords::test_none_text",
+./.pytest_cache/v/cache/nodeids:7215:  "tests/test_playbook002_staged_entry_rules.py::TestDropCheapPullbackSafety::test_cheap_alone_no_add",
+./.pytest_cache/v/cache/nodeids:7216:  "tests/test_playbook002_staged_entry_rules.py::TestDropCheapPullbackSafety::test_drop_alone_no_add",
+./.pytest_cache/v/cache/nodeids:7217:  "tests/test_playbook002_staged_entry_rules.py::TestDropCheapPullbackSafety::test_pullback_alone_no_add",
+./.pytest_cache/v/cache/nodeids:7218:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_all_scores_max",
+./.pytest_cache/v/cache/nodeids:7219:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_all_scores_zero",
+./.pytest_cache/v/cache/nodeids:7220:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_deterministic_multiple_runs",
+./.pytest_cache/v/cache/nodeids:7221:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_infinite_current_price",
+./.pytest_cache/v/cache/nodeids:7222:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_nan_current_price",
+./.pytest_cache/v/cache/nodeids:7223:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_none_context_all_none",
+./.pytest_cache/v/cache/nodeids:7224:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_result_is_immutable_context",
+./.pytest_cache/v/cache/nodeids:7225:  "tests/test_playbook002_staged_entry_rules.py::TestEdgeCases::test_zero_position",
+./.pytest_cache/v/cache/nodeids:7226:  "tests/test_playbook002_staged_entry_rules.py::TestEvaluateAttackLot::test_breakout_blowoff_top_forbidden",
+./.pytest_cache/v/cache/nodeids:7227:  "tests/test_playbook002_staged_entry_rules.py::TestEvaluateAttackLot::test_breakout_eligible",
+./.pytest_cache/v/cache/nodeids:7228:  "tests/test_playbook002_staged_entry_rules.py::TestEvaluateAttackLot::test_forbidden_limit_down",
+./.pytest_cache/v/cache/nodeids:7229:  "tests/test_playbook002_staged_entry_rules.py::TestEvaluateAttackLot::test_forbidden_sector_retreat",
+./.pytest_cache/v/cache/nodeids:7230:  "tests/test_playbook002_staged_entry_rules.py::TestEvaluateAttackLot::test_forbidden_volume_breakdown",
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tradingagents/tradeflow/playbook_contract.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+def _normalize_lot_status(value: Any, allowed: List[str]) -> Optional[str]:
+    """把 lot_status 归一化为合法值或 None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in allowed:
+            return candidate
+    return None
+
+
+def _normalize_bool(value: Any) -> Optional[bool]:
+    """把宽松布尔值归一化为 True/False/None."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if not math.isfinite(float(value)):
+            return None
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in ("true", "1", "yes", "y"):
+            return True
+        if candidate in ("false", "0", "no", "n"):
+            return False
+    return None
+
+
+def playbook_contract_from_dict(data: Optional[Dict[str, Any]]) -> PlaybookContract:
+    """从 dict 构建 PlaybookContract，忽略未知键并安全归一化.
+
+    缺字段返回 ``None`` 默认值；脏数据（非法阶段/分数超界/类型不匹配）
+    被归一化或丢弃，绝不抛异常。这保证旧报告和旧观察仓数据不报错。
+    """
+    if not isinstance(data, dict):
+        return PlaybookContract()
+
+    stage = normalize_playbook_stage(data.get("playbook_stage"))
+
+    return PlaybookContract(
+        playbook_stage=stage,
+        industry_evidence_score=_clamp_score(data.get("industry_evidence_score")),
+        earnings_validation_score=_clamp_score(data.get("earnings_validation_score")),
+        fund_confirmation_score=_clamp_score(data.get("fund_confirmation_score")),
+        risk_pressure_score=_clamp_score(data.get("risk_pressure_score")),
+        planned_max_position_pct=_clamp_position_pct(data.get("planned_max_position_pct")),
+        current_position_pct=_clamp_position_pct(data.get("current_position_pct")),
+        unrealized_pnl_pct=_finite_float(data.get("unrealized_pnl_pct")),
+        core_position_qty=_safe_int(data.get("core_position_qty")),
+        tactical_position_qty=_safe_int(data.get("tactical_position_qty")),
+        defensive_cash_required_pct=_clamp_position_pct(data.get("defensive_cash_required_pct")),
+        trial_lot_status=_normalize_lot_status(data.get("trial_lot_status"), TRIAL_LOT_STATUSES),
+        confirm_lot_status=_normalize_lot_status(data.get("confirm_lot_status"), CONFIRM_LOT_STATUSES),
+        attack_lot_status=_normalize_lot_status(data.get("attack_lot_status"), ATTACK_LOT_STATUSES),
+        allow_add=_normalize_bool(data.get("allow_add")),
+        allow_replenish=_normalize_bool(data.get("allow_replenish")),
+        allow_chase=_normalize_bool(data.get("allow_chase")),
+        add_trigger=_safe_str(data.get("add_trigger")),
+        reduce_trigger=_safe_str(data.get("reduce_trigger")),
+        exit_trigger=_safe_str(data.get("exit_trigger")),
+        investment_thesis=_safe_str(data.get("investment_thesis")),
+        last_operation=_safe_str(data.get("last_operation")),
+        next_action=_safe_str(data.get("next_action")),
+        notes=_safe_str(data.get("notes")),
+        stage_updated_at=_safe_str(data.get("stage_updated_at")),
+    )
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        return int(numeric)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _safe_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        return s if s else None
+    return str(value).strip() or None
+
+
+def playbook_contract_to_dict(contract: PlaybookContract) -> Dict[str, Any]:
+    """把 PlaybookContract 序列化为 JSON-safe dict.
+
+    ``None`` 值保留为 ``None``（不转为空字符串），让消费方区分"未设置"
+    和"显式空"。这是契约的向后兼容要求。
+    """
+    if not isinstance(contract, PlaybookContract):
+        return {}
+    result: Dict[str, Any] = {}
+    for f in fields(contract):
+        result[f.name] = getattr(contract, f.name)
+    return result
+
+
+def merge_playbook_contract_into_dict(
+    target: Dict[str, Any],
+    contract: Optional[PlaybookContract],
+) -> Dict[str, Any]:
+    """把 contract 字段合并进 target dict（返回新 dict）.
+
+    只合并非 ``None`` 的字段，避免覆盖 target 中已有值。用于把 playbook
+    字段附加到 observation item / report response dict。
+    """
+    if not isinstance(target, dict):
+        target = {}
+    else:
+        target = dict(target)  # shallow copy
+    if contract is None:
+        return target
+    contract_payload: Dict[str, Any] = {}
+    for f in fields(contract):
+        val = getattr(contract, f.name)
+        if val is not None:
+            if target.get(f.name) is None:
+                target[f.name] = val
+            contract_payload[f.name] = val
+    if contract_payload:
+        existing_payload = target.get("playbook_contract")
+        if isinstance(existing_payload, dict):
+            merged_payload = dict(existing_payload)
+            for key, value in contract_payload.items():
+                if merged_payload.get(key) is None:
+                    merged_payload[key] = value
+            target["playbook_contract"] = merged_payload
+        else:
+            target["playbook_contract"] = contract_payload
+    return target
+
+
+def playbook_contract_is_empty(contract: Optional[PlaybookContract]) -> bool:
+    """判断 contract 是否完全未设置（所有字段为 None）.
+
+    用于决定是否向前端透传 playbook 字段：空 contract 不应生成无意义的
+    ``playbook_stage: null`` payload。
+    """
+    if contract is None:
+        return True
+    return all(getattr(contract, f.name) is None for f in fields(contract))
+
+
+def playbook_stage_label(stage: Optional[str]) -> str:
+    """返回阶段的中文标签；未知/未设置返回空字符串（不回退 hold）."""
+    if not is_valid_playbook_stage(stage):
+        return ""
+    return PLAYBOOK_STAGE_LABELS.get(stage, "")
+
+
+def playbook_contract_summary(contract: Optional[PlaybookContract]) -> Dict[str, Any]:
+    """生成精简的 playbook 摘要 dict（用于 API response 顶层透传）.
+
+    只包含有意义的字段，空 contract 返回 ``{}``。包含：
+      - ``playbook_stage`` + ``playbook_stage_label``
+      - 4 项证据评分（如有）
+      - 仓位百分比（如有）
+      - 三笔法状态（如有）
+    """
+    if playbook_contract_is_empty(contract):
+        return {}
+    if contract is None:
+        return {}
+    summary: Dict[str, Any] = {}
+    stage = contract.playbook_stage
+    if stage is not None:
+        summary["playbook_stage"] = stage
+        label = playbook_stage_label(stage)
+        if label:
+            summary["playbook_stage_label"] = label
+    for score_field in (
+        "industry_evidence_score",
+        "earnings_validation_score",
+        "fund_confirmation_score",
+        "risk_pressure_score",
+    ):
+        val = getattr(contract, score_field, None)
+        if val is not None:
+            summary[score_field] = val
+    for pos_field in (
+        "planned_max_position_pct",
+        "current_position_pct",
+        "unrealized_pnl_pct",
+    ):
+        val = getattr(contract, pos_field, None)
+        if val is not None:
+            summary[pos_field] = val
+    for lot_field in ("trial_lot_status", "confirm_lot_status", "attack_lot_status"):
+        val = getattr(contract, lot_field, None)
+        if val is not None:
+            summary[lot_field] = val
+    return summary
+
+
+def assert_no_strong_action_words(text: Optional[str]) -> None:
+    """断言文本不含强动作禁用词（供调用方和测试使用）."""
+    if not text:
+        return
+    for word in FORBIDDEN_STRONG_WORDS:
+        if word in text:
+            raise AssertionError(f"playbook contract text contains forbidden strong word: {word}")
+
+
+def validate_playbook_contract_safety(contract: Optional[PlaybookContract]) -> bool:
+    """检查 contract 的所有文本字段不含强动作词.
+
+    返回 True 表示安全，False 表示发现违规词。用于 CI 守卫。
+    """
+    if contract is None:
+        return True
+    text_fields = (
+        contract.add_trigger,
+        contract.reduce_trigger,
+        contract.exit_trigger,
+        contract.investment_thesis,
+        contract.last_operation,
+        contract.next_action,
+        contract.notes,
+    )
+    for text in text_fields:
+        if not text:
+            continue
+        for word in FORBIDDEN_STRONG_WORDS:
+            if word in text:
+                return False
+    return True
+
+exec
+/bin/zsh -lc "grep -n \"PLAYBOOK-002\\|计划仓位\\|三笔法\\|试错仓\\|确认仓\\|进攻仓\\|跌了\" -n docs/trade_playbook_lifecycle.md docs/TASKS.md | head -200 && sed -n '480,560p' docs/TASKS.md && sed -n '1,160p' docs/trade_playbook_lifecycle.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/trade_playbook_lifecycle.md:15:- 加仓不是因为跌了，而是因为确定性增强。
+docs/trade_playbook_lifecycle.md:29:| `trial` 试错 | 逻辑像，仓位小，错了不伤账户 | 试错仓 |
+docs/trade_playbook_lifecycle.md:30:| `confirm` 确认 | 产业/业绩/资金至少两类证据增强 | 确认仓 |
+docs/trade_playbook_lifecycle.md:31:| `attack` 进攻 | 已确认后出现高赔率窗口 | 回踩进攻仓或突破进攻仓 |
+docs/trade_playbook_lifecycle.md:36:## 3. 计划仓位上限
+docs/trade_playbook_lifecycle.md:38:每次买入前必须先判断最大计划仓位。默认参考：
+docs/trade_playbook_lifecycle.md:40:| 标的类型 | 最大计划仓位 |
+docs/trade_playbook_lifecycle.md:49:若当前持仓已超过计划仓位，系统不得提示继续加仓，只能提示持有、减仓或等待确认。
+docs/trade_playbook_lifecycle.md:51:## 4. 上车三笔法
+docs/trade_playbook_lifecycle.md:53:计划仓位拆成三笔：
+docs/trade_playbook_lifecycle.md:57:| 试错仓 | 计划仓位的 1/3 | 先上车，防止完全踏空 |
+docs/trade_playbook_lifecycle.md:58:| 确认仓 | 计划仓位的 1/3 | 逻辑被证据验证后加仓 |
+docs/trade_playbook_lifecycle.md:59:| 进攻仓 | 计划仓位的 1/3 | 已确认后在高赔率窗口加仓 |
+docs/trade_playbook_lifecycle.md:63:### 试错仓
+docs/trade_playbook_lifecycle.md:81:### 确认仓
+docs/trade_playbook_lifecycle.md:83:确认仓不是看股价涨，而是看证据是否增强。至少满足以下三类中的两类：
+docs/trade_playbook_lifecycle.md:91:### 进攻仓
+docs/trade_playbook_lifecycle.md:93:进攻仓必须建立在确认仓之后，不能跳过确认仓直接加进攻仓。
+docs/trade_playbook_lifecycle.md:213:观察 / 试错仓 / 加确认仓 / 加进攻仓 / 持有 / 减机动仓 / 减到核心仓 / 证伪退出
+docs/trade_playbook_lifecycle.md:227:- 所有加仓必须说明是试错仓、确认仓还是进攻仓。
+docs/trade_playbook_lifecycle.md:240:| `playbook_stage` | `STAGE_OBSERVE` 等 | `observe / trial / confirm / attack / hold / risk / exit` | 观察 / 试错仓 / 确认仓 / 进攻仓 / 持有 / 风控 / 退出 |
+docs/trade_playbook_lifecycle.md:245:### 11.2 三笔法 lot_status 枚举
+docs/TASKS.md:53:23. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+docs/TASKS.md:92:### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+docs/TASKS.md:93:- **描述**：把"计划最大仓位 + 试错仓/确认仓/进攻仓"写成可测试规则，禁止系统因为下跌简单提示补仓。
+docs/TASKS.md:95:- **状态**：in_progress — claimed PLAYBOOK-002-20260723-020942
+docs/TASKS.md:99:- **验收方式**：fixture覆盖可试错/不可试错/可加确认仓/不可加确认仓/回踩进攻/突破进攻/跌停不补。"跌了/便宜/回调"单独出现不能触发补仓。
+docs/TASKS.md:100:- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+docs/TASKS.md:400:163. `PLAYBOOK-002`：计划仓位上限与上车三笔法规则引擎（P1，blocked — 战略暂停，待研报/半年报主线完成后人工释放）。
+docs/TASKS.md:401:164. `PLAYBOOK-003`：持仓拆分与机动仓/核心仓/防守仓规则引擎（P1，blocked — 等 PLAYBOOK-001/PLAYBOOK-002 完成）。
+docs/TASKS.md:402:165. `PLAYBOOK-004`：TA 报告动作语义接入战法阶段与仓位建议（P1，blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成）。
+docs/TASKS.md:741:### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+docs/TASKS.md:742:- **描述**：把“计划最大仓位 + 试错仓/确认仓/进攻仓”写成可测试规则，禁止系统因为下跌简单提示补仓。
+docs/TASKS.md:751:  1. 新增规则函数：按标的类型给出默认计划仓位上限（ETF、主板龙头、题材弹性股、业绩未验证、高波动传闻票、单票绝对上限）。
+docs/TASKS.md:752:  2. 新增三笔法判断：
+docs/TASKS.md:756:  3. 若当前仓位已超过计划仓位，强制 `allow_add=False`。
+docs/TASKS.md:759:  - fixture 覆盖：可试错、不可试错、可加确认仓、不可加确认仓、回踩进攻、突破进攻、跌停不补。
+docs/TASKS.md:760:  - “跌了/便宜/回调”单独出现不能触发补仓。
+docs/TASKS.md:761:  - 资金/业绩/产业证据不足时不得进入确认仓。
+docs/TASKS.md:762:- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+docs/TASKS.md:767:- **状态**：blocked — 等 PLAYBOOK-001/PLAYBOOK-002 完成
+docs/TASKS.md:768:- **前置条件**：PLAYBOOK-001、PLAYBOOK-002 完成。
+docs/TASKS.md:788:- **状态**：blocked — 等 PLAYBOOK-002/PLAYBOOK-003 完成
+docs/TASKS.md:789:- **前置条件**：PLAYBOOK-002、PLAYBOOK-003、DECISION-004 完成。
+docs/TASKS.md:797:     - 观察、试错仓、加确认仓、加进攻仓、持有、减机动仓、减到核心仓、证伪退出。
+docs/TASKS.md:802:  - 未持仓 + 只满足试错条件：只能输出试错仓/观察，不能输出重仓。
+docs/TASKS.md:817:  2. 观察仓导入支持可选字段：计划仓位、阶段、触发条件、投资假设。
+docs/TASKS.md:827:- **描述**：用历史报告和利通电子示例回放验证战法不会变成“跌了就补/涨了就追”的自动化口号。
+docs/TASKS.md:843:  - 证据增强场景才允许确认仓/进攻仓。
+docs/TASKS.md:6063:  3. 第一次大跌或跌停未打开时禁止进攻仓；仅传闻/弱来源时禁止确认仓；核心逻辑被公告澄清或事实反证时进入风控/退出候选。
+docs/TASKS.md:6080:  - 本任务只做阶段与动作语义，不实现计划仓位百分比或三笔法数量；PLAYBOOK-002/003 继续战略暂停。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+  1. 新增观察仓表或等价持久化模型，字段至少包含：
+     - `symbol/name`
+     - `status`: `watching / near_entry / in_entry_zone / ta_required / entered / invalidated / removed`
+     - `entry_low/entry_high`
+     - `trigger_price`
+     - `invalid_price`
+     - `horizon`: `intraday / short / mid`
+     - `source`: `manual / tradeflow / ta / investment_controller`
+     - `reason`
+     - `priority`
+     - `notes`
+     - `created_at/updated_at/last_reviewed_at`
+  2. 新增 API：
+     - list observation items
+     - create/update item
+     - mark invalidated/removed
+     - optional bulk upsert
+  3. API 返回必须区分“真实持仓”和“观察仓”，禁止把观察仓误算入持仓市值。
+  4. 测试覆盖创建、更新、状态流转、空数据、symbol/name 规范化。
+- **验收方式**：
+  - 后端测试通过。
+  - 新建观察仓条目后可查询。
+  - `entry_low=0`、`entry_high=0` 等边界值不被显示成 `N/A`。
+  - 观察仓条目不会污染真实持仓接口。
+- **代码标注要求**：`# [TRACK-001] observation_warehouse`
+
+### TRACK-002: 跟踪看板 v2 分组接口与今日指引聚合（P0）
+- **描述**：升级 `GET /v1/dashboard/tracking-board` 或新增 v2 接口，返回持仓、观察仓、今日提醒和复盘摘要四类数据。
+- **优先级**：P0
+- **状态**：done — commit fd0d511
+- **前置条件**：TRACK-001 ✓
+- **执行约束**：
+  - 不触发 TA/LLM。
+  - 不自动发通知。
+  - 不改变现有 v1 字段含义，前端旧页面必须兼容。
+- **实现要点**：
+  1. Response 至少包含：
+     - `holdings`
+     - `observation_items`
+     - `today_guidance`
+     - `alerts`
+     - `review_summary`
+     - `data_freshness`
+  2. `today_guidance` 聚合：
+     - 持仓风险票
+     - 观察仓接近买点票
+     - 需要 TA 深度确认票
+     - 数据不足只记录票
+  3. 每条 guidance 必须有 `source`、`as_of`、`reason`，不得给无来源结论。
+  4. 复用已有跟踪看板实时行情与最新报告语义字段：`research_direction / execution_action / action_label`。
+- **验收方式**：
+  - 无持仓、无观察仓时返回空数组和稳定空状态。
+  - 有观察仓但无实时行情时标记 `data_freshness`，不报错。
+  - 有最新 TA 报告时透传动作语义；没有报告时显示“未分析/需人工确认”。
+- **代码标注要求**：`# [TRACK-002] tracking_board_v2`
+
+### TRACK-003: 跟踪看板前端四区改版（P0）
+- **描述**：把跟踪看板前端改为“持仓 / 观察仓 / 今日指引 / 盘后复盘”四区。
+- **优先级**：P0
+- **状态**：done ✓（commit d80aa66）
+- **前置条件**：TRACK-002 ✓
+- **执行约束**：
+  - 不把观察仓 UI 做成交易下单。
+  - 不展示强买卖词。
+  - 不隐藏数据缺失/非实时提示。
+- **实现要点**：
+  1. 持仓区：展示真实持仓、当日表现、浮盈、关键价位、最新 TA 动作语义。
+  2. 观察仓：展示观察状态、买入区间、触发价、失效价、来源、理由、优先级。
+  3. 今日指引：按 P0/P1/P2/P3 或“风险/接近买点/需 TA/仅记录”分组。
+  4. 盘后复盘：展示当日是否触发计划、是否失效、明日是否继续观察。
+  5. 提供新增/编辑观察仓的轻量表单。
+- **验收方式**：
+  - `npm run build` 通过。
+  - mock 数据下四区均可展示。
+  - 空状态有明确文案，不崩溃。
+# A股跟进看板战法契约：上车—在车上—下车
+
+> 本文是 TA 系统的交易生命周期契约草案，供跟踪看板、观察仓、TA 报告语义层和 investment-controller 共用。
+> 目标不是自动下单，而是让系统每次讨论一只股票时先讲清楚：当前在哪个阶段、用哪一类仓位、什么证据允许前进、什么证据要求撤退。
+
+## 1. 总纲
+
+核心目标：
+
+> 看对时尽量留在车上，看错时不能被一把打死。
+
+系统原则：
+
+- 上车分批，不一把梭。
+- 加仓不是因为跌了，而是因为确定性增强。
+- 持仓后必须拆分核心仓、机动仓、防守仓。
+- 高抛优先处理机动仓，不轻易卖核心仓。
+- 低吸必须等风险释放和承接确认，不在第一次大跌或跌停时补。
+- 下车分为赚钱下车和证伪下车，不能混淆。
+- 单票不得无限重仓，题材弹性票尤其要设置硬上限。
+
+## 2. 生命周期阶段
+
+TA 与跟踪看板使用统一阶段枚举：
+
+| 阶段 | 含义 | 允许动作 |
+| --- | --- | --- |
+| `observe` 观察 | 有逻辑线索，但证据或位置不足 | 加入观察仓、等待触发 |
+| `trial` 试错 | 逻辑像，仓位小，错了不伤账户 | 试错仓 |
+| `confirm` 确认 | 产业/业绩/资金至少两类证据增强 | 确认仓 |
+| `attack` 进攻 | 已确认后出现高赔率窗口 | 回踩进攻仓或突破进攻仓 |
+| `hold` 持有 | 已在车上，逻辑未证伪 | 拆分核心/机动/防守仓 |
+| `risk` 风控 | 价格或逻辑出现风险暴露 | 减机动仓、减到核心仓 |
+| `exit` 退出 | 投资假设证伪或重大风险 | 退出核心仓也可被允许 |
+
+## 3. 计划仓位上限
+
+每次买入前必须先判断最大计划仓位。默认参考：
+
+| 标的类型 | 最大计划仓位 |
+| --- | ---: |
+| ETF / 指数类 | 10%—20% |
+| 硬逻辑主板龙头 | 10%—25% |
+| 题材弹性股 | 5%—15% |
+| 业绩未验证但想试错 | 3%—10% |
+| 高波动、监管风险、传闻票 | 1%—5% |
+| 单票绝对上限 | 不超过总资产 40% |
+
+若当前持仓已超过计划仓位，系统不得提示继续加仓，只能提示持有、减仓或等待确认。
+
+## 4. 上车三笔法
+
+计划仓位拆成三笔：
+
+| 仓位 | 比例 | 作用 |
+| --- | ---: | --- |
+| 试错仓 | 计划仓位的 1/3 | 先上车，防止完全踏空 |
+| 确认仓 | 计划仓位的 1/3 | 逻辑被证据验证后加仓 |
+| 进攻仓 | 计划仓位的 1/3 | 已确认后在高赔率窗口加仓 |
+
+三分之一不是越跌越买，而是越确定越买。
+
+### 试错仓
+
+允许条件：
+
+- 投资假设清晰。
+- 当前价格不是连续暴涨后的极端高位。
+- 板块没有明显退潮。
+- 买入后可接受 5%—8% 亏损。
+- 仓位足够小，错了不伤账户。
+
+禁止条件：
+
+- 纯传闻，无公告、订单、产业证据。
+- 连续涨停后高开追入。
+- 当天爆量冲高回落。
+- 已严重偏离基本面。
+- 用户现金不足或总仓位过高。
+
+### 确认仓
+
+确认仓不是看股价涨，而是看证据是否增强。至少满足以下三类中的两类：
+
+- 产业证据：必需环节、客户认证、订单/中标、产能投放、收入传导、不是蹭概念。
+- 业绩确认：预告超预期、财报改善、毛利率改善、主营增长、新业务放量、订单转收入。
+- 资金确认：放量上涨未快速砸回、回调缩量、板块龙头同步走强、资金不是一日游。
+
+无业绩/订单/产业事实验证时，不允许提示重仓。
+
+### 进攻仓
+
+进攻仓必须建立在确认仓之后，不能跳过确认仓直接加进攻仓。
+
+回踩进攻条件：逻辑已确认、上涨后回调、回调缩量、不破平台、再次放量转强、板块健康。
+
+突破进攻条件：逻辑已确认、板块同步走强、突破关键平台、放量但不爆量失控、突破后 1—2 天不跌回平台。
+
+禁止在第一次大跌、跌停封死、放量破位、板块龙头集体退潮时补仓。
+
+## 5. 在车上：仓位拆分
+
+已持仓后系统必须拆分为：
+
+| 仓位类型 | 默认比例 | 作用 |
+| --- | ---: | --- |
+| 核心仓 | 50% | 吃主升，不轻易动 |
+| 机动仓 | 30% | 高抛低吸、波段操作 |
+| 防守仓/现金 | 20% | 防黑天鹅、等待机会 |
+
+若用户满仓或现金不足，系统应提示缺乏防守仓，不适合继续加仓。
+
+核心仓只有在业绩证伪、公告澄清核心逻辑、监管问询、高位连续放量杀跌、板块系统性退潮、投资假设被推翻时才考虑退出。
+
+机动仓用于高抛低吸：
+
+- 盈利 15%—20% 可卖部分机动仓。
+- 盈利 25%—35% 且情绪过热，可再卖部分机动仓。
+- 连续加速、极端亢奋，优先减机动仓。
+- 第一次大跌不补，跌停封死不补。
+- 跌后缩量企稳或放量重新站回关键位，才可小接/接回机动仓。
+
+## 6. 下车规则
+
+赚钱下车与证伪下车必须分开。
+
+赚钱下车：
+
+- +15%—20%：卖机动仓的 1/3。
+- +30% 左右：再卖机动仓的 1/3。
+- +50% 以上：结合业绩和趋势，尽量保留核心仓。
+- 极端亢奋：减大部分机动仓，只留核心。
+
+证伪下车：
+
+- 轻度风险：减机动仓。
+- 中度风险：减到只剩核心仓。
+- 重度证伪：核心仓也要退出。
+- 连续跌停/重大利空：不补仓，优先保命。
+
+证伪信号包括业绩低于预期、公告澄清核心业务、监管问询、主营逻辑不成立、高位放量连续杀跌、跌停后第二天继续弱、板块龙头集体退潮、资金撤离且无承接。
+
+## 7. 卖飞后的追回
+
+系统不能要求用户卖出后必须等跌回来。若卖出机动仓后继续走强，允许强势追回：
+
+- 股价继续强势突破。
+- 板块同步走强。
+- 基本面没有变差。
+- 突破后站稳新平台 2—3 天。
+- 没有爆量冲高回落。
+- 追回仓位不得超过此前卖出机动仓的一半。
+
+## 8. 跟踪看板字段契约
+
+建议新增或派生以下字段：
+
+```text
+symbol/name
+theme
+
+exec
+/bin/zsh -lc "sed -n '741,766p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+- **描述**：把“计划最大仓位 + 试错仓/确认仓/进攻仓”写成可测试规则，禁止系统因为下跌简单提示补仓。
+- **优先级**：P1
+- **状态**：blocked — 战略暂停，待研报/半年报主线完成后人工释放
+- **前置条件**：PLAYBOOK-001 完成；同时需满足当前产品主线已完成一次真实交易日回放。
+- **执行约束**：
+  - 不自动下单，不输出“立即买入/重仓买入”等强动作。
+  - 不调 live LLM。
+  - 不改 prompts。
+- **实现要点**：
+  1. 新增规则函数：按标的类型给出默认计划仓位上限（ETF、主板龙头、题材弹性股、业绩未验证、高波动传闻票、单票绝对上限）。
+  2. 新增三笔法判断：
+     - `trial_lot`: 投资假设清晰、非极端高位、板块未退潮、亏损可控、仓位小。
+     - `confirm_lot`: 产业/业绩/资金三类证据至少两类增强。
+     - `attack_lot`: 确认后出现回踩企稳或突破站稳。
+  3. 若当前仓位已超过计划仓位，强制 `allow_add=False`。
+  4. 第一次大跌、跌停封死、放量破位、板块退潮时，`allow_replenish=False`。
+- **验收方式**：
+  - fixture 覆盖：可试错、不可试错、可加确认仓、不可加确认仓、回踩进攻、突破进攻、跌停不补。
+  - “跌了/便宜/回调”单独出现不能触发补仓。
+  - 资金/业绩/产业证据不足时不得进入确认仓。
+- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+
+### PLAYBOOK-003: 持仓拆分与机动仓/核心仓/防守仓规则引擎（P1）
+- **描述**：持仓后不再把仓位看成一坨，统一拆成核心仓、机动仓、防守仓，并定义高抛低吸和证伪减仓边界。
+- **优先级**：P1
+
+exec
+/bin/zsh -lc "grep -n \"class TestApplyRulesToContract\\|class TestApplyStagedEntryRules\\|lot_status\\|playbook_stage\\|allow_add\" -n tests/test_playbook002_staged_entry_rules.py | head -100 && sed -n '500,760p' tests/test_playbook002_staged_entry_rules.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+11:- allow_add: over position / under position / unknown
+51:    check_allow_add,
+491:        allow, reason = check_allow_add(ctx)
+501:        allow, reason = check_allow_add(ctx)
+510:        allow, reason = check_allow_add(ctx)
+515:        allow, reason = check_allow_add(ctx)
+521:        allow, reason = check_allow_add(ctx)
+527:        allow, reason = check_allow_add(ctx)
+644:        # allow_add is based on position, not price
+680:class TestApplyStagedEntryRules:
+773:        assert result.allow_add is False
+778:class TestApplyRulesToContract:
+791:            playbook_stage="observe",
+800:        assert contract.playbook_stage == "observe"
+810:        assert contract.allow_add is True
+814:    def test_over_position_sets_allow_add_false(self):
+820:        assert contract.allow_add is False
+851:        assert result.allow_add is False
+877:        assert result.allow_add is True
+910:        assert r1.allow_add == r2.allow_add
+946:            result.allow_add_reason,
+        )
+        allow, reason = check_allow_add(ctx)
+        assert allow is False
+        assert "≥" in reason
+
+    def test_over_position(self):
+        ctx = StagedEntryContext(
+            planned_max_position_pct=15.0,
+            current_position_pct=20.0,
+        )
+        allow, reason = check_allow_add(ctx)
+        assert allow is False
+
+    def test_no_planned_max(self):
+        ctx = StagedEntryContext(current_position_pct=5.0)
+        allow, reason = check_allow_add(ctx)
+        assert allow is False
+        assert "计划仓位未设置" in reason
+
+    def test_no_current_position(self):
+        ctx = StagedEntryContext(planned_max_position_pct=15.0)
+        allow, reason = check_allow_add(ctx)
+        assert allow is False
+        assert "当前仓位未知" in reason
+
+    def test_both_none(self):
+        ctx = StagedEntryContext()
+        allow, reason = check_allow_add(ctx)
+        assert allow is False
+
+
+# ── Allow Replenish ───────────────────────────────────────────────────────────
+
+class TestCheckAllowReplenish:
+    def test_all_clear(self):
+        ctx = StagedEntryContext()
+        allow, reason = check_allow_replenish(ctx)
+        assert allow is True
+        assert "无禁止" in reason
+
+    def test_limit_down(self):
+        ctx = StagedEntryContext(limit_down=True)
+        allow, reason = check_allow_replenish(ctx)
+        assert allow is False
+        assert "跌停" in reason
+
+    def test_volume_breakdown(self):
+        ctx = StagedEntryContext(volume_breakdown=True)
+        allow, reason = check_allow_replenish(ctx)
+        assert allow is False
+        assert "放量破位" in reason
+
+    def test_sector_retreat(self):
+        ctx = StagedEntryContext(sector_retreat=True)
+        allow, reason = check_allow_replenish(ctx)
+        assert allow is False
+        assert "退潮" in reason
+
+    def test_first_big_drop(self):
+        ctx = StagedEntryContext(first_big_drop=True)
+        allow, reason = check_allow_replenish(ctx)
+        assert allow is False
+        assert "第一次大跌" in reason
+
+    def test_multiple_forbidden(self):
+        ctx = StagedEntryContext(limit_down=True, volume_breakdown=True)
+        allow, reason = check_allow_replenish(ctx)
+        assert allow is False
+        # First check in priority order is limit_down
+        assert "跌停" in reason
+
+
+# ── Allow Chase ───────────────────────────────────────────────────────────────
+
+class TestCheckAllowChase:
+    def test_normal(self):
+        ctx = StagedEntryContext()
+        allow, reason = check_allow_chase(ctx)
+        assert allow is True
+
+    def test_blowoff_top(self):
+        ctx = StagedEntryContext(volume_blowoff_top=True)
+        allow, reason = check_allow_chase(ctx)
+        assert allow is False
+        assert "爆量" in reason
+
+
+# ── Forbidden Keyword Detection ──────────────────────────────────────────────
+
+class TestDetectForbiddenReplenishKeywords:
+    def test_none_text(self):
+        assert detect_forbidden_replenish_keywords(None) == []
+
+    def test_empty_text(self):
+        assert detect_forbidden_replenish_keywords("") == []
+
+    def test_clean_text(self):
+        assert detect_forbidden_replenish_keywords("证据增强，确认仓资格") == []
+
+    def test_detect_died(self):
+        found = detect_forbidden_replenish_keywords("跌了就买")
+        assert "跌了" in found
+
+    def test_detect_pianyi(self):
+        found = detect_forbidden_replenish_keywords("现在便宜了")
+        assert "便宜" in found or "便宜了" in found
+
+    def test_detect_huidiao(self):
+        found = detect_forbidden_replenish_keywords("回调到位可以补")
+        assert "回调" in found
+
+    def test_detect_bu_cang(self):
+        found = detect_forbidden_replenish_keywords("考虑补仓")
+        assert "补仓" in found
+
+    def test_detect_chao_di(self):
+        found = detect_forbidden_replenish_keywords("抄底机会")
+        assert "抄底" in found
+
+    def test_detect_yue_die_yue_mai(self):
+        found = detect_forbidden_replenish_keywords("越跌越买策略")
+        assert "越跌越买" in found
+
+    def test_no_false_positive_on_normal_text(self):
+        text = "产业证据增强，业绩确认超预期，资金流入明显"
+        found = detect_forbidden_replenish_keywords(text)
+        assert found == []
+
+
+# ── Safety: "跌了/便宜/回调" alone cannot trigger add ────────────────────────
+
+class TestDropCheapPullbackSafety:
+    """TASKS.md 验收方式: "跌了/便宜/回调" 单独出现不能触发补仓."""
+
+    def test_drop_alone_no_add(self):
+        ctx = StagedEntryContext(
+            investment_thesis_clear=True,
+            current_price=9.0,  # 比 entry_high 跌了
+            entry_low=9.0,
+            entry_high=11.0,
+            planned_max_position_pct=15.0,
+            current_position_pct=5.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        # allow_add is based on position, not price
+        # allow_replenish checks limit_down/volume_breakdown etc.
+        # The key: price drop alone does not set any lot to eligible
+        # without evidence
+        assert result.confirm_lot_eligible is False
+        assert result.attack_lot_eligible is False
+
+    def test_cheap_alone_no_add(self):
+        ctx = StagedEntryContext(
+            investment_thesis_clear=True,
+            current_price=8.0,  # "便宜"
+            planned_max_position_pct=15.0,
+            current_position_pct=5.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        # 便宜 alone does not grant confirm or attack
+        assert result.confirm_lot_eligible is False
+        assert result.attack_lot_eligible is False
+
+    def test_pullback_alone_no_add(self):
+        ctx = StagedEntryContext(
+            investment_thesis_clear=True,
+            current_price=10.0,  # "回调"
+            pullback_shrink_volume=False,
+            above_support=False,
+            confirm_lot_added=False,
+            planned_max_position_pct=15.0,
+            current_position_pct=5.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.confirm_lot_eligible is False
+        assert result.attack_lot_eligible is False
+
+
+# ── Main Orchestrator ─────────────────────────────────────────────────────────
+
+class TestApplyStagedEntryRules:
+    def test_returns_staged_entry_result(self):
+        ctx = _make_trial_context()
+        result = apply_staged_entry_rules(ctx)
+        assert isinstance(result, StagedEntryResult)
+
+    def test_asset_type_populated(self):
+        ctx = StagedEntryContext(strategy_tags=["ETF"])
+        result = apply_staged_entry_rules(ctx)
+        assert result.asset_type == ASSET_TYPE_ETF
+
+    def test_planned_max_populated(self):
+        ctx = StagedEntryContext(strategy_tags=["ETF"])
+        result = apply_staged_entry_rules(ctx)
+        assert result.planned_max_position_pct is not None
+        assert result.planned_max_position_pct > 0
+
+    def test_tranches_populated(self):
+        ctx = StagedEntryContext(strategy_tags=["ETF"])
+        result = apply_staged_entry_rules(ctx)
+        assert result.trial_pct is not None
+        assert result.confirm_pct is not None
+        assert result.attack_pct is not None
+        assert result.trial_pct > 0
+
+    def test_trial_eligible_full_flow(self):
+        ctx = _make_trial_context()
+        result = apply_staged_entry_rules(ctx)
+        assert result.trial_lot_eligible is True
+        assert result.trial_lot_forbidden is False
+
+    def test_trial_forbidden_full_flow(self):
+        ctx = _make_trial_context(investment_thesis_clear=False)
+        result = apply_staged_entry_rules(ctx)
+        assert result.trial_lot_eligible is False
+        assert result.trial_lot_forbidden is True
+
+    def test_confirm_eligible_full_flow(self):
+        ctx = _make_confirm_context()
+        result = apply_staged_entry_rules(ctx)
+        assert result.confirm_lot_eligible is True
+        assert result.confirm_evidence_categories == 3
+
+    def test_confirm_not_eligible_full_flow(self):
+        ctx = _make_confirm_context(
+            industry_evidence_score=2.0,
+            earnings_validation_score=2.0,
+            fund_confirmation_score=None,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.confirm_lot_eligible is False
+
+    def test_attack_pullback_full_flow(self):
+        ctx = _make_attack_context()
+        result = apply_staged_entry_rules(ctx)
+        assert result.attack_lot_eligible is True
+        assert result.attack_type == "pullback"
+
+    def test_attack_breakout_full_flow(self):
+        ctx = _make_attack_context(
+            pullback_shrink_volume=False,
+            above_support=False,
+            breakout_confirmed=True,
+            sector_leader_sync=True,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.attack_lot_eligible is True
+        assert result.attack_type == "breakout"
+
+    def test_limit_down_no_replenish(self):
+        ctx = _make_attack_context(limit_down=True)
+        result = apply_staged_entry_rules(ctx)
+        assert result.allow_replenish is False
+        assert "跌停" in result.allow_replenish_reason
+
+    def test_notes_populated_when_forbidden(self):
+        ctx = _make_trial_context(investment_thesis_clear=False)
+        result = apply_staged_entry_rules(ctx)
+        assert result.notes != ""
+        assert "禁止" in result.notes or "纯传闻" in result.notes
+
+
+exec
+/bin/zsh -lc "sed -n '760,980p' tests/test_playbook002_staged_entry_rules.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+    def test_notes_empty_when_all_ok(self):
+        ctx = _make_trial_context()
+        result = apply_staged_entry_rules(ctx)
+        # No replenish forbidden, trial allowed → notes may be empty
+        assert result.forbidden_replenish_detected is False
+
+    def test_empty_context_conservative(self):
+        ctx = StagedEntryContext()
+        result = apply_staged_entry_rules(ctx)
+        assert result.trial_lot_eligible is False
+        assert result.confirm_lot_eligible is False
+        assert result.attack_lot_eligible is False
+        assert result.allow_add is False
+
+
+# ── Contract Integration ──────────────────────────────────────────────────────
+
+class TestApplyRulesToContract:
+    def test_creates_new_contract(self):
+        ctx = _make_trial_context(
+            planned_max_position_pct=15.0,
+            current_position_pct=5.0,
+        )
+        contract, result = apply_rules_to_contract(ctx)
+        assert isinstance(contract, PlaybookContract)
+        assert isinstance(result, StagedEntryResult)
+        assert contract.planned_max_position_pct is not None
+
+    def test_preserves_existing_fields(self):
+        existing = PlaybookContract(
+            playbook_stage="observe",
+            industry_evidence_score=4.0,
+            investment_thesis="核心逻辑",
+        )
+        ctx = _make_trial_context(
+            planned_max_position_pct=15.0,
+            current_position_pct=5.0,
+        )
+        contract, result = apply_rules_to_contract(ctx, existing=existing)
+        assert contract.playbook_stage == "observe"
+        assert contract.industry_evidence_score == 4.0
+        assert contract.investment_thesis == "核心逻辑"
+
+    def test_updates_allow_fields(self):
+        ctx = _make_trial_context(
+            planned_max_position_pct=15.0,
+            current_position_pct=5.0,
+        )
+        contract, result = apply_rules_to_contract(ctx)
+        assert contract.allow_add is True
+        assert contract.allow_replenish is True
+        assert contract.allow_chase is True
+
+    def test_over_position_sets_allow_add_false(self):
+        ctx = _make_trial_context(
+            planned_max_position_pct=10.0,
+            current_position_pct=15.0,
+        )
+        contract, result = apply_rules_to_contract(ctx)
+        assert contract.allow_add is False
+
+    def test_safety_contract_no_strong_words(self):
+        ctx = _make_trial_context()
+        contract, result = apply_rules_to_contract(ctx)
+        assert validate_playbook_contract_safety(contract) is True
+
+    def test_safety_contract_with_forbidden(self):
+        ctx = _make_trial_context(investment_thesis_clear=False)
+        contract, result = apply_rules_to_contract(ctx)
+        assert validate_playbook_contract_safety(contract) is True
+
+    def test_notes_no_forbidden_replenish_keywords(self):
+        ctx = _make_trial_context(investment_thesis_clear=False)
+        contract, result = apply_rules_to_contract(ctx)
+        # Notes should describe the restriction, not use forbidden keywords
+        # to justify a buy
+        keywords = detect_forbidden_replenish_keywords(contract.notes)
+        assert keywords == []
+
+
+# ── Edge Cases ────────────────────────────────────────────────────────────────
+
+class TestEdgeCases:
+    def test_none_context_all_none(self):
+        ctx = StagedEntryContext()
+        result = apply_staged_entry_rules(ctx)
+        assert result.asset_type == ASSET_TYPE_UNKNOWN
+        assert result.trial_lot_eligible is False
+        assert result.confirm_lot_eligible is False
+        assert result.attack_lot_eligible is False
+        assert result.allow_add is False
+
+    def test_infinite_current_price(self):
+        ctx = StagedEntryContext(
+            current_price=float("inf"),
+            investment_thesis_clear=True,
+        )
+        result = apply_staged_entry_rules(ctx)
+        # Should not crash
+        assert isinstance(result, StagedEntryResult)
+
+    def test_nan_current_price(self):
+        ctx = StagedEntryContext(
+            current_price=float("nan"),
+            investment_thesis_clear=True,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert isinstance(result, StagedEntryResult)
+
+    def test_zero_position(self):
+        ctx = StagedEntryContext(
+            planned_max_position_pct=15.0,
+            current_position_pct=0.0,
+            investment_thesis_clear=True,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.allow_add is True
+
+    def test_all_scores_zero(self):
+        ctx = _make_confirm_context(
+            industry_evidence_score=0.0,
+            earnings_validation_score=0.0,
+            fund_confirmation_score=0.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.confirm_lot_eligible is False
+        assert result.confirm_evidence_categories == 0
+
+    def test_all_scores_max(self):
+        ctx = _make_confirm_context(
+            industry_evidence_score=5.0,
+            earnings_validation_score=5.0,
+            fund_confirmation_score=5.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.confirm_lot_eligible is True
+        assert result.confirm_evidence_categories == 3
+
+    def test_result_is_immutable_context(self):
+        ctx = StagedEntryContext(symbol="600001")
+        apply_staged_entry_rules(ctx)
+        assert ctx.symbol == "600001"
+
+    def test_deterministic_multiple_runs(self):
+        ctx = _make_trial_context()
+        r1 = apply_staged_entry_rules(ctx)
+        r2 = apply_staged_entry_rules(ctx)
+        assert r1.trial_lot_eligible == r2.trial_lot_eligible
+        assert r1.planned_max_position_pct == r2.planned_max_position_pct
+        assert r1.allow_add == r2.allow_add
+        assert r1.allow_replenish == r2.allow_replenish
+
+
+# ── All Asset Types Have Defaults ─────────────────────────────────────────────
+
+class TestAssetTypeDefaults:
+    def test_all_types_in_midpoint_dict(self):
+        for asset_type in ALL_ASSET_TYPES:
+            assert asset_type in DEFAULT_MAX_POSITION_MIDPOINT
+
+    def test_all_types_in_range_dict(self):
+        for asset_type in ALL_ASSET_TYPES:
+            assert asset_type in DEFAULT_MAX_POSITION_BY_TYPE
+
+    def test_ranges_ordered(self):
+        for asset_type, (lo, hi) in DEFAULT_MAX_POSITION_BY_TYPE.items():
+            assert lo <= hi, f"{asset_type}: {lo} > {hi}"
+
+    def test_absolute_cap_respected_by_all_midpoints(self):
+        for asset_type, mid in DEFAULT_MAX_POSITION_MIDPOINT.items():
+            assert mid <= ABSOLUTE_MAX_POSITION_PCT, f"{asset_type} midpoint {mid} > cap"
+
+
+# ── No Strong Action Words in Module Output ───────────────────────────────────
+
+class TestNoStrongActionWords:
+    def test_all_reason_texts_clean(self):
+        """Scan all possible reason strings for forbidden strong words."""
+        ctx = _make_trial_context()
+        result = apply_staged_entry_rules(ctx)
+        text_fields = [
+            result.trial_lot_reason,
+            result.trial_lot_forbidden_reason,
+            result.confirm_lot_reason,
+            result.attack_lot_reason,
+            result.allow_add_reason,
+            result.allow_replenish_reason,
+            result.allow_chase_reason,
+            result.notes,
+        ]
+        for text in text_fields:
+            if not text:
+                continue
+            for word in FORBIDDEN_STRONG_WORDS:
+                assert word not in text, f"Found '{word}' in: {text}"
+
+    def test_contract_safety(self):
+        """Contract from rules must pass safety validation."""
+        ctx = _make_trial_context()
+        contract, _ = apply_rules_to_contract(ctx)
+        assert validate_playbook_contract_safety(contract) is True
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/staged_entry_rules.py | sed -n '330,380p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   330	
+   331	
+   332	# [PLAYBOOK-002] staged_entry_rules
+   333	# ── 确认仓评估 ────────────────────────────────────────────────────────────────
+   334	
+   335	def evaluate_confirm_lot(context: StagedEntryContext) -> Tuple[bool, int, str]:
+   336	    """评估确认仓资格.
+   337	
+   338	    需要产业 / 业绩 / 资金三类证据中至少两类增强。
+   339	
+   340	    Returns:
+   341	        ``(eligible, evidence_categories_met, reason)``
+   342	    """
+   343	    # 已加确认仓
+   344	    if context.confirm_lot_added:
+   345	        return (False, 0, "已加确认仓")
+   346	
+   347	    # 必须先建试错仓
+   348	    if not context.trial_lot_built:
+   349	        return (False, 0, "未建试错仓，不可跳到确认仓")
+   350	
+   351	    # 试错仓必须成功
+   352	    if not context.trial_lot_succeeded:
+   353	        return (False, 0, "试错仓未成功，不可加确认仓")
+   354	
+   355	    # ── 三类证据评估 ──
+   356	    categories_met = 0
+   357	    category_details: List[str] = []
+   358	
+   359	    # 1. 产业证据：必需环节、客户认证、订单/中标、产能投放、收入传导
+   360	    if context.industry_evidence_score is not None and context.industry_evidence_score >= 3.0:
+   361	        categories_met += 1
+   362	        category_details.append(f"产业证据({context.industry_evidence_score:.1f}/5)")
+   363	
+   364	    # 2. 业绩确认：预告超预期、财报改善、毛利率改善、主营增长
+   365	    if context.earnings_validation_score is not None and context.earnings_validation_score >= 3.0:
+   366	        categories_met += 1
+   367	        category_details.append(f"业绩确认({context.earnings_validation_score:.1f}/5)")
+   368	
+   369	    # 3. 资金确认：放量上涨未快速砸回、回调缩量、板块龙头同步走强
+   370	    if context.fund_confirmation_score is not None and context.fund_confirmation_score >= 3.0:
+   371	        categories_met += 1
+   372	        category_details.append(f"资金确认({context.fund_confirmation_score:.1f}/5)")
+   373	
+   374	    if categories_met >= 2:
+   375	        return (True, categories_met,
+   376	                f"证据增强：{', '.join(category_details)}（{categories_met}/3 类）")
+   377	    else:
+   378	        detail = ', '.join(category_details) if category_details else "无有效证据"
+   379	        return (False, categories_met,
+   380	                f"证据不足：{detail}（{categories_met}/3 类，需 ≥2）")
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/staged_entry_rules.py | sed -n '430,560p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   430	def check_allow_add(context: StagedEntryContext) -> Tuple[bool, str]:
+   431	    """检查是否允许加仓.
+   432	
+   433	    超过计划仓位时不得提示继续加仓，只能提示持有、减仓或等待确认。
+   434	    """
+   435	    if context.planned_max_position_pct is None:
+   436	        # 未设置计划仓位，无法判断；保守不允许
+   437	        return (False, "计划仓位未设置，保守不允许加仓")
+   438	
+   439	    if context.current_position_pct is None:
+   440	        return (False, "当前仓位未知，保守不允许加仓")
+   441	
+   442	    if context.current_position_pct >= context.planned_max_position_pct:
+   443	        return (False,
+   444	                f"当前仓位 {context.current_position_pct:.1f}% ≥ 计划上限 "
+   445	                f"{context.planned_max_position_pct:.1f}%，不得继续加仓")
+   446	
+   447	    return (True,
+   448	            f"当前仓位 {context.current_position_pct:.1f}% < 计划上限 "
+   449	            f"{context.planned_max_position_pct:.1f}%，可继续加仓")
+   450	
+   451	
+   452	def check_allow_replenish(context: StagedEntryContext) -> Tuple[bool, str]:
+   453	    """检查是否允许补仓.
+   454	
+   455	    禁止在第一次大跌、跌停封死、放量破位、板块龙头集体退潮时补仓。
+   456	    """
+   457	    # 跌停封死
+   458	    if context.limit_down:
+   459	        return (False, "跌停封死，禁止补仓")
+   460	
+   461	    # 放量破位
+   462	    if context.volume_breakdown:
+   463	        return (False, "放量破位，禁止补仓")
+   464	
+   465	    # 板块龙头集体退潮
+   466	    if context.sector_retreat:
+   467	        return (False, "板块龙头集体退潮，禁止补仓")
+   468	
+   469	    # 第一次大跌
+   470	    if context.first_big_drop:
+   471	        return (False, "第一次大跌，禁止补仓")
+   472	
+   473	    return (True, "无禁止条件")
+   474	
+   475	
+   476	def check_allow_chase(context: StagedEntryContext) -> Tuple[bool, str]:
+   477	    """检查是否允许追高.
+   478	
+   479	    爆量冲高回落时禁止追入。
+   480	    """
+   481	    if context.volume_blowoff_top:
+   482	        return (False, "爆量冲高回落，禁止追入")
+   483	    return (True, "无禁止追高条件")
+   484	
+   485	
+   486	def detect_forbidden_replenish_keywords(text: Optional[str]) -> List[str]:
+   487	    """检测文本中的禁止补仓关键词.
+   488	
+   489	    "跌了 / 便宜 / 回调" 单独出现不能触发补仓，此处用于扫描上游
+   490	    reason / notes 文本，发现时标记 ``forbidden_replenish_detected``。
+   491	    """
+   492	    if not text:
+   493	        return []
+   494	    found = [kw for kw in _FORBIDDEN_REPLENISH_KEYWORDS if kw in text]
+   495	    return found
+   496	
+   497	
+   498	# [PLAYBOOK-002] staged_entry_rules
+   499	# ── 主入口 ────────────────────────────────────────────────────────────────────
+   500	
+   501	def apply_staged_entry_rules(context: StagedEntryContext) -> StagedEntryResult:
+   502	    """应用三笔法规则引擎，计算仓位、资格和操作许可.
+   503	
+   504	    主入口函数。纯确定性，不修改 ``context``，返回新的 ``StagedEntryResult``。
+   505	    """
+   506	    result = StagedEntryResult()
+   507	
+   508	    # ── 1. 标的类型 ──
+   509	    result.asset_type = classify_asset_type(context)
+   510	
+   511	    # ── 2. 计划仓位上限 ──
+   512	    result.planned_max_position_pct = compute_planned_max_position(
+   513	        result.asset_type,
+   514	        override_pct=context.planned_max_position_pct,
+   515	    )
+   516	
+   517	    # ── 3. 三笔法仓位拆分 ──
+   518	    result.trial_pct, result.confirm_pct, result.attack_pct = compute_tranche_sizes(
+   519	        result.planned_max_position_pct,
+   520	    )
+   521	
+   522	    # ── 4. 试错仓 ──
+   523	    eligible, reason, forbidden, forbidden_reason = evaluate_trial_lot(context)
+   524	    result.trial_lot_eligible = eligible
+   525	    result.trial_lot_reason = reason
+   526	    result.trial_lot_forbidden = forbidden
+   527	    result.trial_lot_forbidden_reason = forbidden_reason
+   528	
+   529	    # ── 5. 确认仓 ──
+   530	    eligible, cats, reason = evaluate_confirm_lot(context)
+   531	    result.confirm_lot_eligible = eligible
+   532	    result.confirm_evidence_categories = cats
+   533	    result.confirm_lot_reason = reason
+   534	
+   535	    # ── 6. 进攻仓 ──
+   536	    eligible, attack_type, reason = evaluate_attack_lot(context)
+   537	    result.attack_lot_eligible = eligible
+   538	    result.attack_type = attack_type
+   539	    result.attack_lot_reason = reason
+   540	
+   541	    # ── 7. 操作许可 ──
+   542	    allow, reason = check_allow_add(context)
+   543	    result.allow_add = allow
+   544	    result.allow_add_reason = reason
+   545	
+   546	    allow, reason = check_allow_replenish(context)
+   547	    result.allow_replenish = allow
+   548	    result.allow_replenish_reason = reason
+   549	
+   550	    allow, reason = check_allow_chase(context)
+   551	    result.allow_chase = allow
+   552	    result.allow_chase_reason = reason
+   553	
+   554	    # ── 8. 安全扫描 ──
+   555	    # 扫描 reason 文本中是否存在"跌了/便宜/回调"等暗示"因为跌所以买"的关键词
+   556	    all_reasons = " ".join([
+   557	        result.trial_lot_reason,
+   558	        result.confirm_lot_reason,
+   559	        result.attack_lot_reason,
+   560	        result.allow_add_reason,
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/staged_entry_rules.py | sed -n '270,330p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   270	    if not math.isfinite(planned_max_pct) or planned_max_pct <= 0:
+   271	        return (0.0, 0.0, 0.0)
+   272	    tranche = planned_max_pct * TRANCHE_FRACTION
+   273	    return (tranche, tranche, tranche)
+   274	
+   275	
+   276	# [PLAYBOOK-002] staged_entry_rules
+   277	# ── 试错仓评估 ────────────────────────────────────────────────────────────────
+   278	
+   279	def evaluate_trial_lot(context: StagedEntryContext) -> Tuple[bool, str, bool, str]:
+   280	    """评估试错仓资格.
+   281	
+   282	    Returns:
+   283	        ``(eligible, reason, forbidden, forbidden_reason)``
+   284	    """
+   285	    # 已建试错仓，不需要重新评估资格
+   286	    if context.trial_lot_built:
+   287	        return (False, "已建试错仓", False, "")
+   288	
+   289	    # ── 禁止条件（任一命中即禁止） ──
+   290	    # 1. 纯传闻，无公告、订单、产业证据
+   291	    if not context.investment_thesis_clear:
+   292	        return (False, "投资假设不清晰", True, "纯传闻，无公告、订单、产业证据")
+   293	
+   294	    # 2. 连续涨停后高开追入
+   295	    if context.volume_blowoff_top:
+   296	        return (False, "爆量冲高回落", True, "当天爆量冲高回落，禁止试错")
+   297	
+   298	    # 3. 板块明显退潮
+   299	    if context.sector_retreat:
+   300	        return (False, "板块退潮", True, "板块明显退潮，禁止试错")
+   301	
+   302	    # 4. 跌停封死
+   303	    if context.limit_down:
+   304	        return (False, "跌停封死", True, "跌停封死，禁止试错")
+   305	
+   306	    # ── 允许条件（全部满足才允许） ──
+   307	    reasons: List[str] = []
+   308	
+   309	    # 1. 投资假设清晰（已检查）
+   310	    reasons.append("投资假设清晰")
+   311	
+   312	    # 2. 当前价格不是连续暴涨后的极端高位
+   313	    if context.current_price is not None and context.entry_high is not None:
+   314	        extreme_threshold = context.entry_high * (1.0 + EXTREME_HIGH_RATIO)
+   315	        if context.current_price > extreme_threshold:
+   316	            return (False, "价格处于极端高位", False,
+   317	                    f"当前价 {context.current_price:.2f} > 入场上沿 "
+   318	                    f"{context.entry_high:.2f} × {1 + EXTREME_HIGH_RATIO:.0%}")
+   319	        reasons.append("非极端高位")
+   320	    else:
+   321	        reasons.append("价格信息不足，保守通过")
+   322	
+   323	    # 3. 板块没有明显退潮（已检查）
+   324	    reasons.append("板块未退潮")
+   325	
+   326	    # 4. 仓位足够小（通过三笔法自然保证）
+   327	    reasons.append("仓位通过三笔法控制")
+   328	
+   329	    return (True, "；".join(reasons), False, "")
+   330	
+
+2026-07-22T18:19:45.262840Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "sed -n '220,275p' docs/trade_playbook_lifecycle.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+【一句话结论】
+```
+
+## 10. 安全约束
+
+- 禁止简单因为下跌提示补仓。
+- 禁止简单因为上涨提示追高。
+- 所有加仓必须说明是试错仓、确认仓还是进攻仓。
+- 所有减仓必须说明是机动仓减仓、风控减仓还是证伪退出。
+- 数据不足时只能输出观察或等待确认，不得输出强动作。
+- 本契约不绕过现有 DECISION / Buy Level / Risk Level / 强动作门禁。
+
+## 11. 字段与代码 schema 映射表（PLAYBOOK-001）
+
+> 代码实现：`tradingagents/tradeflow/playbook_contract.py`（`# [PLAYBOOK-001] lifecycle_contract`）
+
+### 11.1 阶段枚举
+
+| 文档字段 | 代码常量 | 合法值 | 中文标签 |
+| --- | --- | --- | --- |
+| `playbook_stage` | `STAGE_OBSERVE` 等 | `observe / trial / confirm / attack / hold / risk / exit` | 观察 / 试错仓 / 确认仓 / 进攻仓 / 持有 / 风控 / 退出 |
+
+- `normalize_playbook_stage()` 对无法识别的值返回 `None`，**绝不回退到 `hold`**。
+- `is_valid_playbook_stage(None)` → `False`。
+
+### 11.2 三笔法 lot_status 枚举
+
+| 文档字段 | 代码常量集合 | 合法值 |
+| --- | --- | --- |
+| `trial_lot_status` | `TRIAL_LOT_STATUSES` | `none / built / failed / succeeded` |
+| `confirm_lot_status` | `CONFIRM_LOT_STATUSES` | `none / eligible / added / cancelled` |
+| `attack_lot_status` | `ATTACK_LOT_STATUSES` | `none / pullback / breakout / added / retreat` |
+
+### 11.3 PlaybookContract 字段映射
+
+| 文档字段（§8） | PlaybookContract 属性 | 类型 | 默认 |
+| --- | --- | --- | --- |
+| `playbook_stage` | `playbook_stage` | `Optional[str]` | `None` |
+| `industry_evidence_score` | `industry_evidence_score` | `Optional[float]` (0-5) | `None` |
+| `earnings_validation_score` | `earnings_validation_score` | `Optional[float]` (0-5) | `None` |
+| `fund_confirmation_score` | `fund_confirmation_score` | `Optional[float]` (0-5) | `None` |
+| `risk_pressure_score` | `risk_pressure_score` | `Optional[float]` (0-5) | `None` |
+| `planned_max_position_pct` | `planned_max_position_pct` | `Optional[float]` (0-100) | `None` |
+| `current_position_pct` | `current_position_pct` | `Optional[float]` (0-100) | `None` |
+| `unrealized_pnl_pct` | `unrealized_pnl_pct` | `Optional[float]`（有限数值） | `None` |
+| `trial_lot_status` | `trial_lot_status` | `Optional[str]` | `None` |
+| `confirm_lot_status` | `confirm_lot_status` | `Optional[str]` | `None` |
+| `attack_lot_status` | `attack_lot_status` | `Optional[str]` | `None` |
+| `core_position_qty` | `core_position_qty` | `Optional[int]` | `None` |
+| `tactical_position_qty` | `tactical_position_qty` | `Optional[int]` | `None` |
+| `defensive_cash_required_pct` | `defensive_cash_required_pct` | `Optional[float]` (0-100) | `None` |
+| `allow_add` | `allow_add` | `Optional[bool]` | `None` |
+| `allow_replenish` | `allow_replenish` | `Optional[bool]` | `None` |
+| `allow_chase` | `allow_chase` | `Optional[bool]` | `None` |
+| `add_trigger` | `add_trigger` | `Optional[str]` | `None` |
+| `reduce_trigger` | `reduce_trigger` | `Optional[str]` | `None` |
+
+2026-07-22T18:20:02.562585Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "python - <<'PY'
+from tradingagents.tradeflow.staged_entry_rules import *
+ctx=StagedEntryContext(strategy_tags=['ETF'], current_position_pct=5, investment_thesis_clear=True)
+r=apply_staged_entry_rules(ctx)
+print(r.planned_max_position_pct, r.allow_add, r.allow_add_reason)
+ctx=StagedEntryContext(investment_thesis_clear=True,current_price=10,entry_high=11,invalid_price=8.5)
+print(evaluate_trial_lot(ctx))
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+2026-07-22T18:20:12.823331Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from tradingagents.tradeflow.staged_entry_rules import *
+ctx=StagedEntryContext(strategy_tags=['ETF'], current_position_pct=5, investment_thesis_clear=True)
+r=apply_staged_entry_rules(ctx)
+print(r.planned_max_position_pct, r.allow_add, r.allow_add_reason)
+ctx=StagedEntryContext(investment_thesis_clear=True,current_price=10,entry_high=11,invalid_price=8.5)
+print(evaluate_trial_lot(ctx))
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+15.0 False 计划仓位未设置，保守不允许加仓
+(True, '投资假设清晰；非极端高位；板块未退潮；仓位通过三笔法控制', False, '')
+
+2026-07-22T18:20:17.545909Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc 'grep -n "first_big_drop" -C 2 tests/test_playbook002_staged_entry_rules.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+111-        pullback_shrink_volume=True,
+112-        above_support=True,
+113:        first_big_drop=False,
+114-        limit_down=False,
+115-        volume_breakdown=False,
+--
+453-        assert "退潮" in reason
+454-
+455:    def test_pullback_first_big_drop_forbidden(self):
+456:        ctx = _make_attack_context(first_big_drop=True)
+457-        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+458-        assert eligible is False
+--
+556-        assert "退潮" in reason
+557-
+558:    def test_first_big_drop(self):
+559:        ctx = StagedEntryContext(first_big_drop=True)
+560-        allow, reason = check_allow_replenish(ctx)
+561-        assert allow is False
+
+2026-07-22T18:20:27.244607Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-22T18:20:28.041076Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "sed -n '420,465p' tests/test_playbook002_staged_entry_rules.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            above_support=False,
+            breakout_confirmed=True,
+            sector_leader_sync=True,
+            volume_blowoff_top=False,
+        )
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is True
+        assert attack_type == "breakout"
+        assert "突破" in reason
+
+    def test_not_eligible_no_confirm(self):
+        ctx = _make_attack_context(confirm_lot_added=False)
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is False
+        assert attack_type is None
+        assert "未加确认仓" in reason
+
+    def test_forbidden_limit_down(self):
+        ctx = _make_attack_context(limit_down=True)
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is False
+        assert "跌停" in reason
+
+    def test_forbidden_volume_breakdown(self):
+        ctx = _make_attack_context(volume_breakdown=True)
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is False
+        assert "放量破位" in reason
+
+    def test_forbidden_sector_retreat(self):
+        ctx = _make_attack_context(sector_retreat=True)
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is False
+        assert "退潮" in reason
+
+    def test_pullback_first_big_drop_forbidden(self):
+        ctx = _make_attack_context(first_big_drop=True)
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is False
+
+    def test_breakout_blowoff_top_forbidden(self):
+        ctx = _make_attack_context(
+            pullback_shrink_volume=False,
+            breakout_confirmed=True,
+            sector_leader_sync=True,
+            volume_blowoff_top=True,
+
+2026-07-22T18:20:31.751795Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/staged_entry_rules.py | sed -n '388,425p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   388	
+   389	    进攻仓必须建立在确认仓之后。分回踩进攻和突破进攻两种。
+   390	
+   391	    Returns:
+   392	        ``(eligible, attack_type, reason)``
+   393	        ``attack_type``: ``"pullback"`` / ``"breakout"`` / ``None``
+   394	    """
+   395	    # 必须先加确认仓
+   396	    if not context.confirm_lot_added:
+   397	        return (False, None, "未加确认仓，不可跳到进攻仓")
+   398	
+   399	    # ── 禁止条件 ──
+   400	    # 第一次大跌、跌停封死、放量破位、板块龙头集体退潮
+   401	    if context.limit_down:
+   402	        return (False, None, "跌停封死，禁止进攻")
+   403	    if context.volume_breakdown:
+   404	        return (False, None, "放量破位，禁止进攻")
+   405	    if context.sector_retreat:
+   406	        return (False, None, "板块龙头集体退潮，禁止进攻")
+   407	
+   408	    # ── 回踩进攻 ──
+   409	    # 条件：逻辑已确认、上涨后回调、回调缩量、不破平台、再次放量转强、板块健康
+   410	    if (context.pullback_shrink_volume
+   411	            and context.above_support
+   412	            and not context.first_big_drop):
+   413	        return (True, "pullback",
+   414	                "回踩缩量不破支撑，板块健康，回踩进攻窗口")
+   415	
+   416	    # ── 突破进攻 ──
+   417	    # 条件：逻辑已确认、板块同步走强、突破关键平台、放量但不爆量失控
+   418	    if (context.breakout_confirmed
+   419	            and context.sector_leader_sync
+   420	            and not context.volume_blowoff_top):
+   421	        return (True, "breakout",
+   422	                "突破关键平台，板块同步走强，突破进攻窗口")
+   423	
+   424	    return (False, None, "不满足回踩或突破进攻条件")
+   425	
+
+2026-07-22T18:20:37.201810Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "sed -n '1,240p' docs/task_runs/PLAYBOOK-002-20260723-020942/task.md && sed -n '1,240p' docs/task_runs/PLAYBOOK-002-20260723-020942/prompt-round1.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# Auto Dev Task Run
+
+- Task: PLAYBOOK-002 - 计划仓位上限与上车三笔法规则引擎（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-07-23_02:09:42
+- Git HEAD: df755c0
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Codex review timeout seconds: 1200
+- OpenCode binary: /opt/homebrew/bin/opencode
+- OpenCode version: 1.15.12
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+# Task: PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+
+Read task "PLAYBOOK-002" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+
+2026-07-22T18:20:46.125510Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/staged_entry_rules.py | sed -n '575,650p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   575	    return result
+   576	
+   577	
+   578	# [PLAYBOOK-002] staged_entry_rules
+   579	# ── 便捷入口：直接填充 PlaybookContract ──────────────────────────────────────
+   580	
+   581	def apply_rules_to_contract(
+   582	    context: StagedEntryContext,
+   583	    *,
+   584	    existing: Optional[PlaybookContract] = None,
+   585	) -> Tuple[PlaybookContract, StagedEntryResult]:
+   586	    """应用规则并返回 ``(updated_contract, raw_result)``.
+   587	
+   588	    若 ``existing`` 非空，在其基础上更新；否则创建新 contract。
+   589	    只更新本模块负责的字段，不覆盖上游已设置的评分/阶段。
+   590	    """
+   591	    result = apply_staged_entry_rules(context)
+   592	
+   593	    if existing is not None:
+   594	        contract = PlaybookContract(
+   595	            playbook_stage=existing.playbook_stage,
+   596	            industry_evidence_score=existing.industry_evidence_score,
+   597	            earnings_validation_score=existing.earnings_validation_score,
+   598	            fund_confirmation_score=existing.fund_confirmation_score,
+   599	            risk_pressure_score=existing.risk_pressure_score,
+   600	            planned_max_position_pct=result.planned_max_position_pct,
+   601	            current_position_pct=existing.current_position_pct,
+   602	            unrealized_pnl_pct=existing.unrealized_pnl_pct,
+   603	            core_position_qty=existing.core_position_qty,
+   604	            tactical_position_qty=existing.tactical_position_qty,
+   605	            defensive_cash_required_pct=existing.defensive_cash_required_pct,
+   606	            trial_lot_status=existing.trial_lot_status,
+   607	            confirm_lot_status=existing.confirm_lot_status,
+   608	            attack_lot_status=existing.attack_lot_status,
+   609	            allow_add=result.allow_add,
+   610	            allow_replenish=result.allow_replenish,
+   611	            allow_chase=result.allow_chase,
+   612	            add_trigger=existing.add_trigger,
+   613	            reduce_trigger=existing.reduce_trigger,
+   614	            exit_trigger=existing.exit_trigger,
+   615	            investment_thesis=existing.investment_thesis,
+   616	            last_operation=existing.last_operation,
+   617	            next_action=existing.next_action,
+   618	            notes=result.notes or existing.notes,
+   619	            stage_updated_at=existing.stage_updated_at,
+   620	        )
+   621	    else:
+   622	        contract = PlaybookContract(
+   623	            planned_max_position_pct=result.planned_max_position_pct,
+   624	            allow_add=result.allow_add,
+   625	            allow_replenish=result.allow_replenish,
+   626	            allow_chase=result.allow_chase,
+   627	            notes=result.notes or None,
+   628	        )
+   629	
+   630	    return contract, result
+
+2026-07-22T18:20:55.414631Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+codex
+The new rule engine has logic gaps that can incorrectly deny default-plan additions and incorrectly allow attack/trial eligibility under documented forbidden or uncontrolled-risk scenarios.
+
+Full review comments:
+
+- [P2] Feed computed plan into add checks — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/staged_entry_rules.py:542-542
+  When callers rely on the asset-type default instead of passing `planned_max_position_pct`, this computes `result.planned_max_position_pct` but then checks `allow_add` against the original context where the plan is still `None`. For example an ETF with `current_position_pct=5` gets a 15% computed cap but returns `allow_add=False` with “计划仓位未设置”, so the default max-position rule never permits adds unless an override was supplied.
+
+- [P2] Block first-drop breakout attacks — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/staged_entry_rules.py:418-420
+  If `first_big_drop=True` arrives together with `breakout_confirmed=True` and `sector_leader_sync=True`, the breakout branch still returns an eligible attack lot because the first-drop flag is only excluded from the pullback branch. This violates the documented “第一次大跌” attack/replenish prohibition for noisy or conflicting upstream signals.
+
+- [P2] Enforce trial-lot downside limit — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/staged_entry_rules.py:326-329
+  Trial lots are marked eligible without checking whether the stop/invalid price keeps the loss within the stated 5%–8% tolerance; e.g. `current_price=10` and `invalid_price=8.5` still returns eligible. Since the context and `TRIAL_ACCEPTABLE_LOSS_PCT` already exist, this misses the task requirement that trial entries must have controllable downside.
+The new rule engine has logic gaps that can incorrectly deny default-plan additions and incorrectly allow attack/trial eligibility under documented forbidden or uncontrolled-risk scenarios.
+
+Full review comments:
+
+- [P2] Feed computed plan into add checks — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/staged_entry_rules.py:542-542
+  When callers rely on the asset-type default instead of passing `planned_max_position_pct`, this computes `result.planned_max_position_pct` but then checks `allow_add` against the original context where the plan is still `None`. For example an ETF with `current_position_pct=5` gets a 15% computed cap but returns `allow_add=False` with “计划仓位未设置”, so the default max-position rule never permits adds unless an override was supplied.
+
+- [P2] Block first-drop breakout attacks — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/staged_entry_rules.py:418-420
+  If `first_big_drop=True` arrives together with `breakout_confirmed=True` and `sector_leader_sync=True`, the breakout branch still returns an eligible attack lot because the first-drop flag is only excluded from the pullback branch. This violates the documented “第一次大跌” attack/replenish prohibition for noisy or conflicting upstream signals.
+
+- [P2] Enforce trial-lot downside limit — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/staged_entry_rules.py:326-329
+  Trial lots are marked eligible without checking whether the stop/invalid price keeps the loss within the stated 5%–8% tolerance; e.g. `current_price=10` and `invalid_price=8.5` still returns eligible. Since the context and `TRIAL_ACCEPTABLE_LOSS_PCT` already exist, this misses the task requirement that trial entries must have controllable downside.
