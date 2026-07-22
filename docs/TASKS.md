@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-17
+> 最后更新：2026-07-22
 
 ---
 
@@ -22,16 +22,16 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-17）
+### 当前执行队列（2026-07-22）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-> **执行前置**：FUND-001A 已完成人工实现、对抗修复和 Codex 多轮复审；提交并恢复 clean tree 后，从 FUND-003A-B 开始按依赖串行自动领取。自动循环继续遵守 dirty-tree 停止规则。
+> **执行前置**：FUND-001A、FUND-003A 与 FUND-003A-B 已完成确定性补修和 Codex 多轮对抗复审。工作区恢复干净后，从 FUND-004B 开始按依赖串行自动领取；自动循环继续遵守 dirty-tree 停止规则。
 
 1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress；已有 `aac9add` + `f5fc13f`，复审仍有 P1/P2）。
-3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，ready；收口 FUND-003A）。
-4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto；等待 FUND-003A-B）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
+3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
 5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004B）。
 6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
@@ -54,13 +54,13 @@
 
 > FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
 
-### 今晚 4 小时执行包（2026-07-17）
+### 今晚 4 小时执行包（2026-07-22）
 
 > 目标预算约 200-265 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1/P2 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
 
 | 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
 |---|---|---:|---|
-| 1 | `FUND-003A-B` | 35-50 分钟 | 按术语和每次出现分别绑定方向/否定/因果关系；复审无 P0/P1/P2 |
+| 1 | `FUND-003A-B` | done | `2d98abc`；72 项专项、271 项聚焦回归通过，复审无 P0/P1/P2 |
 | 2 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
 | 3 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
 | 4 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
@@ -268,12 +268,12 @@
 185. `FUND-005`：逐 Agent 模型与输入契约脱敏 trace（P1，blocked-review，第一版待 FUND-005A 补修）。
 186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
 187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，in_progress，已有 `aac9add` + `f5fc13f`，等待 FUND-003A-B 收口）。
-189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，blocked-auto，依赖 FUND-003A-B）。
+188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done，由 `2d98abc` 完成复审收口）。
+189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready，依赖已闭环）。
 190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004B）。
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
 192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
-193. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，ready，收口 `aac9add` + `f5fc13f` 复审发现）。
+193. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
 194. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto，依赖 FUND-006A）。
 
 ### 数据源治理候选队列
@@ -5684,7 +5684,7 @@
 ### FUND-003A: 财务因果声明与官方证据逐项绑定（P0）
 - **描述**：把当前“公告出现任意关键词即可放行整段解释”改成 claim-level 证据绑定，防止无关合同负债公告放行“原材料下降/化工旺季/净额法”等错误叙事。
 - **优先级**：P0
-- **状态**：in_progress — 已有 `aac9add` + `f5fc13f`，Round 2 复审仍有 P1/P2，由 FUND-003A-B 收口
+- **状态**：done — `aac9add` + `f5fc13f`，由 FUND-003A-B commit `2d98abc` 完成复审收口
 - **预计耗时**：35-45 分钟
 - **depends_on**：FUND-001A, FUND-003, KB-014
 - **auto_release**：true
@@ -5701,7 +5701,7 @@
 ### FUND-003A-B: 因果证据按术语/出现位置绑定补修（P0）
 - **描述**：收口 `aac9add` + `f5fc13f` 的复审问题，将证据方向、否定和因果关系从 entry 全局属性下沉到具体术语及每次出现，防止多指标/多句子误绑定。
 - **优先级**：P0
-- **状态**：ready — 2026-07-17 旧版 `/usr/local/bin/opencode` 误命中已修复，可重新领取
+- **状态**：done — commit `2d98abc`；72 项专项、271 项聚焦回归通过，Codex review 无 P0/P1/P2 correctness finding
 - **预计耗时**：35-50 分钟
 - **depends_on**：FUND-001A
 - **auto_release**：true
@@ -5718,7 +5718,7 @@
 ### FUND-004B: C-006 同日期/同期间口径计算补修（P0）
 - **描述**：修复 C-006 按指标各取最新值导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算的问题。
 - **优先级**：P0
-- **状态**：blocked-auto — 等待 FUND-003A-B
+- **状态**：ready — FUND-003A-B 已由 `2d98abc` 闭环，可自动领取
 - **预计耗时**：30-40 分钟
 - **depends_on**：FUND-002, FUND-003A-B
 - **auto_release**：true
