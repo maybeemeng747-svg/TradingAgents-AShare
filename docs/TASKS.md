@@ -6028,7 +6028,7 @@
 ### SCORE-003: 账户上下文 portfolio_fit 评分卡（P1）
 - **描述**：基于账户权限、真实持仓、可用现金、行业集中度、标的流动性和风险预算生成独立 `portfolio_fit`，回答“这只票是否适合当前账户参与”。
 - **优先级**：P1
-- **状态**：in_progress — claimed SCORE-003-20260723-025306
+- **状态**：done -- commit cd6bb36
 - **前置条件**：SCORE-001、C-002、TF-RISK-001、IC-TA-001 完成。
 - **depends_on**：SCORE-001, C-002, TF-RISK-001, IC-TA-001
 - **auto_release**：true
