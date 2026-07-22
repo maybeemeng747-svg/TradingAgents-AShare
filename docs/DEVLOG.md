@@ -1,5 +1,27 @@
 # 修改日志
 
+## 2026-07-23 | C-008 execution_readiness_score 简化版
+
+- **任务**：C-008 — 每份报告输出两个核心质量指标（P2）
+- **实现**：
+  - `tradingagents/agents/utils/readiness_score.py` — 已有完整实现，无需修改。
+    - **data_completeness**（数据完整度，0-100%）：基于 8 个布尔输入（市场/舆情/新闻/基本面/主力资金/量价/用户上下文/持仓数据）计算。
+    - **confidence**（置信度，高/中/低）：基于 data_completeness + 矛盾信号/分析师一致性/事件风险/证据覆盖度等修饰因子评估。
+    - `generate_readiness_score(data_completeness, confidence)` → 返回 `{"data_completeness": int, "confidence": str, "summary": str}`。
+    - `format_readiness_score(score)` → 格式化输出包含两个核心指标的报告文本。
+    - `assess_confidence()` 支持 evidence_coverage < 70 时强制 cap 为 MEDIUM。
+  - `tradingagents/agents/managers/risk_manager.py` — 已集成，无需修改。
+    - risk_manager_node 中调用 `calculate_data_completeness()` → `assess_confidence()` → `generate_readiness_score()` → `format_readiness_score()`。
+    - 两个核心指标通过 `format_execution_block()` 输出到报告末尾的「执行等级与证据门禁」区块。
+- **测试**：
+  - `tests/test_c008_execution_readiness_score.py`（新增）— **52 tests passed**。
+  - 覆盖 10 个测试类：data_completeness（5）、confidence（8）、generate_readiness_score（7）、format_readiness_score（6）、position_status（5）、allowed_actions（3）、format_execution_block（6）、端到端（5）、确定性（3）、evidence_coverage（4）。
+- **回归**：
+  - `pytest tests/test_readiness_score.py tests/test_execution_schema.py tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**263 passed**。
+  - `pytest tests/test_c001_position_validation_gate.py tests/test_c005_delta_check.py tests/test_c006_financial_validator.py tests/test_c007_event_risk_gate.py -q`：**248 passed**。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | C-007 event_risk_gate 重大事件风控门禁
 
 - **任务**：C-007 — 重大事件发生时，进入风控优先模式（P1）

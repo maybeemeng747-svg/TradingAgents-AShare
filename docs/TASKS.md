@@ -167,7 +167,7 @@
 ### C-008: execution_readiness_score — 简化版（P2）
 - **描述**：每份报告输出两个核心质量指标
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — C-008-20260723-042548
 - **预计耗时**：25-35 分钟
 - **depends_on**：无
 - **auto_release**：true
