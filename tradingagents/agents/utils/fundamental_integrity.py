@@ -1,8 +1,7 @@
 """Deterministic integrity checks for fundamental-analysis evidence.
 
-FUND-003A-B: Per-term evidence binding — direction, negation, and causal
-relation are extracted per keyword (not per entry), preventing multi-indicator
-misbinding when an entry contains multiple terms.
+FUND-003A-B: Per-term-occurrence evidence binding — direction, negation,
+and causal relation are extracted per keyword occurrence, not per entry.
 """
 
 from __future__ import annotations
@@ -19,10 +18,12 @@ CAUSE_UNSUPPORTED = "CAUSE_UNSUPPORTED"
 ACCOUNTING_POLICY_UNKNOWN = "ACCOUNTING_POLICY_UNKNOWN"
 
 _CAUSE_KEYWORDS = (
-    "原材料", "淡季", "旺季", "产品涨价", "销量提升", "成本下降",
-    "行业周期", "集中交付",
-    "原材料下降", "原材料成本下降", "采购成本下降",
-    "原材料上涨", "原材料成本上涨", "采购成本上涨",
+    "原材料采购成本下降", "原材料采购成本上涨",
+    "原材料价格下降", "原材料价格上涨",
+    "原材料成本下降", "采购成本下降", "原材料成本上涨", "采购成本上涨",
+    "原材料下降", "原材料上涨",
+    "产品涨价", "销量提升", "成本下降", "行业周期", "集中交付",
+    "原材料", "淡季", "旺季",
 )
 _ACCOUNTING_KEYWORDS = (
     "净额法", "总额法", "主要责任人", "代理人", "合同负债",
@@ -37,18 +38,27 @@ _ACCOUNTING_CANONICAL: dict[str, str] = {
     "合同负债驱动": "预收款",
 }
 
-_CAUSE_CANONICAL: dict[str, str] = {
-    "原材料": "原材料下降",
-    "原材料成本下降": "原材料下降",
-    "采购成本下降": "原材料下降",
-    "原材料成本上涨": "原材料上涨",
-    "采购成本上涨": "原材料上涨",
-}
-
 _SYNONYM_GROUPS: list[tuple[str, ...]] = [
     ("预收款", "预收货款", "预收客户货款", "预收客户款", "合同负债驱动", "预收款驱动"),
-    ("原材料下降", "原材料成本下降", "采购成本下降"),
-    ("原材料上涨", "原材料成本上涨", "采购成本上涨"),
+    (
+        "原材料下降", "原材料采购成本下降", "原材料价格下降",
+        "原材料成本下降", "采购成本下降",
+    ),
+    (
+        "原材料上涨", "原材料采购成本上涨", "原材料价格上涨",
+        "原材料成本上涨", "采购成本上涨",
+    ),
+]
+
+_CAUSE_SYNONYM_GROUPS: list[tuple[str, ...]] = [
+    (
+        "原材料下降", "原材料采购成本下降", "原材料价格下降",
+        "原材料成本下降", "采购成本下降",
+    ),
+    (
+        "原材料上涨", "原材料采购成本上涨", "原材料价格上涨",
+        "原材料成本上涨", "采购成本上涨",
+    ),
 ]
 
 _SYNONYM_MAP: dict[str, str] = {}
@@ -57,58 +67,136 @@ for _group in _SYNONYM_GROUPS:
     for _term in _group:
         _SYNONYM_MAP[_term] = _canonical
 
-_UP_WORDS = {"上涨", "上升", "增加", "增长", "提升", "走高", "攀升", "升高", "扩大", "增多"}
+_CAUSE_SYNONYM_MAP: dict[str, str] = {}
+for _group in _CAUSE_SYNONYM_GROUPS:
+    _canonical = _group[0]
+    for _term in _group:
+        _CAUSE_SYNONYM_MAP[_term] = _canonical
+
+_UP_WORDS = {"上涨", "涨价", "上升", "增加", "增长", "提升", "走高", "攀升", "升高", "扩大", "增多"}
 _DOWN_WORDS = {"下降", "降低", "减少", "回落", "走低", "收缩", "缩小", "下滑", "下跌", "缩减"}
 _NEGATION_WORDS = {"未", "不", "没有", "并非", "未见", "尚未", "未曾"}
 
 _NEGATION_PATTERN = re.compile(
     r"(未|不|没有|并非|未见|尚未|未曾)\s*(?:采用|使用|执行|确认|实行)?\s*(净额法|总额法|主要责任人|代理人)",
 )
+_DIRECTION_NEGATION_SUFFIX_PATTERN = re.compile(
+    r"(?:未|不|没有|并非|未见|尚未|未曾)"
+    r"(?:(?:\s|出现|发生|呈现|形成|明显|显著|大幅|持续|进一步|再度|重新|"
+    r"实质性|趋势性|快速|继续|能|有|见|再|过|地))*$"
+)
+_RELATION_KEYWORDS = (
+    "主要系", "由于", "因为", "因此", "所以", "导致", "推动", "驱动", "所致", "造成", "带来",
+    "受益于", "得益于", "来自",
+)
+_CAUSE_BEFORE_RESULT_CUES = {
+    "因此", "所以", "导致", "推动", "驱动", "造成", "带来", "所致",
+}
+_RESULT_BEFORE_CAUSE_CUES = {
+    "主要系", "由于", "因为", "受益于", "得益于", "来自",
+}
 
-_RELATION_KEYWORDS = {"由于", "因为", "因此", "所以", "导致", "推动", "驱动", "主要系", "所致"}
+# A cause is not enough by itself: "原材料下降是采购优化的结果" does
+# not prove the separate claim that it drove gross margin.  Keep the target
+# vocabulary deliberately small and financial-report oriented so an unknown
+# endpoint fails closed rather than being guessed from free text.
+_RELATION_TARGET_GROUPS: list[tuple[str, ...]] = [
+    ("经营现金流", "现金流"),
+    ("营业收入", "营收", "收入"),
+    ("归母净利润", "扣非净利润", "净利润", "利润"),
+    ("毛利率",),
+    ("净利率",),
+    ("合同负债",),
+    ("存货",),
+    ("应收账款",),
+    ("业绩",),
+]
+_RELATION_TARGET_MAP = {
+    term: group[0]
+    for group in _RELATION_TARGET_GROUPS
+    for term in group
+}
 
 
-def _claim_id_for(prefix: str, content: str, occurrence: int = 0) -> str:
+def _claim_id_for(prefix: str, content: str) -> str:
     normalized = content.strip()
-    suffix = f"@{occurrence}" if occurrence > 0 else ""
-    digest = hashlib.sha256(f"{normalized}{suffix}".encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
     return f"{prefix}-{digest}"
-
-
-def _canonicalize_term(term: str) -> str:
-    canonical = _ACCOUNTING_CANONICAL.get(term, term)
-    canonical = _CAUSE_CANONICAL.get(canonical, canonical)
-    canonical = _SYNONYM_MAP.get(canonical, canonical)
-    return canonical
 
 
 def _normalize_terms(terms: Iterable[str]) -> list[str]:
     result: set[str] = set()
     for t in terms:
-        result.add(_canonicalize_term(t))
+        canonical = _ACCOUNTING_CANONICAL.get(t, t)
+        synonym = _SYNONYM_MAP.get(canonical, canonical)
+        result.add(synonym)
     return sorted(result)
+
+
+def _find_all_occurrences(text: str, keyword: str) -> list[int]:
+    positions: list[int] = []
+    start = 0
+    while True:
+        idx = text.find(keyword, start)
+        if idx < 0:
+            break
+        positions.append(idx)
+        start = idx + 1
+    return positions
+
+
+def _clause_bounds(text: str, pos: int, keyword_end: int) -> tuple[int, int]:
+    """Keep semantic cues in the same sentence as their keyword occurrence."""
+    delimiters = "。！？；\n"
+    start = max((text.rfind(mark, 0, pos) for mark in delimiters), default=-1) + 1
+    end_candidates = [text.find(mark, keyword_end) for mark in delimiters]
+    end = min((candidate for candidate in end_candidates if candidate >= 0), default=len(text))
+    return start, end
 
 
 def _extract_direction_at(text: str, keyword: str, pos: int) -> str | None:
     keyword_end = pos + len(keyword)
+    intrinsic_up = any(word in keyword for word in _UP_WORDS)
+    intrinsic_down = any(word in keyword for word in _DOWN_WORDS)
+    if intrinsic_up != intrinsic_down:
+        return "up" if intrinsic_up else "down"
+
+    clause_start, clause_end = _clause_bounds(text, pos, keyword_end)
+
+    def crosses_phrase_boundary(word_pos: int, word_len: int) -> bool:
+        word_end = word_pos + word_len
+        if word_pos >= keyword_end:
+            between = text[keyword_end:word_pos]
+        elif word_end <= pos:
+            between = text[word_end:pos]
+        else:
+            between = ""
+        return "，" in between or "," in between
+
     best_dir = None
     best_dist = len(text)
     for w in _UP_WORDS:
-        w_idx = text.find(w)
-        while w_idx >= 0:
+        w_idx = text.find(w, clause_start, clause_end)
+        while w_idx >= 0 and w_idx < clause_end:
+            if crosses_phrase_boundary(w_idx, len(w)):
+                w_idx = text.find(w, w_idx + 1, clause_end)
+                continue
             dist = min(abs(w_idx - pos), abs(w_idx - keyword_end))
             if dist < best_dist:
                 best_dist = dist
                 best_dir = "up"
-            w_idx = text.find(w, w_idx + 1)
+            w_idx = text.find(w, w_idx + 1, clause_end)
     for w in _DOWN_WORDS:
-        w_idx = text.find(w)
-        while w_idx >= 0:
+        w_idx = text.find(w, clause_start, clause_end)
+        while w_idx >= 0 and w_idx < clause_end:
+            if crosses_phrase_boundary(w_idx, len(w)):
+                w_idx = text.find(w, w_idx + 1, clause_end)
+                continue
             dist = min(abs(w_idx - pos), abs(w_idx - keyword_end))
             if dist < best_dist:
                 best_dist = dist
                 best_dir = "down"
-            w_idx = text.find(w, w_idx + 1)
+            w_idx = text.find(w, w_idx + 1, clause_end)
     if best_dist <= 15:
         return best_dir
     return None
@@ -126,31 +214,24 @@ def _is_negated_at(text: str, keyword: str, pos: int) -> bool:
     return False
 
 
-def _is_negated(text: str, keyword: str) -> bool:
-    for m in _NEGATION_PATTERN.finditer(text):
-        if keyword in m.group(0):
-            return True
-    idx = text.find(keyword)
-    if idx < 0:
-        return False
-    window_start = max(0, idx - 6)
-    window = text[window_start:idx]
-    for neg in _NEGATION_WORDS:
-        if neg in window:
-            return True
+def _is_direction_negated_at(text: str, keyword: str, pos: int) -> bool:
+    """Detect negation attached to a nearby direction word, e.g. 未下降."""
+    keyword_end = pos + len(keyword)
+    _, clause_end = _clause_bounds(text, pos, keyword_end)
+    phrase_breaks = [
+        boundary
+        for separator in ("，", ",")
+        if (boundary := text.find(separator, keyword_end, clause_end)) >= 0
+    ]
+    phrase_end = min(phrase_breaks, default=clause_end)
+    for direction_word in _UP_WORDS | _DOWN_WORDS:
+        direction_pos = text.find(direction_word, keyword_end, phrase_end)
+        while direction_pos >= 0:
+            between = text[keyword_end:direction_pos]
+            if _DIRECTION_NEGATION_SUFFIX_PATTERN.search(between):
+                return True
+            direction_pos = text.find(direction_word, direction_pos + 1, phrase_end)
     return False
-
-
-def _find_all_occurrences(text: str, keyword: str) -> list[int]:
-    positions: list[int] = []
-    start = 0
-    while True:
-        idx = text.find(keyword, start)
-        if idx < 0:
-            break
-        positions.append(idx)
-        start = idx + 1
-    return positions
 
 
 def _directions_conflict(ev_dir: str | None, claim_dir: str | None) -> bool:
@@ -168,6 +249,248 @@ def _extract_context_around(text: str, keyword: str, margin: int = 200) -> str:
     return text[start:end]
 
 
+def _extract_context_around_position(
+    text: str, position: int, keyword_len: int, margin: int = 200
+) -> str:
+    start = max(0, position - margin)
+    end = min(len(text), position + keyword_len + margin)
+    return text[start:end]
+
+
+def _cue_assigns_cause_role(
+    cue: str,
+    cue_pos: int,
+    cause_pos: int,
+    cause_end: int,
+) -> bool:
+    if cue == "原因":
+        return True
+    if cue in _CAUSE_BEFORE_RESULT_CUES:
+        return cause_end <= cue_pos
+    if cue in _RESULT_BEFORE_CAUSE_CUES:
+        return cause_pos >= cue_pos + len(cue)
+    return False
+
+
+def _is_enumerated_cause_prefix(fragment: str) -> bool:
+    remaining = fragment
+    for cause_term in sorted(_CAUSE_KEYWORDS, key=len, reverse=True):
+        remaining = remaining.replace(cause_term, "")
+    remaining = re.sub(r"(?:\s|[、，,]|以及|并且|及|和|与)+", "", remaining)
+    return not remaining
+
+
+def _extract_relation_at(text: str, keyword: str, pos: int) -> tuple[str | None, str | None]:
+    """Return the nearest causal cue tied to this exact keyword occurrence."""
+    keyword_end = pos + len(keyword)
+    clause_start, clause_end = _clause_bounds(text, pos, keyword_end)
+    following = text[keyword_end:clause_end]
+    if re.match(r"^(?:是|为).{0,15}?(?:主要)?原因", following):
+        return "causal", "原因"
+    preceding = text[max(clause_start, pos - 24):pos]
+    if re.search(r"(?:主要)?原因(?:是|为|包括)\s*$", preceding):
+        return "causal", "原因"
+    for cue in _CAUSE_BEFORE_RESULT_CUES:
+        cue_pos = preceding.rfind(cue)
+        if cue_pos < 0:
+            continue
+        cleft_result = preceding[cue_pos + len(cue):]
+        if (
+            re.search(r"(?:的)?(?:是|为)\s*$", cleft_result)
+            and any(target in cleft_result for target in _RELATION_TARGET_MAP)
+        ):
+            return "causal", cue
+    start = max(clause_start, pos - 6)
+    end = min(clause_end, keyword_end + 6)
+    window = text[start:end]
+    nearby_candidates: list[tuple[int, str, int]] = []
+    for cue in _RELATION_KEYWORDS:
+        cue_pos = window.find(cue)
+        while cue_pos >= 0:
+            absolute_pos = start + cue_pos
+            distance = min(abs(absolute_pos - pos), abs(absolute_pos - keyword_end))
+            nearby_candidates.append((distance, cue, absolute_pos))
+            cue_pos = window.find(cue, cue_pos + 1)
+    valid_candidates = [
+        candidate
+        for candidate in nearby_candidates
+        if candidate[0] <= 6
+        and _cue_assigns_cause_role(candidate[1], candidate[2], pos, keyword_end)
+    ]
+    if valid_candidates:
+        # Nested wording can place one cue on each side of a cause. Prefer the
+        # cue that preserves a recognized financial result instead of blindly
+        # choosing the nearest token (for example, 由于...下降导致成本改善).
+        targeted_candidates = [
+            candidate
+            for candidate in valid_candidates
+            if _extract_relation_targets(text, keyword, pos, candidate[1])
+        ]
+        chosen = min(targeted_candidates or valid_candidates, key=lambda item: item[0])
+        return "causal", chosen[1]
+
+    if not valid_candidates:
+        # A trailing verb can also be shared by a listed set of causes, e.g.
+        # "行业周期及集中交付推动利润改善".  Do not cross a clause break.
+        suffix = text[keyword_end:min(clause_end, keyword_end + 30)]
+        for cue in _RELATION_KEYWORDS:
+            cue_pos = suffix.find(cue)
+            if cue_pos < 0:
+                continue
+            absolute_pos = keyword_end + cue_pos
+            between = suffix[:cue_pos]
+            only_connector_comma = not between.strip("，, ")
+            if (
+                not any(mark in between for mark in "；。！？\n")
+                and ("，" not in between and "," not in between or only_connector_comma)
+                and _cue_assigns_cause_role(cue, absolute_pos, pos, keyword_end)
+            ):
+                return "causal", cue
+        # A leading connector can legitimately be farther away when a report
+        # names the result before its cause.  Only accept it across an
+        # uninterrupted phrase, so a later unrelated clause cannot leak back.
+        prefix = text[max(clause_start, pos - 30):pos]
+        for cue in _RELATION_KEYWORDS:
+            cue_pos = prefix.rfind(cue)
+            if cue_pos < 0:
+                continue
+            between = prefix[cue_pos + len(cue):]
+            absolute_pos = max(clause_start, pos - 30) + cue_pos
+            comma_is_enumeration = (
+                "，" not in between and "," not in between
+            ) or _is_enumerated_cause_prefix(between)
+            if (
+                not any(mark in between for mark in "；。！？\n")
+                and comma_is_enumeration
+                and _cue_assigns_cause_role(cue, absolute_pos, pos, keyword_end)
+            ):
+                return "causal", cue
+        return None, None
+    return None, None
+
+
+def _extract_relation_targets(
+    text: str,
+    keyword: str,
+    pos: int,
+    relation_cue: str | None,
+) -> list[str]:
+    """Return every financial result directly connected by ``relation_cue``."""
+    if not relation_cue:
+        return []
+    keyword_end = pos + len(keyword)
+    clause_start, clause_end = _clause_bounds(text, pos, keyword_end)
+
+    cue_positions = _find_all_occurrences(text[clause_start:clause_end], relation_cue)
+    if not cue_positions:
+        # ``原因`` is emitted by the structured ``是...主要原因`` matcher.
+        search_start, search_end = keyword_end, clause_end
+    else:
+        absolute_positions = [clause_start + item for item in cue_positions]
+        cue_pos = min(
+            absolute_positions,
+            key=lambda item: min(abs(item - pos), abs(item - keyword_end)),
+        )
+        cue_end = cue_pos + len(relation_cue)
+        comma_before_cue = max(
+            text.rfind(separator, clause_start, cue_pos)
+            for separator in ("，", ",")
+        )
+        comma_after_candidates = [
+            position
+            for separator in ("，", ",")
+            if (position := text.find(separator, cue_end, clause_end)) >= 0
+        ]
+        comma_after_cue = min(comma_after_candidates, default=-1)
+        cue_segment_start = comma_before_cue + 1 if comma_before_cue >= 0 else clause_start
+        cue_segment_end = comma_after_cue if comma_after_cue >= 0 else clause_end
+
+        if (
+            cue_pos < pos
+            and relation_cue in _CAUSE_BEFORE_RESULT_CUES
+            and re.search(r"(?:的)?(?:是|为)\s*$", text[cue_end:pos])
+        ):
+            # 倒装句："导致毛利率提升的是原材料下降"。
+            search_start, search_end = cue_end, pos
+        elif cue_pos < pos:
+            # Some disclosures insert a comma immediately before the cue
+            # ("毛利率提升，主要由于...").  If the cue's own comma segment
+            # has no target, include exactly the preceding segment; otherwise
+            # keep the scan in the current segment to avoid borrowing an
+            # unrelated earlier metric.
+            immediate_prefix = text[cue_segment_start:cue_pos]
+            has_target_in_immediate_prefix = any(
+                target in immediate_prefix for target in _RELATION_TARGET_MAP
+            )
+            if comma_before_cue >= 0 and not has_target_in_immediate_prefix:
+                previous_comma = max(
+                    text.rfind(separator, clause_start, comma_before_cue)
+                    for separator in ("，", ",")
+                )
+                search_start = previous_comma + 1 if previous_comma >= 0 else clause_start
+            else:
+                search_start = cue_segment_start
+            search_end = cue_pos
+            has_backward_target = any(
+                text.find(target, search_start, search_end) >= 0
+                for target in _RELATION_TARGET_MAP
+            )
+            if (
+                not has_backward_target
+                and relation_cue in _RESULT_BEFORE_CAUSE_CUES
+                and comma_after_cue >= keyword_end
+            ):
+                result_start = comma_after_cue + 1
+                next_comma_candidates = [
+                    position
+                    for separator in ("，", ",")
+                    if (position := text.find(separator, result_start, clause_end)) >= 0
+                ]
+                next_comma = min(next_comma_candidates, default=-1)
+                search_start = result_start
+                search_end = next_comma if next_comma >= 0 else clause_end
+        elif relation_cue in {"因此", "所以", "导致", "推动", "驱动", "造成", "带来"}:
+            # Usually the result follows the cue ("原因推动结果").  In the
+            # common "原因对结果有推动作用" / "原因给结果带来..." shape,
+            # however, the financial target sits between the cause and verb.
+            interposed = text[keyword_end:cue_pos]
+            has_interposed_target = any(
+                target in interposed for target in _RELATION_TARGET_MAP
+            )
+            if (
+                has_interposed_target
+                and re.match(r"^\s*(?:对|给|为|使|令|让)", interposed)
+            ):
+                search_start, search_end = keyword_end, cue_pos
+            else:
+                search_start, search_end = cue_end, cue_segment_end
+        elif relation_cue == "所致":
+            # 结果 + 原因 + 所致。
+            search_start, search_end = cue_segment_start, pos
+        elif relation_cue == "原因":
+            # 原因项 + 是/为 + 财务结果 + 的主要原因。
+            search_start, search_end = keyword_end, cue_pos
+        else:
+            # "原因，主要系另一原因" explains the cause term itself.  Do not
+            # borrow a financial word from a later comma-delimited fragment.
+            search_start, search_end = cue_segment_start, pos
+
+    matches: list[tuple[int, str]] = []
+    for target in sorted(_RELATION_TARGET_MAP, key=len, reverse=True):
+        target_pos = text.find(target, search_start, search_end)
+        while target_pos >= 0:
+            target_end = target_pos + len(target)
+            overlaps_cause = target_pos < keyword_end and target_end > pos
+            if not overlaps_cause:
+                matches.append((target_pos, _RELATION_TARGET_MAP[target]))
+            target_pos = text.find(target, target_pos + 1, search_end)
+    targets: list[str] = []
+    for _, canonical in sorted(matches):
+        if canonical not in targets:
+            targets.append(canonical)
+    return targets
+
+
 def _evidence_text_for(raw: str, keywords: list[str]) -> str:
     for kw in keywords:
         if kw in raw:
@@ -175,49 +498,70 @@ def _evidence_text_for(raw: str, keywords: list[str]) -> str:
     return raw[:500]
 
 
-def _scan_term_occurrences(
-    raw: str,
-    terms: list[str],
-    *,
-    is_cause: bool,
-) -> dict[str, dict[str, Any]]:
-    """Scan every occurrence of each term and return per-canonical-term
-    direction, negation, and relation.  Conflicting occurrences → fail closed."""
-    raw_occurrences: dict[str, list[tuple[str | None, bool, bool]]] = {}
-    for term in terms:
-        canonical = _canonicalize_term(term)
-        if canonical not in raw_occurrences:
-            raw_occurrences[canonical] = []
-        start = 0
-        while True:
-            idx = raw.find(term, start)
-            if idx < 0:
-                break
-            end = idx + len(term)
-            direction = _extract_direction_at(raw, term, idx)
-            negated = _is_negated_at(raw, term, idx)
-            rel_win = raw[max(0, idx - 30):min(len(raw), end + 30)]
-            has_rel = any(rk in rel_win for rk in _RELATION_KEYWORDS) if is_cause else False
-            raw_occurrences[canonical].append((direction, negated, has_rel))
-            start = end
+def _extract_term_occurrences(
+    text: str, keywords: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    occurrences: list[dict[str, Any]] = []
+    # Prefer the longest keyword at one position.  A single "原材料成本下降"
+    # occurrence must not also become independent "原材料"/"成本下降" evidence.
+    occupied_spans: list[tuple[int, int]] = []
+    for kw in sorted(keywords, key=len, reverse=True):
+        for pos in _find_all_occurrences(text, kw):
+            end_pos = pos + len(kw)
+            canonical = _ACCOUNTING_CANONICAL.get(kw, kw)
+            canonical = _SYNONYM_MAP.get(canonical, canonical)
+            cause_canonical = _CAUSE_SYNONYM_MAP.get(kw)
+            if cause_canonical:
+                canonical = cause_canonical
+            if any(pos < occupied_end and end_pos > occupied_start for occupied_start, occupied_end in occupied_spans):
+                continue
+            occupied_spans.append((pos, end_pos))
+            direction = _extract_direction_at(text, kw, pos)
+            if canonical == "原材料" and direction == "down":
+                canonical = "原材料下降"
+            elif canonical == "原材料" and direction == "up":
+                canonical = "原材料上涨"
+            negated = _is_negated_at(text, kw, pos) or _is_direction_negated_at(text, kw, pos)
+            relation, relation_cue = _extract_relation_at(text, kw, pos)
+            relation_targets = (
+                _extract_relation_targets(text, kw, pos, relation_cue)
+                if relation == "causal"
+                else []
+            )
+            occurrences.append({
+                "surface_term": kw,
+                "canonical": canonical,
+                "direction": direction,
+                "negation": negated,
+                "relation": relation,
+                "relation_cue": relation_cue,
+                "relation_target": relation_targets[0] if relation_targets else None,
+                "relation_targets": relation_targets,
+                "position": pos,
+                "context": _extract_context_around_position(text, pos, len(kw), margin=60),
+            })
+    return occurrences
 
-    result: dict[str, dict[str, Any]] = {}
-    for canonical, occs in raw_occurrences.items():
-        if not occs:
-            continue
-        dirs = {o[0] for o in occs}
-        negs = {o[1] for o in occs}
-        final_dir = None if len(dirs) > 1 else occs[0][0]
-        final_neg = False if len(negs) > 1 else occs[0][1]
-        has_rel = any(o[2] for o in occs)
-        relation = "cause" if (is_cause and has_rel) else ("accounting" if not is_cause else None)
-        result[canonical] = {
-            "direction": final_dir,
-            "negation": final_neg,
-            "relation": relation,
-            "evidence_id": None,
-        }
-    return result
+
+def _cause_family(canonical: str) -> str:
+    if canonical in {"原材料下降", "原材料上涨"}:
+        return "原材料"
+    return canonical
+
+
+def _audit_fragment(evidence_id: str, occurrence: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence_id,
+        "matched_term": occurrence.get("surface_term") or occurrence.get("canonical"),
+        "canonical": occurrence.get("canonical"),
+        "direction": occurrence.get("direction"),
+        "negation": bool(occurrence.get("negation")),
+        "relation": occurrence.get("relation"),
+        "relation_cue": occurrence.get("relation_cue"),
+        "relation_target": occurrence.get("relation_target"),
+        "relation_targets": occurrence.get("relation_targets") or [],
+        "position": occurrence.get("position"),
+    }
 
 
 def build_official_explanation_context(
@@ -225,8 +569,6 @@ def build_official_explanation_context(
     announcements: Any,
     half_year_facts: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Each entry carries ``term_details`` — dict keyed by canonical term with
-    per-term direction, negation, relation, and evidence_id."""
     entries: list[dict[str, Any]] = []
     all_cause_terms: list[str] = []
     all_accounting_terms: list[str] = []
@@ -241,23 +583,14 @@ def build_official_explanation_context(
             all_matched = list(matched_cause) + [
                 t for t in _ACCOUNTING_KEYWORDS if t in raw
             ]
-            cause_details = _scan_term_occurrences(raw, matched_cause, is_cause=True)
-            accounting_details = _scan_term_occurrences(
-                raw, [t for t in _ACCOUNTING_KEYWORDS if t in raw], is_cause=False
-            )
-            for details in (cause_details, accounting_details):
-                for term_key in details:
-                    details[term_key]["evidence_id"] = f"E{idx:03d}"
-            term_details: dict[str, dict[str, Any]] = {}
-            term_details.update(cause_details)
-            term_details.update(accounting_details)
+            occurrences = _extract_term_occurrences(raw, tuple(all_matched))
             entries.append({
                 "evidence_id": f"E{idx:03d}",
                 "source": source,
                 "text": _evidence_text_for(raw, all_matched),
                 "cause_terms": sorted(set(matched_cause)),
                 "accounting_terms": sorted(set(matched_accounting)),
-                "term_details": term_details,
+                "occurrences": occurrences,
             })
             all_cause_terms.extend(matched_cause)
             all_accounting_terms.extend(matched_accounting)
@@ -274,123 +607,142 @@ def bind_claims(
     report_text: str,
     explanation_context: Mapping[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Each claim has an audit_fragment showing matched evidence term and
-    its semantic attributes."""
     ctx = explanation_context or {}
     entries = ctx.get("entries") or []
     as_of = ctx.get("as_of")
 
-    evidence_term_info: dict[str, dict[str, dict[str, Any]]] = {}
+    evidence_occurrences: dict[str, list[dict[str, Any]]] = {}
     evidence_source: dict[str, str] = {}
     for entry in entries:
         eid = entry.get("evidence_id", "")
         evidence_source[eid] = entry.get("source", "unknown")
-        term_details = entry.get("term_details") or {}
-        if not term_details:
-            continue
-        evidence_term_info[eid] = {}
-        for term_key, details in term_details.items():
-            canonical = _canonicalize_term(term_key)
-            evidence_term_info[eid][canonical] = details
+        evidence_occurrences[eid] = entry.get("occurrences") or []
 
     text = report_text or ""
     claims: list[dict[str, Any]] = []
 
-    # Deduplicate: track occupied positions so shorter keywords don't
-    # duplicate a position already claimed by a longer keyword.
-    occupied_positions: set[int] = set()
-    for keyword in sorted(_CAUSE_KEYWORDS, key=len, reverse=True):
-        canonical = _canonicalize_term(keyword)
+    # Neutral mentions such as "关注原材料" are not claims.  A directed fact can
+    # be supported by the same official fact, while a causal claim additionally
+    # requires an official causal occurrence for that exact term.
+    for claim_occ in _extract_term_occurrences(text, _CAUSE_KEYWORDS):
+        is_causal_claim = claim_occ["relation"] == "causal"
+        if not is_causal_claim and claim_occ["direction"] is None:
+            continue
+        claim_canonical = str(claim_occ["canonical"])
+        claim_dir = claim_occ.get("direction")
+        claim_negated = bool(claim_occ["negation"])
+        claim_targets = set(
+            claim_occ.get("relation_targets")
+            or ([claim_occ.get("relation_target")] if claim_occ.get("relation_target") else [])
+        )
+        supporting: list[str] = []
+        fragments: list[dict[str, Any]] = []
+        contradictory_evidence = False
+        for eid, ev_occs in evidence_occurrences.items():
+            for ev_occ in ev_occs:
+                ev_canonical = str(ev_occ.get("canonical") or "")
+                if _cause_family(ev_canonical) != _cause_family(claim_canonical):
+                    continue
+                ev_negated = bool(ev_occ.get("negation"))
+                if ev_canonical == claim_canonical and ev_negated != claim_negated:
+                    contradictory_evidence = True
+                    continue
+                if ev_negated != claim_negated:
+                    # "未上涨" does not contradict "下降"; it merely cannot
+                    # prove it.  Negating the exact same directed fact above is
+                    # a contradiction and must fail closed.
+                    continue
+                ev_dir = ev_occ.get("direction")
+                if _directions_conflict(ev_dir, claim_dir):
+                    if not ev_negated and not claim_negated:
+                        contradictory_evidence = True
+                    continue
+                ev_targets = set(
+                    ev_occ.get("relation_targets")
+                    or ([ev_occ.get("relation_target")] if ev_occ.get("relation_target") else [])
+                )
+                if (
+                    ev_canonical != claim_canonical
+                    or (
+                        is_causal_claim
+                        and (
+                            ev_occ.get("relation") != "causal"
+                            or not claim_targets
+                            or not claim_targets.issubset(ev_targets)
+                        )
+                    )
+                ):
+                    continue
+                if eid not in supporting:
+                    supporting.append(eid)
+                    fragments.append(_audit_fragment(eid, ev_occ))
+        if supporting and not contradictory_evidence:
+            status = "officially_explained"
+        elif entries:
+            status = "evidence_conflict"
+        else:
+            status = "unexplained"
+        ctx_text = _extract_context_around_position(
+            text, int(claim_occ["position"]), len(str(claim_occ["surface_term"])), margin=60
+        )
+        claims.append({
+            "claim_id": _claim_id_for(
+                "CAUSE", f"{claim_occ['surface_term']}@{claim_occ['position']}:{ctx_text}"
+            ),
+            "metric": claim_occ["canonical"],
+            "cause_terms": [claim_occ["surface_term"]],
+            "policy_terms": [],
+            "evidence_ids": supporting,
+            "source_type": evidence_source.get(supporting[0]) if supporting else None,
+            "as_of": as_of,
+            "status": status,
+            "audit_fragment": fragments[0] if fragments else None,
+            "audit_fragments": fragments,
+        })
+
+    seen_accounting: set[tuple[str, int]] = set()
+    for keyword in _ACCOUNTING_KEYWORDS:
         positions = _find_all_occurrences(text, keyword)
         for pos in positions:
-            if pos in occupied_positions:
+            canonical = _ACCOUNTING_CANONICAL.get(keyword, keyword)
+            canonical = _SYNONYM_MAP.get(canonical, canonical)
+            if (canonical, pos) in seen_accounting:
                 continue
-            occupied_positions.add(pos)
+            seen_accounting.add((canonical, pos))
+            claim_negated = _is_negated_at(text, keyword, pos) or _is_direction_negated_at(
+                text, keyword, pos
+            )
             claim_dir = _extract_direction_at(text, keyword, pos)
             supporting: list[str] = []
-            audit_fragment = None
-            for eid, term_map in evidence_term_info.items():
-                td = term_map.get(canonical)
-                if td is None:
-                    continue
-                ev_dir = td.get("direction")
-                if _directions_conflict(ev_dir, claim_dir):
-                    continue
-                ev_neg = td.get("negation", False)
-                if ev_neg:
-                    continue
-                supporting.append(eid)
-                if audit_fragment is None:
-                    audit_fragment = {
-                        "matched_term": keyword,
-                        "direction": td.get("direction"),
-                        "negation": td.get("negation", False),
-                        "relation": td.get("relation"),
-                        "evidence_id": td.get("evidence_id"),
-                    }
-            if supporting:
+            fragments: list[dict[str, Any]] = []
+            contradictory_evidence = False
+            for eid, ev_occs in evidence_occurrences.items():
+                for ev_occ in ev_occs:
+                    ev_canonical = ev_occ.get("canonical", "")
+                    if ev_canonical != canonical:
+                        continue
+                    ev_dir = ev_occ.get("direction")
+                    if _directions_conflict(ev_dir, claim_dir):
+                        if not ev_occ.get("negation", False) and not claim_negated:
+                            contradictory_evidence = True
+                        continue
+                    ev_negated = ev_occ.get("negation", False)
+                    if bool(ev_negated) != claim_negated:
+                        contradictory_evidence = True
+                        continue
+                    if eid not in supporting:
+                        supporting.append(eid)
+                        fragments.append(_audit_fragment(eid, ev_occ))
+            if supporting and not contradictory_evidence:
                 status = "officially_explained"
             elif entries:
                 status = "evidence_conflict"
             else:
                 status = "unexplained"
             src = evidence_source.get(supporting[0]) if supporting else None
-            occurrence = text[:pos].count(keyword)
+            ctx_text = _extract_context_around_position(text, pos, len(keyword), margin=60)
             claims.append({
-                "claim_id": _claim_id_for("CAUSE", keyword, occurrence),
-                "metric": keyword,
-                "cause_terms": [keyword],
-                "policy_terms": [],
-                "evidence_ids": supporting,
-                "source_type": src,
-                "as_of": as_of,
-                "status": status,
-                "audit_fragment": audit_fragment,
-            })
-
-    occupied_positions_acct: set[int] = set()
-    for keyword in _ACCOUNTING_KEYWORDS:
-        canonical = _canonicalize_term(keyword)
-        positions = _find_all_occurrences(text, keyword)
-        for pos in positions:
-            if pos in occupied_positions_acct:
-                continue
-            occupied_positions_acct.add(pos)
-            claim_negated = _is_negated_at(text, keyword, pos)
-            claim_dir = _extract_direction_at(text, keyword, pos)
-            supporting = []
-            audit_fragment = None
-            for eid, term_map in evidence_term_info.items():
-                td = term_map.get(canonical)
-                if td is None:
-                    continue
-                ev_dir = td.get("direction")
-                if _directions_conflict(ev_dir, claim_dir):
-                    continue
-                ev_negated = td.get("negation", False)
-                if ev_negated and not claim_negated:
-                    continue
-                if claim_negated and not ev_negated:
-                    continue
-                supporting.append(eid)
-                if audit_fragment is None:
-                    audit_fragment = {
-                        "matched_term": keyword,
-                        "direction": td.get("direction"),
-                        "negation": td.get("negation", False),
-                        "relation": td.get("relation"),
-                        "evidence_id": td.get("evidence_id"),
-                    }
-            if supporting:
-                status = "officially_explained"
-            elif entries:
-                status = "evidence_conflict"
-            else:
-                status = "unexplained"
-            src = evidence_source.get(supporting[0]) if supporting else None
-            occurrence = text[:pos].count(keyword)
-            claims.append({
-                "claim_id": _claim_id_for("ACCT", canonical, occurrence),
+                "claim_id": _claim_id_for("ACCT", f"{canonical}@{pos}:{ctx_text}"),
                 "metric": canonical,
                 "cause_terms": [],
                 "policy_terms": [canonical],
@@ -398,7 +750,8 @@ def bind_claims(
                 "source_type": src,
                 "as_of": as_of,
                 "status": status,
-                "audit_fragment": audit_fragment,
+                "audit_fragment": fragments[0] if fragments else None,
+                "audit_fragments": fragments,
             })
 
     return claims
