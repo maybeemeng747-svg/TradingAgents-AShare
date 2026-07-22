@@ -38,7 +38,7 @@
 8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
 9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
 10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，done，commit 87dcd44 + 24881f6，73 tests passed）。
-11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
 12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
 13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
 14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
@@ -409,7 +409,7 @@
 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
 174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，done，commit 87dcd44 + 24881f6）。
-175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto，依赖 SCORE-001/KB-020）。
+175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
 178. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
@@ -5987,7 +5987,7 @@
 ### SCORE-001B: 研究快照接入聚合响应与 TradeFlow candidate detail（P1）
 - **描述**：在 SCORE-001 loader 验收后，把只读摘要接入 KB-020 聚合响应、TA metadata 和 TradeFlow candidate detail；本任务只透传研究卡，不参与候选原分、动作或阶段计算。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — SCORE-001B-20260723-022706
 - **前置条件**：SCORE-001、KB-020 完成。
 - **depends_on**：SCORE-001, KB-020
 - **auto_release**：true

@@ -734,6 +734,44 @@ def _enrich_candidates_with_half_year(items: List[dict]) -> List[dict]:
     return items
 
 
+# [SCORE-001B] research_score_snapshot_api_adapter
+def _enrich_candidate_with_research_score_snapshot(item: dict) -> dict:
+    """单条候选注入研究快照摘要（[SCORE-001B]。
+
+    失败 / 无 knowledge_root 时静默退化为 ``research_score_snapshot=None``，
+    绝不阻塞候选读取主链路。只读、不调用 LLM、不改变 tier / action 门禁。
+    """
+    symbol = item.get("symbol") or ""
+    if not symbol:
+        item.setdefault("research_score_snapshot", None)
+        return item
+    knowledge_root = _resolve_knowledge_root()
+    if not knowledge_root:
+        item.setdefault("research_score_snapshot", None)
+        return item
+    try:
+        from datetime import timezone as _tz
+        from tradingagents.dataflows.research_score_snapshot import (
+            query_research_score_snapshot as _snap_query,
+            snapshot_to_api_dict as _snap_to_api,
+        )
+        analysis_time = datetime.now(_tz.utc)
+        result = _snap_query(
+            knowledge_root,
+            symbol=symbol,
+            analysis_time=analysis_time,
+        )
+        api_dict = _snap_to_api(result)
+        # 只有真正有快照数据时才注入；无快照保持 None。
+        if api_dict.get("snapshot") is not None:
+            item["research_score_snapshot"] = api_dict
+        else:
+            item.setdefault("research_score_snapshot", None)
+    except Exception:
+        item.setdefault("research_score_snapshot", None)
+    return item
+
+
 def _compute_action(item: dict) -> str:
     if item.get("need_deep_ta"):
         return "NEED_DEEP_TA"
@@ -1174,6 +1212,11 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         # [HY-006] tradeflow_half_year_factor — 候选详情注入半年报事实因子与
         # 降权原因（报告期 / 支持或削弱 / 风险标记），便于前端 drawer 展示。
         detail = _enrich_candidate_with_half_year(detail)
+
+        # [SCORE-001B] research_score_snapshot_api_adapter — 候选详情注入研究快照
+        # 摘要（分数 / 投资假设 / 证据引用 / 缺口），便于前端 drawer 展示。
+        # 只读、不调用 LLM、不改变 tier / action 门禁。
+        detail = _enrich_candidate_with_research_score_snapshot(detail)
 
         return {
             "status": "ok",

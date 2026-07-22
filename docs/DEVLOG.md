@@ -1,5 +1,26 @@
 # 修改日志
 
+## 2026-07-23 | SCORE-001B 研究快照接入聚合响应与 TradeFlow candidate detail
+
+- **任务**：SCORE-001B — 研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1）
+- **实现**：
+  - `tradingagents/dataflows/research_score_snapshot.py` — 新增 `snapshot_to_api_dict()` 序列化函数，将 `ResearchScoreQueryResult` 转为 API 安全的 slim dict（过滤绝对路径/敏感信息，只输出摘要/证据引用/缺口）。
+  - `api/services/research_evidence_service.py` — KB-020 聚合响应新增 `research_score_snapshot` bucket（`BUCKET_RESEARCH_SCORE_SNAPSHOT`），数据状态映射 HAS_DATA→fresh / STALE→stale / NO_DATA→missing。
+  - `api/services/tradeflow_service.py` — `get_candidate_detail` 新增 `_enrich_candidate_with_research_score_snapshot()` 注入，与 KB-008/KB-004/HY-006 同模式（只读、不改 tier/action，失败静默降级）。
+  - `api/services/report_service.py` — `create_report` 调用 `attach_report_research_score_snapshot()` 附加快照摘要到 result_data（只读，不改变强动作门禁）。
+- **测试**：
+  - `tests/test_score001b_snapshot_api_adapter.py` — 37 tests（snapshot_to_api_dict 五类状态+敏感过滤+路径过滤+动作字段隔离 / KB-020 bucket / TradeFlow enrichment / report attachment / JSON 可序列化）。
+  - `pytest tests/test_score001_research_score_snapshot.py -q`：**73 passed**（SCORE-001 回归）。
+  - `pytest tests/test_kb020_research_evidence_api.py tests/test_runtime_tier_contract.py -q`：**194 passed**（KB-020 + runtime tier 回归）。
+  - `pytest tests/test_api_smoke.py -q`：**52 passed**（API smoke 回归）。
+- **改动文件**：
+  - `tradingagents/dataflows/research_score_snapshot.py` — 新增 `snapshot_to_api_dict` + `_filter_sensitive` + `_is_abs_path_like`
+  - `api/services/research_evidence_service.py` — 新增 `BUCKET_RESEARCH_SCORE_SNAPSHOT` / `_build_research_score_snapshot_bucket` / 更新 `ALL_BUCKETS` / payload / disabled / `__all__`
+  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_research_score_snapshot` + 在 `get_candidate_detail` 中调用
+  - `api/services/report_service.py` — 新增 `attach_report_research_score_snapshot` + 在 `create_report` 中调用
+  - `tests/test_score001b_snapshot_api_adapter.py` — 新增测试文件
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | SCORE-001 re-validation 与状态回写
 
 - **任务**：SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
@@ -13891,3 +13912,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/SCORE-001-20260723-round1.txt
 - **Run archive**: docs/task_runs/SCORE-001-20260723-022118/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: SCORE-001B - 研究快照接入聚合响应与 TradeFlow candidate detail（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/SCORE-001B-20260723-round1.txt
+- **Run archive**: docs/task_runs/SCORE-001B-20260723-022706/

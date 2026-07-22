@@ -1088,6 +1088,145 @@ def suggest_query_output_path(docs_dir: str = "docs/knowledge_reports") -> str:
     return os.path.join(docs_dir, f"research_score_snapshot-{today}.md")
 
 
+# ── API 序列化 ─────────────────────────────────────────────────────────
+# [SCORE-001B] research_score_snapshot_api_adapter
+
+#: 敏感信息正则——命中即过滤（不输出到 API 响应）。
+_SENSITIVE_KEY_RE = re.compile(
+    r"(token|cookie|key|secret|password|credential|api_key|apikey|auth)",
+    re.IGNORECASE,
+)
+
+#: 绝对路径前缀（POSIX + Windows）。
+_ABS_PATH_PREFIXES = ("/", "\\\\", "C:\\", "D:\\", "E:\\")
+
+
+def _is_abs_path_like(value: str) -> bool:
+    """判断字符串是否像绝对路径（POSIX 或 Windows）。"""
+    if not value:
+        return False
+    stripped = value.strip()
+    return (
+        os.path.isabs(stripped)
+        or any(stripped.startswith(p) for p in _ABS_PATH_PREFIXES)
+        or (".." in Path(stripped).parts)
+    )
+
+
+def _filter_sensitive(obj: Any, depth: int = 0) -> Any:
+    """递归过滤 dict/list 中的敏感字段和绝对路径。
+
+    - 键名匹配 ``_SENSITIVE_KEY_RE`` → 移除
+    - 值为绝对路径字符串 → 替换为 ``"[redacted_path]"``
+    - 最大递归深度 6，防止深结构爆炸
+    """
+    if depth > 6:
+        return obj
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            if _SENSITIVE_KEY_RE.search(k):
+                continue
+            out[k] = _filter_sensitive(v, depth + 1)
+        return out
+    if isinstance(obj, list):
+        return [_filter_sensitive(item, depth + 1) for item in obj]
+    if isinstance(obj, str) and _is_abs_path_like(obj):
+        return "[redacted_path]"
+    return obj
+
+
+def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
+    """将查询结果序列化为 API 安全的 slim dict（SCORE-001B）。
+
+    设计约束：
+    - 只输出摘要、证据引用和缺口，不返回整篇研报正文或本机绝对路径。
+    - 新字段全部可选；无正式快照时返回 ``snapshot=None``，保持旧 API 兼容。
+    - 过滤绝对路径、token、cookie、key 等敏感信息。
+    - 不输出 ``decision`` / ``execution_action`` / ``playbook_stage`` 等动作字段。
+
+    参数:
+        result: :class:`ResearchScoreQueryResult` 实例。
+
+    返回:
+        API 安全的 dict，包含 ``status / snapshot_id / scores / theses_summary /
+        evidence_refs_summary / missing_evidence / score_change_summary /
+        warnings / degradation_reasons`` 等可选字段。
+    """
+    if not isinstance(result, ResearchScoreQueryResult):
+        return {"status": STATUS_NORMAL_NO_DATA, "snapshot": None}
+
+    base: Dict[str, Any] = {
+        "status": result.status,
+        "snapshot_id": result.snapshot_id,
+        "schema_version": result.schema_version,
+        "rubric_id": result.rubric_id,
+        "rubric_version": result.rubric_version,
+        "degradation_reasons": list(result.degradation_reasons or []),
+        "validation_warnings": list(result.validation_warnings or []),
+    }
+
+    if result.snapshot is None:
+        base["snapshot"] = None
+        return _filter_sensitive(base)
+
+    snap = result.snapshot
+
+    # 分数摘要。
+    scores = snap.scores.to_dict() if snap.scores else {}
+
+    # 投资假设摘要（只保留 topic / direction / status / core_hypothesis 摘要）。
+    theses_summary: List[Dict[str, Any]] = []
+    for th in snap.theses[:_MAX_THESES]:
+        theses_summary.append({
+            "thesis_id": th.thesis_id,
+            "topic": th.topic,
+            "direction": th.direction,
+            "status": th.status,
+            "core_hypothesis": _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS),
+        })
+
+    # 证据引用摘要（只保留 claim / claim_type / source_quality_tier / report_date）。
+    evidence_summary: List[Dict[str, Any]] = []
+    for ref in snap.evidence_refs[:_MAX_EVIDENCE_REFS]:
+        evidence_summary.append({
+            "evidence_id": ref.evidence_id,
+            "claim": _clip(ref.claim, _CLAIM_MAX_CHARS),
+            "claim_type": ref.claim_type,
+            "source_quality_tier": ref.source_quality_tier,
+            "report_date": ref.report_date,
+            "financial_period": ref.financial_period,
+        })
+
+    # 分数变化摘要。
+    sc = snap.score_change
+    score_change_summary: Optional[Dict[str, Any]] = None
+    if sc and (sc.previous or sc.current or sc.reasons):
+        score_change_summary = {
+            "previous_snapshot_id": sc.previous_snapshot_id,
+            "reasons": list(sc.reasons or [])[:5],
+        }
+
+    base["snapshot"] = {
+        "snapshot_id": snap.snapshot_id,
+        "symbol": snap.symbol,
+        "name": snap.name,
+        "as_of": snap.as_of,
+        "status": snap.status,
+        "scores": scores,
+        "theses_summary": theses_summary,
+        "evidence_refs_summary": evidence_summary,
+        "missing_evidence": list(snap.missing_evidence or []),
+        "upgrade_conditions": list(snap.upgrade_conditions or [])[:5],
+        "downgrade_conditions": list(snap.downgrade_conditions or [])[:5],
+        "invalidation_conditions": list(snap.invalidation_conditions or [])[:5],
+        "score_change_summary": score_change_summary,
+        "warnings": list(snap.warnings or [])[:5],
+    }
+
+    return _filter_sensitive(base)
+
+
 __all__ = [
     "VENDOR",
     "TASK_CODE",
@@ -1115,4 +1254,5 @@ __all__ = [
     "render_research_score_block",
     "render_research_score_report",
     "suggest_query_output_path",
+    "snapshot_to_api_dict",
 ]

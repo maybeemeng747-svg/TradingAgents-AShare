@@ -1,0 +1,1014 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "SCORE-001B"[90m in docs · 73 matches[0m
+[0m✱ [0mGrep "SCORE-001B"[90m in . · 1 match[0m
+Let me find the full SCORE-001B task description:
+[0m→ [0mRead docs/TASKS.md[90m [offset=5985, limit=80][0m
+[0m→ [0mRead docs/task_runs/SCORE-001B-20260723-022706/task.md
+[0m→ [0mRead tradingagents/dataflows/research_score_snapshot.py
+[0m✱ [0mGrep "KB-020|kb_020|knowledge_aggregate|aggregate_response"[90m in . · 20 matches[0m
+[0m✱ [0mGrep "candidate_detail|candidate.*detail"[90m in . · 67 matches[0m
+Now let me explore the existing codebase to understand the SCORE-001 loader and related components:
+[0m→ [0mRead api/services/research_evidence_service.py
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=1100, limit=120][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=100, offset=300][0m
+[0m✱ [0mGrep "_enrich_candidate_with"[90m in api/services · 6 matches[0m
+Let me look at the enrichment patterns and the API routes:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=120, offset=560][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=120, offset=700][0m
+[0m✱ [0mGrep "ta_metadata|report_metadata"[90m in . · 0 matches[0m
+[0m→ [0mRead tests/test_kb020_research_evidence_api.py[90m [limit=80][0m
+Now let me check the TA report metadata and existing tests:
+[0m✱ [0mGrep "attach_report|report_service"[90m in api/services · 22 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=1][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=100, offset=291][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=80, offset=1140][0m
+[0m
+[0m# [0mTodos
+[•] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[ ] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[ ] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[ ] Add research_score_snapshot to report_service.py (TA metadata)
+[ ] Write tests for SCORE-001B integration
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a complete understanding. Let me plan and implement.
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1087,8 +1087,147 @@
+     today = date.today().strftime("%Y-%m-%d")
+     return os.path.join(docs_dir, f"research_score_snapshot-{today}.md")
+ 
+ 
++# ── API 序列化 ─────────────────────────────────────────────────────────
++# [SCORE-001B] research_score_snapshot_api_adapter
++
++#: 敏感信息正则——命中即过滤（不输出到 API 响应）。
++_SENSITIVE_KEY_RE = re.compile(
++    r"(token|cookie|key|secret|password|credential|api_key|apikey|auth)",
++    re.IGNORECASE,
++)
++
++#: 绝对路径前缀（POSIX + Windows）。
++_ABS_PATH_PREFIXES = ("/", "\\\\", "C:\\", "D:\\", "E:\\")
++
++
++def _is_abs_path_like(value: str) -> bool:
++    """判断字符串是否像绝对路径（POSIX 或 Windows）。"""
++    if not value:
++        return False
++    stripped = value.strip()
++    return (
++        os.path.isabs(stripped)
++        or any(stripped.startswith(p) for p in _ABS_PATH_PREFIXES)
++        or (".." in Path(stripped).parts)
++    )
++
++
++def _filter_sensitive(obj: Any, depth: int = 0) -> Any:
++    """递归过滤 dict/list 中的敏感字段和绝对路径。
++
++    - 键名匹配 ``_SENSITIVE_KEY_RE`` → 移除
++    - 值为绝对路径字符串 → 替换为 ``"[redacted_path]"``
++    - 最大递归深度 6，防止深结构爆炸
++    """
++    if depth > 6:
++        return obj
++    if isinstance(obj, dict):
++        out: Dict[str, Any] = {}
++        for k, v in obj.items():
++            if _SENSITIVE_KEY_RE.search(k):
++                continue
++            out[k] = _filter_sensitive(v, depth + 1)
++        return out
++    if isinstance(obj, list):
++        return [_filter_sensitive(item, depth + 1) for item in obj]
++    if isinstance(obj, str) and _is_abs_path_like(obj):
++        return "[redacted_path]"
++    return obj
++
++
++def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
++    """将查询结果序列化为 API 安全的 slim dict（SCORE-001B）。
++
++    设计约束：
++    - 只输出摘要、证据引用和缺口，不返回整篇研报正文或本机绝对路径。
++    - 新字段全部可选；无正式快照时返回 ``snapshot=None``，保持旧 API 兼容。
++    - 过滤绝对路径、token、cookie、key 等敏感信息。
++    - 不输出 ``decision`` / ``execution_action`` / ``playbook_stage`` 等动作字段。
++
++    参数:
++        result: :class:`ResearchScoreQueryResult` 实例。
++
++    返回:
++        API 安全的 dict，包含 ``status / snapshot_id / scores / theses_summary /
++        evidence_refs_summary / missing_evidence / score_change_summary /
++        warnings / degradation_reasons`` 等可选字段。
++    """
++    if not isinstance(result, ResearchScoreQueryResult):
++        return {"status": STATUS_NORMAL_NO_DATA, "snapshot": None}
++
++    base: Dict[str, Any] = {
++        "status": result.status,
++        "snapshot_id": result.snapshot_id,
++        "schema_version": result.schema_version,
++        "rubric_id": result.rubric_id,
++        "rubric_version": result.rubric_version,
++        "degradation_reasons": list(result.degradation_reasons or []),
++        "validation_warnings": list(result.validation_warnings or []),
++    }
++
++    if result.snapshot is None:
++        base["snapshot"] = None
++        return _filter_sensitive(base)
++
++    snap = result.snapshot
++
++    # 分数摘要。
++    scores = snap.scores.to_dict() if snap.scores else {}
++
++    # 投资假设摘要（只保留 topic / direction / status / core_hypothesis 摘要）。
++    theses_summary: List[Dict[str, Any]] = []
++    for th in snap.theses[:_MAX_THESES]:
++        theses_summary.append({
++            "thesis_id": th.thesis_id,
++            "topic": th.topic,
++            "direction": th.direction,
++            "status": th.status,
++            "core_hypothesis": _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS),
++        })
++
++    # 证据引用摘要（只保留 claim / claim_type / source_quality_tier / report_date）。
++    evidence_summary: List[Dict[str, Any]] = []
++    for ref in snap.evidence_refs[:_MAX_EVIDENCE_REFS]:
++        evidence_summary.append({
++            "evidence_id": ref.evidence_id,
++            "claim": _clip(ref.claim, _CLAIM_MAX_CHARS),
++            "claim_type": ref.claim_type,
++            "source_quality_tier": ref.source_quality_tier,
++            "report_date": ref.report_date,
++            "financial_period": ref.financial_period,
++        })
++
++    # 分数变化摘要。
++    sc = snap.score_change
++    score_change_summary: Optional[Dict[str, Any]] = None
++    if sc and (sc.previous or sc.current or sc.reasons):
++        score_change_summary = {
++            "previous_snapshot_id": sc.previous_snapshot_id,
++            "reasons": list(sc.reasons or [])[:5],
++        }
++
++    base["snapshot"] = {
++        "snapshot_id": snap.snapshot_id,
++        "symbol": snap.symbol,
++        "name": snap.name,
++        "as_of": snap.as_of,
++        "status": snap.status,
++        "scores": scores,
++        "theses_summary": theses_summary,
++        "evidence_refs_summary": evidence_summary,
++        "missing_evidence": list(snap.missing_evidence or []),
++        "upgrade_conditions": list(snap.upgrade_conditions or [])[:5],
++        "downgrade_conditions": list(snap.downgrade_conditions or [])[:5],
++        "invalidation_conditions": list(snap.invalidation_conditions or [])[:5],
++        "score_change_summary": score_change_summary,
++        "warnings": list(snap.warnings or [])[:5],
++    }
++
++    return _filter_sensitive(base)
++
++
+ __all__ = [
+     "VENDOR",
+     "TASK_CODE",
+     "SCHEMA_VERSION",
+
+[0m
+**Step 1**: Add `snapshot_to_api_dict()` serialization function to `research_score_snapshot.py`:
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1253,5 +1253,6 @@
+     "query_research_score_snapshot",
+     "render_research_score_block",
+     "render_research_score_report",
+     "suggest_query_output_path",
++    "snapshot_to_api_dict",
+ ]
+
+[0m
+[0m# [0mTodos
+[✓] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[•] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[ ] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[ ] Add research_score_snapshot to report_service.py (TA metadata)
+[ ] Write tests for SCORE-001B integration
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -70,8 +70,14 @@
+ )
+ from tradingagents.dataflows.half_year_facts_provider import (  # [HY-003]
+     query_half_year_facts,
+ )
++from tradingagents.dataflows.research_score_snapshot import (  # [SCORE-001B]
++    STATUS_NORMAL_NO_DATA as SNAP_STATUS_NO_DATA,
++    STATUS_FAILED as SNAP_STATUS_FAILED,
++    query_research_score_snapshot,
++    snapshot_to_api_dict,
++)
+ 
+ logger = logging.getLogger(__name__)
+ 
+ CONTEXT_SOURCE = "research_evidence"
+
+[0m
+**Step 2**: Add research_score_snapshot bucket to KB-020 aggregate:
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -100,13 +100,15 @@
+ BUCKET_HALF_YEAR_FACTS = "half_year_facts"
+ BUCKET_CITATION_AUDIT = "citation_audit"
+ BUCKET_THESIS_TIMELINE = "thesis_timeline"
+ BUCKET_CONSENSUS = "consensus"
++BUCKET_RESEARCH_SCORE_SNAPSHOT = "research_score_snapshot"  # [SCORE-001B]
+ ALL_BUCKETS = (
+     BUCKET_CONSENSUS,
+     BUCKET_CITATION_AUDIT,
+     BUCKET_THESIS_TIMELINE,
+     BUCKET_HALF_YEAR_FACTS,
++    BUCKET_RESEARCH_SCORE_SNAPSHOT,
+ )
+ 
+ # Strong action verbs the synthesised response must NEVER emit. Mirrors the
+ # KB-006 contract; checked defensively on summary fields.
+
+[0m
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -489,8 +489,57 @@
+         logger.warning("[kb-020] opinion_index build failed: %s", exc)
+         return None
+ 
+ 
++def _build_research_score_snapshot_bucket(
++    *,
++    knowledge_root: str,
++    symbol: str,
++    today: date,
++) -> Dict[str, Any]:
++    """[SCORE-001B] Build the research_score_snapshot bucket for KB-020.
++
++    Read-only query of ZCode's ``research_score_snapshot`` via SCORE-001 loader.
++    Failure → degraded bucket (never crashes the aggregator).
++    """
++    try:
++        from datetime import datetime, timezone
++        analysis_time = datetime(
++            today.year, today.month, today.day,
++            tzinfo=timezone.utc,
++        )
++        result = query_research_score_snapshot(
++            knowledge_root,
++            symbol=symbol,
++            analysis_time=analysis_time,
++        )
++    except Exception as exc:  # pragma: no cover - defensive
++        logger.warning("[kb-020] research_score_snapshot bucket failed: %s", exc)
++        return _failed_bucket(BUCKET_RESEARCH_SCORE_SNAPSHOT, exc)
++
++    api_dict = snapshot_to_api_dict(result)
++    snap_status = api_dict.get("status", SNAP_STATUS_NO_DATA)
++
++    data_status = DATA_STATUS_FRESH
++    if snap_status in (SNAP_STATUS_NO_DATA, SNAP_STATUS_FAILED):
++        data_status = DATA_STATUS_MISSING
++    elif snap_status == "STALE":
++        data_status = DATA_STATUS_STALE
++    elif snap_status == "LOW_CONFIDENCE":
++        data_status = DATA_STATUS_FRESH
++
++    has_snap = api_dict.get("snapshot") is not None
++    return {
++        "bucket": BUCKET_RESEARCH_SCORE_SNAPSHOT,
++        "status": snap_status,
++        "task": "SCORE-001",
++        "has_hit": has_snap,
++        "data_status": data_status,
++        "errors": [],
++        "summary": api_dict,
++    }
++
++
+ # ──────────────────────────────────────────────────────────────────────────────
+ # Gaps computation
+ # ──────────────────────────────────────────────────────────────────────────────
+ 
+
+[0m
+[0m→ [0mRead api/services/research_evidence_service.py[90m [limit=60, offset=700][0m
+[0m
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -743,13 +743,19 @@
+     BUCKET_HALF_YEAR_FACTS,
+     RuntimeError("half_year_facts pre-scan returned None"),
+ )
+ 
++# [SCORE-001B] research_score_snapshot bucket — fully isolated.
++research_score_snapshot_bucket = _build_research_score_snapshot_bucket(
++    knowledge_root=root, symbol=canonical, today=today,
++)
++
+ buckets: Dict[str, Dict[str, Any]] = {
+     BUCKET_CONSENSUS: consensus_bucket,
+     BUCKET_CITATION_AUDIT: citation_audit_bucket,
+     BUCKET_THESIS_TIMELINE: thesis_timeline_bucket,
+     BUCKET_HALF_YEAR_FACTS: half_year_facts_bucket,
++    BUCKET_RESEARCH_SCORE_SNAPSHOT: research_score_snapshot_bucket,
+ }
+ 
+ # ── Path redaction (defensive — upstream already relative). ──
+ for bucket_id, bucket in buckets.items():
+
+[0m
+[0m→ [0mRead api/services/research_evidence_service.py[90m [limit=40, offset=775][0m
+[0m
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -788,8 +788,9 @@
+     BUCKET_CONSENSUS: buckets[BUCKET_CONSENSUS],
+     BUCKET_CITATION_AUDIT: buckets[BUCKET_CITATION_AUDIT],
+     BUCKET_THESIS_TIMELINE: buckets[BUCKET_THESIS_TIMELINE],
+     BUCKET_HALF_YEAR_FACTS: buckets[BUCKET_HALF_YEAR_FACTS],
++    BUCKET_RESEARCH_SCORE_SNAPSHOT: buckets[BUCKET_RESEARCH_SCORE_SNAPSHOT],
+     "gaps": gaps,
+     "errors": errors,
+     "read_only": True,
+ }
+
+[0m
+[0m→ [0mRead api/services/research_evidence_service.py[90m [limit=30, offset=815][0m
+[0m
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -828,8 +828,9 @@
+     BUCKET_CONSENSUS: empty_buckets[BUCKET_CONSENSUS],
+     BUCKET_CITATION_AUDIT: empty_buckets[BUCKET_CITATION_AUDIT],
+     BUCKET_THESIS_TIMELINE: empty_buckets[BUCKET_THESIS_TIMELINE],
+     BUCKET_HALF_YEAR_FACTS: empty_buckets[BUCKET_HALF_YEAR_FACTS],
++    BUCKET_RESEARCH_SCORE_SNAPSHOT: empty_buckets[BUCKET_RESEARCH_SCORE_SNAPSHOT],
+     "gaps": ["all buckets: disabled by config"],
+     "errors": ["research_evidence disabled by config"],
+     "read_only": True,
+ }
+
+[0m
+[0m← [0mEdit api/services/research_evidence_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/research_evidence_service.py
+@@ -842,8 +842,9 @@
+ "BUCKET_CITATION_AUDIT",
+ "BUCKET_CONSENSUS",
+ "BUCKET_HALF_YEAR_FACTS",
+ "BUCKET_THESIS_TIMELINE",
++"BUCKET_RESEARCH_SCORE_SNAPSHOT",
+ "CONTEXT_SOURCE",
+ "DEFAULT_WINDOW_MONTHS",
+ "TASK_CODE",
+ "InvalidSymbolError",
+
+[0m
+[0m# [0mTodos
+[✓] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[✓] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[•] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[ ] Add research_score_snapshot to report_service.py (TA metadata)
+[ ] Write tests for SCORE-001B integration
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=40, offset=715][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -733,8 +733,41 @@
+         _apply_half_year_to_item(it, facts_result, thesis_result)
+     return items
+ 
+ 
++# [SCORE-001B] research_score_snapshot_api_adapter
++def _enrich_candidate_with_research_score_snapshot(item: dict) -> dict:
++    """单条候选注入研究快照摘要（[SCORE-001B]。
++
++    失败 / 无 knowledge_root 时静默退化为 ``research_score_snapshot=None``，
++    绝不阻塞候选读取主链路。只读、不调用 LLM、不改变 tier / action 门禁。
++    """
++    symbol = item.get("symbol") or ""
++    if not symbol:
++        item.setdefault("research_score_snapshot", None)
++        return item
++    knowledge_root = _resolve_knowledge_root()
++    if not knowledge_root:
++        item.setdefault("research_score_snapshot", None)
++        return item
++    try:
++        from datetime import timezone as _tz
++        from tradingagents.dataflows.research_score_snapshot import (
++            query_research_score_snapshot as _snap_query,
++            snapshot_to_api_dict as _snap_to_api,
++        )
++        analysis_time = datetime.now(_tz.utc)
++        result = _snap_query(
++            knowledge_root,
++            symbol=symbol,
++            analysis_time=analysis_time,
++        )
++        item["research_score_snapshot"] = _snap_to_api(result)
++    except Exception:
++        item.setdefault("research_score_snapshot", None)
++    return item
++
++
+ def _compute_action(item: dict) -> str:
+     if item.get("need_deep_ta"):
+         return "NEED_DEEP_TA"
+     trigger = item.get("trigger_price")
+
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=40, offset=1195][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1207,8 +1207,13 @@
+ # [HY-006] tradeflow_half_year_factor — 候选详情注入半年报事实因子与
+ # 降权原因（报告期 / 支持或削弱 / 风险标记），便于前端 drawer 展示。
+ detail = _enrich_candidate_with_half_year(detail)
+ 
++# [SCORE-001B] research_score_snapshot_api_adapter — 候选详情注入研究快照
++# 摘要（分数 / 投资假设 / 证据引用 / 缺口），便于前端 drawer 展示。
++# 只读、不调用 LLM、不改变 tier / action 门禁。
++detail = _enrich_candidate_with_research_score_snapshot(detail)
++
+ return {
+     "status": "ok",
+     "trade_date": trade_date,
+     "candidate": detail,
+
+[0m
+[0m# [0mTodos
+[✓] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[✓] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[✓] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[•] Add research_score_snapshot to report_service.py (TA metadata)
+[ ] Write tests for SCORE-001B integration
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=50, offset=465][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=60, offset=514][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=30, offset=1160][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=40, offset=590][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=60, offset=700][0m
+[0m
+[0m← [0mEdit api/services/report_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/report_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+@@ -702,8 +702,64 @@
+         "has_missing_facts": has_missing_facts,
+     }
+ 
+ 
++# [SCORE-001B] research_score_snapshot_api_adapter
++def attach_report_research_score_snapshot(
++    result_data: Optional[Dict[str, Any]],
++    symbol: Optional[str] = None,
++) -> Optional[Dict[str, Any]]:
++    """Attach [SCORE-001B] research score snapshot summary to report result_data.
++
++    Strictly read-only with respect to the strong action gate: this function
++    MUST NOT alter ``decision`` / ``execution_action`` / ``action_label`` /
++    ``research_direction`` / ``wait_reason_codes`` / ``data_blockers``.
++
++    Output keys (all backward-compatible; old reports simply get None):
++      - ``research_score_snapshot``: dict with structured snapshot summary
++        (status / scores / theses_summary / missing_evidence).
++    """
++    if not isinstance(result_data, dict):
++        return result_data
++    try:
++        from datetime import datetime, timezone
++        from tradingagents.dataflows.research_score_snapshot import (
++            STATUS_NORMAL_NO_DATA as _SNAP_NO_DATA,
++            default_knowledge_root as _snap_default_root,
++            query_research_score_snapshot as _snap_query,
++            snapshot_to_api_dict as _snap_to_api,
++        )
++
++        if not symbol:
++            return result_data
++
++        resolved_symbol = str(symbol).strip()
++        if not resolved_symbol:
++            return result_data
++
++        knowledge_root = _snap_default_root()
++        if not knowledge_root:
++            return result_data
++
++        result = _snap_query(
++            knowledge_root,
++            symbol=resolved_symbol,
++            analysis_time=datetime.now(timezone.utc),
++        )
++        api_dict = _snap_to_api(result)
++
++        # 只有真正有快照数据时才附加；无快照不污染 result_data。
++        if api_dict.get("snapshot") is None:
++            return result_data
++
++        enriched = dict(result_data)
++        enriched["research_score_snapshot"] = api_dict
++        return enriched
++    except Exception as exc:
++        logger.warning("SCORE-001B research_score_snapshot attachment failed: %s", exc)
++        return result_data
++
++
+ def extract_structured_data(
+     final_trade_decision: str,
+     fundamentals_report: str = "",
+     config: Optional[Dict[str, Any]] = None,
+
+[0m
+[0m← [0mEdit api/services/report_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/report_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+@@ -1225,8 +1225,11 @@
+ # Reuses metadata.raw_evidence.half_year_facts when present; otherwise
+ # re-queries by symbol. Background evidence only — must NOT alter the
+ # strong action gate or mask data_blockers / wait_reason_codes.
+ result_data = attach_report_half_year_facts(result_data, symbol=symbol)
++# [SCORE-001B] research_score_snapshot_api_adapter — attach snapshot summary.
++# Background evidence only — must NOT alter the strong action gate.
++result_data = attach_report_research_score_snapshot(result_data, symbol=symbol)
+ 
+ now = datetime.now(timezone.utc)
+ 
+ # Check if we should update an existing record (initialized via init_report)
+
+[0m
+[0m# [0mTodos
+[✓] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[✓] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[✓] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[✓] Add research_score_snapshot to report_service.py (TA metadata)
+[•] Write tests for SCORE-001B integration
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m✱ [0mGlob "tests/test_*score_snapshot*"[90m 1 match[0m
+[0m✱ [0mGlob "tests/fixtures/*score_snapshot*"[90m 0 matches[0m
+[0m✱ [0mGlob "tests/fixtures/**/*snapshot*"[90m 0 matches[0m
+[0m→ [0mRead tests/test_score001_research_score_snapshot.py[90m [limit=120][0m
+[0m→ [0mRead tests/research_score_snapshot_fixtures.py[90m [limit=80][0m
+[0m✱ [0mGrep "def build_snapshot_fixture_kb"[90m in tests/research_score_snapshot_fixtures.py · 1 match[0m
+[0m→ [0mRead tests/research_score_snapshot_fixtures.py[90m [limit=60, offset=549][0m
+Now let me write the test file:
+[0m
+[0m← [0mWrite tests/test_score001b_snapshot_api_adapter.py
+Wrote file successfully.
+[0m
+Now let me run the tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_score001b_snapshot_api_adapter.py -v --tb=short 2>&1 | head -120
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 37 items
+
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_has_data_snapshot PASSED [  2%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_data_snapshot PASSED [  5%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_failed_snapshot PASSED [  8%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_low_confidence_snapshot PASSED [ 10%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_stale_snapshot PASSED [ 13%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_none_scores PASSED [ 16%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_sensitive_key_filtering PASSED [ 18%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_absolute_path_redaction PASSED [ 21%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_action_keys_leak PASSED [ 24%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_strong_action_verbs PASSED [ 27%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_invalid_input PASSED [ 29%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_score_change_summary PASSED [ 32%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_degradation_reasons_preserved PASSED [ 35%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_present_in_response PASSED [ 37%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_snapshot PASSED [ 40%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_disabled PASSED [ 43%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_action_keys PASSED [ 45%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_source_freshness_includes_snapshot PASSED [ 48%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_with_snapshot PASSED [ 51%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_without_snapshot FAILED [ 54%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_symbol PASSED [ 56%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_knowledge_root PASSED [ 59%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_failure_graceful FAILED [ 62%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_action_keys PASSED [ 64%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_preserves_existing_fields PASSED [ 67%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_with_snapshot PASSED [ 70%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_without_snapshot PASSED [ 72%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_symbol PASSED [ 75%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_none_result_data PASSED [ 78%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_failure_graceful PASSED [ 81%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_action_keys PASSED [ 83%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_has_data PASSED [ 86%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_no_data PASSED [ 89%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_multi_version FAILED [ 91%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_drafts_excluded PASSED [ 94%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_has_data_json_serializable PASSED [ 97%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_no_data_json_serializable PASSED [100%]
+
+=================================== FAILURES ===================================
+__ TestTradeFlowCandidateSnapshotEnrichment.test_enrichment_without_snapshot ___
+tests/test_score001b_snapshot_api_adapter.py:431: in test_enrichment_without_snapshot
+    assert result.get("research_score_snapshot") is None
+E   AssertionError: assert {'degradation_reasons': [], 'rubric_id': None, 'rubric_version': None, 'schema_version': None, ...} is None
+E    +  where {'degradation_reasons': [], 'rubric_id': None, 'rubric_version': None, 'schema_version': None, ...} = <built-in method get of dict object at 0x10ff54ac0>('research_score_snapshot')
+E    +    where <built-in method get of dict object at 0x10ff54ac0> = {'name': '圣泉集团', 'research_score_snapshot': {'degradation_reasons': [], 'rubric_id': None, 'rubric_version': None, 'schema_version': None, ...}, 'symbol': '605589.SH'}.get
+__ TestTradeFlowCandidateSnapshotEnrichment.test_enrichment_failure_graceful ___
+tests/test_score001b_snapshot_api_adapter.py:459: in test_enrichment_failure_graceful
+    assert result.get("research_score_snapshot") is None
+E   AssertionError: assert {'degradation_reasons': [], 'rubric_id': None, 'rubric_version': None, 'schema_version': None, ...} is None
+E    +  where {'degradation_reasons': [], 'rubric_id': None, 'rubric_version': None, 'schema_version': None, ...} = <built-in method get of dict object at 0x11000e4c0>('research_score_snapshot')
+E    +    where <built-in method get of dict object at 0x11000e4c0> = {'name': '圣泉集团', 'research_score_snapshot': {'degradation_reasons': [], 'rubric_id': None, 'rubric_version': None, 'schema_version': None, ...}, 'symbol': '605589.SH'}.get
+______ TestSnapshotToApiDictIntegration.test_full_pipeline_multi_version _______
+tests/test_score001b_snapshot_api_adapter.py:625: in test_full_pipeline_multi_version
+    assert api["status"] == STATUS_HAS_DATA
+E   AssertionError: assert 'NORMAL_NO_DATA' == 'HAS_DATA'
+E     
+E     - HAS_DATA
+E     + NORMAL_NO_DATA
+=========================== short test summary info ============================
+FAILED tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_without_snapshot
+FAILED tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_failure_graceful
+FAILED tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_multi_version
+========================= 3 failed, 34 passed in 1.22s =========================
+[0m
+[0m✱ [0mGrep "multi_version"[90m in tests/research_score_snapshot_fixtures.py · 2 matches[0m
+Let me fix the 3 failing tests. First let me check the multi_version fixtures:
+[0m→ [0mRead tests/research_score_snapshot_fixtures.py[90m [limit=40, offset=455][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -760,9 +760,14 @@
+         knowledge_root,
+         symbol=symbol,
+         analysis_time=analysis_time,
+     )
+-    item["research_score_snapshot"] = _snap_to_api(result)
++    api_dict = _snap_to_api(result)
++    # 只有真正有快照数据时才注入；无快照保持 None。
++    if api_dict.get("snapshot") is not None:
++        item["research_score_snapshot"] = api_dict
++    else:
++        item.setdefault("research_score_snapshot", None)
+ except Exception:
+     item.setdefault("research_score_snapshot", None)
+ return item
+ 
+
+[0m
+[0m← [0mEdit tests/test_score001b_snapshot_api_adapter.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_score001b_snapshot_api_adapter.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_score001b_snapshot_api_adapter.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_score001b_snapshot_api_adapter.py
+@@ -617,15 +617,15 @@
+     root = build_snapshot_fixture_kb(
+         tmp_path, include=["multi_version_r1", "multi_version_r2"]
+     )
+     result = query_research_score_snapshot(
+-        str(root), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
++        str(root), symbol="600519.SH", analysis_time=_at(2026, 7, 14)
+     )
+     api = snapshot_to_api_dict(result)
+ 
+     assert api["status"] == STATUS_HAS_DATA
+-    # R2 is newer (2026-07-13 vs 2026-07-12)
+-    assert api["snapshot_id"] == "605589.SH-20260713-r2"
++    # R2 is newer (2026-07-10 vs 2026-06-01)
++    assert api["snapshot_id"] == "600519.SH-20260710-r2"
+ 
+ def test_full_pipeline_drafts_excluded(self, tmp_path: Path) -> None:
+     """Drafts excluded → NO_DATA if only drafts exist."""
+     root = build_snapshot_fixture_kb(tmp_path, include=["draft_603629"])
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_score001b_snapshot_api_adapter.py -v --tb=short 2>&1 | tail -30
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_strong_action_verbs PASSED [ 27%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_invalid_input PASSED [ 29%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_score_change_summary PASSED [ 32%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_degradation_reasons_preserved PASSED [ 35%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_present_in_response PASSED [ 37%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_snapshot PASSED [ 40%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_disabled PASSED [ 43%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_action_keys PASSED [ 45%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_source_freshness_includes_snapshot PASSED [ 48%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_with_snapshot PASSED [ 51%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_without_snapshot PASSED [ 54%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_symbol PASSED [ 56%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_knowledge_root PASSED [ 59%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_failure_graceful PASSED [ 62%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_action_keys PASSED [ 64%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_preserves_existing_fields PASSED [ 67%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_with_snapshot PASSED [ 70%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_without_snapshot PASSED [ 72%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_symbol PASSED [ 75%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_none_result_data PASSED [ 78%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_failure_graceful PASSED [ 81%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_action_keys PASSED [ 83%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_has_data PASSED [ 86%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_no_data PASSED [ 89%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_multi_version PASSED [ 91%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_drafts_excluded PASSED [ 94%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_has_data_json_serializable PASSED [ 97%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_no_data_json_serializable PASSED [100%]
+
+============================== 37 passed in 1.02s ==============================
+[0m
+All 37 tests pass. Now let me run the related regression tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_score001_research_score_snapshot.py tests/test_kb020_research_evidence_api.py tests/test_runtime_tier_contract.py -v --tb=short 2>&1 | tail -40
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_none_not_allowed PASSED [ 80%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_invalid_not_allowed PASSED [ 81%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_empty_not_allowed PASSED [ 81%]
+tests/test_runtime_tier_contract.py::TestSchedulerDefault::test_default_is_not_full_ta PASSED [ 82%]
+tests/test_runtime_tier_contract.py::TestSchedulerDefault::test_default_is_light_research PASSED [ 82%]
+tests/test_runtime_tier_contract.py::TestTierLabelsCN::test_three_labels PASSED [ 83%]
+tests/test_runtime_tier_contract.py::TestTierLabelsCN::test_count PASSED [ 84%]
+tests/test_runtime_tier_contract.py::TestRuntimeTierMetaSchema::test_default_is_fast_radar PASSED [ 84%]
+tests/test_runtime_tier_contract.py::TestRuntimeTierMetaSchema::test_custom_values PASSED [ 85%]
+tests/test_runtime_tier_contract.py::TestRuntimeTierMetaSchema::test_from_dict_roundtrip PASSED [ 85%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_candidates_has_runtime_tier_meta PASSED [ 86%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_observe_has_runtime_tier_meta PASSED [ 86%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_data_health_has_runtime_tier_meta PASSED [ 87%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_ta_queue_has_runtime_tier_meta PASSED [ 87%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_review_has_runtime_tier_meta PASSED [ 88%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_filtered_has_runtime_tier_meta PASSED [ 88%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_candidate_detail_has_runtime_tier_meta PASSED [ 89%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_daily_plan_no_data_has_meta PASSED [ 89%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_no_db_candidates_has_meta PASSED [ 90%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_candidates_response_has_meta PASSED [ 90%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_observe_response_has_meta PASSED [ 91%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_data_health_response_has_meta PASSED [ 91%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_daily_plan_response_has_meta PASSED [ 92%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_ta_queue_response_has_meta PASSED [ 92%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_review_response_has_meta PASSED [ 93%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_filtered_response_has_meta PASSED [ 93%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_candidate_detail_response_has_meta PASSED [ 94%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_response_json_includes_meta PASSED [ 94%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_custom_meta_overrides PASSED [ 95%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_tradeflow_candidates_returns_fast_tier PASSED [ 95%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_tradeflow_data_health_returns_fast_tier PASSED [ 96%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_full_ta_requires_confirmation PASSED [ 96%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_scheduler_not_full_ta PASSED [ 97%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_three_tier_labels_cn PASSED [ 97%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_fast_radar_no_llm PASSED [ 98%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_full_ta_llm_with_confirmation PASSED [ 98%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_all_tradeflow_endpoints_fast PASSED [ 99%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_no_live_ta_triggered PASSED [100%]
+
+============================= 194 passed in 5.57s ==============================
+[0m
+All 194 related tests pass. Let me also run a broader regression on the API smoke tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_api_smoke.py -v --tb=short 2>&1 | tail -20
+tests/test_api_smoke.py::TestBarkRuntimeConfig::test_bark_warmup_uses_stored_url_when_input_missing PASSED [ 67%]
+tests/test_api_smoke.py::TestBarkRuntimeConfig::test_inline_bark_warmup_does_not_persist_unsaved_url PASSED [ 69%]
+tests/test_api_smoke.py::TestBarkRuntimeConfig::test_invalid_bark_url_is_rejected PASSED [ 71%]
+tests/test_api_smoke.py::TestBarkRuntimeConfig::test_report_create_sends_bark_when_enabled PASSED [ 73%]
+tests/test_api_smoke.py::TestBarkRuntimeConfig::test_report_create_skips_bark_when_disabled PASSED [ 75%]
+tests/test_api_smoke.py::TestWatchlistAddEndpoint::test_batch_add_supports_codes_and_full_names PASSED [ 76%]
+tests/test_api_smoke.py::TestWatchlistAddEndpoint::test_batch_add_marks_duplicates PASSED [ 78%]
+tests/test_api_smoke.py::TestReportsEndpoint::test_latest_by_symbols_returns_only_each_symbol_latest_report PASSED [ 80%]
+tests/test_api_smoke.py::TestReportsEndpoint::test_batch_delete_endpoint_removes_multiple_reports PASSED [ 82%]
+tests/test_api_smoke.py::TestPortfolioOverviewEndpoint::test_overview_returns_watchlist_scheduled_portfolio_and_latest_reports PASSED [ 84%]
+tests/test_api_smoke.py::TestScheduledBatchEndpoints::test_batch_update_endpoint_updates_multiple_items PASSED [ 86%]
+tests/test_api_smoke.py::TestScheduledBatchEndpoints::test_batch_delete_endpoint_removes_multiple_items PASSED [ 88%]
+tests/test_api_smoke.py::TestScheduledBatchEndpoints::test_manual_trigger_endpoint_queues_single_scheduled_task PASSED [ 90%]
+tests/test_api_smoke.py::TestScheduledBatchEndpoints::test_batch_trigger_endpoint_queues_selected_tasks_with_position_context PASSED [ 92%]
+tests/test_api_smoke.py::TestRuntimeTierGate::test_dry_run_without_runtime_tier_passes PASSED [ 94%]
+tests/test_api_smoke.py::TestRuntimeTierGate::test_light_research_without_confirmation_passes PASSED [ 96%]
+tests/test_api_smoke.py::TestRuntimeTierGate::test_full_ta_without_confirmation_rejected PASSED [ 98%]
+tests/test_api_smoke.py::TestRuntimeTierGate::test_full_ta_with_confirmation_accepted PASSED [100%]
+
+============================= 52 passed in 23.10s ==============================
+[0m
+All tests pass. Let me also run the existing SCORE-001 tests and the broader TradeFlow tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_score001_research_score_snapshot.py -v --tb=short 2>&1 | tail -15
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_result_json_serializable PASSED [ 83%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_snapshot_to_dict_roundtrip PASSED [ 84%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_has_data PASSED [ 86%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_empty_for_no_data PASSED [ 87%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_report PASSED [ 89%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_suggest_output_path PASSED [ 90%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_corrupt_falls_back_to_older PASSED [ 91%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_invalid_falls_back_to_older PASSED [ 93%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_score_summary_defaults_none PASSED [ 94%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_evidence_ref_default_tier_unknown PASSED [ 95%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_thesis_defaults PASSED [ 97%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_validation_error_carries_reason_code PASSED [ 98%]
+tests/test_score001_research_score_snapshot.py::TestSymbolNormalization::test_lowercase_exchange_suffix_reads_uppercase_snapshot_dir PASSED [100%]
+
+============================== 73 passed in 0.09s ==============================
+[0m
+[0m# [0mTodos
+[✓] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[✓] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[✓] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[✓] Add research_score_snapshot to report_service.py (TA metadata)
+[✓] Write tests for SCORE-001B integration
+[✓] Run tests and verify no regressions
+[•] Update docs/DEVLOG.md
+[0m
+All 73 SCORE-001 tests pass. Now let me update docs/DEVLOG.md:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30, offset=1][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,27 @@
+ # 修改日志
+ 
++## 2026-07-23 | SCORE-001B 研究快照接入聚合响应与 TradeFlow candidate detail
++
++- **任务**：SCORE-001B — 研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1）
++- **实现**：
++  - `tradingagents/dataflows/research_score_snapshot.py` — 新增 `snapshot_to_api_dict()` 序列化函数，将 `ResearchScoreQueryResult` 转为 API 安全的 slim dict（过滤绝对路径/敏感信息，只输出摘要/证据引用/缺口）。
++  - `api/services/research_evidence_service.py` — KB-020 聚合响应新增 `research_score_snapshot` bucket（`BUCKET_RESEARCH_SCORE_SNAPSHOT`），数据状态映射 HAS_DATA→fresh / STALE→stale / NO_DATA→missing。
++  - `api/services/tradeflow_service.py` — `get_candidate_detail` 新增 `_enrich_candidate_with_research_score_snapshot()` 注入，与 KB-008/KB-004/HY-006 同模式（只读、不改 tier/action，失败静默降级）。
++  - `api/services/report_service.py` — `create_report` 调用 `attach_report_research_score_snapshot()` 附加快照摘要到 result_data（只读，不改变强动作门禁）。
++- **测试**：
++  - `tests/test_score001b_snapshot_api_adapter.py` — 37 tests（snapshot_to_api_dict 五类状态+敏感过滤+路径过滤+动作字段隔离 / KB-020 bucket / TradeFlow enrichment / report attachment / JSON 可序列化）。
++  - `pytest tests/test_score001_research_score_snapshot.py -q`：**73 passed**（SCORE-001 回归）。
++  - `pytest tests/test_kb020_research_evidence_api.py tests/test_runtime_tier_contract.py -q`：**194 passed**（KB-020 + runtime tier 回归）。
++  - `pytest tests/test_api_smoke.py -q`：**52 passed**（API smoke 回归）。
++- **改动文件**：
++  - `tradingagents/dataflows/research_score_snapshot.py` — 新增 `snapshot_to_api_dict` + `_filter_sensitive` + `_is_abs_path_like`
++  - `api/services/research_evidence_service.py` — 新增 `BUCKET_RESEARCH_SCORE_SNAPSHOT` / `_build_research_score_snapshot_bucket` / 更新 `ALL_BUCKETS` / payload / disabled / `__all__`
++  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_research_score_snapshot` + 在 `get_candidate_detail` 中调用
++  - `api/services/report_service.py` — 新增 `attach_report_research_score_snapshot` + 在 `create_report` 中调用
++  - `tests/test_score001b_snapshot_api_adapter.py` — 新增测试文件
++- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-23 | SCORE-001 re-validation 与状态回写
+ 
+ - **任务**：SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
+ - **操作**：re-validate 已有实现，确认契约完整性，更新 TASKS.md 状态为 done。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -5986,9 +5986,9 @@
+ 
+ ### SCORE-001B: 研究快照接入聚合响应与 TradeFlow candidate detail（P1）
+ - **描述**：在 SCORE-001 loader 验收后，把只读摘要接入 KB-020 聚合响应、TA metadata 和 TradeFlow candidate detail；本任务只透传研究卡，不参与候选原分、动作或阶段计算。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed SCORE-001B-20260723-022706
++- **状态**：done — SCORE-001B-20260723-022706
+ - **前置条件**：SCORE-001、KB-020 完成。
+ - **depends_on**：SCORE-001, KB-020
+ - **auto_release**：true
+ - **执行约束**：
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -37,9 +37,9 @@
+ 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
+ 8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
+ 9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+ 10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，done，commit 87dcd44 + 24881f6，73 tests passed）。
+-11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
++11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
+ 12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+ 13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+ 14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+ 15. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -408,9 +408,9 @@
+ 171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
+ 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
+ 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
+ 174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，done，commit 87dcd44 + 24881f6）。
+-175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto，依赖 SCORE-001/KB-020）。
++175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
+ 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
+ 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
+ 178. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
+ 179. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
+
+[0m
+[0m# [0mTodos
+[✓] Create snapshot_to_api_dict() serialization in research_score_snapshot.py
+[✓] Add research_score_snapshot bucket to KB-020 aggregate (research_evidence_service.py)
+[✓] Add research_score_snapshot enrichment to TradeFlow candidate detail (tradeflow_service.py)
+[✓] Add research_score_snapshot to report_service.py (TA metadata)
+[✓] Write tests for SCORE-001B integration
+[✓] Run tests and verify no regressions
+[✓] Update docs/DEVLOG.md
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short
+M api/services/report_service.py
+ M api/services/research_evidence_service.py
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/dataflows/research_score_snapshot.py
+?? docs/task_runs/SCORE-001B-20260723-022706/
+?? tests/test_score001b_snapshot_api_adapter.py
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_score001b_snapshot_api_adapter.py tests/test_score001_research_score_snapshot.py tests/test_kb020_research_evidence_api.py tests/test_runtime_tier_contract.py tests/test_api_smoke.py -q --tb=short 2>&1 | tail -5
+........................................................................ [ 25%]
+........................................................................ [ 50%]
+........................................................................ [ 76%]
+...................................................................      [100%]
+283 passed in 23.20s
+[0m
+## SCORE-001B Complete
+
+### Files changed
+| File | Change |
+|---|---|
+| `tradingagents/dataflows/research_score_snapshot.py` | Added `snapshot_to_api_dict()` serialization + `_filter_sensitive()` + `_is_abs_path_like()` |
+| `api/services/research_evidence_service.py` | Added `BUCKET_RESEARCH_SCORE_SNAPSHOT` + `_build_research_score_snapshot_bucket()` + wired into KB-020 aggregate |
+| `api/services/tradeflow_service.py` | Added `_enrich_candidate_with_research_score_snapshot()` + wired into `get_candidate_detail()` |
+| `api/services/report_service.py` | Added `attach_report_research_score_snapshot()` + wired into `create_report()` |
+| `tests/test_score001b_snapshot_api_adapter.py` | New — 37 tests |
+| `docs/DEVLOG.md` | Updated with SCORE-001B entry |
+| `docs/TASKS.md` | SCORE-001B status → done |
+
+### Key logic
+- **`snapshot_to_api_dict()`**: Converts `ResearchScoreQueryResult` to API-safe dict — filters absolute paths, sensitive keys (token/cookie/key/secret), clips text, only outputs summary/evidence refs/gaps. No snapshot → `snapshot=None` (backward-compatible).
+- **KB-020 bucket**: `BUCKET_RESEARCH_SCORE_SNAPSHOT` added to aggregate response with data_status mapping (HAS_DATA→fresh, STALE→stale, NO_DATA/FAILED→missing). Fully isolated failure.
+- **TradeFlow enrichment**: `_enrich_candidate_with_research_score_snapshot()` follows existing enrichment pattern (KB-008/KB-004/HY-006). Only injects when snapshot has data; failure → `None`.
+- **Report attachment**: `attach_report_research_score_snapshot()` in `create_report()` — read-only, never alters decision/action/gate.
+
+### Test results
+- **SCORE-001B tests**: 37 passed
+- **Full regression** (SCORE-001 + KB-020 + runtime_tier + API smoke): **283 passed, 0 failed**

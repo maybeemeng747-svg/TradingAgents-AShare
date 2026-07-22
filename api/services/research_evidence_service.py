@@ -71,6 +71,12 @@ from tradingagents.dataflows.research_thesis_timeline import (  # [KB-018]
 from tradingagents.dataflows.half_year_facts_provider import (  # [HY-003]
     query_half_year_facts,
 )
+from tradingagents.dataflows.research_score_snapshot import (  # [SCORE-001B]
+    STATUS_NORMAL_NO_DATA as SNAP_STATUS_NO_DATA,
+    STATUS_FAILED as SNAP_STATUS_FAILED,
+    query_research_score_snapshot,
+    snapshot_to_api_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +101,13 @@ BUCKET_HALF_YEAR_FACTS = "half_year_facts"
 BUCKET_CITATION_AUDIT = "citation_audit"
 BUCKET_THESIS_TIMELINE = "thesis_timeline"
 BUCKET_CONSENSUS = "consensus"
+BUCKET_RESEARCH_SCORE_SNAPSHOT = "research_score_snapshot"  # [SCORE-001B]
 ALL_BUCKETS = (
     BUCKET_CONSENSUS,
     BUCKET_CITATION_AUDIT,
     BUCKET_THESIS_TIMELINE,
     BUCKET_HALF_YEAR_FACTS,
+    BUCKET_RESEARCH_SCORE_SNAPSHOT,
 )
 
 # Strong action verbs the synthesised response must NEVER emit. Mirrors the
@@ -482,6 +490,55 @@ def _build_opinion_index(
         return None
 
 
+def _build_research_score_snapshot_bucket(
+    *,
+    knowledge_root: str,
+    symbol: str,
+    today: date,
+) -> Dict[str, Any]:
+    """[SCORE-001B] Build the research_score_snapshot bucket for KB-020.
+
+    Read-only query of ZCode's ``research_score_snapshot`` via SCORE-001 loader.
+    Failure → degraded bucket (never crashes the aggregator).
+    """
+    try:
+        from datetime import datetime, timezone
+        analysis_time = datetime(
+            today.year, today.month, today.day,
+            tzinfo=timezone.utc,
+        )
+        result = query_research_score_snapshot(
+            knowledge_root,
+            symbol=symbol,
+            analysis_time=analysis_time,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("[kb-020] research_score_snapshot bucket failed: %s", exc)
+        return _failed_bucket(BUCKET_RESEARCH_SCORE_SNAPSHOT, exc)
+
+    api_dict = snapshot_to_api_dict(result)
+    snap_status = api_dict.get("status", SNAP_STATUS_NO_DATA)
+
+    data_status = DATA_STATUS_FRESH
+    if snap_status in (SNAP_STATUS_NO_DATA, SNAP_STATUS_FAILED):
+        data_status = DATA_STATUS_MISSING
+    elif snap_status == "STALE":
+        data_status = DATA_STATUS_STALE
+    elif snap_status == "LOW_CONFIDENCE":
+        data_status = DATA_STATUS_FRESH
+
+    has_snap = api_dict.get("snapshot") is not None
+    return {
+        "bucket": BUCKET_RESEARCH_SCORE_SNAPSHOT,
+        "status": snap_status,
+        "task": "SCORE-001",
+        "has_hit": has_snap,
+        "data_status": data_status,
+        "errors": [],
+        "summary": api_dict,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Gaps computation
 # ──────────────────────────────────────────────────────────────────────────────
@@ -687,11 +744,17 @@ def build_research_evidence(
         RuntimeError("half_year_facts pre-scan returned None"),
     )
 
+    # [SCORE-001B] research_score_snapshot bucket — fully isolated.
+    research_score_snapshot_bucket = _build_research_score_snapshot_bucket(
+        knowledge_root=root, symbol=canonical, today=today,
+    )
+
     buckets: Dict[str, Dict[str, Any]] = {
         BUCKET_CONSENSUS: consensus_bucket,
         BUCKET_CITATION_AUDIT: citation_audit_bucket,
         BUCKET_THESIS_TIMELINE: thesis_timeline_bucket,
         BUCKET_HALF_YEAR_FACTS: half_year_facts_bucket,
+        BUCKET_RESEARCH_SCORE_SNAPSHOT: research_score_snapshot_bucket,
     }
 
     # ── Path redaction (defensive — upstream already relative). ──
@@ -726,6 +789,7 @@ def build_research_evidence(
         BUCKET_CITATION_AUDIT: buckets[BUCKET_CITATION_AUDIT],
         BUCKET_THESIS_TIMELINE: buckets[BUCKET_THESIS_TIMELINE],
         BUCKET_HALF_YEAR_FACTS: buckets[BUCKET_HALF_YEAR_FACTS],
+        BUCKET_RESEARCH_SCORE_SNAPSHOT: buckets[BUCKET_RESEARCH_SCORE_SNAPSHOT],
         "gaps": gaps,
         "errors": errors,
         "read_only": True,
@@ -765,6 +829,7 @@ def _disabled_payload(
         BUCKET_CITATION_AUDIT: empty_buckets[BUCKET_CITATION_AUDIT],
         BUCKET_THESIS_TIMELINE: empty_buckets[BUCKET_THESIS_TIMELINE],
         BUCKET_HALF_YEAR_FACTS: empty_buckets[BUCKET_HALF_YEAR_FACTS],
+        BUCKET_RESEARCH_SCORE_SNAPSHOT: empty_buckets[BUCKET_RESEARCH_SCORE_SNAPSHOT],
         "gaps": ["all buckets: disabled by config"],
         "errors": ["research_evidence disabled by config"],
         "read_only": True,
@@ -778,6 +843,7 @@ __all__ = [
     "BUCKET_CONSENSUS",
     "BUCKET_HALF_YEAR_FACTS",
     "BUCKET_THESIS_TIMELINE",
+    "BUCKET_RESEARCH_SCORE_SNAPSHOT",
     "CONTEXT_SOURCE",
     "DEFAULT_WINDOW_MONTHS",
     "TASK_CODE",

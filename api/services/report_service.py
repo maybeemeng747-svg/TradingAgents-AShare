@@ -703,6 +703,62 @@ def _build_half_year_facts_summary(
     }
 
 
+# [SCORE-001B] research_score_snapshot_api_adapter
+def attach_report_research_score_snapshot(
+    result_data: Optional[Dict[str, Any]],
+    symbol: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Attach [SCORE-001B] research score snapshot summary to report result_data.
+
+    Strictly read-only with respect to the strong action gate: this function
+    MUST NOT alter ``decision`` / ``execution_action`` / ``action_label`` /
+    ``research_direction`` / ``wait_reason_codes`` / ``data_blockers``.
+
+    Output keys (all backward-compatible; old reports simply get None):
+      - ``research_score_snapshot``: dict with structured snapshot summary
+        (status / scores / theses_summary / missing_evidence).
+    """
+    if not isinstance(result_data, dict):
+        return result_data
+    try:
+        from datetime import datetime, timezone
+        from tradingagents.dataflows.research_score_snapshot import (
+            STATUS_NORMAL_NO_DATA as _SNAP_NO_DATA,
+            default_knowledge_root as _snap_default_root,
+            query_research_score_snapshot as _snap_query,
+            snapshot_to_api_dict as _snap_to_api,
+        )
+
+        if not symbol:
+            return result_data
+
+        resolved_symbol = str(symbol).strip()
+        if not resolved_symbol:
+            return result_data
+
+        knowledge_root = _snap_default_root()
+        if not knowledge_root:
+            return result_data
+
+        result = _snap_query(
+            knowledge_root,
+            symbol=resolved_symbol,
+            analysis_time=datetime.now(timezone.utc),
+        )
+        api_dict = _snap_to_api(result)
+
+        # 只有真正有快照数据时才附加；无快照不污染 result_data。
+        if api_dict.get("snapshot") is None:
+            return result_data
+
+        enriched = dict(result_data)
+        enriched["research_score_snapshot"] = api_dict
+        return enriched
+    except Exception as exc:
+        logger.warning("SCORE-001B research_score_snapshot attachment failed: %s", exc)
+        return result_data
+
+
 def extract_structured_data(
     final_trade_decision: str,
     fundamentals_report: str = "",
@@ -1170,6 +1226,9 @@ def create_report(
     # re-queries by symbol. Background evidence only — must NOT alter the
     # strong action gate or mask data_blockers / wait_reason_codes.
     result_data = attach_report_half_year_facts(result_data, symbol=symbol)
+    # [SCORE-001B] research_score_snapshot_api_adapter — attach snapshot summary.
+    # Background evidence only — must NOT alter the strong action gate.
+    result_data = attach_report_research_score_snapshot(result_data, symbol=symbol)
 
     now = datetime.now(timezone.utc)
     
