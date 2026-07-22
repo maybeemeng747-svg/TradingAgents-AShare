@@ -127,6 +127,7 @@ class TestParser:
         "status, expected",
         [
             ("ready", "ready"),
+            ("ready — 前置任务已由补修闭环", "ready"),
             ("done — commit abc123", "done"),
             ("done ✓", "done"),
             ("闭环", "done"),
@@ -195,6 +196,15 @@ class TestDoneDetection:
             """)
         tasks = R.parse_tasks(f.read_text(encoding="utf-8"))
         assert "T-001" in R.collect_done_ids(tasks)
+
+    def test_ready_with_closure_explanation_is_not_done(self, tmp_path):
+        f = _write(tmp_path, """\
+            ### T-001: 待领取任务 (P0)
+            - **状态**：ready — 前置任务已由补修闭环
+            """)
+        tasks = R.parse_tasks(f.read_text(encoding="utf-8"))
+        assert tasks[0].status_kind == "ready"
+        assert "T-001" not in R.collect_done_ids(tasks)
 
 
 # ────────────────────────────────────────────────────────────────────

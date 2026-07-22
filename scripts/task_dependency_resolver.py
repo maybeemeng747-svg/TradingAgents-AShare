@@ -120,15 +120,20 @@ def _classify_status(status_raw: str) -> str:
     s = status_raw.lower()
     if not s:
         return "unknown"
-    if "done" in s or "✓" in s or "闭环" in s or "已由" in s:
-        return "done"
-    if "in_progress" in s:
-        return "in_progress"
-    if "proposed" in s:
-        return "proposed"
-    if "ready" in s:
+    # An explicit active state at the beginning is authoritative.  Otherwise
+    # explanatory text such as "ready — 前置任务已闭环" is accidentally
+    # classified as done and the picker can skip the task entirely.
+    if re.match(r"^\s*ready(?:\b|\s|[-—:：])", s):
         return "ready"
+    if re.match(r"^\s*in_progress(?:\b|\s|[-—:：])", s):
+        return "in_progress"
+    if re.match(r"^\s*proposed(?:\b|\s|[-—:：])", s):
+        return "proposed"
+    if re.match(r"^\s*done(?:\b|\s|[-—:：])", s):
+        return "done"
     if "blocked" in s or "等待" in s:
+        if "✓" in s or "闭环" in s or "已由" in s:
+            return "done"
         if (
             "needs_human" in s
             or "need_human" in s
@@ -139,6 +144,14 @@ def _classify_status(status_raw: str) -> str:
         ):
             return "blocked_human"
         return "blocked_auto"
+    if "done" in s or "✓" in s or "闭环" in s or "已由" in s:
+        return "done"
+    if "in_progress" in s:
+        return "in_progress"
+    if "proposed" in s:
+        return "proposed"
+    if "ready" in s:
+        return "ready"
     return "unknown"
 
 
@@ -252,11 +265,16 @@ def collect_done_ids(tasks: Iterable[Task]) -> set[str]:
         if t.status_kind == "done":
             done.add(t.task_id)
             continue
-        s = t.status.lower()
-        if "done" in s or "闭环" in s or "已由" in s:
-            done.add(t.task_id)
-            continue
-        if "✓" in t.title or "done" in t.title.lower():
+        # Explicit active states must not be overturned by explanatory words
+        # later in the same status line.  Legacy title/status heuristics are
+        # retained only when no recognised status was parsed.
+        if t.status_kind == "unknown" and (
+            "done" in t.status.lower()
+            or "闭环" in t.status
+            or "已由" in t.status
+            or "✓" in t.title
+            or "done" in t.title.lower()
+        ):
             done.add(t.task_id)
     return done
 
