@@ -8,7 +8,7 @@
 - **复审**：连续运行真实 `codex review --uncommitted`，逐轮修复所有 P0/P1/P2 correctness finding；最终 Review 结论为未发现离散 correctness 问题。
 - **验证**：`test_fund003_fund004_integrity.py` 72 项通过；FUND/DataCollector/Evidence/Readiness 聚焦回归 271 项通过；Review 额外运行全量套件至 20% 时由审查进程主动中断，此前 2128 passed、2 skipped、0 failed。
 - **提交与解锁**：代码 commit `2d98abc`；FUND-003A/FUND-003A-B 标记 done，FUND-004B 释放为下一项 ready。
-- **自动领取补修**：dry-run 发现状态说明中的“已由/闭环”会覆盖行首 `ready`，导致解析器跳过 FUND-004B 并越级领取 FUND-004A；现改为行首显式状态优先，并限制 legacy done 启发式只作用于未知状态。67 项 AUTO-007 测试通过，resolver 已正确选择 FUND-004B。
+- **自动领取补修**：dry-run 发现状态说明中的“已由/闭环”会覆盖行首 `ready`，导致解析器跳过 FUND-004B 并越级领取 FUND-004A；现改为行首显式状态优先，并限制 legacy done 启发式只作用于未知状态。67 项 AUTO-007 测试通过，resolver 已正确选择 FUND-004B；遗留 `AUTO-007 in_progress` 状态同步为 done。
 - **边界**：未修改 prompts、未调用 live LLM、未写生产数据库。
 
 ## 2026-07-18 | FUND-003A-B 因果证据按术语/出现位置绑定补修
