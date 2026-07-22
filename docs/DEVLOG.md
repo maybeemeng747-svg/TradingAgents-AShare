@@ -1,5 +1,31 @@
 # 修改日志
 
+## 2026-07-23 | SCORE-002 复用 TradeFlow 现有因子生成 entry_timing 评分卡
+
+- **任务**：SCORE-002 — 复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1）
+- **实现**：
+  - `tradingagents/tradeflow/entry_timing_score.py`（新增，`# [SCORE-002] entry_timing_adapter`）— 纯确定性评分卡模块，复用 TradeFlow 已有字段，不调用 LLM / 网络 / prompts。
+    - 五维度评分：估值预期位置（0.25）、拥挤度（0.20）、资金价格确认（0.20）、催化有效性（0.25）、下行赔率（0.10）。
+    - 每维度携带 `score/weight/status/source_fields/reasons/missing_fields`，可追溯到现有候选字段。
+    - 时机风险标志检测：第一次大跌、跌停未打开、爆量破位、板块退潮（从 `risk_flags` + `overheat_flags` 提取）。
+    - 加权合成 `entry_timing` 0-100，缺维度时按可用权重归一化（`data_status=partial`）；全缺返回 0 + `missing`。
+    - 资金单位未校验 → `fund_price_confirm` 上限 50；时机风险标志 → 整体扣分（每个 10 分，上限 30）。
+    - `entry_timing_to_dict()` 序列化为 JSON-safe dict。
+  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_entry_timing()` / `_enrich_candidates_with_entry_timing()`，注入到 `get_candidates` / `get_daily_plan` / `get_candidate_detail` / `get_candidates_tiered` 四条数据通路。
+    - 与 KB-004/KB-008/HY-006/SCORE-001B 同模式：只读、不调用 LLM、不改变 tier / action 门禁；异常静默降级为 `entry_timing_card=None`。
+- **测试**：
+  - `tests/test_score002_entry_timing.py` — **48 tests passed**。
+  - 覆盖 14 个测试类：估值预期位置（4）、拥挤度（3）、资金价格确认（3）、催化有效性（3）、下行赔率（3）、时机风险标志（7）、七类验收场景（7）、稳定性/确定性（3）、研究快照独立性（2）、序列化（4）、部分数据（1）、服务层注入（7）、权重正确性（1）。
+- **改动文件**：
+  - `tradingagents/tradeflow/entry_timing_score.py`（新增）
+  - `api/services/tradeflow_service.py`（新增 enrichment 函数 + 4 处调用点）
+  - `tests/test_score002_entry_timing.py`（新增）
+- **回归**：
+  - `pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py -q`：**110 passed**（SCORE-001 回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `py_compile` 通过。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。`entry_timing` 不注入研究快照 JSON，不改变 `action_tier` / `tier` / `decision`。
+
 ## 2026-07-23 | SCORE-001B 研究快照接入聚合响应与 TradeFlow candidate detail
 
 - **任务**：SCORE-001B — 研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1）
@@ -13924,3 +13950,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/SCORE-001B-20260723-round1.txt
 - **Run archive**: docs/task_runs/SCORE-001B-20260723-022706/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: SCORE-002 - 复用 TradeFlow 现有因子生成 entry_timing 评分卡（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/SCORE-002-20260723-round1.txt
+- **Run archive**: docs/task_runs/SCORE-002-20260723-023857/

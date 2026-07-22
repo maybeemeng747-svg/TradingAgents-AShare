@@ -444,6 +444,57 @@ def _apply_knowledge_calibration_explain(items: List[dict]) -> List[dict]:
     return items
 
 
+# [SCORE-002] entry_timing_adapter
+def _enrich_candidate_with_entry_timing(item: dict) -> dict:
+    """单条候选注入 entry_timing 评分卡（[SCORE-002]）。
+
+    纯确定性映射，复用 TradeFlow 已有字段；只读、不调用 LLM、不改变 tier / action 门禁。
+    缺数据时降级为 entry_timing=None + data_status="missing"，绝不伪造中性满分。
+    """
+    try:
+        from tradingagents.tradeflow.entry_timing_score import (
+            compute_entry_timing,
+            entry_timing_to_dict,
+        )
+        result = compute_entry_timing(
+            pricing_gap_score=item.get("pricing_gap_score") or 0.0,
+            current_price=item.get("current_price"),
+            support_price=item.get("support_price"),
+            game_balance=item.get("game_balance") or "",
+            resonance_count=item.get("resonance_count") or 0,
+            positive_category_count=item.get("positive_category_count") or 0,
+            overheat_penalty=item.get("overheat_penalty") or 0.0,
+            fund_flow_anomaly_score=item.get("fund_flow_anomaly_score") or 0.0,
+            fund_flow_unit_verified=bool(item.get("fund_flow_unit_verified")),
+            technical_score=item.get("technical_score") or 0.0,
+            event_score=item.get("event_score") or 0.0,
+            ambush_score=item.get("ambush_score") or 0.0,
+            narrative_score=item.get("narrative_score") or 0.0,
+            contradiction_level=item.get("contradiction_level") or "",
+            risk_penalty=item.get("risk_penalty") or 0.0,
+            invalid_price=item.get("invalid_price"),
+            risk_flags=item.get("risk_flags"),
+            overheat_flags=item.get("overheat_flags"),
+        )
+        item["entry_timing_card"] = entry_timing_to_dict(result)
+    except Exception:
+        item.setdefault("entry_timing_card", None)
+    return item
+
+
+def _enrich_candidates_with_entry_timing(items: List[dict]) -> List[dict]:
+    """批量注入 entry_timing 评分卡（[SCORE-002]）。
+
+    只读叠加层，不改变 tier / action 门禁；异常静默跳过。
+    """
+    if not items:
+        return items
+    for it in items:
+        if isinstance(it, dict):
+            _enrich_candidate_with_entry_timing(it)
+    return items
+
+
 # [KB-004] tradeflow_knowledge_score
 def _resolve_knowledge_root() -> str:
     """解析当前生效的本地知识库根目录（环境变量优先）。
@@ -1038,6 +1089,10 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
         # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
         candidate_items = _apply_knowledge_calibration_explain(candidate_items)
 
+        # [SCORE-002] entry_timing_adapter — 注入入场时机评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；缺数据降级为 None。
+        candidate_items = _enrich_candidates_with_entry_timing(candidate_items)
+
         return {
             "status": "ok",
             "trade_date": _rget(plan_row, "trade_date", trade_date),
@@ -1140,6 +1195,10 @@ def get_candidates(
         # [TF-KB-001] knowledge_score_calibration — 追加知识分影响 explain。
         items = _apply_knowledge_calibration_explain(items)
 
+        # [SCORE-002] entry_timing_adapter — 注入入场时机评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；缺数据降级为 None。
+        items = _enrich_candidates_with_entry_timing(items)
+
         # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
         # while exposing the strict main/observation/filtered split separately.
         from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
@@ -1217,6 +1276,10 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         # 摘要（分数 / 投资假设 / 证据引用 / 缺口），便于前端 drawer 展示。
         # 只读、不调用 LLM、不改变 tier / action 门禁。
         detail = _enrich_candidate_with_research_score_snapshot(detail)
+
+        # [SCORE-002] entry_timing_adapter — 候选详情注入入场时机评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁。
+        detail = _enrich_candidate_with_entry_timing(detail)
 
         return {
             "status": "ok",
@@ -2558,6 +2621,10 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
         # [KB-008] research_attention_integration — 注入研报关注度字段。
         # 只读、不调用 LLM、共享一次全库扫描；不改变 tier / action 门禁。
         all_items = _enrich_candidates_with_research_attention(all_items)
+
+        # [SCORE-002] entry_timing_adapter — 注入入场时机评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；缺数据降级为 None。
+        all_items = _enrich_candidates_with_entry_timing(all_items)
 
         # [TF-QUALITY-001A] pool_gate_contract — tiered view intentionally
         # groups main candidates but keeps the other pools visible.
