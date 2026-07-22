@@ -10,13 +10,11 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional
 
+# [C-004] action_enum — single canonical enum; no local duplicate.
+from tradingagents.agents.utils.trade_actions import TradeAction
 
-class Action(Enum):
-    WAIT = "WAIT"
-    ENTER = "ENTER"
-    HOLD = "HOLD"
-    REDUCE = "REDUCE"
-    EXIT = "EXIT"
+# Backward-compatible alias so existing imports of ``Action`` keep working.
+Action = TradeAction
 
 
 class BuyLevel(Enum):

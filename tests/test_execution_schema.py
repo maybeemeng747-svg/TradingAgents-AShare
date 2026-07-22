@@ -272,6 +272,15 @@ class TestEnums:
         assert Action.REDUCE.value == "REDUCE"
         assert Action.EXIT.value == "EXIT"
 
+    def test_action_is_trade_action_alias(self):
+        """[C-004] Action in execution_schema must be the same object as TradeAction."""
+        from tradingagents.agents.utils.trade_actions import TradeAction
+        assert Action is TradeAction
+
+    def test_action_count_is_five(self):
+        """[C-004] Exactly 5 action values, no more, no less."""
+        assert len(Action) == 5
+
     def test_buy_level_values(self):
         assert BuyLevel.LEVEL_0.value == 0
         assert BuyLevel.LEVEL_4.value == 4

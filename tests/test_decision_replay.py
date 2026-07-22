@@ -159,7 +159,7 @@ class TestReplay600584:
         has_position = _detect_has_position(conclusion)
         trigger_price = _extract_trigger_price(conclusion)
 
-        assert has_position is False
+        assert has_position is None
         assert trigger_price is None
 
         result = _extract_decision_semantics(

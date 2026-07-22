@@ -14115,3 +14115,28 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/C-003-20260723-round1.txt
 - **Run archive**: docs/task_runs/C-003-20260723-033007/
+
+## 2026-07-23 | C-004 动作枚举重设计
+
+- **Task**: C-004 - 动作枚举重设计（P1）
+- **Priority**: P2
+- **Status**: OK PASS
+- **Changes**:
+  - `tradingagents/agents/utils/execution_schema.py` — 移除重复的 `Action` 枚举，改为从 `trade_actions.py` 导入 `TradeAction` 并创建向后兼容别名 `Action = TradeAction`
+  - `tests/test_execution_schema.py` — 新增 2 个测试验证 `Action is TradeAction` 别名和枚举恰好 5 个值
+  - `tests/test_decision_replay.py` — 修复 `TestReplay600584` 断言：600584.SH 样本无持仓关键词，`_detect_has_position` 返回 `None`（与 `_extract_decision_semantics` 的 `Optional[bool]` 契约一致）
+- **Key logic**: `TradeAction`（5 个值：WAIT/ENTER/HOLD/REDUCE/EXIT）为唯一权威动作枚举定义；`execution_schema.Action` 作为向后兼容别名保留
+- **Tests**: 316 passed, 0 failed
+- **Codex Review**: passed (round 1)
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: C-004 - 动作枚举重设计（P1）
+- **Priority**: P2
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/C-004-20260723-round2.txt
+- **Run archive**: docs/task_runs/C-004-20260723-033945/

@@ -1,0 +1,2229 @@
+Task: C-004 - 动作枚举重设计（P1）
+Date: 2026-07-23_03:57:35
+Codex exit code: 0
+Round: 2
+---
+2026-07-22T19:56:37.348461Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8b66-cd1c-7db1-ae36-6b06f8bd12ad
+--------
+user
+current changes
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- branch ---\\n' && git branch --show-current && printf '\\n--- required docs skim ---\\n' && for f in AGENTS.md docs/project-overview.md docs/TASKS.md docs/DECISIONS.md docs/DEVLOG.md; do echo \"===== "'$f ====="; sed -n '"'1,160p' \""'$f"; done' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_decision_replay.py
+ M tests/test_execution_schema.py
+ M tradingagents/agents/utils/execution_schema.py
+?? docs/reviews/C-004-20260723-round1.txt
+?? docs/task_runs/C-004-20260723-033945/
+
+--- branch ---
+local/tradingagents-custom
+
+--- required docs skim ---
+===== AGENTS.md =====
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 开发与验收思维模式
+
+### 功能开发：第一性原理 + 剃刀定律
+- 开发新功能或修 bug 时，先回到问题本质：用户真正要解决什么、系统必须满足的最小事实是什么、哪些约束不能破坏。
+- 默认选择能满足目标的最小实现，优先复用现有模块、数据契约和测试框架，不为“看起来完整”而堆叠复杂功能。
+- 每个新增字段、接口、状态和抽象都必须能回答：为什么它不可少；如果删掉它，哪个明确场景会失败。
+- 不用大改架构来解决局部问题；除非能证明现有结构已经无法承载目标。
+
+### 功能验收/测试：多 Agent + 墨菲定律 + 对抗性审查
+- 验收时默认假设：会遗漏的边界一定会遗漏，会被误用的字段一定会被误用，会超时/缺数据/脏状态的路径一定会发生。
+- 重要改动必须至少从三类视角审查：实现者视角、用户操作视角、风控/数据真实性视角；必要时让不同 AI/Agent 分别做 diff review、测试回放和失败路径检查。
+- 测试要覆盖失败、空数据、旧数据、字段缺失、重复执行、非交易日、脏工作区、接口顺序、状态迁移等最容易出事的路径。
+- Codex review 或人工 review 必须优先找 P0/P1 风险，而不是复述功能亮点；发现问题先打回修复，再谈提交。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+===== docs/project-overview.md =====
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 当前产品事实（2026-07-10）
+
+项目已从单一报告生成器扩展为分层投研工作台，但产品主线应保持收敛：
+
+```text
+Tree Work 既有研报/半年报知识页（历史上游）
+  -> ZCode 知识库接入、研究评分与快照发布
+  -> 来源与事实审计
+  -> 昊天左侧候选
+  -> TradeFlow 少量候选池
+  -> 轻量 TA / 人工确认的完整 TA
+  -> 观察仓、盘中观察、盘后复盘
+```
+
+TradeFlow 的 `TECH_TRADE` 与 `POLICY_AMBUSH/POLICY_CONFIRM` 必须分池展示，不能把短线技术机会当作中长期昊天候选。Fast Radar、Light Research、Full TA 的运行层级也必须保持清晰：完整 TA 只能人工确认触发。
+
+现有 Tree Work 知识页只作为可追溯的历史上游与背景/观点证据；后续知识库接入、`research-scorer` 和正式快照发布统一由 ZCode 负责。公告、原始财报和行情数据仍是事实与动作门禁的优先来源。所有知识命中都必须带来源路径、报告期或更新时间、来源等级和新鲜度。
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+===== docs/TASKS.md =====
+# 任务池
+
+> 最后更新：2026-07-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前执行队列（2026-07-22）
+
+> 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
+
+> **执行前置**：FUND-001A、FUND-003A 与 FUND-003A-B 已完成确定性补修和 Codex 多轮对抗复审。工作区恢复干净后，从 FUND-004B 开始按依赖串行自动领取；自动循环继续遵守 dirty-tree 停止规则。
+
+1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
+3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
+5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
+6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A done → 可领取）。
+7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
+8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
+9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，done，commit 87dcd44 + 24881f6，73 tests passed）。
+11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
+12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，done，SCORE-002-20260723-023857）。
+13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+15. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+16. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
+17. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，done；最终补修 `623f45c`）。
+18. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
+19. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
+20. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+21. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
+22. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+23. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+
+> FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
+
+### 今晚 4 小时执行包（2026-07-22）
+
+> 目标预算约 200-265 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1/P2 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
+
+| 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
+|---|---|---:|---|
+| 1 | `FUND-003A-B` | done | `2d98abc`；72 项专项、271 项聚焦回归通过，复审无 P0/P1/P2 |
+| 2 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
+| 3 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
+| 4 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
+| 5 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
+| 6 | `FUND-007A` | 30-40 分钟 | 形成可重复执行的财报错误模式基准集、机器结果和人读回归报告；不得把一次性样本写死为交易结论 |
+
+> **夜间终点**：只完成离线确定性修复、基准沉淀和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 4 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
+
+#### FUND-003A-B 补修验收口径
+
+- 证据的 `direction`/`negation`/因果关系必须属于具体术语及其出现位置，禁止挂在整条 entry 上被其他指标复用。
+- 同一指标多次出现时不得只读第一次；存在相反方向或语义不明时 fail closed。
+- 因果同义词必须同时应用于证据侧和 claim 侧；`采购成本下降` 可支持 `原材料成本下降`，但不得只因同时出现“原材料”就证明任意因果。
+- `claim_id` 必须确定性且能区分同一报告内同指标的多条声明，不得只对 keyword 做 hash。
+- 每个 `evidence_id` 的审计片段必须包含它所支持的具体术语、方向与否定信息。
+- 必测对抗样例：中性首次出现+后文上涨；`未采用净额法，仍采用总额法`；`原材料下降+合同负债增加`；同指标多条相反声明；多术语长证据片段。
+- 完成标准：专项与相关回归全绿，`codex review --uncommitted` 无 P0/P1/P2 correctness finding；不调 live LLM，不写生产数据库。
+
+
+### F-001: TA研报执行层修复（P0-P2共10项）
+- **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+- **优先级**：P0
+- **状态**：done -- commit 4e4088b
+- **预计耗时**：60-90 分钟
+- **depends_on**：无
+- **auto_release**：true
+- **验收方式**：重跑002837报告，10项全部通过
+
+### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+- **描述**：把"计划最大仓位 + 试错仓/确认仓/进攻仓"写成可测试规则，禁止系统因为下跌简单提示补仓。
+- **优先级**：P1
+- **状态**：done -- commit 9cb66f0
+- **预计耗时**：40-50 分钟
+- **depends_on**：PLAYBOOK-001
+- **auto_release**：true
+- **验收方式**：fixture覆盖可试错/不可试错/可加确认仓/不可加确认仓/回踩进攻/突破进攻/跌停不补。"跌了/便宜/回调"单独出现不能触发补仓。
+- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+
+### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
+- **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 research_score_snapshot v1.1.0 可被稳定读取和降级。本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
+- **优先级**：P1
+- **状态**：done -- commit c6f6ea7
+- **预计耗时**：35-45 分钟
+- **depends_on**：KB-001, KB-014
+- **auto_release**：true
+- **验收方式**：fixture覆盖五类状态、完整/缺字段、过期、损坏、symbol错配。断言drafts不会被生产loader选中；同标的多版本严格按analysis_time选择。
+
+### B-001: 接入小米 MiMo 模型到 TA 系统
+- **描述**：在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
+- **优先级**：高
+- **状态**：done -- commit 6525f29
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-001: position_validation_gate（P2）
+- **描述**：每份报告生成前必须读取 current_positions.json，根据持仓状态决定可输出的动作类型
+- **优先级**：P2
+- **状态**：done -- commit af909d4
+- **预计耗时**：40-50 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-003: 禁止做空策略输出（P1）
+- **描述**：如果 can_short=false，做空相关策略在生成阶段就不进入候选池
+- **优先级**：P2
+- **状态**：done -- commit 7f74755
+- **预计耗时**：25-35 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-004: 动作枚举重设计（P1）
+- **描述**：将最终动作枚举精简为 5 个
+- **优先级**：P2
+- **状态**：done — codex review passed
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-005: same_symbol_delta_check（P2）
+- **描述**：同一股票结论翻转时，必须输出对比信息
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：25-35 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-006: financial_data_validator — 分期实现（P2）
+- **描述**：财报数据异常检测，分两期做
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-007: event_risk_gate（P1）
+- **描述**：重大事件发生时，进入风控优先模式
+===== docs/DECISIONS.md =====
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+## ADR-006: 2026-07-10 将研报/半年报/昊天闭环设为唯一产品主线
+- **日期**：2026-07-10
+- **背景**：系统已有 TradeFlow、跟踪看板、知识库和自动开发等大量工程能力，但真实候选中仍以技术池为主，观察仓和盘后 Review 的生产记录不足，半年报事实 Provider 尚未完成。
+- **决策**：优先完成 HY-002/HY-003/KB-015 及其后续事实审计，再做昊天真实候选和交易日回放；PLAYBOOK-002~006 暂停，除非直接阻塞主线。
+- **原因**：用户核心目标是从政策、产业和研报中找到少量高质量中长期候选，而不是继续扩大功能数量。先验证选股和证据闭环，才能判断后续仓位规则是否值得实现。
+- **影响**：自动领取顺序以 `docs/TASKS.md` 的“当前执行队列”为准；fixture 验收和真实运行验收必须分开记录；新功能必须说明是否直接服务主线。
+
+## ADR-007: 研究评分采用四卡分层所有权，不生成混合总分
+- **日期**：2026-07-13
+- **背景**：现有 Tree Work 知识库、TA readiness、TradeFlow 候选分、账户风控和 PLAYBOOK 已分别存在评分或阶段字段。若各层都计算完整总分和动作，会产生重复计分、阈值冲突，以及“好公司被误判为现在可以买”的风险。
+- **决策**：`research-scorer` 的代码、规则版本和正式快照写入归 ZCode 知识库接入项目所有；ZCode 发布的知识快照只拥有慢变量 `research_evidence_confidence` 与 `thesis_quality`。现有 Tree Work 页面继续作为上游知识输入，不要求历史改名。TradingAgents-AShare 不复刻评分公式，只读取版本化快照；TradeFlow 复用现有动态因子生成 `entry_timing`，账户上下文生成 `portfolio_fit`，TA 在四卡之后统一执行硬性否决并映射 PLAYBOOK 七阶段。禁止合成单一股票总分，禁止知识快照携带或覆盖交易动作。
+- **原因**：证据可信度、公司逻辑、实时买点和账户资格回答的是四个不同问题；分层后才能做到来源可追溯、动态变化可解释，并让高研究分始终受行情、账户和风控约束。
+- **影响**：知识库侧任务单独记录在 `docs/zcode_research_scorer_handoff.md`；本仓库新增 SCORE-001~006 消费与裁决任务线。`execution_action` 与 Buy/Risk Level 继续作为底层安全契约，`playbook_stage` 只提供更细语义。SCORE-005 可以实现不含仓位数量的阶段判定，但不解锁 PLAYBOOK-002/003 的真实三笔法和仓位拆分规则。SCORE-006 必须等真实 ZCode 快照人工确认后释放，fixture 不得冒充跨项目验收。
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+===== docs/DEVLOG.md =====
+# 修改日志
+
+## 2026-07-23 | C-003 禁止做空策略输出
+
+- **任务**：C-003 — 如果 can_short=false，做空相关策略在生成阶段就不进入候选池（P1）
+- **实现**：
+  - `tradingagents/agents/utils/readiness_score.py` — 扩展 `_SHORT_SELLING_PATTERNS`，新增 13 个做空相关模式（反手做空、开空仓、融券做空、融券卖出、逢高做空、加空、空头加仓、试空、平空、做空仓位、short position/selling/open short）；新增 `filter_short_strategy()` 便捷函数。
+  - `tradingagents/agents/managers/research_manager.py` — 新增 [C-003] 过滤：
+    - 读取 `config.account_capability.can_short`。
+    - `can_short=False` 时，在 prompt 末尾追加做空约束指令（生成阶段过滤）。
+    - LLM 输出后，调用 `filter_short_strategy()` 做后处理文本替换（兜底过滤）。
+  - `tradingagents/agents/researchers/bear_researcher.py` — 已有运行时 can_short 检查，无需修改。
+  - `tradingagents/agents/managers/risk_manager.py` — 已有 `_sanitize_short_selling_text` 后处理，无需修改。
+- **测试**：
+  - `tests/test_c003_short_strategy_filter.py`（新增）— **23 tests passed**。
+  - 覆盖 5 个测试类：扩展模式匹配（12）、filter_short_strategy 便捷函数（7）、Research Manager 集成（2）、Bear Researcher 集成（1）、Risk Manager 集成（1）。
+- **回归**：
+  - `pytest tests/test_f001_report_execution_fixes.py tests/test_readiness_score.py tests/test_decision_semantics.py tests/test_research_manager_consensus.py tests/test_e_series_fixes.py -q`：**276 passed**。
+  - `pytest tests/test_c001_position_validation_gate.py tests/test_decision_replay.py tests/test_v006_decision_e2e_replay.py tests/test_p11_has_position.py tests/test_g001_three_layer.py -q`：**146 passed**。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-23 | C-001 position_validation_gate 持仓状态动作门禁
+
+- **任务**：C-001 — 每份报告生成前读取持仓状态，根据持仓状态约束可输出的动作类型（P2）
+- **实现**：
+  - `tradingagents/agents/utils/position_validation_gate.py`（新增）— 持仓状态动作门禁模块。
+    - `validate_position_actions(text, user_context)` 主入口：解析持仓状态（has_position/no_position/unknown），检测报告文本中违反持仓约束的动作关键词。
+    - 未持仓禁止动作：减仓/清仓/止损/止盈/卖出/HOLD/SELL/EXIT/REDUCE 等（30+ 模式）。
+    - 已持仓禁止动作：建仓/买入/入场/BUY/ENTER 等（15+ 模式）。
+    - 未知持仓状态：不约束（与现有行为一致）。
+    - 字段名保护：止损价/止损位/止损条件/止损线/止损红线不误判为违规。
+    - 系统区块排除：⚠️ [C-001]/[D-002]/📊/--- 标记后的内容不参与检测。
+    - `format_position_validation_warning(result)` 将违规结果格式化为追加警告文本。
+    - 返回结构化 dict：`{passed, position_status, violations, allowed_actions, forbidden_actions, has_position}`。
+  - `tradingagents/agents/managers/research_manager.py` — 替换原软警告为 `validate_position_actions()` 门禁调用，清理未使用的 `has_position` 变量。
+  - `tradingagents/agents/managers/risk_manager.py` — 同上，替换原软警告为门禁调用。
+  - `tradingagents/graph/signal_processing.py` — 未修改，`_has_gate_failure()` 仍能识别新门禁输出的 `[C-001]` 标记。
+  - `tradingagents/agents/utils/trade_actions.py` — 未修改，复用现有 `POSITION_STATE_ACTIONS` 枚举。
+- **测试**：
+  - `tests/test_c001_position_validation_gate.py`（新增）— **46 tests passed**。
+  - 覆盖 10 个测试类：未持仓违规检测（9）、已持仓违规检测（8）、未知持仓不约束（4）、字段名保护（5）、系统区块排除（4）、多违规检测（2）、警告格式化（4）、边界条件（7）、集成验证（3）。
+- **回归**：
+  - `pytest tests/test_decision_semantics.py tests/test_decision_replay.py tests/test_e_series_fixes.py tests/test_readiness_score.py -q`：**194 passed**。
+  - `pytest tests/test_fund004a_integrity_gate.py tests/test_p11_has_position.py -q`：**35 passed**。
+  - `py_compile` 全部修改文件通过。
+- **向后兼容**：新门禁输出仍包含 `[C-001]` 标记，`signal_processing._has_gate_failure()` 和 `test_e_series_fixes.py`/`test_decision_semantics.py` 中的断言不受影响。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-23 | B-001 接入小米 MiMo 模型到 TA 系统
+
+- **任务**：B-001 — 在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro（高优先级）
+- **实现**：
+  - `tradingagents/llm_clients/mimo_client.py`（新增）— 专用 MiMo 客户端适配器，继承 `BaseLLMClient`，内部使用 `UnifiedChatOpenAI`（MiMo 兼容 OpenAI 协议）。
+    - 双端点支持：标准端点 `https://api.xiaomimimo.com/v1`、Token Plan 端点 `https://token-plan-cn.xiaomimimo.com/v1`（默认）。
+    - 推理模型检测：`mimo-v2.5-pro` 识别为推理模型，自动跳过 temperature 参数。
+    - API Key 解析：`TA_API_KEY` > `OPENAI_API_KEY`，与现有 OpenAI-compatible 端点一致。
+    - 超时默认 300s，与 OpenAIClient 保持一致。
+  - `tradingagents/llm_clients/factory.py` — 新增 `mimo` provider 路由，`create_llm_client("mimo", ...)` 返回 `MiMoClient`。
+  - `tradingagents/llm_clients/model_catalog.py` — `xiaomi-mimo` 和 `xiaomi-token-plan` 条目 provider 从 `openai` 改为 `mimo`，`xiaomi-mimo` 模型名从旧版 `xiaomi/mimo-v2-flash`/`xiaomi/mimo-v2-pro` 升级为 `mimo-v2.5`/`mimo-v2.5-pro`。
+  - `tradingagents/llm_clients/validators.py` — 新增 `mimo` provider 的 `VALID_MODELS` 列表（6 个模型名：`mimo-v2.5`、`mimo-v2.5-pro`、`xiaomi/mimo-v2-flash`、`xiaomi/mimo-v2-pro`、`xiaomi/mimo-v2.5`、`xiaomi/mimo-v2.5-pro`）。
+  - `tradingagents/llm_clients/__init__.py` — 导出 `MiMoClient`。
+- **测试**：
+  - `tests/test_mimo_client.py`（新增）— **45 tests passed**。
+  - 覆盖 11 个测试类：工厂路由（6）、客户端实例化（3）、Base URL 解析（3）、推理模型检测（6）、模型验证（6）、模型目录（7）、get_llm 输出（6）、向后兼容（2）、常量（4）、导入（2）。
+- **回归**：
+  - `pytest tests/test_config_fallback.py tests/test_llm_rate_limiter.py -q`：**42 passed**（LLM/config 回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `pytest tests/test_fund005_agent_trace.py -q`：**24 passed**（引用 MiMo 模型名的 trace 测试）。
+  - `py_compile` 全部修改文件通过。
+- **向后兼容**：`llm_provider=openai` + MiMo base_url 的旧配置路径仍然工作，不受影响。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-23 | SCORE-003 账户上下文 portfolio_fit 评分卡
+
+- **任务**：SCORE-003 — 账户上下文 `portfolio_fit` 评分卡（P1）
+- **实现**：
+  - `tradingagents/tradeflow/portfolio_fit_score.py`（新增，`# [SCORE-003] portfolio_fit_card`）— 纯确定性评分卡模块，不调用 LLM / 网络 / prompts。
+    - 六维度评分：交易权限（0.20）、仓位与上限（0.20）、现金防守空间（0.15）、相关性集中度（0.15）、流动性执行难度（0.15）、账户风险预算（0.15）。
+    - 每维度携带 `score/weight/status/source_fields/reasons/missing_fields`，可追溯到输入字段。
+    - 板块权限推断：科创板（688/689）、创业板（300/301）、北交所（8/4）、主板（6/0），按 symbol 前缀确定性映射。
+    - 仓位评估：当前仓位 vs 计划上限（复用 PLAYBOOK-002 `classify_asset_type` + `compute_planned_max_position`），按 room_pct 四档评分。
+    - 现金评估：可用资金 vs 最低一手成本（考虑板块差异手数：STAR=200、主板/创业板=100、北交所=1）。
+    - 集中度评估：同主题持仓计数 vs `concentration_per_topic_max`，四档评分。
+    - 流动性评估：价格水平 + 日均成交量 + 买卖价差，各独立评分取均值。
+    - 风险预算评估：预算利用率 + 当日新开仓限额 + 并发跟踪数，各独立评分取均值。
+    - 加权合成 `portfolio_fit` 0-100，缺维度时按可用权重归一化（`data_status=partial`）；全缺返回 0 + `missing`。
+    - 布尔/三态事实：`tradable_by_user / position_overweight / insufficient_cash / concentration_exceeded / risk_budget_exceeded / context_unknown`。
+    - `context_unknown` 在 3 个关键维度（权限/仓位/现金）中 ≥2 个非 "ok" 时为 True，确保缺省上下文不被解释为"适配良好"。
+    - `portfolio_fit_to_dict()` 序列化为 JSON-safe dict。
+  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_portfolio_fit()` / `_enrich_candidates_with_portfolio_fit()`，注入到 `get_candidates` / `get_daily_plan` / `get_candidate_detail` / `get_candidates_tiered` 四条数据通路。
+    - 与 SCORE-002 entry_timing 同模式：只读、不调用 LLM、不改变 tier / action 门禁；异常静默降级为 `portfolio_fit_card=None`。
+    - 自动从候选 `strategy_tags` 推断资产类型，从 `staged_entry_rules` 获取计划仓位上限。
+    - 账户级上下文（permissions / cash / risk budget）通过 kwargs 传入，缺省时各维度 graceful 降级。
+- **测试**：
+  - `tests/test_score003_portfolio_fit.py` — **116 tests passed**。
+  - 覆盖 16 个测试类：板块推断（15）、交易权限（10）、仓位与上限（11）、现金防守（13）、相关性集中度（6）、流动性执行（8）、风险预算（12）、集成计算（10）、序列化（3）、权重正确性（2）、验收场景（9）、服务层注入（7）、边界情况（6）。
+- **改动文件**：
+  - `tradingagents/tradeflow/portfolio_fit_score.py`（新增）
+  - `api/services/tradeflow_service.py`（新增 enrichment 函数 + 4 处调用点）
+  - `tests/test_score003_portfolio_fit.py`（新增）
+- **回归**：
+  - `pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py tests/test_score002_entry_timing.py -q`：**158 passed**（SCORE-001/002 回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `py_compile` 通过。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。`portfolio_fit` 不注入研究快照 JSON，不改变 `action_tier` / `tier` / `decision`。评分只描述适配度，硬性阻断由 SCORE-004 集中裁决。
+
+## 2026-07-23 | SCORE-002 复用 TradeFlow 现有因子生成 entry_timing 评分卡
+
+- **任务**：SCORE-002 — 复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1）
+- **实现**：
+  - `tradingagents/tradeflow/entry_timing_score.py`（新增，`# [SCORE-002] entry_timing_adapter`）— 纯确定性评分卡模块，复用 TradeFlow 已有字段，不调用 LLM / 网络 / prompts。
+    - 五维度评分：估值预期位置（0.25）、拥挤度（0.20）、资金价格确认（0.20）、催化有效性（0.25）、下行赔率（0.10）。
+    - 每维度携带 `score/weight/status/source_fields/reasons/missing_fields`，可追溯到现有候选字段。
+    - 时机风险标志检测：第一次大跌、跌停未打开、爆量破位、板块退潮（从 `risk_flags` + `overheat_flags` 提取）。
+    - 加权合成 `entry_timing` 0-100，缺维度时按可用权重归一化（`data_status=partial`）；全缺返回 0 + `missing`。
+    - 资金单位未校验 → `fund_price_confirm` 上限 50；时机风险标志 → 整体扣分（每个 10 分，上限 30）。
+    - `entry_timing_to_dict()` 序列化为 JSON-safe dict。
+  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_entry_timing()` / `_enrich_candidates_with_entry_timing()`，注入到 `get_candidates` / `get_daily_plan` / `get_candidate_detail` / `get_candidates_tiered` 四条数据通路。
+    - 与 KB-004/KB-008/HY-006/SCORE-001B 同模式：只读、不调用 LLM、不改变 tier / action 门禁；异常静默降级为 `entry_timing_card=None`。
+- **测试**：
+  - `tests/test_score002_entry_timing.py` — **48 tests passed**。
+  - 覆盖 14 个测试类：估值预期位置（4）、拥挤度（3）、资金价格确认（3）、催化有效性（3）、下行赔率（3）、时机风险标志（7）、七类验收场景（7）、稳定性/确定性（3）、研究快照独立性（2）、序列化（4）、部分数据（1）、服务层注入（7）、权重正确性（1）。
+- **改动文件**：
+  - `tradingagents/tradeflow/entry_timing_score.py`（新增）
+  - `api/services/tradeflow_service.py`（新增 enrichment 函数 + 4 处调用点）
+  - `tests/test_score002_entry_timing.py`（新增）
+- **回归**：
+  - `pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py -q`：**110 passed**（SCORE-001 回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `py_compile` 通过。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。`entry_timing` 不注入研究快照 JSON，不改变 `action_tier` / `tier` / `decision`。
+
+## 2026-07-23 | SCORE-001B 研究快照接入聚合响应与 TradeFlow candidate detail
+
+- **任务**：SCORE-001B — 研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1）
+- **实现**：
+  - `tradingagents/dataflows/research_score_snapshot.py` — 新增 `snapshot_to_api_dict()` 序列化函数，将 `ResearchScoreQueryResult` 转为 API 安全的 slim dict（过滤绝对路径/敏感信息，只输出摘要/证据引用/缺口）。
+  - `api/services/research_evidence_service.py` — KB-020 聚合响应新增 `research_score_snapshot` bucket（`BUCKET_RESEARCH_SCORE_SNAPSHOT`），数据状态映射 HAS_DATA→fresh / STALE→stale / NO_DATA→missing。
+  - `api/services/tradeflow_service.py` — `get_candidate_detail` 新增 `_enrich_candidate_with_research_score_snapshot()` 注入，与 KB-008/KB-004/HY-006 同模式（只读、不改 tier/action，失败静默降级）。
+  - `api/services/report_service.py` — `create_report` 调用 `attach_report_research_score_snapshot()` 附加快照摘要到 result_data（只读，不改变强动作门禁）。
+- **测试**：
+  - `tests/test_score001b_snapshot_api_adapter.py` — 37 tests（snapshot_to_api_dict 五类状态+敏感过滤+路径过滤+动作字段隔离 / KB-020 bucket / TradeFlow enrichment / report attachment / JSON 可序列化）。
+  - `pytest tests/test_score001_research_score_snapshot.py -q`：**73 passed**（SCORE-001 回归）。
+  - `pytest tests/test_kb020_research_evidence_api.py tests/test_runtime_tier_contract.py -q`：**194 passed**（KB-020 + runtime tier 回归）。
+  - `pytest tests/test_api_smoke.py -q`：**52 passed**（API smoke 回归）。
+- **改动文件**：
+  - `tradingagents/dataflows/research_score_snapshot.py` — 新增 `snapshot_to_api_dict` + `_filter_sensitive` + `_is_abs_path_like`
+  - `api/services/research_evidence_service.py` — 新增 `BUCKET_RESEARCH_SCORE_SNAPSHOT` / `_build_research_score_snapshot_bucket` / 更新 `ALL_BUCKETS` / payload / disabled / `__all__`
+  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_research_score_snapshot` + 在 `get_candidate_detail` 中调用
+  - `api/services/report_service.py` — 新增 `attach_report_research_score_snapshot` + 在 `create_report` 中调用
+  - `tests/test_score001b_snapshot_api_adapter.py` — 新增测试文件
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-23 | SCORE-001 re-validation 与状态回写
+
+- **任务**：SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
+- **操作**：re-validate 已有实现，确认契约完整性，更新 TASKS.md 状态为 done。
+- **实现**：已有实现（commit 87dcd44 + 24881f6）完整覆盖任务要求：
+  - `tradingagents/dataflows/research_score_snapshot.py` — 只读 loader/provider，五类状态、fail-closed 降级表、路径安全、禁止动作字段、证据闭包、来源等级复用 KB-014。
+
+exec
+/bin/zsh -lc "git diff --stat && printf '\\n--- cached stat ---\\n' && git diff --cached --stat && printf '\\n--- untracked ---\\n' && find docs/reviews/C-004-20260723-round1.txt docs/task_runs/C-004-20260723-033945 -maxdepth 3 -type f -print" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                 | 13 +++++++++++++
+ docs/TASKS.md                                  |  2 +-
+ tests/test_decision_replay.py                  |  2 +-
+ tests/test_execution_schema.py                 |  9 +++++++++
+ tradingagents/agents/utils/execution_schema.py | 10 ++++------
+ 5 files changed, 28 insertions(+), 8 deletions(-)
+
+--- cached stat ---
+
+--- untracked ---
+docs/reviews/C-004-20260723-round1.txt
+docs/task_runs/C-004-20260723-033945/tests-round2.txt
+docs/task_runs/C-004-20260723-033945/tests-round1.txt
+docs/task_runs/C-004-20260723-033945/codex-review-round1.txt
+docs/task_runs/C-004-20260723-033945/codegraph-status.json
+docs/task_runs/C-004-20260723-033945/prompt-round1.md
+docs/task_runs/C-004-20260723-033945/codegraph-context.txt
+docs/task_runs/C-004-20260723-033945/opencode-round2.txt
+docs/task_runs/C-004-20260723-033945/prompt-round2.md
+docs/task_runs/C-004-20260723-033945/opencode-round1.txt
+docs/task_runs/C-004-20260723-033945/task.md
+docs/task_runs/C-004-20260723-033945/review-meta-round1.json
+docs/task_runs/C-004-20260723-033945/codegraph-impact.txt
+
+exec
+/bin/zsh -lc 'git diff -- tradingagents/agents/utils/execution_schema.py tests/test_execution_schema.py tests/test_decision_replay.py docs/TASKS.md docs/DEVLOG.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 1fe553b..a2f45e4 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -14115,3 +14115,16 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
+ - **Timeout budget**: OpenCode 1800s / tests 900s
+ - **Review file**: docs/reviews/C-003-20260723-round1.txt
+ - **Run archive**: docs/task_runs/C-003-20260723-033007/
++
++## 2026-07-23 | C-004 动作枚举重设计
++
++- **Task**: C-004 - 动作枚举重设计（P1）
++- **Priority**: P2
++- **Status**: OK PASS
++- **Changes**:
++  - `tradingagents/agents/utils/execution_schema.py` — 移除重复的 `Action` 枚举，改为从 `trade_actions.py` 导入 `TradeAction` 并创建向后兼容别名 `Action = TradeAction`
++  - `tests/test_execution_schema.py` — 新增 2 个测试验证 `Action is TradeAction` 别名和枚举恰好 5 个值
++  - `tests/test_decision_replay.py` — 修复 `TestReplay600584` 断言：600584.SH 样本无持仓关键词，`_detect_has_position` 返回 `None`（与 `_extract_decision_semantics` 的 `Optional[bool]` 契约一致）
++- **Key logic**: `TradeAction`（5 个值：WAIT/ENTER/HOLD/REDUCE/EXIT）为唯一权威动作枚举定义；`execution_schema.Action` 作为向后兼容别名保留
++- **Tests**: 316 passed, 0 failed
++- **Codex Review**: passed (round 1)
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 1bd996b..1b2c6d6 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -135,7 +135,7 @@
+ ### C-004: 动作枚举重设计（P1）
+ - **描述**：将最终动作枚举精简为 5 个
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：done — codex review passed
+ - **预计耗时**：30-40 分钟
+ - **depends_on**：无
+ - **auto_release**：true
+diff --git a/tests/test_decision_replay.py b/tests/test_decision_replay.py
+index 4af432f..540dabe 100644
+--- a/tests/test_decision_replay.py
++++ b/tests/test_decision_replay.py
+@@ -159,7 +159,7 @@ class TestReplay600584:
+         has_position = _detect_has_position(conclusion)
+         trigger_price = _extract_trigger_price(conclusion)
+ 
+-        assert has_position is False
++        assert has_position is None
+         assert trigger_price is None
+ 
+         result = _extract_decision_semantics(
+diff --git a/tests/test_execution_schema.py b/tests/test_execution_schema.py
+index 4c3c27a..4594793 100644
+--- a/tests/test_execution_schema.py
++++ b/tests/test_execution_schema.py
+@@ -272,6 +272,15 @@ class TestEnums:
+         assert Action.REDUCE.value == "REDUCE"
+         assert Action.EXIT.value == "EXIT"
+ 
++    def test_action_is_trade_action_alias(self):
++        """[C-004] Action in execution_schema must be the same object as TradeAction."""
++        from tradingagents.agents.utils.trade_actions import TradeAction
++        assert Action is TradeAction
++
++    def test_action_count_is_five(self):
++        """[C-004] Exactly 5 action values, no more, no less."""
++        assert len(Action) == 5
++
+     def test_buy_level_values(self):
+         assert BuyLevel.LEVEL_0.value == 0
+         assert BuyLevel.LEVEL_4.value == 4
+diff --git a/tradingagents/agents/utils/execution_schema.py b/tradingagents/agents/utils/execution_schema.py
+index d30a2ca..0a056f2 100644
+--- a/tradingagents/agents/utils/execution_schema.py
++++ b/tradingagents/agents/utils/execution_schema.py
+@@ -10,13 +10,11 @@ from dataclasses import dataclass, field, asdict
+ from enum import Enum
+ from typing import Optional
+ 
++# [C-004] action_enum — single canonical enum; no local duplicate.
++from tradingagents.agents.utils.trade_actions import TradeAction
+ 
+-class Action(Enum):
+-    WAIT = "WAIT"
+-    ENTER = "ENTER"
+-    HOLD = "HOLD"
+-    REDUCE = "REDUCE"
+-    EXIT = "EXIT"
++# Backward-compatible alias so existing imports of ``Action`` keep working.
++Action = TradeAction
+ 
+ 
+ class BuyLevel(Enum):
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/agents/utils/trade_actions.py && printf '\\n--- execution_schema ---\\n' && sed -n '1,220p' tradingagents/agents/utils/execution_schema.py && printf '\\n--- tests relevant ---\\n' && sed -n '1,360p' tests/test_execution_schema.py && sed -n '120,190p' tests/test_decision_replay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [C-004] action_enum
+"""交易动作枚举定义"""
+
+from enum import Enum
+
+
+class TradeAction(Enum):
+    """交易动作枚举 — 5 个标准动作"""
+    WAIT = "WAIT"           # 观望/等条件（含回避，备注说明原因）
+    ENTER = "ENTER"         # 建仓
+    HOLD = "HOLD"           # 持有
+    REDUCE = "REDUCE"       # 减仓/止损/止盈
+    EXIT = "EXIT"           # 清仓
+
+
+# 动作描述
+ACTION_DESCRIPTIONS = {
+    TradeAction.WAIT: "观望，等待更好的入场条件",
+    TradeAction.ENTER: "建仓买入",
+    TradeAction.HOLD: "继续持有",
+    TradeAction.REDUCE: "减仓或止损",
+    TradeAction.EXIT: "清仓离场",
+}
+
+# 持仓状态与允许的动作
+POSITION_STATE_ACTIONS = {
+    False: [TradeAction.WAIT, TradeAction.ENTER],              # 未持仓：只能观望或建仓
+    True: [TradeAction.HOLD, TradeAction.REDUCE, TradeAction.EXIT],  # 已持仓：持有、减仓、清仓
+}
+
+# 旧动作 → 新动作映射（兼容现有 prompt 输出）
+ACTION_MAPPING = {
+    "BUY": TradeAction.ENTER,
+    "SELL": TradeAction.EXIT,
+    "HOLD": TradeAction.HOLD,
+    "买入": TradeAction.ENTER,
+    "卖出": TradeAction.EXIT,
+    "观望": TradeAction.WAIT,
+    "减仓": TradeAction.REDUCE,
+    "清仓": TradeAction.EXIT,
+    "止损": TradeAction.REDUCE,
+    "止盈": TradeAction.REDUCE,
+}
+
+
+def validate_action(action_str: str, has_position: bool) -> TradeAction:
+    """校验动作是否合法，返回合法的 TradeAction"""
+    action_str_upper = action_str.strip().upper()
+
+    # 尝试直接匹配
+    for action in TradeAction:
+        if action.value == action_str_upper:
+            return action
+
+    # 尝试中文匹配
+    mapped = ACTION_MAPPING.get(action_str.strip())
+    if mapped:
+        return mapped
+
+    # 尝试模糊匹配
+    for key, action in ACTION_MAPPING.items():
+        if key in action_str:
+            return action
+
+    # 默认返回 WAIT
+    return TradeAction.WAIT
+
+--- execution_schema ---
+"""Execution Schema — structured output for report execution decisions.  # [N-005] execution_schema
+
+Provides machine-readable alternative to format_execution_block() text output.
+Does NOT replace text output; produces structured sidecar data.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Optional
+
+# [C-004] action_enum — single canonical enum; no local duplicate.
+from tradingagents.agents.utils.trade_actions import TradeAction
+
+# Backward-compatible alias so existing imports of ``Action`` keep working.
+Action = TradeAction
+
+
+class BuyLevel(Enum):
+    LEVEL_0 = 0
+    LEVEL_1 = 1
+    LEVEL_2 = 2
+    LEVEL_3 = 3
+    LEVEL_4 = 4
+
+
+class RiskLevel(Enum):
+    LEVEL_0 = 0
+    LEVEL_1 = 1
+    LEVEL_2 = 2
+    LEVEL_3 = 3
+    LEVEL_4 = 4
+
+
+@dataclass
+class ExecutionSchema:
+    action: str
+    buy_level: int = 0
+    risk_level: int = 0
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    confidence: str = "中"
+    opportunity_score: int = 0
+    source_coverage: int = 0
+    evidence_coverage: int = 0
+    strong_action_gate_passed: bool = True
+    gate_failures: list[str] = field(default_factory=list)
+    position_status: str = "unknown"
+    analysis_intent: str = "watch"
+    horizon: str = "short"
+    data_quality_flags: list[str] = field(default_factory=list)
+    evidence_refs: list[str] = field(default_factory=list)
+    valuation_mismatch: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def validate(self) -> list[str]:
+        issues: list[str] = []
+        valid_actions = {a.value for a in Action}
+        if self.action not in valid_actions:
+            issues.append(f"Invalid action: {self.action}")
+        if self.position_status == "no_position" and self.action != "WAIT":
+            issues.append(f"no_position but action={self.action}, should be WAIT")
+        if self.action == "ENTER" and self.buy_level < 3:
+            issues.append(f"ENTER but buy_level={self.buy_level}, need >= 3")
+        if self.action in ("REDUCE", "EXIT") and self.position_status != "has_position":
+            issues.append(f"{self.action} but position_status={self.position_status}")
+        if self.evidence_coverage < 50:
+            self.data_quality_flags.append("low_evidence_coverage")
+        if self.source_coverage < 50:
+            self.data_quality_flags.append("low_source_coverage")
+        return issues
+
+
+def build_execution_schema(
+    source_coverage: int,
+    evidence_coverage: int,
+    confidence: str,
+    opportunity_score: int,
+    risk_level: int,
+    buy_level: int,
+    position_status: str = "unknown",
+    analysis_intent: str = "watch",
+    horizon: str = "short",
+    strong_action_gate: dict = None,
+    valuation_mismatch: bool = False,
+) -> ExecutionSchema:
+    if position_status == "no_position":
+        action = "WAIT"
+    elif analysis_intent == "stop_loss":
+        action = "EXIT"
+    elif analysis_intent == "reduce":
+        action = "REDUCE"
+    elif analysis_intent in ("add", "entry") and buy_level >= 3:
+        action = "ENTER"
+    else:
+        action = "HOLD"
+
+    gate = strong_action_gate or {"passed": True, "failures": []}
+
+    return ExecutionSchema(
+        action=action,
+        buy_level=buy_level,
+        risk_level=risk_level,
+        confidence=confidence,
+        opportunity_score=opportunity_score,
+        source_coverage=source_coverage,
+        evidence_coverage=evidence_coverage,
+        strong_action_gate_passed=gate["passed"],
+        gate_failures=gate.get("failures", []),
+        position_status=position_status,
+        analysis_intent=analysis_intent,
+        horizon=horizon,
+        valuation_mismatch=valuation_mismatch,
+    )
+
+--- tests relevant ---
+"""Tests for execution_schema — N-005."""  # [N-005] execution_schema
+
+import pytest
+
+from tradingagents.agents.utils.execution_schema import (
+    Action,
+    BuyLevel,
+    RiskLevel,
+    ExecutionSchema,
+    build_execution_schema,
+)
+
+
+class TestExecutionSchemaToDict:
+    def test_to_dict_returns_all_fields(self):
+        s = ExecutionSchema(action="HOLD")
+        d = s.to_dict()
+        assert d["action"] == "HOLD"
+        assert "buy_level" in d
+        assert "risk_level" in d
+        assert "gate_failures" in d
+        assert "data_quality_flags" in d
+        assert isinstance(d["gate_failures"], list)
+        assert isinstance(d["data_quality_flags"], list)
+
+
+class TestActionDerivation:
+    def test_no_position_always_wait(self):
+        for intent in ("watch", "entry", "add", "reduce", "stop_loss"):
+            s = build_execution_schema(
+                source_coverage=80,
+                evidence_coverage=80,
+                confidence="高",
+                opportunity_score=70,
+                risk_level=3,
+                buy_level=4,
+                position_status="no_position",
+                analysis_intent=intent,
+            )
+            assert s.action == "WAIT", f"intent={intent} should still be WAIT"
+
+    def test_stop_loss_gives_exit(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="高",
+            opportunity_score=30,
+            risk_level=1,
+            buy_level=2,
+            position_status="has_position",
+            analysis_intent="stop_loss",
+        )
+        assert s.action == "EXIT"
+
+    def test_reduce_gives_reduce(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="中",
+            opportunity_score=40,
+            risk_level=2,
+            buy_level=2,
+            position_status="has_position",
+            analysis_intent="reduce",
+        )
+        assert s.action == "REDUCE"
+
+    def test_entry_with_high_buy_level_gives_enter(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="高",
+            opportunity_score=75,
+            risk_level=3,
+            buy_level=3,
+            position_status="has_position",
+            analysis_intent="entry",
+        )
+        assert s.action == "ENTER"
+
+    def test_add_with_high_buy_level_gives_enter(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="高",
+            opportunity_score=75,
+            risk_level=3,
+            buy_level=4,
+            position_status="has_position",
+            analysis_intent="add",
+        )
+        assert s.action == "ENTER"
+
+    def test_entry_with_low_buy_level_gives_hold(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=2,
+            buy_level=2,
+            position_status="has_position",
+            analysis_intent="entry",
+        )
+        assert s.action == "HOLD"
+
+    def test_watch_with_has_position_gives_hold(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=3,
+            buy_level=2,
+            position_status="has_position",
+            analysis_intent="watch",
+        )
+        assert s.action == "HOLD"
+
+    def test_unknown_position_watch_gives_hold(self):
+        s = build_execution_schema(
+            source_coverage=60,
+            evidence_coverage=60,
+            confidence="中",
+            opportunity_score=40,
+            risk_level=2,
+            buy_level=1,
+            position_status="unknown",
+            analysis_intent="watch",
+        )
+        assert s.action == "HOLD"
+
+
+class TestValidation:
+    def test_valid_schema_no_issues(self):
+        s = ExecutionSchema(
+            action="HOLD",
+            buy_level=2,
+            risk_level=3,
+            position_status="has_position",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        issues = s.validate()
+        assert issues == []
+
+    def test_no_position_with_enter_fails(self):
+        s = ExecutionSchema(
+            action="ENTER",
+            buy_level=3,
+            position_status="no_position",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        issues = s.validate()
+        assert any("no_position" in i for i in issues)
+
+    def test_invalid_action_fails(self):
+        s = ExecutionSchema(
+            action="BUY_NOW",
+            position_status="has_position",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        issues = s.validate()
+        assert any("Invalid action" in i for i in issues)
+
+    def test_enter_with_low_buy_level_fails(self):
+        s = ExecutionSchema(
+            action="ENTER",
+            buy_level=1,
+            position_status="has_position",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        issues = s.validate()
+        assert any("ENTER but buy_level" in i for i in issues)
+
+    def test_reduce_without_position_fails(self):
+        s = ExecutionSchema(
+            action="REDUCE",
+            position_status="no_position",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        issues = s.validate()
+        assert any("REDUCE but position_status" in i for i in issues)
+
+    def test_exit_without_position_fails(self):
+        s = ExecutionSchema(
+            action="EXIT",
+            position_status="unknown",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        issues = s.validate()
+        assert any("EXIT but position_status" in i for i in issues)
+
+    def test_low_coverage_sets_data_quality_flags(self):
+        s = ExecutionSchema(
+            action="HOLD",
+            position_status="has_position",
+            source_coverage=30,
+            evidence_coverage=40,
+        )
+        s.validate()
+        assert "low_evidence_coverage" in s.data_quality_flags
+        assert "low_source_coverage" in s.data_quality_flags
+
+    def test_high_coverage_no_quality_flags(self):
+        s = ExecutionSchema(
+            action="HOLD",
+            position_status="has_position",
+            source_coverage=80,
+            evidence_coverage=80,
+        )
+        s.validate()
+        assert "low_evidence_coverage" not in s.data_quality_flags
+        assert "low_source_coverage" not in s.data_quality_flags
+
+
+class TestBuildExecutionSchemaFields:
+    def test_gate_failure_propagation(self):
+        gate = {"passed": False, "failures": ["evidence_too_low", "confidence_insufficient"]}
+        s = build_execution_schema(
+            source_coverage=40,
+            evidence_coverage=40,
+            confidence="低",
+            opportunity_score=30,
+            risk_level=2,
+            buy_level=1,
+            position_status="has_position",
+            strong_action_gate=gate,
+        )
+        assert s.strong_action_gate_passed is False
+        assert s.gate_failures == ["evidence_too_low", "confidence_insufficient"]
+
+    def test_valuation_mismatch_propagation(self):
+        s = build_execution_schema(
+            source_coverage=80,
+            evidence_coverage=80,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=2,
+            buy_level=2,
+            valuation_mismatch=True,
+        )
+        assert s.valuation_mismatch is True
+
+    def test_default_values(self):
+        s = build_execution_schema(
+            source_coverage=60,
+            evidence_coverage=60,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=2,
+            buy_level=2,
+        )
+        assert s.position_status == "unknown"
+        assert s.analysis_intent == "watch"
+        assert s.horizon == "short"
+        assert s.valuation_mismatch is False
+        assert s.strong_action_gate_passed is True
+        assert s.gate_failures == []
+
+
+class TestEnums:
+    def test_action_values(self):
+        assert Action.WAIT.value == "WAIT"
+        assert Action.ENTER.value == "ENTER"
+        assert Action.HOLD.value == "HOLD"
+        assert Action.REDUCE.value == "REDUCE"
+        assert Action.EXIT.value == "EXIT"
+
+    def test_action_is_trade_action_alias(self):
+        """[C-004] Action in execution_schema must be the same object as TradeAction."""
+        from tradingagents.agents.utils.trade_actions import TradeAction
+        assert Action is TradeAction
+
+    def test_action_count_is_five(self):
+        """[C-004] Exactly 5 action values, no more, no less."""
+        assert len(Action) == 5
+
+    def test_buy_level_values(self):
+        assert BuyLevel.LEVEL_0.value == 0
+        assert BuyLevel.LEVEL_4.value == 4
+
+    def test_risk_level_values(self):
+        assert RiskLevel.LEVEL_0.value == 0
+        assert RiskLevel.LEVEL_4.value == 4
+            trigger_price=trigger_price,
+        )
+
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+        assert result.decision == "HOLD"
+
+
+class TestReplay002138:
+    """002138.SZ - 偏空方向，盈利恶化回避，未持仓，C-001 等待触发。"""
+
+    def test_semantics(self):
+        sample = _load_sample("002138.SZ.json")
+        conclusion = sample["conclusion"]
+        has_position = _detect_has_position(conclusion)
+        trigger_price = _extract_trigger_price(conclusion)
+
+        assert has_position is False
+        assert trigger_price == pytest.approx(41.0)
+
+        result = _extract_decision_semantics(
+            conclusion,
+            has_position=has_position,
+            trigger_price=trigger_price,
+        )
+
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+        assert result.decision == "HOLD"
+
+
+class TestReplay600584:
+    """600584.SH - 无 VERDICT 标签，建议持有，未持仓，C-001 人工复核。"""
+
+    def test_semantics(self):
+        sample = _load_sample("600584.SH.json")
+        conclusion = sample["conclusion"]
+        has_position = _detect_has_position(conclusion)
+        trigger_price = _extract_trigger_price(conclusion)
+
+        assert has_position is None
+        assert trigger_price is None
+
+        result = _extract_decision_semantics(
+            conclusion,
+            has_position=has_position,
+            trigger_price=trigger_price,
+        )
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "观望"
+        assert result.decision == "HOLD"
+
+exec
+/bin/zsh -lc "rg \"\\bAction\\b|TradeAction|execution_schema\" -n --glob '"'!docs/task_runs/**'"' --glob '"'!docs/reviews/**'"'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/prompts/en.py:259:| Price Action | Volume | Meaning |
+tradingagents/prompts/en.py:267:| Price Action | Volume | Meaning |
+tradingagents/prompts/en.py:344:### High-Volume Stopping Action (Bottom)
+tradingagents/prompts/en.py:348:### High-Volume Stopping Action (Top)
+tests/test_playbook002_staged_entry_rules.py:934:# ── No Strong Action Words in Module Output ───────────────────────────────────
+api/services/bark_notification_service.py:263:    # Action lines: only include non-generic, non-empty content
+tests/test_p11_has_position.py:101:# ── P1-1c: Strong Action Gate 未通过 + 未持仓 → WAIT ────────────
+tests/test_p11_has_position.py:105:    """When not holding + Strong Action Gate failed, decision should be WAIT."""
+tests/test_p11_has_position.py:110:            "- Strong Action Gate：未通过\n"
+tests/test_p11_has_position.py:119:            "- Strong Action Gate：未通过\n"
+tests/test_h013_topic_heatmap.py:733:class TestNoTradeActions:
+tests/test_decision_semantics.py:161:            "- Strong Action Gate：未通过\n"
+tests/test_decision_semantics.py:170:        text = "- Strong Action Gate：未通过\n"
+tests/test_decision_semantics.py:185:            "- Strong Action Gate：未通过\n"
+tests/test_p0_p1_acceptance.py:56:            "- Strong Action Gate：通过\n"
+tests/test_report_ux006_knowledge_evidence_card.py:18:  2. **Action-semantic invariant**: the disabled summary is additive only —
+tests/test_report_ux006_knowledge_evidence_card.py:211:# ── 2. Action-semantic invariant: disabled does not alter actions ─────────
+tests/test_report_ux006_knowledge_evidence_card.py:280:        # Action gate intact through serialization.
+tests/test_report_ux003_wait_reason_codes.py:230:        "Strong Action Gate：未通过\n"
+tests/test_report_ux003_wait_reason_codes.py:357:# Scenario F: GATE_BLOCKED — explicit Strong Action Gate未通过.
+tests/test_report_ux003_wait_reason_codes.py:367:        "结论：方向偏多，但 Strong Action Gate：未通过，等待人工复核。\n"
+tests/test_e_series_fixes.py:17:    """P0: Strong Action Gate not passed → final signal must be HOLD."""
+tests/test_e_series_fixes.py:23:            "- Strong Action Gate：未通过\n"
+tests/test_e_series_fixes.py:32:            "- Strong Action Gate：通过\n"
+tests/test_e_series_fixes.py:64:        text = "- Strong Action Gate：未通过\n- 降级原因：source_coverage=60%"
+tests/test_e_series_fixes.py:68:        text = "- Strong Action Gate：通过"
+tests/test_e_series_fixes.py:157:# ── E-001: Strong Action Gate with HOLD enforcement ────────────────
+tests/test_e_series_fixes.py:161:    """Verify Strong Action Gate results in HOLD when not passed."""
+tests/test_e_series_fixes.py:322:            "- Strong Action Gate：未通过\n"
+tests/test_e_series_fixes.py:345:            "### 执行等级\n- Strong Action Gate：未通过\n"
+tests/test_e_series_fixes.py:360:            "- Strong Action Gate：未通过\n"
+tests/test_v008_paper_trial_acceptance.py:766:# ── Step 6: Confirm Action (Buy → Sell) ──────────────────────────
+tests/test_hy004_half_year_report_block.py:20:| # | Scenario                  | HY hit            | Action      | wait_codes      |
+tests/test_hy004_half_year_report_block.py:701:        # Action gate preserved.
+tests/test_h012_topic_registry.py:794:class TestNoTradeActions:
+api/services/research_evidence_service.py:23:    * Action-safe: the response body never carries ``decision`` /
+tests/test_execution_schema.py:1:"""Tests for execution_schema — N-005."""  # [N-005] execution_schema
+tests/test_execution_schema.py:5:from tradingagents.agents.utils.execution_schema import (
+tests/test_execution_schema.py:6:    Action,
+tests/test_execution_schema.py:10:    build_execution_schema,
+tests/test_execution_schema.py:30:            s = build_execution_schema(
+tests/test_execution_schema.py:43:        s = build_execution_schema(
+tests/test_execution_schema.py:56:        s = build_execution_schema(
+tests/test_execution_schema.py:69:        s = build_execution_schema(
+tests/test_execution_schema.py:82:        s = build_execution_schema(
+tests/test_execution_schema.py:95:        s = build_execution_schema(
+tests/test_execution_schema.py:108:        s = build_execution_schema(
+tests/test_execution_schema.py:121:        s = build_execution_schema(
+tests/test_execution_schema.py:225:        s = build_execution_schema(
+tests/test_execution_schema.py:239:        s = build_execution_schema(
+tests/test_execution_schema.py:251:        s = build_execution_schema(
+tests/test_execution_schema.py:269:        assert Action.WAIT.value == "WAIT"
+tests/test_execution_schema.py:270:        assert Action.ENTER.value == "ENTER"
+tests/test_execution_schema.py:271:        assert Action.HOLD.value == "HOLD"
+tests/test_execution_schema.py:272:        assert Action.REDUCE.value == "REDUCE"
+tests/test_execution_schema.py:273:        assert Action.EXIT.value == "EXIT"
+tests/test_execution_schema.py:276:        """[C-004] Action in execution_schema must be the same object as TradeAction."""
+tests/test_execution_schema.py:277:        from tradingagents.agents.utils.trade_actions import TradeAction
+tests/test_execution_schema.py:278:        assert Action is TradeAction
+tests/test_execution_schema.py:282:        assert len(Action) == 5
+tests/test_tf_paper001_paper_ledger.py:252:# ── Confirm Action (Buy) Tests ──────────────────────────────────────────
+tests/test_tf_paper001_paper_ledger.py:316:# ── Confirm Action (Sell) Tests ─────────────────────────────────────────
+tests/test_readiness_score.py:453:    assert "Strong Action Gate：通过" in block
+tests/test_readiness_score.py:468:    assert "Strong Action Gate：未通过" in block
+tests/test_readiness_score.py:702:# P2: Strong Action Gate unknown position semantic tests
+scripts/auto_dev_loop.sh:429:        echo "- **Action**: Deleted lock, restored ${lock_task_id:-unknown} to ready"
+tests/test_report_ux005_knowledge_action_semantics_replay.py:12:  | # | Scenario        | Action  | action_label  | KB hit          | half_year_facts   |
+tests/test_report_ux005_knowledge_action_semantics_replay.py:721:    rows.append("| # | Scenario | Action | action_label | KB | half_year_facts | wait_reason_codes |")
+tests/test_report_ux004_local_knowledge_replay.py:26:| # | Scenario            | KB hit          | Action      | wait_reason_codes     |
+tradingagents/graph/signal_processing.py:74:    - ``GATE_BLOCKED``: the Strong Action Gate failed, forcing WAIT even when
+tradingagents/graph/signal_processing.py:379:    if re.search(r"Strong Action Gate[：:]\s*未通过", text, re.IGNORECASE):
+tradingagents/graph/signal_processing.py:402:    If the execution block (Strong Action Gate / trade quality check / C-001)
+tradingagents/agents/utils/position_validation_gate.py:14:    TradeAction,
+tradingagents/agents/utils/position_validation_gate.py:193:        forbidden_actions = [a.value for a in TradeAction if a not in POSITION_STATE_ACTIONS[False]]
+tradingagents/agents/utils/position_validation_gate.py:196:        forbidden_actions = [a.value for a in TradeAction if a not in POSITION_STATE_ACTIONS[True]]
+tradingagents/tradeflow/action_tier_scorer.py:2:"""Trade Priority Score & Action Tier Scorer for TradeFlow.
+tradingagents/tradeflow/acceptance_replay.py:479:        lines.append(f"- **Action**: {r.action}")
+tradingagents/agents/utils/trade_actions.py:7:class TradeAction(Enum):
+tradingagents/agents/utils/trade_actions.py:18:    TradeAction.WAIT: "观望，等待更好的入场条件",
+tradingagents/agents/utils/trade_actions.py:19:    TradeAction.ENTER: "建仓买入",
+tradingagents/agents/utils/trade_actions.py:20:    TradeAction.HOLD: "继续持有",
+tradingagents/agents/utils/trade_actions.py:21:    TradeAction.REDUCE: "减仓或止损",
+tradingagents/agents/utils/trade_actions.py:22:    TradeAction.EXIT: "清仓离场",
+tradingagents/agents/utils/trade_actions.py:27:    False: [TradeAction.WAIT, TradeAction.ENTER],              # 未持仓：只能观望或建仓
+tradingagents/agents/utils/trade_actions.py:28:    True: [TradeAction.HOLD, TradeAction.REDUCE, TradeAction.EXIT],  # 已持仓：持有、减仓、清仓
+tradingagents/agents/utils/trade_actions.py:33:    "BUY": TradeAction.ENTER,
+tradingagents/agents/utils/trade_actions.py:34:    "SELL": TradeAction.EXIT,
+tradingagents/agents/utils/trade_actions.py:35:    "HOLD": TradeAction.HOLD,
+tradingagents/agents/utils/trade_actions.py:36:    "买入": TradeAction.ENTER,
+tradingagents/agents/utils/trade_actions.py:37:    "卖出": TradeAction.EXIT,
+tradingagents/agents/utils/trade_actions.py:38:    "观望": TradeAction.WAIT,
+tradingagents/agents/utils/trade_actions.py:39:    "减仓": TradeAction.REDUCE,
+tradingagents/agents/utils/trade_actions.py:40:    "清仓": TradeAction.EXIT,
+tradingagents/agents/utils/trade_actions.py:41:    "止损": TradeAction.REDUCE,
+tradingagents/agents/utils/trade_actions.py:42:    "止盈": TradeAction.REDUCE,
+tradingagents/agents/utils/trade_actions.py:46:def validate_action(action_str: str, has_position: bool) -> TradeAction:
+tradingagents/agents/utils/trade_actions.py:47:    """校验动作是否合法，返回合法的 TradeAction"""
+tradingagents/agents/utils/trade_actions.py:51:    for action in TradeAction:
+tradingagents/agents/utils/trade_actions.py:66:    return TradeAction.WAIT
+tradingagents/agents/utils/readiness_score.py:718:    - Strong Action Gate 未通过: cap 60
+tradingagents/agents/utils/readiness_score.py:925:    lines.append(f"- Strong Action Gate：{'通过' if gate['passed'] else '未通过'}")
+tradingagents/agents/managers/research_manager.py:13:from tradingagents.agents.utils.trade_actions import validate_action, TradeAction
+tradingagents/agents/utils/execution_schema.py:1:"""Execution Schema — structured output for report execution decisions.  # [N-005] execution_schema
+tradingagents/agents/utils/execution_schema.py:14:from tradingagents.agents.utils.trade_actions import TradeAction
+tradingagents/agents/utils/execution_schema.py:16:# Backward-compatible alias so existing imports of ``Action`` keep working.
+tradingagents/agents/utils/execution_schema.py:17:Action = TradeAction
+tradingagents/agents/utils/execution_schema.py:61:        valid_actions = {a.value for a in Action}
+tradingagents/agents/utils/execution_schema.py:77:def build_execution_schema(
+docs/DEVLOG.md:229:- **验证**：F-001 专项 70 项通过；readiness/trade_setup/execution_schema/g008/api_smoke/runtime_tier 回归 279 项通过；组合 349 项通过；`py_compile` 通过。
+docs/DEVLOG.md:4516:| `GATE_BLOCKED` | 门禁未通过 | Strong Action Gate 未通过，强制 WAIT |
+docs/DEVLOG.md:8795:- **设计参考**：N-005 已定义 WAIT/ENTER/HOLD/REDUCE/EXIT 枚举和 execution_schema，但未接到生产链路
+docs/DEVLOG.md:14125:  - `tradingagents/agents/utils/execution_schema.py` — 移除重复的 `Action` 枚举，改为从 `trade_actions.py` 导入 `TradeAction` 并创建向后兼容别名 `Action = TradeAction`
+docs/DEVLOG.md:14126:  - `tests/test_execution_schema.py` — 新增 2 个测试验证 `Action is TradeAction` 别名和枚举恰好 5 个值
+docs/DEVLOG.md:14128:- **Key logic**: `TradeAction`（5 个值：WAIT/ENTER/HOLD/REDUCE/EXIT）为唯一权威动作枚举定义；`execution_schema.Action` 作为向后兼容别名保留
+docs/TASKS-E6-E9.md:27:**问题：** 中间交易员计划里保留"最终交易建议:买入"，但系统最终动作已被 Strong Action Gate 降为 HOLD。读报告时容易混淆。
+docs/TASKS-E6-E9.md:29:> ⚠️ 上游买入建议已被 Strong Action Gate 降级，系统最终动作以 HOLD/等待触发为准。
+docs/tradeflow_acceptance/2026-05-30.md:20:- **Action**: NEED_DEEP_TA
+docs/tradeflow_acceptance/2026-05-30.md:35:- **Action**: OBSERVE
+docs/tradeflow_acceptance/2026-05-30.md:52:- **Action**: OBSERVE
+docs/tradeflow_acceptance/2026-05-30.md:69:- **Action**: OBSERVE
+docs/tradeflow_acceptance/2026-05-30.md:87:- **Action**: NEED_DEEP_TA
+docs/tradeflow_acceptance/2026-05-30.md:102:- **Action**: 
+docs/TASKS.md:3266:- **代码标注要求**：`# [N-005] execution_schema`
+docs/TASKS.md:3274:- **前置条件**：`N-005` 完成（已有 WAIT/ENTER/HOLD/REDUCE/EXIT 枚举和 execution_schema）✓。
+docs/TASKS.md:5997:  - 不改候选原始 score、Opportunity/Action Tier、decision 或 execution_action。
+docs/TASKS.md:6016:  - 复用 `technical_score/fund_flow_score/event_score/risk_penalty_score/data_quality_score`、触发距离、Observe 状态和现有 Opportunity/Action Tier 规则。
+
+exec
+/bin/zsh -lc "rg \"def _detect_has_position|class DecisionSemantics|_extract_decision_semantics\" -n tradingagents tests/test_decision_replay.py && sed -n '1,140p' tests/test_decision_replay.py && sed -n '1,520p' tradingagents/graph/signal_processing.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tests/test_decision_replay.py:3:Replays 5 real delta_log samples through _extract_decision_semantics and
+tests/test_decision_replay.py:18:from tradingagents.graph.signal_processing import _extract_decision_semantics
+tests/test_decision_replay.py:47:def _detect_has_position(conclusion: str) -> bool | None:
+tests/test_decision_replay.py:69:        result = _extract_decision_semantics(
+tests/test_decision_replay.py:93:        result = _extract_decision_semantics(
+tests/test_decision_replay.py:117:        result = _extract_decision_semantics(
+tests/test_decision_replay.py:141:        result = _extract_decision_semantics(
+tests/test_decision_replay.py:165:        result = _extract_decision_semantics(
+tradingagents/graph/signal_processing.py:132:class DecisionSemantics:
+tradingagents/graph/signal_processing.py:520:def _extract_decision_semantics(
+"""DECISION-002: Historical report replay tests.
+
+Replays 5 real delta_log samples through _extract_decision_semantics and
+asserts the expected research_direction / execution_action / action_label.
+
+Rules:
+  - No LLM calls
+  - No prompt modifications
+  - No production DB writes
+"""
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from tradingagents.graph.signal_processing import _extract_decision_semantics
+
+DELTA_LOG = Path(__file__).resolve().parent.parent / (
+    "tradingagents/portfolio/analysis/delta_log"
+)
+
+SAMPLE_FILES = [
+    "002709.SZ.json",
+    "300750.SZ.json",
+    "603256.SH.json",
+    "002138.SZ.json",
+    "600584.SH.json",
+]
+
+
+def _load_sample(filename: str) -> dict:
+    path = DELTA_LOG / filename
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _extract_trigger_price(conclusion: str) -> float | None:
+    m = re.search(r"触发价[：:]\s*([\d.]+)", conclusion)
+    if m:
+        val = m.group(1)
+        return float(val)
+    return None
+
+
+def _detect_has_position(conclusion: str) -> bool | None:
+    if "[C-001]" in conclusion and "未持仓" in conclusion:
+        return False
+    if "未持仓" in conclusion:
+        return False
+    if "已持仓" in conclusion or "当前持仓" in conclusion:
+        return True
+    return None
+
+
+class TestReplay002709:
+    """002709.SZ - 偏多方向，短线超跌反弹，未持仓，C-001 等待触发。"""
+
+    def test_semantics(self):
+        sample = _load_sample("002709.SZ.json")
+        conclusion = sample["conclusion"]
+        has_position = _detect_has_position(conclusion)
+        trigger_price = _extract_trigger_price(conclusion)
+
+        assert has_position is False
+        assert trigger_price == pytest.approx(60.0)
+
+        result = _extract_decision_semantics(
+            conclusion,
+            has_position=has_position,
+            trigger_price=trigger_price,
+        )
+
+        assert result.research_direction == "偏多"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "等待触发"
+        assert result.decision == "HOLD"
+
+
+class TestReplay300750:
+    """300750.SZ - 偏多方向，有条件买入，未持仓，C-001 等待触发。"""
+
+    def test_semantics(self):
+        sample = _load_sample("300750.SZ.json")
+        conclusion = sample["conclusion"]
+        has_position = _detect_has_position(conclusion)
+        trigger_price = _extract_trigger_price(conclusion)
+
+        assert has_position is False
+        assert trigger_price == pytest.approx(430.0)
+
+        result = _extract_decision_semantics(
+            conclusion,
+            has_position=has_position,
+            trigger_price=trigger_price,
+        )
+
+        assert result.research_direction == "偏多"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "等待触发"
+        assert result.decision == "HOLD"
+
+
+class TestReplay603256:
+    """603256.SH - 偏空方向，绝对禁止建仓，未持仓，C-001 等待触发。"""
+
+    def test_semantics(self):
+        sample = _load_sample("603256.SH.json")
+        conclusion = sample["conclusion"]
+        has_position = _detect_has_position(conclusion)
+        trigger_price = _extract_trigger_price(conclusion)
+
+        assert has_position is False
+        assert trigger_price == pytest.approx(180.0)
+
+        result = _extract_decision_semantics(
+            conclusion,
+            has_position=has_position,
+            trigger_price=trigger_price,
+        )
+
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+        assert result.decision == "HOLD"
+
+
+class TestReplay002138:
+    """002138.SZ - 偏空方向，盈利恶化回避，未持仓，C-001 等待触发。"""
+
+    def test_semantics(self):
+        sample = _load_sample("002138.SZ.json")
+        conclusion = sample["conclusion"]
+        has_position = _detect_has_position(conclusion)
+        trigger_price = _extract_trigger_price(conclusion)
+
+        assert has_position is False
+        assert trigger_price == pytest.approx(41.0)
+
+# TradingAgents/graph/signal_processing.py
+
+import re
+import json
+from dataclasses import dataclass
+from typing import Optional
+
+from langchain_openai import ChatOpenAI
+from tradingagents.dataflows.config import get_config
+from tradingagents.prompts import get_prompt
+
+
+# [REPORT-UX-003] wait_reason_codes
+WAIT_REASON_DATA_MISSING = "DATA_MISSING"
+WAIT_REASON_GATE_BLOCKED = "GATE_BLOCKED"
+WAIT_REASON_CONFLICT = "CONFLICT"
+WAIT_REASON_NO_TRIGGER = "NO_TRIGGER"
+WAIT_REASON_RISK_FIRST = "RISK_FIRST"
+WAIT_REASON_NORMAL_NO_DATA = "NORMAL_NO_DATA"
+
+WAIT_REASON_LABELS: dict[str, str] = {
+    WAIT_REASON_DATA_MISSING: "关键数据缺口",
+    WAIT_REASON_GATE_BLOCKED: "门禁未通过",
+    WAIT_REASON_CONFLICT: "结论冲突",
+    WAIT_REASON_NO_TRIGGER: "等待触发价",
+    WAIT_REASON_RISK_FIRST: "风险优先",
+    WAIT_REASON_NORMAL_NO_DATA: "数据正常·暂无触发",
+}
+
+# Blocker keys whose failure genuinely blocks a directional verdict, vs. aux
+# sources that are normally no-data on most trading days.
+_CRITICAL_BLOCKER_KEYS = {"ohlcv_5d", "individual_fund_flow"}
+_SEVERE_BLOCKER_STATUSES = {"query_failed", "field_missing"}
+
+# Text patterns reused from readiness_score for conflict detection (kept local
+# to avoid a circular import; signal_processing must stay dependency-light).
+_CONFLICT_TEXT_PATTERNS = [
+    r"(?:冲突|矛盾|不一致)",
+    r"(?:多空|多空双方).*?(?:分歧|对立)",
+    r"(?:分析师|模块|上游).*?(?:分歧|冲突|矛盾)",
+    r"verdict.*?分歧",
+    r"(?:短中线|中线.*?短线).*?(?:冲突|矛盾|分歧)",
+]
+
+
+def _text_has_conflict(text: str) -> bool:
+    if not text:
+        return False
+    return any(re.search(p, text, re.IGNORECASE) for p in _CONFLICT_TEXT_PATTERNS)
+
+
+def compute_wait_reason_codes(
+    *,
+    execution_action: Optional[str],
+    research_direction: Optional[str],
+    action_label: Optional[str] = None,
+    has_position: Optional[bool] = None,
+    trigger_price: Optional[float] = None,
+    gate_blocked: bool = False,
+    data_insufficient: bool = False,
+    data_blockers: Optional[list] = None,
+    has_conflict: bool = False,
+) -> list[str]:
+    """[REPORT-UX-003] wait_reason_codes — decompose a WAIT/观察 verdict into
+    one or more explainable reason codes.
+
+    The user-facing complaint was that every recent report collapsed into the
+    single catch-all label "数据不足观察". This helper keeps the strong action
+    gate intact and instead explains *why* the action is WAIT:
+
+    - ``DATA_MISSING``: a critical field (行情/K线、主力资金) has a severe
+      blocker (``query_failed`` / ``field_missing``), or the decision text
+      itself declares the evidence insufficient.
+    - ``GATE_BLOCKED``: the Strong Action Gate failed, forcing WAIT even when
+      a direction was otherwise available.
+    - ``CONFLICT``: 中线/短线 or 分析师结论冲突 detected in the decision text.
+    - ``NO_TRIGGER``: 方向偏多 but no trigger_price / target price was produced
+      (waiting for an entry condition).
+    - ``RISK_FIRST``: 方向偏空/看空 and the user is not holding — risk avoidance
+      takes priority (maps to the "回避" label).
+    - ``NORMAL_NO_DATA``: data sources are healthy and no conflict exists, but
+      there is simply no actionable signal yet (neutral watch).
+
+    Returns an empty list for non-WAIT actions so the frontend can treat the
+    absence of codes as "no wait reason to explain".
+    """
+    if (execution_action or "").upper() != "WAIT":
+        return []
+
+    codes: list[str] = []
+
+    has_critical_blocker = False
+    if isinstance(data_blockers, list):
+        for blocker in data_blockers:
+            if not isinstance(blocker, dict):
+                continue
+            if (
+                blocker.get("key") in _CRITICAL_BLOCKER_KEYS
+                and blocker.get("status") in _SEVERE_BLOCKER_STATUSES
+            ):
+                has_critical_blocker = True
+                break
+
+    if has_critical_blocker or data_insufficient:
+        codes.append(WAIT_REASON_DATA_MISSING)
+
+    if gate_blocked:
+        codes.append(WAIT_REASON_GATE_BLOCKED)
+
+    if has_conflict:
+        codes.append(WAIT_REASON_CONFLICT)
+
+    # RISK_FIRST — 偏空/看空 + 未持仓 → "回避" 路径，风险优先于入场。
+    if research_direction in ("偏空", "看空") and (
+        has_position is False or has_position is None
+    ):
+        codes.append(WAIT_REASON_RISK_FIRST)
+
+    # NO_TRIGGER — 偏多/看多 but no trigger price supplied.
+    if research_direction in ("偏多", "看多") and not trigger_price:
+        codes.append(WAIT_REASON_NO_TRIGGER)
+
+    # Fallback: data is fine and there is no conflict/directional reason —
+    # the system simply has no actionable signal to act on this round.
+    if not codes:
+        codes.append(WAIT_REASON_NORMAL_NO_DATA)
+
+    return codes
+
+
+@dataclass
+class DecisionSemantics:
+    research_direction: str
+    execution_action: str
+    action_label: str
+    decision: str
+    # [REPORT-UX-003] wait_reason_codes — populated when execution_action == WAIT.
+    wait_reason_codes: Optional[list] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "research_direction": self.research_direction,
+            "execution_action": self.execution_action,
+            "action_label": self.action_label,
+            "decision": self.decision,
+            "wait_reason_codes": self.wait_reason_codes or [],
+        }
+
+
+_RESEARCH_DIRECTION_MAP = {
+    "看多": "看多",
+    "BULLISH": "看多",
+    "BUY": "看多",
+    "偏多": "偏多",
+    "看空": "看空",
+    "BEARISH": "看空",
+    "SELL": "看空",
+    "偏空": "偏空",
+    "中性": "中性",
+    "NEUTRAL": "中性",
+    "HOLD": "中性",
+    "谨慎": "中性",
+    "CAUTIOUS": "中性",
+}
+
+_DECISION_MAP = {
+    "看多": "BUY",
+    "偏多": "BUY",
+    "中性": "HOLD",
+    "偏空": "SELL",
+    "看空": "SELL",
+}
+
+
+def _parse_research_direction_from_verdict(text: str) -> str | None:
+    verdict_scope = re.split(r"\n\s*#{1,6}\s*执行质检\b", text, maxsplit=1)[0]
+    matches = list(re.finditer(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", verdict_scope, re.IGNORECASE | re.DOTALL))
+    if not matches:
+        return None
+    try:
+        payload = json.loads(matches[-1].group(1))
+    except Exception:
+        return None
+    direction = str(payload.get("direction", "")).strip()
+    return _RESEARCH_DIRECTION_MAP.get(direction.upper()) or _RESEARCH_DIRECTION_MAP.get(direction)
+
+
+def _classify_research_direction(snippet: str) -> str | None:
+    snippet_upper = snippet.upper()
+    negated = bool(re.search(r"不(?:建议|宜|应|要|能|可)\s*", snippet))
+    sell_kw = ["SELL", "卖出", "减持", "清仓", "空仓", "回避", "看空", "偏空"]
+    buy_kw = ["BUY", "买入", "增持", "做多", "看多", "偏多", "谨慎看多", "有条件建仓", "条件建仓", "建仓"]
+    hold_kw = ["HOLD", "观望", "持有", "中性"]
+    if any(k in snippet_upper for k in sell_kw):
+        return "偏空"
+    if any(k in snippet_upper for k in buy_kw):
+        return "中性" if negated else "偏多"
+    if any(k in snippet_upper for k in hold_kw):
+        return "中性"
+    return None
+
+
+def _strip_system_overrides(text: str) -> str:
+    return re.sub(r"⚠?\s*\[C-\d+\].*", "", text)
+
+
+def _infer_research_direction(text: str) -> str:
+    rd = _parse_research_direction_from_verdict(text)
+    if rd:
+        return rd
+
+    stripped = re.split(
+        r"\n\s*#{1,6}\s*执行质检\b",
+        _strip_system_overrides(text),
+        maxsplit=1,
+    )[0]
+
+    explicit_patterns = [
+        r"最终裁决[:：]\s*([^\n*]+)",
+        r"风控委员会最终裁决[:：]\s*([^\n*]+)",
+        r"最终建议[:：]\s*([^\n*]+)",
+        r"方向[:：]\s*([^\n*]+)",
+        r"核心定性[:：]\s*([^\n*]+)",
+    ]
+    for pattern in explicit_patterns:
+        match = re.search(pattern, stripped, re.IGNORECASE)
+        if match:
+            rd = _classify_research_direction(match.group(1).strip())
+            if rd:
+                return rd
+
+    headline = "\n".join(stripped.splitlines()[:20])
+    rd = _classify_research_direction(headline)
+    if rd:
+        return rd
+
+    rd = _classify_research_direction(stripped.upper())
+    if rd:
+        return rd
+
+    return "中性"
+
+
+def _is_data_insufficient(text: str) -> bool:
+    indicators = [
+        r"数据\s*(不足|缺失|不全|有限)",
+        r"(?:无法|未能).{0,10}(?:判断|确认|给出)",
+        r"证据.{0,6}不足",
+        r"source[_\s]?coverage.{0,10}(?:<|低|不足)",
+        r"evidence[_\s]?coverage.{0,10}(?:<|低|不足)",
+    ]
+    return any(re.search(p, text, re.IGNORECASE) for p in indicators)
+
+
+def _derive_action_label(
+    has_position: Optional[bool],
+    research_direction: str,
+    execution_action: str,
+    trigger_price: Optional[float] = None,
+    invalid_price: Optional[float] = None,
+) -> str:
+    if execution_action == "WAIT":
+        if research_direction == "中性" and not trigger_price:
+            if has_position is False or has_position is None:
+                return "数据不足观察" if _is_data_insufficient("") else "观望"
+            return "数据不足观察"
+        if research_direction == "偏多":
+            return "等待触发"
+        if research_direction == "看多":
+            return "等待触发" if not trigger_price else "条件入场"
+        if research_direction in ("偏空", "看空"):
+            if has_position is False or has_position is None:
+                return "回避"
+            return "数据不足观察"
+        return "观望"
+    if execution_action == "ENTER":
+        if trigger_price:
+            return "条件入场"
+        return "入场"
+    if execution_action == "HOLD":
+        return "持有"
+    if execution_action == "REDUCE":
+        return "条件减仓"
+    if execution_action == "EXIT":
+        return "条件清仓"
+    return execution_action
+
+
+def _resolve_execution_action(
+    has_position: Optional[bool],
+    research_direction: str,
+    trigger_price: Optional[float] = None,
+    invalid_price: Optional[float] = None,
+    *,
+    gate_blocked: bool = False,
+    data_insufficient: bool = False,
+) -> str:
+    if gate_blocked:
+        return "WAIT"
+    if data_insufficient:
+        return "WAIT"
+
+    if research_direction == "看多":
+        if has_position is False:
+            return "ENTER" if trigger_price else "WAIT"
+        return "HOLD"
+
+    if research_direction == "偏多":
+        if has_position is False:
+            return "ENTER" if trigger_price else "WAIT"
+        return "HOLD"
+
+    if research_direction == "中性":
+        if has_position:
+            return "HOLD"
+        return "WAIT"
+
+    if research_direction == "偏空":
+        if has_position:
+            return "REDUCE" if trigger_price else "REDUCE"
+        return "WAIT"
+
+    if research_direction == "看空":
+        if has_position:
+            return "EXIT"
+        return "WAIT"
+
+    return "WAIT"
+
+
+class SignalProcessor:
+    """Processes trading signals to extract actionable decisions."""
+
+    def __init__(self, quick_thinking_llm: ChatOpenAI):
+        """Initialize with an LLM for processing."""
+        self.quick_thinking_llm = quick_thinking_llm
+
+    def process_signal(self, full_signal: str, *, has_position: bool | None = None) -> str:
+        """
+        Process a full trading signal to extract the core decision.
+
+        Args:
+            full_signal: Complete trading signal text
+            has_position: Whether the user currently holds the stock.
+                When False, HOLD is mapped to WAIT/观察 (P1-1).
+
+        Returns:
+            Extracted decision (BUY, SELL, HOLD, or WAIT)
+        """
+        if not full_signal:
+            return "WAIT" if has_position is False else "HOLD"
+
+        decision = _extract_decision_keyword(full_signal, has_position=has_position)
+        if decision:
+            if decision == "HOLD" and has_position is False:
+                return "WAIT"
+            return decision
+
+        messages = [
+            (
+                "system",
+                get_prompt("signal_extractor_system", config=get_config()),
+            ),
+            ("human", full_signal),
+        ]
+
+        response = str(self.quick_thinking_llm.invoke(messages).content).strip().upper()
+        if response in {"BUY", "SELL", "HOLD"}:
+            if response == "HOLD" and has_position is False:
+                return "WAIT"
+            return response
+        if has_position is False:
+            return "WAIT"
+        return "HOLD"
+
+
+def _has_gate_failure(text: str) -> bool:
+    """Check for actual execution-layer gate failures only (no position check)."""
+    if re.search(r"Strong Action Gate[：:]\s*未通过", text, re.IGNORECASE):
+        return True
+
+    m = re.search(r"系统动作[：:]\s*(.+)", text)
+    if m:
+        action = m.group(1).strip()
+        if action in ("等待人工复核", "等待触发", "人工复核"):
+            return True
+
+    if "[C-001]" in text and ("观望" in text or "WAIT" in text.upper()):
+        return True
+
+    if re.search(r"未持仓|no_position|current_position.*(0|空)", text, re.IGNORECASE):
+        if re.search(r"WAIT|观察|观望|禁止买入|禁止开仓", text, re.IGNORECASE):
+            if not re.search(r"(?:确认建仓|积极建仓|条件试仓|买入|BUY)", text):
+                return True
+
+    return False
+
+
+def _execution_layer_overrides_hold(text: str, *, has_position: bool | None = None) -> bool:
+    """Check whether the execution layer signals a non-actionable state.
+
+    If the execution block (Strong Action Gate / trade quality check / C-001)
+    says the system should wait / hold / review, the final signal must be
+    HOLD regardless of what VERDICT says.
+
+    [P1-1] When has_position=False, non-actionable state should return WAIT
+    instead of HOLD. The caller (process_signal) handles the mapping.
+    """
+    if _has_gate_failure(text):
+        return True
+
+    if has_position is False:
+        return True
+
+    return False
+
+
+def _extract_decision_keyword(text: str, *, has_position: bool | None = None) -> str | None:
+    """Rule-based decision extraction to keep UI consistent with final decision text."""
+    if _execution_layer_overrides_hold(text, has_position=has_position):
+        return "HOLD"
+
+    upper = text.upper()
+
+    def parse_verdict_direction(raw_text: str) -> str | None:
+        match = re.search(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", raw_text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return None
+        direction = str(payload.get("direction", "")).strip().upper()
+        direction_map = {
+            "看多": "BUY",
+            "偏多": "BUY",
+            "BULLISH": "BUY",
+            "BUY": "BUY",
+            "看空": "SELL",
+            "偏空": "SELL",
+            "BEARISH": "SELL",
+            "SELL": "SELL",
+            "中性": "HOLD",
+            "NEUTRAL": "HOLD",
+            "HOLD": "HOLD",
+            "谨慎": "HOLD",
+            "CAUTIOUS": "HOLD",
+        }
+        return direction_map.get(direction)
+
+    def classify(snippet: str) -> str | None:
+        snippet_upper = snippet.upper()
+        sell_keywords = [
+            "SELL",
+            "卖出",
+            "减持",
+            "清仓",
+            "空仓",
+            "回避",
+            "看空",
+            "偏空",
+        ]
+        buy_keywords = [
+            "BUY",
+            "买入",
+            "增持",
+            "做多",
+            "看多",
+            "偏多",
+            "谨慎看多",
+            "有条件建仓",
+            "条件建仓",
+            "建仓",
+        ]
+        hold_keywords = [
+            "HOLD",
+            "观望",
+            "持有",
+            "中性",
+        ]
+
+        if any(k in snippet_upper for k in buy_keywords):
+            return "BUY"
+        if any(k in snippet_upper for k in sell_keywords):
+            return "SELL"
+        if any(k in snippet_upper for k in hold_keywords):
+            return "HOLD"
+        return None
+
+    verdict_decision = parse_verdict_direction(text)
+    if verdict_decision:
+        return verdict_decision
+
+    explicit_patterns = [
+        r"最终裁决[:：]\s*([^\n*]+)",
+        r"风控委员会最终裁决[:：]\s*([^\n*]+)",
+        r"最终建议[:：]\s*([^\n*]+)",
+        r"方向[:：]\s*([^\n*]+)",
+        r"核心定性[:：]\s*([^\n*]+)",
+    ]
+    for pattern in explicit_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            decision = classify(match.group(1).strip())
+            if decision:
+                return decision
+
+    headline = "\n".join(text.splitlines()[:20])
+    decision = classify(headline)
+    if decision:
+        return decision
+
+    decision = classify(upper)
+    if decision:
+        return decision
+
+    return "UNKNOWN"
+
+
+def _extract_decision_semantics(
+
+exec
+/bin/zsh -lc "sed -n '520,640p' tradingagents/graph/signal_processing.py && python - <<'PY'
+import json
+from pathlib import Path
+p=Path('tradingagents/portfolio/analysis/delta_log/600584.SH.json')
+s=json.loads(p.read_text())['conclusion']
+print(s[:1000])
+print('未持仓' in s, '已持仓' in s, '当前持仓' in s)
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+def _extract_decision_semantics(
+    text: str,
+    *,
+    has_position: Optional[bool] = None,
+    trigger_price: Optional[float] = None,
+    invalid_price: Optional[float] = None,
+    data_blockers: Optional[list] = None,
+) -> DecisionSemantics:
+    """Extract 3-layer structured decision semantics from signal text.
+
+    Returns a DecisionSemantics with:
+      - research_direction: 看多/偏多/中性/偏空/看空
+      - execution_action: WAIT/ENTER/HOLD/REDUCE/EXIT
+      - action_label: human-readable action label
+      - decision: BUY/SELL/HOLD (backward compat)
+      - wait_reason_codes: [REPORT-UX-003] explainable codes when WAIT
+    """
+    research_direction = _infer_research_direction(text)
+    gate_blocked = _has_gate_failure(text)
+    data_insufficient = _is_data_insufficient(text)
+    has_conflict = _text_has_conflict(text)
+
+    execution_action = _resolve_execution_action(
+        has_position=has_position,
+        research_direction=research_direction,
+        trigger_price=trigger_price,
+        invalid_price=invalid_price,
+        gate_blocked=gate_blocked,
+        data_insufficient=data_insufficient,
+    )
+
+    action_label = _derive_action_label(
+        has_position=has_position,
+        research_direction=research_direction,
+        execution_action=execution_action,
+        trigger_price=trigger_price,
+        invalid_price=invalid_price,
+    )
+
+    if data_insufficient and execution_action == "WAIT" and research_direction == "中性":
+        action_label = "数据不足观察"
+
+    decision = _DECISION_MAP.get(research_direction, "HOLD")
+    if gate_blocked:
+        decision = "HOLD"
+
+    # [REPORT-UX-003] wait_reason_codes — decompose the WAIT verdict so the UI
+    # can show *why* the action is 观察 / 数据不足观察 instead of a flat label.
+    wait_reason_codes = compute_wait_reason_codes(
+        execution_action=execution_action,
+        research_direction=research_direction,
+        action_label=action_label,
+        has_position=has_position,
+        trigger_price=trigger_price,
+        gate_blocked=gate_blocked,
+        data_insufficient=data_insufficient,
+        data_blockers=data_blockers,
+        has_conflict=has_conflict,
+    )
+
+    return DecisionSemantics(
+        research_direction=research_direction,
+        execution_action=execution_action,
+        action_label=action_label,
+        decision=decision,
+        wait_reason_codes=wait_reason_codes,
+    )
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('tradingagents/portfolio/analysis/delta_log/600584.SH.json')
+s=json.loads(p.read_text())['conclusion']
+print(s[:1200])
+print('contains:', '未持仓' in s, '已持仓' in s, '当前持仓' in s)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+建议持有。假设约25.30元
+
+### 执行质检
+- 打法标签：未识别
+- 执行模式：人工复核
+- 系统动作：人工复核
+- 入场区间：—
+- 触发价：—
+- 止损价：—
+- 冲突检查：未发现明显执行时点冲突。
+contains: False False False
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_execution_schema.py tests/test_decision_replay.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1284ms:
+..............................                                           [100%]
+30 passed in 0.84s
+
+codex
+No correctness issues were found in the current staged, unstaged, or untracked changes. The targeted execution schema and decision replay tests pass.
+No correctness issues were found in the current staged, unstaged, or untracked changes. The targeted execution schema and decision replay tests pass.
