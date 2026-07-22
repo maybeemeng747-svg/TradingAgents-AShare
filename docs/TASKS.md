@@ -5751,7 +5751,7 @@
 ### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
 - **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
 - **优先级**：P1
-- **状态**：in_progress — claimed FUND-005A-20260722-203834
+- **状态**：done -- commit fad65d9
 - **预计耗时**：25-35 分钟
 - **depends_on**：FUND-004A, FUND-005, PERF-003
 - **auto_release**：true
@@ -5764,7 +5764,7 @@
 ### FUND-006A: 真实 provider 格式与生产图离线回放验收（P1）
 - **描述**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链；这是 live 603629 前的唯一放行门。
 - **优先级**：P1
-- **状态**：blocked-auto — 等待全部 FUND 补修任务
+- **状态**：ready
 - **预计耗时**：40-50 分钟
 - **depends_on**：FUND-001A, FUND-003A-B, FUND-004A, FUND-004B, FUND-005A
 - **auto_release**：true
