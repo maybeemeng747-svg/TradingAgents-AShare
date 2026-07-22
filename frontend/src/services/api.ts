@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse, HoldingsImportContract, HoldingsImportDiff, HoldingsImportResult } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse, HoldingsImportContract, HoldingsImportDiff, HoldingsImportResult, ResearchEvidenceResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -676,6 +676,16 @@ class ApiService {
                     force_overwrite_notes: !!payload.force_overwrite_notes,
                 }),
             },
+        )
+    }
+
+    // [UI-014] research_evidence_center — KB-020 research evidence aggregation
+    async getResearchEvidence(symbol: string, windowMonths?: number): Promise<ResearchEvidenceResponse> {
+        const params = new URLSearchParams()
+        if (windowMonths != null) params.append('window_months', String(windowMonths))
+        const qs = params.toString()
+        return this.request<ResearchEvidenceResponse>(
+            `/v1/knowledge/research/evidence/${encodeURIComponent(symbol)}${qs ? '?' + qs : ''}`,
         )
     }
 }

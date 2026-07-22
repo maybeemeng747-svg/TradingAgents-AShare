@@ -1990,3 +1990,110 @@ export interface ObservationAddResponse {
     }
     runtime_tier_meta?: RuntimeTierMeta
 }
+
+// [UI-014] research_evidence_center — KB-020 research evidence aggregation types
+export type ResearchEvidenceDataStatus = 'fresh' | 'stale' | 'missing' | 'failed' | 'skipped' | 'conflict'
+export type ResearchEvidenceBucketStatus = 'HAS_DATA' | 'NO_DATA' | 'DISABLED' | 'PARTIAL'
+
+export interface ResearchEvidenceBucketFreshness {
+    data_status: ResearchEvidenceDataStatus
+    has_hit: boolean
+    task: string
+}
+
+export interface ResearchEvidenceConsensusSummary {
+    effective_report_count?: number
+    institution_dedup_count?: number
+    consensus_direction?: string
+    disagreement_count?: number
+    reports?: Array<{
+        source_path?: string
+        direction?: string
+        institution?: string
+        date?: string
+        summary?: string
+    }>
+}
+
+export interface ResearchEvidenceCitationAuditSummary {
+    total_claims?: number
+    supported_count?: number
+    contradicted_count?: number
+    pending_count?: number
+    items?: Array<{
+        claim?: string
+        status?: string
+        source_path?: string
+        detail?: string
+    }>
+}
+
+export interface ResearchEvidenceThesisTimelineSummary {
+    timeline?: Array<{
+        date?: string
+        thesis?: string
+        direction?: string
+        source_path?: string
+        status?: string
+    }>
+    drift_direction?: string
+    total_versions?: number
+}
+
+export interface ResearchEvidenceHalfYearPage {
+    rel_path?: string
+    title?: string
+    financial_period?: string
+    disclosure_date?: string
+    source_type?: string[]
+    data_status?: string
+    metric_count?: number
+    metric_keys?: string[]
+}
+
+export interface ResearchEvidenceHalfYearFactsSummary {
+    pages?: ResearchEvidenceHalfYearPage[]
+    summary_lines?: string[]
+    risks?: string[]
+    latest_period?: string
+    latest_disclosure_date?: string
+}
+
+export interface ResearchEvidenceScoreSnapshotSummary {
+    status?: string
+    scores?: Record<string, unknown>
+    theses_summary?: string
+    missing_evidence?: string[]
+}
+
+export interface ResearchEvidenceBucket {
+    bucket: string
+    status: ResearchEvidenceBucketStatus
+    task: string
+    has_hit: boolean
+    data_status: ResearchEvidenceDataStatus
+    errors: string[]
+    summary: Record<string, unknown>
+}
+
+export interface ResearchEvidenceResponse {
+    source: string
+    task: string
+    symbol: string
+    as_of: string
+    data_status: ResearchEvidenceDataStatus
+    vendor: string
+    endpoint: string
+    knowledge_root: string
+    query: { symbol: string; window_months: number }
+    source_freshness: Record<string, ResearchEvidenceBucketFreshness>
+    consensus: ResearchEvidenceBucket
+    citation_audit: ResearchEvidenceBucket
+    thesis_timeline: ResearchEvidenceBucket
+    half_year_facts: ResearchEvidenceBucket
+    research_score_snapshot: ResearchEvidenceBucket
+    gaps: string[]
+    errors: string[]
+    read_only: boolean
+    runtime_tier_meta?: RuntimeTierMeta
+}

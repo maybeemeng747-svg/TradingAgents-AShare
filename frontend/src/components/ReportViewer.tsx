@@ -6,6 +6,7 @@ import { useAnalysisStore } from '@/stores/analysisStore'
 import type { ReportDetail } from '@/types'
 import { sanitizeReportMarkdown } from '@/utils/reportText'
 import { deriveKnowledgeEvidenceCard } from '@/utils/knowledgeContract'
+import ResearchEvidenceCenter from '@/components/ResearchEvidenceCenter'
 
 const REPORT_SECTIONS = [
     { key: 'market_report', title: '市场分析报告', team: '分析团队' },
@@ -312,6 +313,12 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
                             </div>
                         )
                     })()}
+                    {/* [UI-014] research_evidence_center — 研报证据中心与来源下钻
+                        Lazy-loads KB-020 aggregation on first expand.
+                        Failure does not block report body rendering. */}
+                    {reportData?.symbol && (
+                        <ResearchEvidenceCenter symbol={reportData.symbol} />
+                    )}
                     <div className="rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-xs leading-6 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{REPORT_DISCLAIMER}</ReactMarkdown>
                     </div>
