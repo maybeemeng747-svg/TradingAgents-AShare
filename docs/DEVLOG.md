@@ -1,5 +1,20 @@
 # 修改日志
 
+## 2026-07-23 | SCORE-001 re-validation 与状态回写
+
+- **任务**：SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
+- **操作**：re-validate 已有实现，确认契约完整性，更新 TASKS.md 状态为 done。
+- **实现**：已有实现（commit 87dcd44 + 24881f6）完整覆盖任务要求：
+  - `tradingagents/dataflows/research_score_snapshot.py` — 只读 loader/provider，五类状态、fail-closed 降级表、路径安全、禁止动作字段、证据闭包、来源等级复用 KB-014。
+  - `tests/research_score_snapshot_fixtures.py` — 21 个 fixture 样本。
+  - `tests/test_score001_research_score_snapshot.py` — 73 tests。
+- **验证**：
+  - `pytest tests/test_score001_research_score_snapshot.py -q`：**73 passed**。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**。
+- **改动文件**：
+  - `docs/TASKS.md` — SCORE-001 状态从 blocked/in_progress 更新为 done。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | PLAYBOOK-002 计划仓位上限与上车三笔法规则引擎
 
 - **目标**：实现"计划最大仓位 + 试错仓/确认仓/进攻仓"可测试规则引擎，禁止系统因下跌简单提示补仓。
@@ -13864,3 +13879,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/PLAYBOOK-002-20260723-round1.txt
 - **Run archive**: docs/task_runs/PLAYBOOK-002-20260723-020942/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: SCORE-001 - TA 只读 research_score_snapshot 契约与安全接入（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/SCORE-001-20260723-round1.txt
+- **Run archive**: docs/task_runs/SCORE-001-20260723-022118/

@@ -37,7 +37,7 @@
 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
 8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
 9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
-10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，done，commit 87dcd44 + 24881f6，73 tests passed）。
 11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
 12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
 13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
@@ -102,7 +102,7 @@
 ### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
 - **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 research_score_snapshot v1.1.0 可被稳定读取和降级。本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — commit 87dcd44 + 24881f6，73 tests passed
 - **预计耗时**：35-45 分钟
 - **depends_on**：KB-001, KB-014
 - **auto_release**：true
@@ -408,7 +408,7 @@
 171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked，等待 HY-008）。
 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
-174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，blocked，已有未提交实现等待专项收口）。
+174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，done，commit 87dcd44 + 24881f6）。
 175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto，依赖 SCORE-001/KB-020）。
 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
@@ -5959,7 +5959,7 @@
 ### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
 - **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 `research_score_snapshot` v1.1.0 可被稳定读取和降级，但本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
-- **状态**：blocked — 自动开发循环异常终止，OpenCode 执行超时或卡住
+- **状态**：done — commit 87dcd44 + 24881f6，73 tests passed
 - **前置条件**：KB-001、KB-014 完成；ZCode v1.1.0 Schema/validator/fixture 已人工确认。
 - **depends_on**：KB-001, KB-014
 - **auto_release**：false
