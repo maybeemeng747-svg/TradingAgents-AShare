@@ -1,0 +1,815 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m✱ [0mGrep "FUND-004A"[90m in docs/TASKS.md · 13 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=622][0m
+Let me find the FUND-004A task details and understand the codebase structure.
+[0m→ [0mRead docs/TASKS.md[90m [offset=5730, limit=100][0m
+[0m• [0mExplore FUND graph and agents[90m Explore Agent[0m
+[0m✓ [0mExplore FUND graph and agents[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[•] Read key source files: fundamental_integrity.py, data_collector.py, setup.py, fundamentals_analyst.py, risk_manager.py, research_manager.py, memory.py, reflection.py, trading_graph.py
+[ ] Implement pre-filter: evaluate_fundamental_integrity() call after Fundamentals Analyst, before Bull/Bear
+[ ] Gate fundamentals_report: when integrity fails, replace report with safe version containing blocker + preserved facts
+[ ] Update Bull/Bear to see explicit 'does not participate in direction weight' when gated
+[ ] Prevent invalid narratives from being written to long-term memory (reflection.py)
+[ ] Keep Risk Judge D-002 strong action gate as second defense layer
+[ ] Write tests: inject invalid fundamental, verify Bull/Bear prompts don't contain rejected narrative
+[ ] Run existing FUND tests + regression tests to verify no breakage
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/graph/setup.py
+[0m→ [0mRead tradingagents/graph/propagation.py
+[0m→ [0mRead tradingagents/graph/trading_graph.py
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py
+[0m→ [0mRead tradingagents/agents/analysts/fundamentals_analyst.py
+[0m→ [0mRead tradingagents/agents/managers/risk_manager.py
+[0m→ [0mRead tradingagents/agents/managers/research_manager.py
+[0m→ [0mRead tradingagents/graph/reflection.py
+[0m→ [0mRead tradingagents/agents/researchers/bull_researcher.py
+[0m✱ [0mGlob "tests/test_fund*.py"[90m 5 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/agent_states.py[90m [limit=60][0m
+Now let me look at existing tests to understand patterns:
+[0m→ [0mRead tests/test_fund003_fund004_integrity.py[90m [limit=100][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=50, offset=580][0m
+[0m
+[0m# [0mTodos
+[✓] Read key source files: fundamental_integrity.py, data_collector.py, setup.py, fundamentals_analyst.py, risk_manager.py, research_manager.py, memory.py, reflection.py, trading_graph.py
+[•] Implement pre-filter: evaluate_fundamental_integrity() call after Fundamentals Analyst, before Bull/Bear
+[ ] Gate fundamentals_report: when integrity fails, replace report with safe version containing blocker + preserved facts
+[ ] Update Research Manager consensus weight to exclude gated fundamentals
+[ ] Prevent invalid narratives from being written to long-term memory (reflection.py)
+[ ] Keep Risk Judge D-002 strong action gate as second defense layer
+[ ] Write tests: inject invalid fundamental, verify Bull/Bear prompts don't contain rejected narrative
+[ ] Run existing FUND tests + regression tests to verify no breakage
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit tradingagents/agents/utils/fundamental_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+@@ -978,8 +978,78 @@
+     lines.append("基本面模块已降级为待人工复核，不得作为可执行交易结论的依据。")
+     return "\n".join(lines)
+ 
+ 
++# [FUND-004A] fundamental_semantic_gate_forward
++
++_GATED_HEADER = (
++    "【基本面语义门禁已触发 — 该模块不参与方向权重】\n\n"
++    "基本面报告存在以下完整性问题，已被门禁拦截：\n"
++)
++
++
++def _extract_verified_facts(pool: Mapping[str, Any] | None) -> str:
++    """Extract verified financial facts from data pool for the gated report."""
++    if not pool:
++        return ""
++    parts: list[str] = []
++    identity = pool.get("instrument_identity")
++    if isinstance(identity, Mapping) and identity.get("security_name"):
++        parts.append(f"公司名称：{identity.get('security_name')}")
++    if isinstance(identity, Mapping) and identity.get("industry"):
++        parts.append(f"行业：{identity.get('industry')}")
++    period_facts = pool.get("financial_period_facts") or []
++    if period_facts:
++        latest_by_metric: dict[str, Mapping[str, Any]] = {}
++        for fact in period_facts:
++            if not isinstance(fact, Mapping) or fact.get("value") is None:
++                continue
++            metric = str(fact.get("metric") or "")
++            if not metric:
++                continue
++            existing = latest_by_metric.get(metric)
++            if existing is None or str(fact.get("report_date", "")) > str(existing.get("report_date", "")):
++                latest_by_metric[metric] = fact
++        metric_labels = {
++            "revenue": "营业收入", "operating_cost": "营业成本",
++            "net_profit": "净利润", "operating_cashflow": "经营现金流",
++            "total_assets": "总资产", "total_liabilities": "总负债",
++            "gross_margin": "毛利率", "debt_ratio": "资产负债率",
++        }
++        for metric, label in metric_labels.items():
++            fact = latest_by_metric.get(metric)
++            if fact is not None:
++                value = fact.get("value")
++                unit = fact.get("unit", "")
++                report_date = fact.get("report_date", "")
++                parts.append(f"{label}：{value} {unit}（{report_date}）")
++    return "\n".join(parts) if parts else "无可验证财务事实"
++
++
++def build_gated_fundamentals_report(
++    *,
++    original_report: str,
++    integrity: Mapping[str, Any],
++    pool: Mapping[str, Any] | None,
++) -> str:
++    """Build a safe fundamentals report when integrity gate fails.
++
++    Contains only blocker reasons and verified raw facts — no narrative
++    claims that could be unsupported causal or accounting explanations.
++    """
++    blockers = integrity.get("blockers") or []
++    blocker_lines = "\n".join(
++        f"- {b.get('code')}: {b.get('reason')}" for b in blockers
++    )
++    verified_facts = _extract_verified_facts(pool)
++    return (
++        f"{_GATED_HEADER}{blocker_lines}\n\n"
++        f"【保留的可验证财务事实】\n{verified_facts}\n\n"
++        f"注意：以上事实仅供参考，不得从中推导因果解释或会计口径结论。\n"
++        f"基本面模块不参与方向权重。Bull/Bear 研究不得引用被拒绝的基本面叙事。"
++    )
++
++
+ def _official_texts(
+     announcements: Any,
+     half_year_facts: Mapping[str, Any] | None,
+ ) -> Iterable[tuple[str, str]]:
+
+[0m
+First, add the `build_gated_fundamentals_report` helper to `fundamental_integrity.py`:
+[0m← [0mEdit tradingagents/graph/setup.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+@@ -40,8 +40,9 @@
+ "create_bear_researcher": create_bear_researcher,
+ "create_bull_researcher": create_bull_researcher,
+ "create_conservative_debator": create_conservative_debator,
+ "create_fundamentals_analyst": create_fundamentals_analyst,
++"create_fundamentals_integrity_gate": create_fundamentals_integrity_gate,
+ "create_macro_analyst": create_macro_analyst,
+ "create_market_analyst": create_market_analyst,
+ "create_neutral_debator": create_neutral_debator,
+ "create_news_analyst": create_news_analyst,
+
+[0m
+Now add the gate node to `setup.py`:
+[0m← [0mEdit tradingagents/graph/setup.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+@@ -9,8 +9,73 @@
+ 
+ from .conditional_logic import ConditionalLogic
+ 
+ 
++def create_fundamentals_integrity_gate(data_collector=None):
++    """[FUND-004A] Create a graph node that gates fundamentals report integrity.
++
++    Runs after Fundamentals Analyst, before Bull/Bear. When integrity fails,
++    replaces the fundamentals_report with a safe version containing only
++    verified facts and blocker reasons — no unsupported narrative.
++    """
++    import logging
++    from tradingagents.agents.utils.fundamental_integrity import (
++        evaluate_fundamental_integrity,
++        build_gated_fundamentals_report,
++    )
++
++    _logger = logging.getLogger(__name__)
++
++    async def fundamentals_integrity_gate_node(state):
++        ticker = state.get("company_of_interest", "")
++        trade_date = state.get("trade_date", "")
++        fundamentals_report = state.get("fundamentals_report", "")
++
++        if not fundamentals_report:
++            return {}
++
++        if data_collector is None:
++            return {}
++
++        pool = data_collector.get(ticker, trade_date)
++        if pool is None:
++            _logger.warning("[FUND-004A] No data pool for %s %s, skipping gate", ticker, trade_date)
++            return {}
++
++        identity = pool.get("instrument_identity") or {}
++        period_facts = pool.get("financial_period_facts") or []
++        explanations = pool.get("fundamental_explanations") or {}
++
++        integrity = evaluate_fundamental_integrity(
++            identity=identity,
++            period_facts=period_facts,
++            explanation_context=explanations,
++            report_text=fundamentals_report,
++        )
++
++        metadata = dict(state.get("metadata") or {})
++        metadata["fundamental_integrity"] = integrity
++
++        if not integrity["is_valid"]:
++            gated_report = build_gated_fundamentals_report(
++                original_report=fundamentals_report,
++                integrity=integrity,
++                pool=pool,
++            )
++            _logger.info(
++                "[FUND-004A] Gate triggered for %s: %d blockers, replacing fundamentals_report",
++                ticker, len(integrity.get("blockers", [])),
++            )
++            return {
++                "fundamentals_report": gated_report,
++                "metadata": metadata,
++            }
++
++        return {"metadata": metadata}
++
++    return fundamentals_integrity_gate_node
++
++
+ def _load_agent_factories() -> dict[str, Any]:
+     """Load graph node factories lazily to avoid circular imports.
+ 
+     Analyst modules import ``tradingagents.graph.intent_parser``; if this module
+
+[0m
+[0m← [0mEdit tradingagents/graph/setup.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+@@ -241,8 +241,13 @@
+     self.ultra_thinking_llm, self.invest_judge_memory
+ )
+ trader_node = factories["create_trader"](self.deep_thinking_llm, self.trader_memory)
+ 
++# [FUND-004A] fundamental_semantic_gate_forward
++fundamentals_integrity_gate_node = factories["create_fundamentals_integrity_gate"](
++    self.data_collector
++)
++
+ # Create risk analysis nodes
+ aggressive_analyst = factories["create_aggressive_debator"](self.mid_thinking_llm)
+ neutral_analyst = factories["create_neutral_debator"](self.mid_thinking_llm)
+ conservative_analyst = factories["create_conservative_debator"](self.mid_thinking_llm)
+
+[0m
+Now update `setup_graph` to add the gate node and rewire edges:
+[0m← [0mEdit tradingagents/graph/setup.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+@@ -276,8 +276,10 @@
+ workflow.add_node("Aggressive Analyst", aggressive_analyst)
+ workflow.add_node("Neutral Analyst", neutral_analyst)
+ workflow.add_node("Conservative Analyst", conservative_analyst)
+ workflow.add_node("Risk Judge", risk_manager_node)
++# [FUND-004A] Insert integrity gate between Fundamentals Analyst and Bull/Bear
++workflow.add_node("Fundamentals Integrity Gate", fundamentals_integrity_gate_node)
+ 
+ # Define edges
+ # Fan out all selected analysts in parallel from START
+ for analyst_type in selected_analysts:
+
+[0m
+[0m← [0mEdit tradingagents/graph/setup.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/setup.py
+@@ -300,13 +300,25 @@
+         },
+     )
+     workflow.add_edge(current_tools, current_analyst)
+ 
+-# All analysts complete → Bull Researcher (start debate)
+-workflow.add_edge(
+-    [f"{analyst_display_name(analyst_type)} Analyst Done" for analyst_type in selected_analysts],
+-    "Bull Researcher",
+-)
++# [FUND-004A] fundamental_semantic_gate_forward
++# Fundamentals Analyst Done → Integrity Gate → Bull Researcher
++# All other analysts complete → Bull Researcher (direct)
++non_fundamentals_done = [
++    f"{analyst_display_name(analyst_type)} Analyst Done"
++    for analyst_type in selected_analysts
++    if analyst_type != "fundamentals"
++]
++if "fundamentals" in selected_analysts:
++    workflow.add_edge("Fundamentals Analyst Done", "Fundamentals Integrity Gate")
++    workflow.add_edge(
++        ["Fundamentals Integrity Gate"] + non_fundamentals_done,
++        "Bull Researcher",
++    )
++else:
++    # No fundamentals analyst selected — all done nodes go directly to Bull
++    workflow.add_edge(non_fundamentals_done, "Bull Researcher")
+ 
+ # Add remaining edges
+ workflow.add_conditional_edges(
+     "Bull Researcher",
+
+[0m
+[0m# [0mTodos
+[✓] Read key source files: fundamental_integrity.py, data_collector.py, setup.py, fundamentals_analyst.py, risk_manager.py, research_manager.py, memory.py, reflection.py, trading_graph.py
+[✓] Implement pre-filter: evaluate_fundamental_integrity() call after Fundamentals Analyst, before Bull/Bear
+[✓] Gate fundamentals_report: when integrity fails, replace report with safe version containing blocker + preserved facts
+[•] Update Research Manager consensus weight to exclude gated fundamentals
+[ ] Prevent invalid narratives from being written to long-term memory (reflection.py)
+[ ] Keep Risk Judge D-002 strong action gate as second defense layer
+[ ] Write tests: inject invalid fundamental, verify Bull/Bear prompts don't contain rejected narrative
+[ ] Run existing FUND tests + regression tests to verify no breakage
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit tradingagents/agents/managers/research_manager.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/research_manager.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/research_manager.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/research_manager.py
+@@ -46,10 +46,18 @@
+ 
+ def _build_consensus_block(  # [G-003] consensus_weight_fix
+     state: dict,
+ ) -> str | None:
++    # [FUND-004A] Exclude fundamentals_analyst from consensus when integrity gate fired
++    metadata = state.get("metadata") or {}
++    fundamental_integrity = metadata.get("fundamental_integrity") or {}
++    fundamentals_gated = not fundamental_integrity.get("is_valid", True)
++
+     reports: list[tuple[str, str, str]] = []
+     for state_key, analyst_name in _ANALYST_MAP:
++        # [FUND-004A] Skip fundamentals when integrity gate has blocked it
++        if analyst_name == "fundamentals_analyst" and fundamentals_gated:
++            continue
+         text = state.get(state_key, "")
+         if not text:
+             continue
+         direction, _ = extract_verdict(text)
+
+[0m
+Update `research_manager.py` to exclude fundamentals from consensus when integrity fails:
+[0m← [0mEdit tradingagents/agents/managers/risk_manager.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/risk_manager.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/risk_manager.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/risk_manager.py
+@@ -153,21 +153,27 @@
+     _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
+ 
+ # [FUND-004] fundamental_semantic_gate — the integrity check consumes
+ # deterministic sidecars, not a model's interpretation of them.
++# [FUND-004A] Use pre-computed integrity from gate node if available,
++# otherwise compute here (fallback for runs without the gate node).
+ raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
+-identity_entry = raw_evidence.get("instrument_identity") or {}
+-period_entry = raw_evidence.get("financial_period_facts") or {}
+-explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+-identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+-period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+-explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+-fundamental_integrity = evaluate_fundamental_integrity(
+-    identity=identity,
+-    period_facts=period_facts,
+-    explanation_context=explanations,
+-    report_text=fundamentals_report,
+-)
++pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
++if pre_computed_integrity is not None:
++    fundamental_integrity = pre_computed_integrity
++else:
++    identity_entry = raw_evidence.get("instrument_identity") or {}
++    period_entry = raw_evidence.get("financial_period_facts") or {}
++    explanation_entry = raw_evidence.get("fundamental_explanations") or {}
++    identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
++    period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++    explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
++    fundamental_integrity = evaluate_fundamental_integrity(
++        identity=identity,
++        period_facts=period_facts,
++        explanation_context=explanations,
++        report_text=fundamentals_report,
++    )
+ integrity_block = format_fundamental_integrity_block(fundamental_integrity)
+ if integrity_block:
+     final_response += "\n\n" + integrity_block
+ 
+
+[0m
+Update `risk_manager.py` to use pre-computed integrity from metadata:
+[0m← [0mWrite tests/test_fund004a_integrity_gate.py
+Wrote file successfully.
+[0m
+Now let me write the tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund004a_integrity_gate.py -v 2>&1 | head -80
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 20 items
+
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_replaces_report_when_identity_unverified PASSED [  5%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_replaces_report_when_cause_unsupported PASSED [ 10%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_preserves_verified_facts PASSED [ 15%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_stores_integrity_in_metadata PASSED [ 20%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_passes_through_when_integrity_valid PASSED [ 25%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_no_data_collector PASSED [ 30%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_no_pool PASSED [ 35%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_empty_report PASSED [ 40%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_contains_blocker_reasons PASSED [ 45%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_no_unsupported_narrative FAILED [ 50%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_preserves_financial_numbers PASSED [ 55%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_excludes_fundamentals_when_gated PASSED [ 60%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_includes_fundamentals_when_valid PASSED [ 65%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_works_without_integrity_metadata PASSED [ 70%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_risk_manager_uses_precomputed_integrity PASSED [ 75%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_risk_manager_falls_back_without_precomputed PASSED [ 80%]
+tests/test_fund004a_integrity_gate.py::TestMemoryProtection::test_reflection_uses_gated_report_from_state PASSED [ 85%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_603629_style_invalid_report_is_gated FAILED [ 90%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_valid_report_passes_through PASSED [ 95%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_accounting_claim_without_evidence_is_gated PASSED [100%]
+
+=================================== FAILURES ===================================
+______ TestGatedReportContent.test_gated_report_no_unsupported_narrative _______
+
+self = <tests.test_fund004a_integrity_gate.TestGatedReportContent object at 0x111230560>
+
+    def test_gated_report_no_unsupported_narrative(self):
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=_INVALID_REPORT,
+        )
+        report = build_gated_fundamentals_report(
+            original_report=_INVALID_REPORT, integrity=integrity,
+            pool=_pool(),
+        )
+        # The unsupported causal claim must not appear
+        assert "原材料成本下降导致毛利率提升" not in report
+>       assert "净额法" not in report
+E       AssertionError: assert '净额法' not in '【基本面语义门禁已触发...引用被拒绝的基本面叙事。'
+E         
+E         '净额法' is contained here:
+E           【基本面语义门禁已触发 — 该模块不参与方向权重】
+E           
+E           基本面报告存在以下完整性问题，已被门禁拦截：
+E           - CAUSE_UNSUPPORTED: 报告包含未经官方来源确认的因果解释：原材料下降
+E           - ACCOUNTING_POLICY_UNKNOWN: 报告讨论会计口径但无官方证据：净额法、设备经销...
+E         
+E         ...Full output truncated (14 lines hidden), use '-vv' to show
+
+tests/test_fund004a_integrity_gate.py:251: AssertionError
+______ TestEndToEndGateBehavior.test_603629_style_invalid_report_is_gated ______
+
+self = <tests.test_fund004a_integrity_gate.TestEndToEndGateBehavior object at 0x111232960>
+
+    def test_603629_style_invalid_report_is_gated(self):
+        """Regression: 603629-style report with identity guess and unsupported
+        causal claims should be gated before reaching Bull/Bear."""
+        report = (
+            "利通电子（603629.SH）主营化工品生产与销售。"
+            "2025年Q1化工行业进入淡季，原材料采购成本下降导致毛利率提升至40%。"
+            "公司采用净额法确认设备经销收入。"
+            "经营现金流与净利润背离，现金流质量存疑。"
+        )
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(False), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=report,
+        )
+        assert not integrity["is_valid"]
+    
+        gated = build_gated_fundamentals_report(
+[0m
+[0m← [0mEdit tests/test_fund004a_integrity_gate.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
+@@ -245,11 +245,16 @@
+     report = build_gated_fundamentals_report(
+         original_report=_INVALID_REPORT, integrity=integrity,
+         pool=_pool(),
+     )
+-    # The unsupported causal claim must not appear
++    # The unsupported causal claim must not appear as narrative
+     assert "原材料成本下降导致毛利率提升" not in report
+-    assert "净额法" not in report
++    # The unsupported accounting claim must not appear as narrative
++    assert "公司采用净额法" not in report
++    assert "确认设备经销收入" not in report
++    # Blocker reasons should mention the keywords diagnostically
++    assert ACCOUNTING_POLICY_UNKNOWN in report
++    assert CAUSE_UNSUPPORTED in report
+ 
+ def test_gated_report_preserves_financial_numbers(self):
+     integrity = evaluate_fundamental_integrity(
+         identity=_identity(), period_facts=_facts(),
+
+[0m
+The test failures are expected — the blocker *reasons* naturally mention the problematic keywords (e.g., "报告讨论会计口径但无官方证据：净额法"). The key assertion should be that the *unsupported narrative claim* is removed, not the diagnostic keyword. Let me fix the tests:
+[0m← [0mEdit tests/test_fund004a_integrity_gate.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
+@@ -422,16 +422,18 @@
+     gated = build_gated_fundamentals_report(
+         original_report=report, integrity=integrity,
+         pool=_pool(False),
+     )
+-    # Gated report must not contain the unsupported narratives
+-    assert "化工" not in gated
+-    assert "淡季" not in gated
+-    assert "净额法" not in gated
+-    assert "毛利率提升至40%" not in gated
+-    # But should contain verified facts
++    # Gated report must not contain the unsupported narratives as claims
++    assert "主营化工品生产与销售" not in gated
++    assert "化工行业进入淡季" not in gated
++    assert "原材料采购成本下降导致毛利率提升至40%" not in gated
++    assert "公司采用净额法" not in gated
++    assert "经营现金流与净利润背离" not in gated
++    # But should contain verified facts and blocker diagnostics
+     assert "营业收入" in gated
+     assert "不参与方向权重" in gated
++    assert CAUSE_UNSUPPORTED in gated or IDENTITY_UNVERIFIED in gated
+ 
+ def test_valid_report_passes_through(self):
+     """A report with no unsupported claims should pass the gate."""
+     simple_report = "利通电子营业收入100亿元，净利润10亿元。"
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund004a_integrity_gate.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 20 items
+
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_replaces_report_when_identity_unverified PASSED [  5%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_replaces_report_when_cause_unsupported PASSED [ 10%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_preserves_verified_facts PASSED [ 15%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_stores_integrity_in_metadata PASSED [ 20%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_passes_through_when_integrity_valid PASSED [ 25%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_no_data_collector PASSED [ 30%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_no_pool PASSED [ 35%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_empty_report PASSED [ 40%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_contains_blocker_reasons PASSED [ 45%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_no_unsupported_narrative PASSED [ 50%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_preserves_financial_numbers PASSED [ 55%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_excludes_fundamentals_when_gated PASSED [ 60%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_includes_fundamentals_when_valid PASSED [ 65%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_works_without_integrity_metadata PASSED [ 70%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_risk_manager_uses_precomputed_integrity PASSED [ 75%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_risk_manager_falls_back_without_precomputed PASSED [ 80%]
+tests/test_fund004a_integrity_gate.py::TestMemoryProtection::test_reflection_uses_gated_report_from_state PASSED [ 85%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_603629_style_invalid_report_is_gated PASSED [ 90%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_valid_report_passes_through PASSED [ 95%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_accounting_claim_without_evidence_is_gated PASSED [100%]
+
+============================== 20 passed in 1.05s ==============================
+[0m
+All 20 FUND-004A tests pass. Now run existing FUND and related regression tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund003_fund004_integrity.py tests/test_fund001_instrument_identity.py tests/test_fund002_financial_periods.py -q 2>&1
+........................................................................ [ 64%]
+.......................................                                  [100%]
+111 passed in 0.91s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q 2>&1
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 20.12s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_readiness_score.py tests/test_fund005_agent_trace.py tests/test_fund006_integrity_replay.py -q 2>&1
+........................................................................ [ 56%]
+.......................................................                  [100%]
+127 passed in 13.66s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_data_p0_fund_route.py tests/test_readiness_score.py tests/test_fund003_fund004_integrity.py tests/test_fund004a_integrity_gate.py tests/test_fund001_instrument_identity.py tests/test_fund002_financial_periods.py tests/test_fund005_agent_trace.py tests/test_fund006_integrity_replay.py tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q 2>&1
+........................................................................ [ 15%]
+........................................................................ [ 31%]
+........................................................................ [ 46%]
+........................................................................ [ 62%]
+........................................................................ [ 78%]
+........................................................................ [ 93%]
+............................                                             [100%]
+460 passed in 23.59s
+[0m
+[0m$ [0msource .venv/bin/activate && python -c "
+import py_compile
+files = [
+    'tradingagents/graph/setup.py',
+    'tradingagents/agents/utils/fundamental_integrity.py',
+    'tradingagents/agents/managers/research_manager.py',
+    'tradingagents/agents/managers/risk_manager.py',
+]
+for f in files:
+    py_compile.compile(f, doraise=True)
+    print(f'  OK: {f}')
+print('All files compile successfully.')
+"
+OK: tradingagents/graph/setup.py
+  OK: tradingagents/agents/utils/fundamental_integrity.py
+  OK: tradingagents/agents/managers/research_manager.py
+  OK: tradingagents/agents/managers/risk_manager.py
+All files compile successfully.
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --check 2>&1 || echo "Exit: $?"
+(no output)
+[0m
+[0m# [0mTodos
+[✓] Read key source files: fundamental_integrity.py, data_collector.py, setup.py, fundamentals_analyst.py, risk_manager.py, research_manager.py, memory.py, reflection.py, trading_graph.py
+[✓] Implement pre-filter: evaluate_fundamental_integrity() call after Fundamentals Analyst, before Bull/Bear
+[✓] Gate fundamentals_report: when integrity fails, replace report with safe version containing blocker + preserved facts
+[✓] Update Research Manager consensus weight to exclude gated fundamentals
+[✓] Prevent invalid narratives from being written to long-term memory (reflection.py)
+[✓] Keep Risk Judge D-002 strong action gate as second defense layer
+[✓] Write tests: inject invalid fundamental, verify Bull/Bear prompts don't contain rejected narrative
+[✓] Run existing FUND tests + regression tests to verify no breakage
+[•] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,24 @@
+ # 修改日志
+ 
++## 2026-07-22 | FUND-004A 基本面语义门禁前移并剔除无效研究权重
++
++- **问题**：`evaluate_fundamental_integrity()` 只在 Risk Judge 阶段（图第 9 步）执行，Bull/Bear 研究员和 Research Manager 已先消费了可能包含未经验证因果/会计叙事的基本面报告，导致无效叙事污染辩论、共识权重和长期投资记忆。
++- **修复**：在 LangGraph 中 Fundamentals Analyst 与 Bull/Bear 之间插入 `Fundamentals Integrity Gate` 节点，提前执行语义门禁：
++  - 当 integrity 失败时，将 `fundamentals_report` 替换为安全版本（仅含 blocker 原因 + 可验证财务事实，不含任何未经支持的叙事）。
++  - 将 integrity 结果存入 `metadata.fundamental_integrity`，供下游（Research Manager、Risk Judge）复用。
++  - Research Manager 共识权重计算排除被门禁拦截的基本面分析师，防止无效叙事参与方向降权。
++  - 长期投资记忆（reflection.py）自动使用安全版本，因为 gate 已在 state 层面替换了报告。
++  - Risk Judge D-002 强动作门禁保留为第二道防线，优先使用预计算的 integrity 结果，无则回退到原位计算。
++- **代码变更**：
++  - `tradingagents/graph/setup.py` — 新增 `create_fundamentals_integrity_gate()` 节点工厂；在 `setup_graph()` 中添加 "Fundamentals Integrity Gate" 节点，将 "Fundamentals Analyst Done → Gate → Bull Researcher" 而非直接到 Bull Researcher。
++  - `tradingagents/agents/utils/fundamental_integrity.py` — 新增 `build_gated_fundamentals_report()` 和 `_extract_verified_facts()` 辅助函数。
++  - `tradingagents/agents/managers/research_manager.py` — `_build_consensus_block()` 检查 `metadata.fundamental_integrity`，integrity 失败时排除 `fundamentals_analyst`。
++  - `tradingagents/agents/managers/risk_manager.py` — 优先使用 `metadata.fundamental_integrity` 预计算结果，避免重复计算。
++- **新增测试**：`tests/test_fund004a_integrity_gate.py`（20 项），覆盖：gate 替换/通过/跳过行为、安全报告内容、Research Manager 共识排除、Risk Judge 预计算复用、记忆保护、603629 回归场景。
++- **验证**：FUND 专项 111 项通过；FUND-004A 专项 20 项通过；API/runtime smoke 122 项通过；readiness/trace/replay 127 项通过；组合回归 460 项通过；`py_compile` 通过；`git diff --check` 通过。
++- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-22 | FUND-004B C-006 同日期/同期间口径计算补修
+ 
+ - **问题**：`extract_financial_anomaly_inputs()` 按指标各取最新值（独立排序 `report_date`），导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算，可组合出虚假毛利率（如 88%/-500%）。
+ - **修复**：按 `(report_date, period_scope, unit)` 建立完整指标组；毛利率只使用同组收入和营业成本，资产负债率只使用同一报告日的 POINT_IN_TIME 资产与负债，找不到完整同口径组时返回 `None`。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -31,9 +31,9 @@
+ 1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+ 2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
+ 3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+ 4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
+-5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004B）。
++5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
+ 6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
+ 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
+ 8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto；等待 FUND-006A）。
+ 9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+
+[0m
+Now update `TASKS.md` to mark FUND-004A as done:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -269,9 +269,9 @@
+ 186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
+ 187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+ 188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done，由 `2d98abc` 完成复审收口）。
+ 189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready，依赖已闭环）。
+-190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004B）。
++190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done，460 项回归通过）。
+ 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
+ 192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
+ 193. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+ 194. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto，依赖 FUND-006A）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -5734,9 +5734,9 @@
+ 
+ ### FUND-004A: 基本面语义门禁前移并剔除无效研究权重（P0）
+ - **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
+ - **优先级**：P0
+-- **状态**：in_progress — claimed FUND-004A-20260722-202004
++- **状态**：done — 460 项回归通过
+ - **预计耗时**：40-50 分钟
+ - **depends_on**：FUND-001A, FUND-003A-B, FUND-004B, FUND-004
+ - **auto_release**：true
+ - **实现约束**：
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -32,9 +32,9 @@
+ 2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
+ 3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+ 4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
+ 5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
+-6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
++6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A done → 可领取）。
+ 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
+ 8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto；等待 FUND-006A）。
+ 9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+ 10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat && echo "---" && git status --short
+docs/DEVLOG.md                                     | 18 ++++
+ docs/TASKS.md                                      |  8 +-
+ tradingagents/agents/managers/research_manager.py  |  8 ++
+ tradingagents/agents/managers/risk_manager.py      | 30 ++++---
+ .../agents/utils/fundamental_integrity.py          | 70 ++++++++++++++++
+ tradingagents/graph/setup.py                       | 95 ++++++++++++++++++++--
+ 6 files changed, 208 insertions(+), 21 deletions(-)
+---
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/agents/managers/research_manager.py
+ M tradingagents/agents/managers/risk_manager.py
+ M tradingagents/agents/utils/fundamental_integrity.py
+ M tradingagents/graph/setup.py
+?? docs/task_runs/FUND-004A-20260722-202004/
+?? tests/test_fund004a_integrity_gate.py
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund003_fund004_integrity.py tests/test_fund004a_integrity_gate.py tests/test_fund001_instrument_identity.py tests/test_fund002_financial_periods.py tests/test_fund005_agent_trace.py tests/test_fund006_integrity_replay.py tests/test_api_smoke.py tests/test_runtime_tier_contract.py tests/test_readiness_score.py tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_data_p0_fund_route.py -q 2>&1
+........................................................................ [ 15%]
+........................................................................ [ 31%]
+........................................................................ [ 46%]
+........................................................................ [ 62%]
+........................................................................ [ 78%]
+........................................................................ [ 93%]
+............................                                             [100%]
+460 passed in 23.41s
+[0m
+[0m# [0mTodos
+[✓] Read key source files: fundamental_integrity.py, data_collector.py, setup.py, fundamentals_analyst.py, risk_manager.py, research_manager.py, memory.py, reflection.py, trading_graph.py
+[✓] Implement pre-filter: evaluate_fundamental_integrity() call after Fundamentals Analyst, before Bull/Bear
+[✓] Gate fundamentals_report: when integrity fails, replace report with safe version containing blocker + preserved facts
+[✓] Update Research Manager consensus weight to exclude gated fundamentals
+[✓] Prevent invalid narratives from being written to long-term memory (reflection.py)
+[✓] Keep Risk Judge D-002 strong action gate as second defense layer
+[✓] Write tests: inject invalid fundamental, verify Bull/Bear prompts don't contain rejected narrative
+[✓] Run existing FUND tests + regression tests to verify no breakage
+[✓] Update docs/DEVLOG.md
+[0m
+## FUND-004A 完成总结
+
+### Files Changed (6 modified, 1 new)
+
+| File | Change |
+|---|---|
+| `tradingagents/graph/setup.py` | 新增 `create_fundamentals_integrity_gate()` 节点工厂；插入 "Fundamentals Integrity Gate" 节点，将 Fundamentals Analyst → Gate → Bull Researcher |
+| `tradingagents/agents/utils/fundamental_integrity.py` | 新增 `build_gated_fundamentals_report()` 和 `_extract_verified_facts()` 辅助函数 |
+| `tradingagents/agents/managers/research_manager.py` | `_build_consensus_block()` 检查 `metadata.fundamental_integrity`，失败时排除 fundamentals_analyst |
+| `tradingagents/agents/managers/risk_manager.py` | 优先使用预计算 integrity，避免重复计算 |
+| `tests/test_fund004a_integrity_gate.py` | 新增 20 项测试 |
+| `docs/DEVLOG.md` / `docs/TASKS.md` | 状态更新 |
+
+### Key Logic
+
+1. **Gate node** runs after Fundamentals Analyst, before Bull/Bear — evaluates `evaluate_fundamental_integrity()` using data_collector's cached sidecars
+2. When integrity fails: replaces `fundamentals_report` with safe version (blocker reasons + verified raw facts only, no unsupported narrative)
+3. Stores integrity result in `metadata.fundamental_integrity` for downstream reuse
+4. **Research Manager** excludes gated fundamentals from consensus weight computation
+5. **Memory** automatically safe — gate replaces report in state before reflection reads it
+6. **Risk Judge** D-002 gate remains as second defense, uses pre-computed integrity when available
+
+### Test Results
+
+- **FUND-004A 专项**: 20 passed
+- **FUND 专项 + 回归**: 460 passed (0 failed)
+- `py_compile` ✅ | `git diff --check` ✅
+
+### Constraints Maintained
+
+- ❌ No changes to `tradingagents/prompts/`
+- ❌ No writes to `tradingagents.db`
+- ❌ No live LLM calls
+- ❌ No commit (outer script handles)

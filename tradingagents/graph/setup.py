@@ -10,6 +10,71 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .conditional_logic import ConditionalLogic
 
 
+def create_fundamentals_integrity_gate(data_collector=None):
+    """[FUND-004A] Create a graph node that gates fundamentals report integrity.
+
+    Runs after Fundamentals Analyst, before Bull/Bear. When integrity fails,
+    replaces the fundamentals_report with a safe version containing only
+    verified facts and blocker reasons — no unsupported narrative.
+    """
+    import logging
+    from tradingagents.agents.utils.fundamental_integrity import (
+        evaluate_fundamental_integrity,
+        build_gated_fundamentals_report,
+    )
+
+    _logger = logging.getLogger(__name__)
+
+    async def fundamentals_integrity_gate_node(state):
+        ticker = state.get("company_of_interest", "")
+        trade_date = state.get("trade_date", "")
+        fundamentals_report = state.get("fundamentals_report", "")
+
+        if not fundamentals_report:
+            return {}
+
+        if data_collector is None:
+            return {}
+
+        pool = data_collector.get(ticker, trade_date)
+        if pool is None:
+            _logger.warning("[FUND-004A] No data pool for %s %s, skipping gate", ticker, trade_date)
+            return {}
+
+        identity = pool.get("instrument_identity") or {}
+        period_facts = pool.get("financial_period_facts") or []
+        explanations = pool.get("fundamental_explanations") or {}
+
+        integrity = evaluate_fundamental_integrity(
+            identity=identity,
+            period_facts=period_facts,
+            explanation_context=explanations,
+            report_text=fundamentals_report,
+        )
+
+        metadata = dict(state.get("metadata") or {})
+        metadata["fundamental_integrity"] = integrity
+
+        if not integrity["is_valid"]:
+            gated_report = build_gated_fundamentals_report(
+                original_report=fundamentals_report,
+                integrity=integrity,
+                pool=pool,
+            )
+            _logger.info(
+                "[FUND-004A] Gate triggered for %s: %d blockers, replacing fundamentals_report",
+                ticker, len(integrity.get("blockers", [])),
+            )
+            return {
+                "fundamentals_report": gated_report,
+                "metadata": metadata,
+            }
+
+        return {"metadata": metadata}
+
+    return fundamentals_integrity_gate_node
+
+
 def _load_agent_factories() -> dict[str, Any]:
     """Load graph node factories lazily to avoid circular imports.
 
@@ -41,6 +106,7 @@ def _load_agent_factories() -> dict[str, Any]:
         "create_bull_researcher": create_bull_researcher,
         "create_conservative_debator": create_conservative_debator,
         "create_fundamentals_analyst": create_fundamentals_analyst,
+        "create_fundamentals_integrity_gate": create_fundamentals_integrity_gate,
         "create_macro_analyst": create_macro_analyst,
         "create_market_analyst": create_market_analyst,
         "create_neutral_debator": create_neutral_debator,
@@ -176,6 +242,11 @@ class GraphSetup:
         )
         trader_node = factories["create_trader"](self.deep_thinking_llm, self.trader_memory)
 
+        # [FUND-004A] fundamental_semantic_gate_forward
+        fundamentals_integrity_gate_node = factories["create_fundamentals_integrity_gate"](
+            self.data_collector
+        )
+
         # Create risk analysis nodes
         aggressive_analyst = factories["create_aggressive_debator"](self.mid_thinking_llm)
         neutral_analyst = factories["create_neutral_debator"](self.mid_thinking_llm)
@@ -206,6 +277,8 @@ class GraphSetup:
         workflow.add_node("Neutral Analyst", neutral_analyst)
         workflow.add_node("Conservative Analyst", conservative_analyst)
         workflow.add_node("Risk Judge", risk_manager_node)
+        # [FUND-004A] Insert integrity gate between Fundamentals Analyst and Bull/Bear
+        workflow.add_node("Fundamentals Integrity Gate", fundamentals_integrity_gate_node)
 
         # Define edges
         # Fan out all selected analysts in parallel from START
@@ -228,11 +301,23 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-        # All analysts complete → Bull Researcher (start debate)
-        workflow.add_edge(
-            [f"{analyst_display_name(analyst_type)} Analyst Done" for analyst_type in selected_analysts],
-            "Bull Researcher",
-        )
+        # [FUND-004A] fundamental_semantic_gate_forward
+        # Fundamentals Analyst Done → Integrity Gate → Bull Researcher
+        # All other analysts complete → Bull Researcher (direct)
+        non_fundamentals_done = [
+            f"{analyst_display_name(analyst_type)} Analyst Done"
+            for analyst_type in selected_analysts
+            if analyst_type != "fundamentals"
+        ]
+        if "fundamentals" in selected_analysts:
+            workflow.add_edge("Fundamentals Analyst Done", "Fundamentals Integrity Gate")
+            workflow.add_edge(
+                ["Fundamentals Integrity Gate"] + non_fundamentals_done,
+                "Bull Researcher",
+            )
+        else:
+            # No fundamentals analyst selected — all done nodes go directly to Bull
+            workflow.add_edge(non_fundamentals_done, "Bull Researcher")
 
         # Add remaining edges
         workflow.add_conditional_edges(

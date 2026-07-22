@@ -32,8 +32,8 @@
 2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
 3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
 4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
-5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004B）。
-6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A）。
+5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
+6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A done → 可领取）。
 7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto；等待 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
 8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，blocked-auto；等待 FUND-006A）。
 9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
@@ -270,7 +270,7 @@
 187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
 188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done，由 `2d98abc` 完成复审收口）。
 189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready，依赖已闭环）。
-190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004B）。
+190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done，460 项回归通过）。
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
 192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，blocked-auto，依赖 FUND-001A/FUND-003A-B/FUND-004A/FUND-004B/FUND-005A）。
 193. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
@@ -5735,7 +5735,7 @@
 ### FUND-004A: 基本面语义门禁前移并剔除无效研究权重（P0）
 - **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — 460 项回归通过
 - **预计耗时**：40-50 分钟
 - **depends_on**：FUND-001A, FUND-003A-B, FUND-004B, FUND-004
 - **auto_release**：true

@@ -154,19 +154,25 @@ def create_risk_manager(llm, memory):
 
         # [FUND-004] fundamental_semantic_gate — the integrity check consumes
         # deterministic sidecars, not a model's interpretation of them.
+        # [FUND-004A] Use pre-computed integrity from gate node if available,
+        # otherwise compute here (fallback for runs without the gate node).
         raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
-        identity_entry = raw_evidence.get("instrument_identity") or {}
-        period_entry = raw_evidence.get("financial_period_facts") or {}
-        explanation_entry = raw_evidence.get("fundamental_explanations") or {}
-        identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
-        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
-        explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
-        fundamental_integrity = evaluate_fundamental_integrity(
-            identity=identity,
-            period_facts=period_facts,
-            explanation_context=explanations,
-            report_text=fundamentals_report,
-        )
+        pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
+        if pre_computed_integrity is not None:
+            fundamental_integrity = pre_computed_integrity
+        else:
+            identity_entry = raw_evidence.get("instrument_identity") or {}
+            period_entry = raw_evidence.get("financial_period_facts") or {}
+            explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+            identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+            period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+            explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity=identity,
+                period_facts=period_facts,
+                explanation_context=explanations,
+                report_text=fundamentals_report,
+            )
         integrity_block = format_fundamental_integrity_block(fundamental_integrity)
         if integrity_block:
             final_response += "\n\n" + integrity_block

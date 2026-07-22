@@ -1,5 +1,23 @@
 # 修改日志
 
+## 2026-07-22 | FUND-004A 基本面语义门禁前移并剔除无效研究权重
+
+- **问题**：`evaluate_fundamental_integrity()` 只在 Risk Judge 阶段（图第 9 步）执行，Bull/Bear 研究员和 Research Manager 已先消费了可能包含未经验证因果/会计叙事的基本面报告，导致无效叙事污染辩论、共识权重和长期投资记忆。
+- **修复**：在 LangGraph 中 Fundamentals Analyst 与 Bull/Bear 之间插入 `Fundamentals Integrity Gate` 节点，提前执行语义门禁：
+  - 当 integrity 失败时，将 `fundamentals_report` 替换为安全版本（仅含 blocker 原因 + 可验证财务事实，不含任何未经支持的叙事）。
+  - 将 integrity 结果存入 `metadata.fundamental_integrity`，供下游（Research Manager、Risk Judge）复用。
+  - Research Manager 共识权重计算排除被门禁拦截的基本面分析师，防止无效叙事参与方向降权。
+  - 长期投资记忆（reflection.py）自动使用安全版本，因为 gate 已在 state 层面替换了报告。
+  - Risk Judge D-002 强动作门禁保留为第二道防线，优先使用预计算的 integrity 结果，无则回退到原位计算。
+- **代码变更**：
+  - `tradingagents/graph/setup.py` — 新增 `create_fundamentals_integrity_gate()` 节点工厂；在 `setup_graph()` 中添加 "Fundamentals Integrity Gate" 节点，将 "Fundamentals Analyst Done → Gate → Bull Researcher" 而非直接到 Bull Researcher。
+  - `tradingagents/agents/utils/fundamental_integrity.py` — 新增 `build_gated_fundamentals_report()` 和 `_extract_verified_facts()` 辅助函数。
+  - `tradingagents/agents/managers/research_manager.py` — `_build_consensus_block()` 检查 `metadata.fundamental_integrity`，integrity 失败时排除 `fundamentals_analyst`。
+  - `tradingagents/agents/managers/risk_manager.py` — 优先使用 `metadata.fundamental_integrity` 预计算结果，避免重复计算。
+- **新增测试**：`tests/test_fund004a_integrity_gate.py`（20 项），覆盖：gate 替换/通过/跳过行为、安全报告内容、Research Manager 共识排除、Risk Judge 预计算复用、记忆保护、603629 回归场景。
+- **验证**：FUND 专项 111 项通过；FUND-004A 专项 20 项通过；API/runtime smoke 122 项通过；readiness/trace/replay 127 项通过；组合回归 460 项通过；`py_compile` 通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-22 | FUND-004B C-006 同日期/同期间口径计算补修
 
 - **问题**：`extract_financial_anomaly_inputs()` 按指标各取最新值（独立排序 `report_date`），导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算，可组合出虚假毛利率（如 88%/-500%）。
@@ -13660,3 +13678,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/FUND-004B-20260722-round1.txt
 - **Run archive**: docs/task_runs/FUND-004B-20260722-200203/
+
+## 2026-07-22 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-004A - 基本面语义门禁前移并剔除无效研究权重（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/FUND-004A-20260722-round1.txt
+- **Run archive**: docs/task_runs/FUND-004A-20260722-202004/

@@ -979,6 +979,76 @@ def format_fundamental_integrity_block(integrity: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# [FUND-004A] fundamental_semantic_gate_forward
+
+_GATED_HEADER = (
+    "【基本面语义门禁已触发 — 该模块不参与方向权重】\n\n"
+    "基本面报告存在以下完整性问题，已被门禁拦截：\n"
+)
+
+
+def _extract_verified_facts(pool: Mapping[str, Any] | None) -> str:
+    """Extract verified financial facts from data pool for the gated report."""
+    if not pool:
+        return ""
+    parts: list[str] = []
+    identity = pool.get("instrument_identity")
+    if isinstance(identity, Mapping) and identity.get("security_name"):
+        parts.append(f"公司名称：{identity.get('security_name')}")
+    if isinstance(identity, Mapping) and identity.get("industry"):
+        parts.append(f"行业：{identity.get('industry')}")
+    period_facts = pool.get("financial_period_facts") or []
+    if period_facts:
+        latest_by_metric: dict[str, Mapping[str, Any]] = {}
+        for fact in period_facts:
+            if not isinstance(fact, Mapping) or fact.get("value") is None:
+                continue
+            metric = str(fact.get("metric") or "")
+            if not metric:
+                continue
+            existing = latest_by_metric.get(metric)
+            if existing is None or str(fact.get("report_date", "")) > str(existing.get("report_date", "")):
+                latest_by_metric[metric] = fact
+        metric_labels = {
+            "revenue": "营业收入", "operating_cost": "营业成本",
+            "net_profit": "净利润", "operating_cashflow": "经营现金流",
+            "total_assets": "总资产", "total_liabilities": "总负债",
+            "gross_margin": "毛利率", "debt_ratio": "资产负债率",
+        }
+        for metric, label in metric_labels.items():
+            fact = latest_by_metric.get(metric)
+            if fact is not None:
+                value = fact.get("value")
+                unit = fact.get("unit", "")
+                report_date = fact.get("report_date", "")
+                parts.append(f"{label}：{value} {unit}（{report_date}）")
+    return "\n".join(parts) if parts else "无可验证财务事实"
+
+
+def build_gated_fundamentals_report(
+    *,
+    original_report: str,
+    integrity: Mapping[str, Any],
+    pool: Mapping[str, Any] | None,
+) -> str:
+    """Build a safe fundamentals report when integrity gate fails.
+
+    Contains only blocker reasons and verified raw facts — no narrative
+    claims that could be unsupported causal or accounting explanations.
+    """
+    blockers = integrity.get("blockers") or []
+    blocker_lines = "\n".join(
+        f"- {b.get('code')}: {b.get('reason')}" for b in blockers
+    )
+    verified_facts = _extract_verified_facts(pool)
+    return (
+        f"{_GATED_HEADER}{blocker_lines}\n\n"
+        f"【保留的可验证财务事实】\n{verified_facts}\n\n"
+        f"注意：以上事实仅供参考，不得从中推导因果解释或会计口径结论。\n"
+        f"基本面模块不参与方向权重。Bull/Bear 研究不得引用被拒绝的基本面叙事。"
+    )
+
+
 def _official_texts(
     announcements: Any,
     half_year_facts: Mapping[str, Any] | None,

@@ -47,8 +47,16 @@ def _classify_direction(direction: str) -> str:  # [G-002] consensus_weight
 def _build_consensus_block(  # [G-003] consensus_weight_fix
     state: dict,
 ) -> str | None:
+    # [FUND-004A] Exclude fundamentals_analyst from consensus when integrity gate fired
+    metadata = state.get("metadata") or {}
+    fundamental_integrity = metadata.get("fundamental_integrity") or {}
+    fundamentals_gated = not fundamental_integrity.get("is_valid", True)
+
     reports: list[tuple[str, str, str]] = []
     for state_key, analyst_name in _ANALYST_MAP:
+        # [FUND-004A] Skip fundamentals when integrity gate has blocked it
+        if analyst_name == "fundamentals_analyst" and fundamentals_gated:
+            continue
         text = state.get(state_key, "")
         if not text:
             continue
