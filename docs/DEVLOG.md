@@ -1,5 +1,41 @@
 # 修改日志
 
+## 2026-07-23 | HY-009 半年报增量刷新、缓存失效与事实冲突审计
+
+- **任务**：HY-009 — 让 HY-003 半年报事实索引能识别新披露、修订稿和知识库页面更新，安全刷新缓存并标记跨版本事实冲突（P2）
+- **状态**：✅ 实现完成，37 tests passed；HY-003/005/008 组合回归 157 passed，无回归
+- **代码标注**：`# [HY-009] half_year_incremental_refresh`
+
+### 改动
+
+- 新增 `tradingagents/dataflows/half_year_incremental_refresh.py`：增量刷新核心模块
+  - `incremental_refresh_half_year_facts()`：主入口，检测页面变更（新增/修订/删除/过期），增量刷新缓存，输出事实冲突标记
+  - `_detect_page_changes()`：基于 mtime / content hash / financial_period / disclosure_date 检测四类变更
+  - `_detect_cross_version_conflicts()`：同报告期跨版本事实冲突检测（revenue / net_profit / gross_margin / operating_cash_flow），输出结构化 `FactConflictFlag`（含来源路径）
+  - `_build_incremental_cache()`：只重建变更页面，复用未变更页面，避免全量扫描
+  - `IncrementalRefreshResult` / `PageChange` / `FactConflictFlag`：数据类，支持 JSON 序列化
+  - `incremental_refresh_with_disk_cache()`：带落盘缓存的便利入口
+- 新增 `tests/test_hy009_half_year_incremental_refresh.py`：37 项测试
+  - 六类 fixture 场景：新增、修订、删除、缓存损坏、同周期冲突、无变化
+  - 幂等性验证：连续两次相同输入结果一致
+  - 冲突事实隔离：conflict 不进入 HAS_DATA 强结论路径
+  - 只读安全性：不写知识库目录
+  - JSON 序列化、边界情况（空页面、非半年报页忽略、混合变更）
+
+### 核心设计
+
+- **增量判断**：基于 KB-010 manifest（size / mtime_ns / sha1_prefix）+ HY-003 financial_period / disclosure_date 变更
+- **缓存失效**：变更页面重建，未变更页面复用 KB-010 CachedPageData；旧缓存 None 或损坏时全量重建
+- **冲突审计**：同 `(period, metric_key)` 多个不同 value → `FactConflictFlag`，附带来源路径；页面级 `data_status=conflict` 与 HY-003 `_detect_conflicts` 口径一致
+- **幂等**：无变更时复用旧缓存，不重建全量索引
+- **约束保持**：全程只读，不调 LLM，不写生产 DB，不改 prompts
+
+### 下游释放
+
+- HY-009 ✓ 后可释放 V-014（真实本地知识库只读 smoke 与研报主线验收日报）
+
+---
+
 ## 2026-07-23 | B-004 持仓快照与 investment-controller 同步
 
 - **任务**：B-004 — TA 系统的持仓数据与 investment-controller 项目的 current_holdings.json 双向同步（中优先级）
@@ -14413,3 +14449,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/B-004-20260723-round1.txt
 - **Run archive**: docs/task_runs/B-004-20260723-052711/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: HY-009 - 半年报增量刷新、缓存失效与事实冲突审计（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/HY-009-20260723-round1.txt
+- **Run archive**: docs/task_runs/HY-009-20260723-054123/
