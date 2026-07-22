@@ -1,5 +1,33 @@
 # 修改日志
 
+## 2026-07-23 | F-001 Codex review 补修：models_cache 缺失字段
+
+- **问题**：Codex CLI v0.144.1 启动时报错 `failed to load models cache: missing field 'supports_reasoning_summaries' at line 88 column 5`，导致 review 无法正常执行。
+- **原因**：`~/.codex/models_cache.json` 中 8 个模型条目缺少 `supports_reasoning_summaries` 字段，Rust 端反序列化强制要求该字段。
+- **修复**：为所有模型条目添加 `"supports_reasoning_summaries": false`。
+- **验证**：F-001 专项 70 项通过；`py_compile` 通过。
+- **边界**：未修改项目代码、未写生产数据库、未提交 commit。
+
+## 2026-07-23 | F-001 TA研报执行层修复（P0-P2 共 10 项）
+
+- **目标**：修复 002837 英维克报告暴露的 10 个执行层问题，建立专项测试覆盖。
+- **修复内容**：
+  1. **P0-1 止损价解析**（`trade_setup.py:_extract_stop_loss`）：风控段优先、条件止损、bold markdown、多价格行。
+  2. **P0-2 估值 sanity check**（`readiness_score.py:check_valuation_mismatch`）：估值段引用价偏离当前价 >20% 标记 mismatch。
+  3. **P0-3 Opportunity Score 封顶**（`readiness_score.py:calculate_opportunity_score`）：gate 未通过/偏空/交易员禁买/数据不足/持仓未知各有限制，取最低封顶。
+  4. **P1-4 未持仓语义**（`readiness_score.py:sanitize_forbidden_strong_actions`）：减仓/清仓/止损/HOLD 替换为观察语义，止损价字段名保留。
+  5. **P1-5 Buy/Risk Level 冲突**（`readiness_score.py:calculate_buy_level/calculate_risk_level`）：未持仓 Risk Level 上限 1；未持仓+入场条件未满足 Buy Level 上限 1；未持仓+偏空 Buy Level 0。
+  6. **P1-6 舆情 VERDICT 矛盾**（`agent_states.py:extract_verdict`）：VERDICT 标签提取与分析师冲突检测。
+  7. **P1-7 入场区间误识别**（`trade_setup.py:_find_price_range`）：排除震荡/观察/阻力区间，硬排除"不建议入场"，优先最终有效区间。
+  8. **P2-8 打法标签**（`trade_setup.py:_setup_type`）：从事实事件派生（业绩承压/超预期/题材预期/事件驱动/量价低吸/趋势突破/持仓风控），最多 3 个。
+  9. **P2-9 A股做空措辞**（`readiness_score.py:_sanitize_short_selling_text`）：做空策略→看空信号、考虑做空→考虑减仓/止损等 8 条替换。
+  10. **P2-10 Evidence Coverage 保守化**（`readiness_score.py:calculate_evidence_coverage`）：HAS_DATA=1.0、NORMAL_NO_DATA=0.5 加权，NOT_AVAILABLE 排除分母。
+- **代码变更**：
+  - `tradingagents/agents/utils/readiness_score.py` — 修复 `calculate_buy_level()` 未持仓+入场条件确认时的 note 准确性。
+  - `tests/test_f001_report_execution_fixes.py`（新增）— 70 项专项测试，覆盖全部 10 个修复点 + 集成测试。
+- **验证**：F-001 专项 70 项通过；readiness/trade_setup/execution_schema/g008/api_smoke/runtime_tier 回归 279 项通过；组合 349 项通过；`py_compile` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-22 | FUND-007A 财报错误模式基准集与持续回归报告
 
 - **目标**：把 603629 及跨行业财报回放中暴露的错误模式固化为确定性基准集，使后续 provider、解析器或模型路由调整都能先证明没有重新引入"数字大体正确、因果解释错误"的故障。
@@ -13778,3 +13806,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/FUND-007A-20260722-round1.txt
 - **Run archive**: docs/task_runs/FUND-007A-20260722-211827/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: F-001 - TA研报执行层修复（P0-P2共10项）
+- **Priority**: P0
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/F-001-20260723-round2.txt
+- **Run archive**: docs/task_runs/F-001-20260723-015057/

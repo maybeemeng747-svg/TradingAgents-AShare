@@ -634,7 +634,7 @@ def calculate_buy_level(
             max_level = min(max_level, 1)
             note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
         else:
-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
     elif position_status == "unknown":
         note_prefix = "持仓状态未知，Buy Level 上限为 2"
     else:

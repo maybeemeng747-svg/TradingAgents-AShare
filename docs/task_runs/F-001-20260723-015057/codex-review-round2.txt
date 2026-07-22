@@ -1,0 +1,2409 @@
+Task: F-001 - TA研报执行层修复（P0-P2共10项）
+Date: 2026-07-23_02:09:41
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8b02-bca0-7da1-b71a-123bd095dbdb
+--------
+user
+current changes
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- branch ---\\n' && git branch --show-current && printf '\\n--- docs head ---\\n' && sed -n '1,120p' docs/project-overview.md && printf '\\n--- TASKS ---\\n' && sed -n '1,120p' docs/TASKS.md && printf '\\n--- DECISIONS ---\\n' && sed -n '1,120p' docs/DECISIONS.md && printf '\\n--- DEVLOG ---\\n' && sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/agents/utils/readiness_score.py
+?? docs/reviews/F-001-20260723-round1.txt
+?? docs/task_runs/F-001-20260723-015057/
+?? tests/test_f001_report_execution_fixes.py
+
+--- branch ---
+local/tradingagents-custom
+
+--- docs head ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 当前产品事实（2026-07-10）
+
+项目已从单一报告生成器扩展为分层投研工作台，但产品主线应保持收敛：
+
+```text
+Tree Work 既有研报/半年报知识页（历史上游）
+  -> ZCode 知识库接入、研究评分与快照发布
+  -> 来源与事实审计
+  -> 昊天左侧候选
+  -> TradeFlow 少量候选池
+  -> 轻量 TA / 人工确认的完整 TA
+  -> 观察仓、盘中观察、盘后复盘
+```
+
+TradeFlow 的 `TECH_TRADE` 与 `POLICY_AMBUSH/POLICY_CONFIRM` 必须分池展示，不能把短线技术机会当作中长期昊天候选。Fast Radar、Light Research、Full TA 的运行层级也必须保持清晰：完整 TA 只能人工确认触发。
+
+现有 Tree Work 知识页只作为可追溯的历史上游与背景/观点证据；后续知识库接入、`research-scorer` 和正式快照发布统一由 ZCode 负责。公告、原始财报和行情数据仍是事实与动作门禁的优先来源。所有知识命中都必须带来源路径、报告期或更新时间、来源等级和新鲜度。
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-07-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前执行队列（2026-07-22）
+
+> 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
+
+> **执行前置**：FUND-001A、FUND-003A 与 FUND-003A-B 已完成确定性补修和 Codex 多轮对抗复审。工作区恢复干净后，从 FUND-004B 开始按依赖串行自动领取；自动循环继续遵守 dirty-tree 停止规则。
+
+1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
+3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
+5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
+6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A done → 可领取）。
+7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
+8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
+9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+15. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+16. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
+17. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，done；最终补修 `623f45c`）。
+18. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
+19. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
+20. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
+21. `UI-014`：TA 研报证据中心与来源下钻（P2，blocked；等待 API 契约人工确认）。
+22. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
+23. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+
+> FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
+
+### 今晚 4 小时执行包（2026-07-22）
+
+> 目标预算约 200-265 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1/P2 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
+
+| 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
+|---|---|---:|---|
+| 1 | `FUND-003A-B` | done | `2d98abc`；72 项专项、271 项聚焦回归通过，复审无 P0/P1/P2 |
+| 2 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
+| 3 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
+| 4 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
+| 5 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
+| 6 | `FUND-007A` | 30-40 分钟 | 形成可重复执行的财报错误模式基准集、机器结果和人读回归报告；不得把一次性样本写死为交易结论 |
+
+> **夜间终点**：只完成离线确定性修复、基准沉淀和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 4 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
+
+#### FUND-003A-B 补修验收口径
+
+- 证据的 `direction`/`negation`/因果关系必须属于具体术语及其出现位置，禁止挂在整条 entry 上被其他指标复用。
+- 同一指标多次出现时不得只读第一次；存在相反方向或语义不明时 fail closed。
+- 因果同义词必须同时应用于证据侧和 claim 侧；`采购成本下降` 可支持 `原材料成本下降`，但不得只因同时出现“原材料”就证明任意因果。
+- `claim_id` 必须确定性且能区分同一报告内同指标的多条声明，不得只对 keyword 做 hash。
+- 每个 `evidence_id` 的审计片段必须包含它所支持的具体术语、方向与否定信息。
+- 必测对抗样例：中性首次出现+后文上涨；`未采用净额法，仍采用总额法`；`原材料下降+合同负债增加`；同指标多条相反声明；多术语长证据片段。
+- 完成标准：专项与相关回归全绿，`codex review --uncommitted` 无 P0/P1/P2 correctness finding；不调 live LLM，不写生产数据库。
+
+
+### F-001: TA研报执行层修复（P0-P2共10项）
+- **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+- **优先级**：P0
+- **状态**：done — 70 项专项通过，279 项回归通过
+- **预计耗时**：60-90 分钟
+- **depends_on**：无
+- **auto_release**：true
+- **验收方式**：重跑002837报告，10项全部通过
+
+### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+- **描述**：把"计划最大仓位 + 试错仓/确认仓/进攻仓"写成可测试规则，禁止系统因为下跌简单提示补仓。
+- **优先级**：P1
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：PLAYBOOK-001
+- **auto_release**：true
+- **验收方式**：fixture覆盖可试错/不可试错/可加确认仓/不可加确认仓/回踩进攻/突破进攻/跌停不补。"跌了/便宜/回调"单独出现不能触发补仓。
+- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+
+### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
+- **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 research_score_snapshot v1.1.0 可被稳定读取和降级。本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
+- **优先级**：P1
+- **状态**：ready
+- **预计耗时**：35-45 分钟
+- **depends_on**：KB-001, KB-014
+- **auto_release**：true
+- **验收方式**：fixture覆盖五类状态、完整/缺字段、过期、损坏、symbol错配。断言drafts不会被生产loader选中；同标的多版本严格按analysis_time选择。
+
+### B-001: 接入小米 MiMo 模型到 TA 系统
+- **描述**：在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
+- **优先级**：高
+- **状态**：ready
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-001: position_validation_gate（P2）
+- **描述**：每份报告生成前必须读取 current_positions.json，根据持仓状态决定可输出的动作类型
+
+--- DECISIONS ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+## ADR-006: 2026-07-10 将研报/半年报/昊天闭环设为唯一产品主线
+- **日期**：2026-07-10
+- **背景**：系统已有 TradeFlow、跟踪看板、知识库和自动开发等大量工程能力，但真实候选中仍以技术池为主，观察仓和盘后 Review 的生产记录不足，半年报事实 Provider 尚未完成。
+- **决策**：优先完成 HY-002/HY-003/KB-015 及其后续事实审计，再做昊天真实候选和交易日回放；PLAYBOOK-002~006 暂停，除非直接阻塞主线。
+- **原因**：用户核心目标是从政策、产业和研报中找到少量高质量中长期候选，而不是继续扩大功能数量。先验证选股和证据闭环，才能判断后续仓位规则是否值得实现。
+- **影响**：自动领取顺序以 `docs/TASKS.md` 的“当前执行队列”为准；fixture 验收和真实运行验收必须分开记录；新功能必须说明是否直接服务主线。
+
+## ADR-007: 研究评分采用四卡分层所有权，不生成混合总分
+- **日期**：2026-07-13
+- **背景**：现有 Tree Work 知识库、TA readiness、TradeFlow 候选分、账户风控和 PLAYBOOK 已分别存在评分或阶段字段。若各层都计算完整总分和动作，会产生重复计分、阈值冲突，以及“好公司被误判为现在可以买”的风险。
+- **决策**：`research-scorer` 的代码、规则版本和正式快照写入归 ZCode 知识库接入项目所有；ZCode 发布的知识快照只拥有慢变量 `research_evidence_confidence` 与 `thesis_quality`。现有 Tree Work 页面继续作为上游知识输入，不要求历史改名。TradingAgents-AShare 不复刻评分公式，只读取版本化快照；TradeFlow 复用现有动态因子生成 `entry_timing`，账户上下文生成 `portfolio_fit`，TA 在四卡之后统一执行硬性否决并映射 PLAYBOOK 七阶段。禁止合成单一股票总分，禁止知识快照携带或覆盖交易动作。
+- **原因**：证据可信度、公司逻辑、实时买点和账户资格回答的是四个不同问题；分层后才能做到来源可追溯、动态变化可解释，并让高研究分始终受行情、账户和风控约束。
+- **影响**：知识库侧任务单独记录在 `docs/zcode_research_scorer_handoff.md`；本仓库新增 SCORE-001~006 消费与裁决任务线。`execution_action` 与 Buy/Risk Level 继续作为底层安全契约，`playbook_stage` 只提供更细语义。SCORE-005 可以实现不含仓位数量的阶段判定，但不解锁 PLAYBOOK-002/003 的真实三笔法和仓位拆分规则。SCORE-006 必须等真实 ZCode 快照人工确认后释放，fixture 不得冒充跨项目验收。
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- DEVLOG ---
+# 修改日志
+
+## 2026-07-23 | F-001 Codex review 补修：models_cache 缺失字段
+
+- **问题**：Codex CLI v0.144.1 启动时报错 `failed to load models cache: missing field 'supports_reasoning_summaries' at line 88 column 5`，导致 review 无法正常执行。
+- **原因**：`~/.codex/models_cache.json` 中 8 个模型条目缺少 `supports_reasoning_summaries` 字段，Rust 端反序列化强制要求该字段。
+- **修复**：为所有模型条目添加 `"supports_reasoning_summaries": false`。
+- **验证**：F-001 专项 70 项通过；`py_compile` 通过。
+- **边界**：未修改项目代码、未写生产数据库、未提交 commit。
+
+## 2026-07-23 | F-001 TA研报执行层修复（P0-P2 共 10 项）
+
+- **目标**：修复 002837 英维克报告暴露的 10 个执行层问题，建立专项测试覆盖。
+- **修复内容**：
+  1. **P0-1 止损价解析**（`trade_setup.py:_extract_stop_loss`）：风控段优先、条件止损、bold markdown、多价格行。
+  2. **P0-2 估值 sanity check**（`readiness_score.py:check_valuation_mismatch`）：估值段引用价偏离当前价 >20% 标记 mismatch。
+  3. **P0-3 Opportunity Score 封顶**（`readiness_score.py:calculate_opportunity_score`）：gate 未通过/偏空/交易员禁买/数据不足/持仓未知各有限制，取最低封顶。
+  4. **P1-4 未持仓语义**（`readiness_score.py:sanitize_forbidden_strong_actions`）：减仓/清仓/止损/HOLD 替换为观察语义，止损价字段名保留。
+  5. **P1-5 Buy/Risk Level 冲突**（`readiness_score.py:calculate_buy_level/calculate_risk_level`）：未持仓 Risk Level 上限 1；未持仓+入场条件未满足 Buy Level 上限 1；未持仓+偏空 Buy Level 0。
+  6. **P1-6 舆情 VERDICT 矛盾**（`agent_states.py:extract_verdict`）：VERDICT 标签提取与分析师冲突检测。
+  7. **P1-7 入场区间误识别**（`trade_setup.py:_find_price_range`）：排除震荡/观察/阻力区间，硬排除"不建议入场"，优先最终有效区间。
+  8. **P2-8 打法标签**（`trade_setup.py:_setup_type`）：从事实事件派生（业绩承压/超预期/题材预期/事件驱动/量价低吸/趋势突破/持仓风控），最多 3 个。
+  9. **P2-9 A股做空措辞**（`readiness_score.py:_sanitize_short_selling_text`）：做空策略→看空信号、考虑做空→考虑减仓/止损等 8 条替换。
+  10. **P2-10 Evidence Coverage 保守化**（`readiness_score.py:calculate_evidence_coverage`）：HAS_DATA=1.0、NORMAL_NO_DATA=0.5 加权，NOT_AVAILABLE 排除分母。
+- **代码变更**：
+  - `tradingagents/agents/utils/readiness_score.py` — 修复 `calculate_buy_level()` 未持仓+入场条件确认时的 note 准确性。
+  - `tests/test_f001_report_execution_fixes.py`（新增）— 70 项专项测试，覆盖全部 10 个修复点 + 集成测试。
+- **验证**：F-001 专项 70 项通过；readiness/trade_setup/execution_schema/g008/api_smoke/runtime_tier 回归 279 项通过；组合 349 项通过；`py_compile` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-22 | FUND-007A 财报错误模式基准集与持续回归报告
+
+- **目标**：把 603629 及跨行业财报回放中暴露的错误模式固化为确定性基准集，使后续 provider、解析器或模型路由调整都能先证明没有重新引入"数字大体正确、因果解释错误"的故障。
+- **实现**：
+  - 新增 `tests/test_fund007a_error_benchmark.py`（21 项），包含 11 个负向样本和 5 个正向控制样本。
+  - 负向覆盖 8 类错误模式：身份错配、年度累计冒充 Q4、跨日期计算、跨单位计算、无解释季节性猜测、净额法/总额法误判、预收款现金流误读、来源全面缺失、证据冲突、否定会计口径、单季度派生冲突。
+  - 正向覆盖 5 类控制：纯事实报告、有证据因果、合法会计口径、无因果关键词、否定一致。
+  - 每个 case 保存稳定 `case_id/expected_gate/expected_rule_ids/actual_result`；故意篡改 expected rule 时测试必须失败。
+  - 新增 CLI runner（`python tests/test_fund007a_error_benchmark.py`），输出机器可读 JSON + 人读 Markdown 报告到 `docs/benchmark_results/`，失败时 exit 1。
+  - 修复 `_extract_relation_at()` 中"主要系...所致"模式检测缺失：当 "主要系" 出现在关键词之前且 "所致" 出现在关键词之后时，正确返回因果关系。
+  - 修复 "是/为" 倒装句检测的正则：从 `(?:的)?(?:是|为)\s*$` 改为 `.+(?:的)?(?:是|为)\s*$`，避免无结果前缀误匹配。
+- **验证**：FUND-007A 专项 21 项通过；FUND 组合 215 项通过；API/runtime smoke 122 项通过；`py_compile` 通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-22 | FUND-006A 真实 provider 格式与生产图离线回放验收
+
+- **目标**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链，作为 live 603629 前的唯一放行门。
+- **实现**：新增 `tests/test_fund006a_provider_replay.py`（52 项），覆盖五条验证轴：
+  1. **身份来源**（9 项）：AKShare 表格格式、Eastmoney 列表格式、CNInfo 跨源冲突、HAS_DATA/PARTIAL/MISSING/CONFLICT 状态、render_identity_context 约束注入。
+  2. **期间公式**（7 项）：累计收入识别（Q1/H1/Q3/FY）、单季度推导（Q2=H1-Q1, Q3=Q3-H1, Q4=FY-Q3）、现金流量表 scope、资产负债表 POINT_IN_TIME、混合累计/单季度分组（FUND-004B 回归）。
+  3. **claim-evidence 绑定**（8 项）：公告解释上下文构建、因果 claim 匹配、不支持 claim 检测、会计政策检测、否定处理、方向冲突、同义词归一化、per-occurrence 绑定（FUND-003A-B 回归）。
+  4. **研究权重剔除**（6 项）：gate 替换报告、共识排除被门禁基本面、gate 存储 integrity 到 metadata、完整 integrity 评估（真实 fixture）、有效报告通过。
+  5. **实际模型 trace**（7 项）：routing facts 注入（provider/model/tier/digest）、tier fallback、snapshot 不可变性、actual_model 从响应提取、隐私安全（secrets/URLs 不泄漏）。
+  6. **全链路离线回放**（9 项）：identity 注入分析师上下文、period context 注入、gate 替换缺失身份报告、Risk Judge 消费 integrity、共识排除、trace 注入、跨行业重放（4 只股票）、603629 历史化工猜测回归、财务事实保留。
+  7. **对抗边界**（6 项）：空 profile、缺失 period facts、未来报告日、重复报告日、单位不匹配、malformed state。
+- **Provider fixture**：使用脱敏的 AKShare 表格格式、Eastmoney 列表格式、CNInfo 跨源格式、真实 income_statement/cashflow/balance_sheet markdown 表格（603629-like 数据），累计/单季度混合。
+- **验证**：FUND-006A 专项 52 项通过；FUND 组合 215 项通过；API/runtime smoke 122 项通过；readiness/data_source/evidence 320 项通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-22 | FUND-005A 逐 Agent 真实模型与运行时 trace 补修
+
+- **问题**：`annotate_agent_traces()` 中 `actual_model` 静态等于 `requested_model`（config 派生），从未从 LLM 响应元数据提取真实模型；无 fallback 追踪；无逐 Agent 计时。
+- **修复**：
+  - `_model_for_tier_with_fallback()` 返回 `(resolved_model, fallback_from)`，当 tier 首选 key 为空且使用后续 candidate 时记录 `fallback_from`。
+  - `_extract_actual_model_from_response()` 从 LLM 最后一个 chunk 的 `response_metadata` 提取 `model`/`model_name`，不可用时返回 `None`（由调用方写 `"unknown"`）。
+  - `annotate_agent_traces()` 保留分析师运行时提供的 `actual_model`，不覆写为 config 值；仅在分析师未提供时回退到 config 派生值。
+  - 7 个分析师节点（fundamentals/market/news/social_media/smart_money/macro/volume_price）统一添加 `import time` + `_extract_actual_model_from_response` 导入，在 LLM 流式调用前后捕获 `started_at`/`finished_at`/`latency_ms`/`actual_model`。
+  - `TraceItem` TypedDict 新增 `started_at`/`finished_at`/`latency_ms`/`actual_model`/`fallback_from` 字段。
+- **代码变更**：
+  - `tradingagents/agents/utils/agent_trace.py` — 新增 `_extract_actual_model_from_response()`、`_model_for_tier_with_fallback()`；修改 `annotate_agent_traces()` 保留分析师 `actual_model`。
+  - `tradingagents/agents/utils/agent_states.py` — `TraceItem` 新增 5 个字段。
+  - `tradingagents/agents/analysts/fundamentals_analyst.py` — 计时 + actual_model 提取。
+  - `tradingagents/agents/analysts/market_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/news_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/social_media_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/smart_money_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/macro_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/volume_price_analyst.py` — 同上。
+- **新增测试**：`tests/test_fund005_agent_trace.py`（24 项），覆盖 5 类场景：无 fallback actual_model 匹配、config tier fallback、运行时 actual_model 提取、actual_model unknown（无响应元数据/显式 unknown）、历史配置变化快照不可变性。额外覆盖：隐私安全（secrets/URLs 不泄漏）、timing 字段保留、全 tier 快照、全部 7 个分析师 tier 映射。
+- **验证**：FUND-005A 专项 24 项通过；FUND 组合 123 项通过；API/runtime smoke 221 项通过；`py_compile` 通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-22 | FUND-004A 基本面语义门禁前移并剔除无效研究权重
+
+- **问题**：`evaluate_fundamental_integrity()` 只在 Risk Judge 阶段（图第 9 步）执行，Bull/Bear 研究员和 Research Manager 已先消费了可能包含未经验证因果/会计叙事的基本面报告，导致无效叙事污染辩论、共识权重和长期投资记忆。
+- **修复**：在 LangGraph 中 Fundamentals Analyst 与 Bull/Bear 之间插入 `Fundamentals Integrity Gate` 节点，提前执行语义门禁：
+  - 当 integrity 失败时，将 `fundamentals_report` 替换为安全版本（仅含 blocker 原因 + 可验证财务事实，不含任何未经支持的叙事）。
+  - 将 integrity 结果存入 `metadata.fundamental_integrity`，供下游（Research Manager、Risk Judge）复用。
+  - Research Manager 共识权重计算排除被门禁拦截的基本面分析师，防止无效叙事参与方向降权。
+  - 长期投资记忆（reflection.py）自动使用安全版本，因为 gate 已在 state 层面替换了报告。
+  - Risk Judge D-002 强动作门禁保留为第二道防线，优先使用预计算的 integrity 结果，无则回退到原位计算。
+- **代码变更**：
+  - `tradingagents/graph/setup.py` — 新增 `create_fundamentals_integrity_gate()` 节点工厂；在 `setup_graph()` 中添加 "Fundamentals Integrity Gate" 节点，将 "Fundamentals Analyst Done → Gate → Bull Researcher" 而非直接到 Bull Researcher。
+  - `tradingagents/agents/utils/fundamental_integrity.py` — 新增 `build_gated_fundamentals_report()` 和 `_extract_verified_facts()` 辅助函数。
+  - `tradingagents/agents/managers/research_manager.py` — `_build_consensus_block()` 检查 `metadata.fundamental_integrity`，integrity 失败时排除 `fundamentals_analyst`。
+  - `tradingagents/agents/managers/risk_manager.py` — 优先使用 `metadata.fundamental_integrity` 预计算结果，避免重复计算。
+- **新增测试**：`tests/test_fund004a_integrity_gate.py`（20 项），覆盖：gate 替换/通过/跳过行为、安全报告内容、Research Manager 共识排除、Risk Judge 预计算复用、记忆保护、603629 回归场景。
+- **验证**：FUND 专项 111 项通过；FUND-004A 专项 20 项通过；API/runtime smoke 122 项通过；readiness/trace/replay 127 项通过；组合回归 460 项通过；`py_compile` 通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-22 | FUND-004B C-006 同日期/同期间口径计算补修
+
+- **问题**：`extract_financial_anomaly_inputs()` 按指标各取最新值（独立排序 `report_date`），导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算，可组合出虚假毛利率（如 88%/-500%）。
+- **修复**：按 `(report_date, period_scope, unit)` 建立完整指标组；毛利率只使用同组收入和营业成本，资产负债率只使用同一报告日的 POINT_IN_TIME 资产与负债，找不到完整同口径组时返回 `None`。
+- **代码变更**：`tradingagents/agents/utils/fundamental_integrity.py` — 重写 `extract_financial_anomaly_inputs()`，新增 `_group_key()`、`_find_best_group()`、`_find_previous_group()`。
+- **新增测试**：`tests/test_fund003_fund004_integrity.py` 新增 7 项 FUND-004B 对抗测试：同日重复累计+单季度值、缺成本、跨日期、跨单位、修订值、资产负债表、前期间毛利率。
+- **验证**：FUND 专项 79 项通过；FUND-002/FUND-006 回归 14 项通过；FUND+API+runtime tier 聚焦回归 215 项通过；全量回归无新增失败。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
+## 2026-07-22 | FUND-003A-B 多轮对抗复审与正式收口
+
+- **起点**：自动开发遗留的两个未提交文件不是可直接提交的完成品；首次定向测试有 7 项失败，dirty tree 连续阻塞夜间任务。
+- **修复**：将财务因果证据绑定下沉到每个术语的具体出现位置，分别保存方向、否定、因果角色、财务目标和审计片段；同一指标出现矛盾证据、目标不一致或语义模糊时 fail closed。
+- **中文语序补全**：覆盖结果在前/原因在后、原因在前/结果在后、`由于/所以/导致/推动/带来`、中英文逗号、并列原因、倒装句、否定词插入，以及“原因对财务目标有推动作用”等常见公告表述。
+- **复审**：连续运行真实 `codex review --uncommitted`，逐轮修复所有 P0/P1/P2 correctness finding；最终 Review 结论为未发现离散 correctness 问题。
+- **验证**：`test_fund003_fund004_integrity.py` 72 项通过；FUND/DataCollector/Evidence/Readiness 聚焦回归 271 项通过；Review 额外运行全量套件至 20% 时由审查进程主动中断，此前 2128 passed、2 skipped、0 failed。
+- **提交与解锁**：代码 commit `2d98abc`；FUND-003A/FUND-003A-B 标记 done，FUND-004B 释放为下一项 ready。
+- **自动领取补修**：dry-run 发现状态说明中的“已由/闭环”会覆盖行首 `ready`，导致解析器跳过 FUND-004B 并越级领取 FUND-004A；现改为行首显式状态优先，并限制 legacy done 启发式只作用于未知状态。67 项 AUTO-007 测试通过，resolver 已正确选择 FUND-004B；遗留 `AUTO-007 in_progress` 状态同步为 done。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库。
+
+
+exec
+/bin/zsh -lc "git diff --stat && printf '\\n--- unstaged diff ---\\n' && git diff -- tradingagents/agents/utils/readiness_score.py docs/TASKS.md docs/DEVLOG.md && printf '\\n--- untracked list ---\\n' && find docs/task_runs/F-001-20260723-015057 -maxdepth 3 -type f -print && printf '\\n--- test file ---\\n' && sed -n '1,260p' tests/test_f001_report_execution_fixes.py && printf '\\n--- review file ---\\n' && sed -n '1,200p' docs/reviews/F-001-20260723-round1.txt" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                | 28 +++++++++++++++++++++++++++
+ docs/TASKS.md                                 |  4 ++--
+ tradingagents/agents/utils/readiness_score.py |  2 +-
+ 3 files changed, 31 insertions(+), 3 deletions(-)
+
+--- unstaged diff ---
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index dafdbb1..4dc13a4 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,33 @@
+ # 修改日志
+ 
++## 2026-07-23 | F-001 Codex review 补修：models_cache 缺失字段
++
++- **问题**：Codex CLI v0.144.1 启动时报错 `failed to load models cache: missing field 'supports_reasoning_summaries' at line 88 column 5`，导致 review 无法正常执行。
++- **原因**：`~/.codex/models_cache.json` 中 8 个模型条目缺少 `supports_reasoning_summaries` 字段，Rust 端反序列化强制要求该字段。
++- **修复**：为所有模型条目添加 `"supports_reasoning_summaries": false`。
++- **验证**：F-001 专项 70 项通过；`py_compile` 通过。
++- **边界**：未修改项目代码、未写生产数据库、未提交 commit。
++
++## 2026-07-23 | F-001 TA研报执行层修复（P0-P2 共 10 项）
++
++- **目标**：修复 002837 英维克报告暴露的 10 个执行层问题，建立专项测试覆盖。
++- **修复内容**：
++  1. **P0-1 止损价解析**（`trade_setup.py:_extract_stop_loss`）：风控段优先、条件止损、bold markdown、多价格行。
++  2. **P0-2 估值 sanity check**（`readiness_score.py:check_valuation_mismatch`）：估值段引用价偏离当前价 >20% 标记 mismatch。
++  3. **P0-3 Opportunity Score 封顶**（`readiness_score.py:calculate_opportunity_score`）：gate 未通过/偏空/交易员禁买/数据不足/持仓未知各有限制，取最低封顶。
++  4. **P1-4 未持仓语义**（`readiness_score.py:sanitize_forbidden_strong_actions`）：减仓/清仓/止损/HOLD 替换为观察语义，止损价字段名保留。
++  5. **P1-5 Buy/Risk Level 冲突**（`readiness_score.py:calculate_buy_level/calculate_risk_level`）：未持仓 Risk Level 上限 1；未持仓+入场条件未满足 Buy Level 上限 1；未持仓+偏空 Buy Level 0。
++  6. **P1-6 舆情 VERDICT 矛盾**（`agent_states.py:extract_verdict`）：VERDICT 标签提取与分析师冲突检测。
++  7. **P1-7 入场区间误识别**（`trade_setup.py:_find_price_range`）：排除震荡/观察/阻力区间，硬排除"不建议入场"，优先最终有效区间。
++  8. **P2-8 打法标签**（`trade_setup.py:_setup_type`）：从事实事件派生（业绩承压/超预期/题材预期/事件驱动/量价低吸/趋势突破/持仓风控），最多 3 个。
++  9. **P2-9 A股做空措辞**（`readiness_score.py:_sanitize_short_selling_text`）：做空策略→看空信号、考虑做空→考虑减仓/止损等 8 条替换。
++  10. **P2-10 Evidence Coverage 保守化**（`readiness_score.py:calculate_evidence_coverage`）：HAS_DATA=1.0、NORMAL_NO_DATA=0.5 加权，NOT_AVAILABLE 排除分母。
++- **代码变更**：
++  - `tradingagents/agents/utils/readiness_score.py` — 修复 `calculate_buy_level()` 未持仓+入场条件确认时的 note 准确性。
++  - `tests/test_f001_report_execution_fixes.py`（新增）— 70 项专项测试，覆盖全部 10 个修复点 + 集成测试。
++- **验证**：F-001 专项 70 项通过；readiness/trade_setup/execution_schema/g008/api_smoke/runtime_tier 回归 279 项通过；组合 349 项通过；`py_compile` 通过。
++- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-22 | FUND-007A 财报错误模式基准集与持续回归报告
+ 
+ - **目标**：把 603629 及跨行业财报回放中暴露的错误模式固化为确定性基准集，使后续 provider、解析器或模型路由调整都能先证明没有重新引入"数字大体正确、因果解释错误"的故障。
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 3dcfbf2..a28dcbc 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -83,7 +83,7 @@
+ ### F-001: TA研报执行层修复（P0-P2共10项）
+ - **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+ - **优先级**：P0
+-- **状态**：ready
++- **状态**：done — 70 项专项通过，279 项回归通过
+ - **预计耗时**：60-90 分钟
+ - **depends_on**：无
+ - **auto_release**：true
+@@ -2933,7 +2933,7 @@
+ - **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+ - **优先级**：P0（1-3）+ P1（4-7）+ P2（8-10）
+ - **验收**：重跑002837报告，10项全部通过
+-- **状态**：已派发OpenCode执行
++- **状态**：done — 70 项专项通过，279 项回归通过
+ 
+ ### R-001: 2026-05-26 自动开发收尾巡检（P0） ✅ 已完成
+ - **描述**：对昨日 OpenClaw/OpenCode 自动开发结果做收口验收，先处理未提交 diff、临时文件、脚本可靠性和 G-008 接线问题，再允许进入新功能开发。
+diff --git a/tradingagents/agents/utils/readiness_score.py b/tradingagents/agents/utils/readiness_score.py
+index 9ba3b8d..af81078 100644
+--- a/tradingagents/agents/utils/readiness_score.py
++++ b/tradingagents/agents/utils/readiness_score.py
+@@ -634,7 +634,7 @@ def calculate_buy_level(
+             max_level = min(max_level, 1)
+             note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
+         else:
+-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
++            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+     elif position_status == "unknown":
+         note_prefix = "持仓状态未知，Buy Level 上限为 2"
+     else:
+
+--- untracked list ---
+docs/task_runs/F-001-20260723-015057/tests-round2.txt
+docs/task_runs/F-001-20260723-015057/tests-round1.txt
+docs/task_runs/F-001-20260723-015057/codex-review-round1.txt
+docs/task_runs/F-001-20260723-015057/codegraph-status.json
+docs/task_runs/F-001-20260723-015057/prompt-round1.md
+docs/task_runs/F-001-20260723-015057/codegraph-context.txt
+docs/task_runs/F-001-20260723-015057/opencode-round2.txt
+docs/task_runs/F-001-20260723-015057/prompt-round2.md
+docs/task_runs/F-001-20260723-015057/opencode-round1.txt
+docs/task_runs/F-001-20260723-015057/task.md
+docs/task_runs/F-001-20260723-015057/review-meta-round1.json
+docs/task_runs/F-001-20260723-015057/codegraph-impact.txt
+
+--- test file ---
+"""F-001: TA研报执行层修复 — 10 项专项测试。
+
+覆盖 002837 英维克报告暴露的 10 个问题：
+  P0-1  止损价解析
+  P0-2  估值 sanity check
+  P0-3  Opportunity Score 封顶
+  P1-4  未持仓语义
+  P1-5  Buy/Risk Level 冲突
+  P1-6  舆情 VERDICT 矛盾
+  P1-7  入场区间误识别
+  P2-8  打法标签
+  P2-9  A股做空措辞
+  P2-10 Evidence Coverage 保守化
+"""
+
+import pytest
+
+from tradingagents.agents.utils.trade_setup import (
+    _extract_stop_loss,
+    _find_price_range,
+    _setup_type,
+    build_trade_quality_check,
+    format_trade_quality_check,
+)
+from tradingagents.agents.utils.readiness_score import (
+    calculate_evidence_coverage,
+    calculate_opportunity_score,
+    calculate_buy_level,
+    calculate_risk_level,
+    check_valuation_mismatch,
+    sanitize_forbidden_strong_actions,
+    _sanitize_short_selling_text,
+    get_strong_action_gate,
+    assess_confidence,
+    ConfidenceLevel,
+    EvidenceStatus,
+    get_position_status,
+)
+from tradingagents.agents.utils.agent_states import extract_verdict
+
+
+# ═══════════════════════════════════════════════════════════════
+# P0-1: 止损价解析
+# ═══════════════════════════════════════════════════════════════
+
+class TestFix1StopLossParsing:
+    """止损价解析：优先取风控段、支持条件止损、支持 bold markdown。"""
+
+    def test_risk_manager_section_takes_priority(self):
+        text = (
+            "交易员建议：止损价 34.00元\n"
+            "## 风控委员会最终裁决\n"
+            "止损价：36.00元\n"
+            "目标价：45.00元\n"
+        )
+        price, label = _extract_stop_loss(text)
+        assert price == 36.00
+        assert label == ""
+
+    def test_conditional_stop_loss_pattern(self):
+        text = "若跌破35.50元止损清仓离场。"
+        price, label = _extract_stop_loss(text)
+        assert price == 35.50
+        assert label == "条件止损价"
+
+    def test_bold_markdown_price(self):
+        text = "**止损价**：**36.00元**"
+        price, label = _extract_stop_loss(text)
+        assert price == 36.00
+
+    def test_multi_price_on_same_line(self):
+        text = "止损价：34.40元（试探仓）和36.00元（主仓）"
+        price, _ = _extract_stop_loss(text)
+        assert price == 36.00
+
+    def test_no_stop_loss_returns_none(self):
+        text = "当前建议观望，等待信号确认。"
+        price, label = _extract_stop_loss(text)
+        assert price is None
+
+    def test_no_position_without_entry_no_error(self):
+        """[P1-3] 未持仓 + 无条件入场 → 止损价缺失不报错。"""
+        check = build_trade_quality_check(
+            investment_plan="当前空仓观望。",
+            trader_plan="不建议入场，止损价：不适用。",
+            final_decision="目标价：—\n止损价：—",
+            user_context={"current_position": 0},
+        )
+        assert check["stop_loss_price"] is None
+        assert "无法从报告中解析出明确止损价。" not in check["do_not_trade_if"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# P0-2: 估值 sanity check
+# ═══════════════════════════════════════════════════════════════
+
+class TestFix2ValuationSanityCheck:
+    """估值段引用价格偏离当前价 >20% 时标记 mismatch。"""
+
+    def test_old_price_pollution_detected(self):
+        text = "假设约15.00元，PE仅12倍，严重低估，建议买入。"
+        result = check_valuation_mismatch(25.50, text)
+        assert result["mismatch"] is True
+        assert result["valuation_price"] == 15.0
+        assert result["deviation_pct"] > 20
+
+    def test_close_prices_no_mismatch(self):
+        text = "假设股价约25.30元，对应PE为20倍，估值合理。"
+        result = check_valuation_mismatch(25.50, text)
+        assert result["mismatch"] is False
+
+    def test_none_current_price_no_mismatch(self):
+        result = check_valuation_mismatch(None, "假设约15.00元")
+        assert result["mismatch"] is False
+
+    def test_empty_report_no_mismatch(self):
+        result = check_valuation_mismatch(25.50, "")
+        assert result["mismatch"] is False
+
+    def test_estimated_price_pattern(self):
+        text = "以约15.80元计算，公司市值约为50亿。"
+        result = check_valuation_mismatch(25.50, text)
+        assert result["mismatch"] is True
+
+    def test_within_20_percent_threshold(self):
+        text = "假设约24.00元，估值合理。"
+        result = check_valuation_mismatch(25.50, text)
+        assert result["mismatch"] is False
+
+
+# ═══════════════════════════════════════════════════════════════
+# P0-3: Opportunity Score 封顶
+# ═══════════════════════════════════════════════════════════════
+
+class TestFix3OpportunityScoreCap:
+    """Opportunity Score 在多种条件下被封顶。"""
+
+    def test_gate_not_passed_cap_60(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            gate_passed=False,
+        )
+        assert score <= 60
+
+    def test_bearish_direction_cap_60(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            final_direction_bearish=True,
+        )
+        assert score <= 60
+
+    def test_trader_disallows_buy_cap_50(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            trader_disallows_buy=True,
+        )
+        assert score <= 50
+
+    def test_low_data_completeness_cap_70(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            data_completeness=50,
+        )
+        assert score <= 70
+
+    def test_unknown_position_cap_70(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            position_status="unknown",
+        )
+        assert score <= 70
+
+    def test_multiple_caps_take_lowest(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            gate_passed=False,          # cap 60
+            trader_disallows_buy=True,  # cap 50
+            position_status="unknown",  # cap 70
+        )
+        assert score <= 50
+
+    def test_all_conditions_good_no_cap(self):
+        score = calculate_opportunity_score(
+            trend_confirmed=True,
+            capital_resonance="strong",
+            catalyst_strength="strong",
+            risk_reward_ratio="favorable",
+            entry_quality="good",
+            gate_passed=True,
+            final_direction_bearish=False,
+            trader_disallows_buy=False,
+            data_completeness=100,
+            position_status="has_position",
+        )
+        assert score == 100
+
+
+# ═══════════════════════════════════════════════════════════════
+# P1-4: 未持仓语义
+# ═══════════════════════════════════════════════════════════════
+
+class TestFix4NoPositionSemantics:
+    """未持仓时，减仓/清仓/止损/HOLD 等持仓动作被替换。"""
+
+    def test_reduce_actions_replaced(self):
+        text = "建议减仓，止损离场。"
+        gate = {"passed": True, "failures": []}
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 1, 1
+        )
+        assert "该持仓动作不适用，保持观察" in result
+        assert len(changes) > 0
+
+    def test_hold_replaced_with_wait(self):
+        # Standalone HOLD without wait/observe/conditional context gets replaced
+        # Note: \b word boundary requires HOLD to be at word boundary (e.g. start of text)
+        text = "HOLD"
+        gate = {"passed": True, "failures": []}
+        result, _ = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 1, 1
+        )
+        assert "WAIT" in result or "观察" in result
+
+    def test_hold_slash_wait_replaced(self):
+        # HOLD/等待触发 → WAIT/等待触发
+        text = "HOLD/等待触发"
+        gate = {"passed": True, "failures": []}
+        result, _ = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 1, 1
+        )
+        assert "WAIT" in result
+
+    def test_has_position_preserves_actions(self):
+        text = "建议减仓，止损离场。"
+        gate = {"passed": True, "failures": []}
+        result, changes = sanitize_forbidden_strong_actions(
+
+--- review file ---
+Task: F-001 - TA研报执行层修复（P0-P2共10项）
+Date: 2026-07-23_02:04:25
+Codex exit code: 0
+Round: 1
+---
+2026-07-22T18:02:44.689054Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8afe-8d23-7431-9a6c-2e932d6b2347
+--------
+user
+current changes
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- branch ---\\n' && git branch --show-current && printf '\\n--- required docs ---\\n' && sed -n '1,220p' docs/project-overview.md && printf '\\n--- TASKS ---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n--- DECISIONS ---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n--- DEVLOG ---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/agents/utils/readiness_score.py
+?? docs/task_runs/F-001-20260723-015057/
+?? tests/test_f001_report_execution_fixes.py
+
+--- branch ---
+local/tradingagents-custom
+
+--- required docs ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 当前产品事实（2026-07-10）
+
+项目已从单一报告生成器扩展为分层投研工作台，但产品主线应保持收敛：
+
+```text
+Tree Work 既有研报/半年报知识页（历史上游）
+  -> ZCode 知识库接入、研究评分与快照发布
+  -> 来源与事实审计
+  -> 昊天左侧候选
+  -> TradeFlow 少量候选池
+  -> 轻量 TA / 人工确认的完整 TA
+  -> 观察仓、盘中观察、盘后复盘
+```
+
+TradeFlow 的 `TECH_TRADE` 与 `POLICY_AMBUSH/POLICY_CONFIRM` 必须分池展示，不能把短线技术机会当作中长期昊天候选。Fast Radar、Light Research、Full TA 的运行层级也必须保持清晰：完整 TA 只能人工确认触发。
+
+现有 Tree Work 知识页只作为可追溯的历史上游与背景/观点证据；后续知识库接入、`research-scorer` 和正式快照发布统一由 ZCode 负责。公告、原始财报和行情数据仍是事实与动作门禁的优先来源。所有知识命中都必须带来源路径、报告期或更新时间、来源等级和新鲜度。
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-07-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前执行队列（2026-07-22）
+
+> 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
+
+> **执行前置**：FUND-001A、FUND-003A 与 FUND-003A-B 已完成确定性补修和 Codex 多轮对抗复审。工作区恢复干净后，从 FUND-004B 开始按依赖串行自动领取；自动循环继续遵守 dirty-tree 停止规则。
+
+1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
+2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
+3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
+4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
+5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
+6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A done → 可领取）。
+7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
+8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
+9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
+10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，blocked — 已有未提交实现，等待专项拆分收口；不得重新领取）。
+11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，blocked-auto；等待 SCORE-001/KB-020）。
+12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
+14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
+15. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
+16. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
+17. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，done；最终补修 `623f45c`）。
+18. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
+19. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，blocked；等待释放）。
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/agents/utils/readiness_score.py | sed -n '560,700p'
+printf '\\n--- surrounding functions ---\\n'
+grep -R \"def calculate_buy_level\\|def sanitize_forbidden\\|def calculate_opportunity_score\" -n tradingagents/agents/utils/readiness_score.py
+printf '\\n--- untracked test tail ---\\n'
+nl -ba tests/test_f001_report_execution_fixes.py | sed -n '260,620p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   560	    else:
+   561	        base_note = ""
+   562	
+   563	    level_4_ok = (
+   564	        source_coverage >= 85
+   565	        and evidence_coverage >= 85
+   566	        and broke_support
+   567	        and main_capital_outflow_days >= 2
+   568	        and volume_breakdown
+   569	        and not has_major_positive_announcement
+   570	    )
+   571	    if level_4_ok:
+   572	        return {"level": min(4, max_level), "note": base_note}
+   573	
+   574	    note = base_note or ("Risk Level 4 条件证据不足" if max_level == 4 else "Risk Level 4 被降级")
+   575	    if name_mismatch and max_level <= 3:
+   576	        note = (base_note + "；" if base_note else "") + "名称校验失败，Risk Level 上限为 3"
+   577	
+   578	    level_3_ok = broke_support and main_capital_outflow_days >= 1
+   579	    if level_3_ok:
+   580	        return {"level": min(3, max_level), "note": note}
+   581	
+   582	    level_2_ok = main_capital_outflow_days >= 1 or broke_support
+   583	    if level_2_ok:
+   584	        return {"level": min(2, max_level), "note": note}
+   585	
+   586	    return {"level": 0, "note": base_note}
+   587	
+   588	
+   589	def calculate_buy_level(
+   590	    source_coverage: int,
+   591	    evidence_coverage: int,
+   592	    trend_confirmed: bool = False,
+   593	    main_capital_inflow_days: int = 0,
+   594	    volume_healthy_expansion: bool = False,
+   595	    has_major_negative_announcement: bool = False,
+   596	    no_execution_conflict: bool = True,
+   597	    no_unresolved_analyst_conflict: bool = True,
+   598	    position_status: str = "unknown",
+   599	    name_mismatch: bool = False,
+   600	    research_bearish: bool = False,
+   601	) -> dict:
+   602	    """计算 Buy Level（买入/建仓侧等级 0-4）。
+   603	
+   604	    [Fix-5] For no-position when entry conditions are NOT met:
+   605	    - Buy Level should be 0 (禁止买入) or 1 (观察)
+   606	    - '未来满足条件后可重新评估' should not elevate the current level
+   607	    - "条件试仓" (level 2) requires actual entry conditions to be met
+   608	
+   609	    [P1-2] For no-position + research bearish (研究经理偏空/不建议入场):
+   610	    - Buy Level forced to 0 (禁止买入)
+   611	
+   612	    返回:
+   613	        {"level": int, "note": str}
+   614	    """
+   615	    max_level = 2 if position_status == "unknown" else 4
+   616	    if name_mismatch:
+   617	        max_level = min(max_level, 3)
+   618	
+   619	    # [P1-2] No-position + research bearish → force level 0
+   620	    if position_status == "no_position" and research_bearish:
+   621	        return {"level": 0, "note": "未持仓且研究经理偏空/不建议入场，Buy Level 降为 0（禁止买入）"}
+   622	
+   623	    # [Fix-5] No-position: cap at level 1 unless real entry conditions met
+   624	    if position_status == "no_position":
+   625	        # Only allow level 2+ if ALL actual entry conditions are confirmed
+   626	        real_entry_ready = (
+   627	            trend_confirmed
+   628	            and main_capital_inflow_days >= 1
+   629	            and no_execution_conflict
+   630	            and no_unresolved_analyst_conflict
+   631	            and not has_major_negative_announcement
+   632	        )
+   633	        if not real_entry_ready:
+   634	            max_level = min(max_level, 1)
+   635	            note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
+   636	        else:
+   637	            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+   638	    elif position_status == "unknown":
+   639	        note_prefix = "持仓状态未知，Buy Level 上限为 2"
+   640	    else:
+   641	        note_prefix = ""
+   642	
+   643	    level_4_ok = (
+   644	        source_coverage >= 85
+   645	        and evidence_coverage >= 85
+   646	        and trend_confirmed
+   647	        and main_capital_inflow_days >= 2
+   648	        and volume_healthy_expansion
+   649	        and not has_major_negative_announcement
+   650	        and no_execution_conflict
+   651	        and no_unresolved_analyst_conflict
+   652	    )
+   653	    if not level_4_ok:
+   654	        note_suffix = "Buy Level 4 条件证据不足" if source_coverage >= 85 and evidence_coverage >= 85 else ""
+   655	    else:
+   656	        note_suffix = ""
+   657	
+   658	    note = (note_prefix + "；" + note_suffix).strip("；") if note_prefix and note_suffix else (note_prefix or note_suffix)
+   659	
+   660	    if level_4_ok:
+   661	        return {"level": min(4, max_level), "note": note}
+   662	
+   663	    level_3_ok = (
+   664	        source_coverage >= 70
+   665	        and evidence_coverage >= 70
+   666	        and trend_confirmed
+   667	        and main_capital_inflow_days >= 1
+   668	    )
+   669	    if level_3_ok:
+   670	        return {"level": min(3, max_level), "note": note}
+   671	
+   672	    level_2_ok = trend_confirmed or main_capital_inflow_days >= 1
+   673	    if level_2_ok:
+   674	        return {"level": min(2, max_level), "note": note}
+   675	
+   676	    return {"level": 1 if source_coverage >= 50 else 0, "note": note}
+   677	
+   678	
+   679	def calculate_opportunity_score(
+   680	    trend_confirmed: bool = False,
+   681	    capital_resonance: str = "none",
+   682	    catalyst_strength: str = "none",
+   683	    risk_reward_ratio: str = "unknown",
+   684	    entry_quality: str = "unknown",
+   685	    event_risk_active: bool = False,
+   686	    # [Fix-3] Cap parameters
+   687	    gate_passed: bool = True,
+   688	    final_direction_bearish: bool = False,
+   689	    trader_disallows_buy: bool = False,
+   690	    data_completeness: int = 100,
+   691	    position_status: str = "unknown",
+   692	) -> int:
+   693	    """计算 Opportunity Score（0-100）。
+   694	
+   695	    维度：
+   696	    - 趋势确认度 (0-25)
+   697	    - 资金共振度 (0-20)
+   698	    - 催化强度 (0-20)
+   699	    - 盈亏比/风险收益比 (0-20)
+   700	    - 入场质量 (0-15)
+
+--- surrounding functions ---
+tradingagents/agents/utils/readiness_score.py:589:def calculate_buy_level(
+tradingagents/agents/utils/readiness_score.py:679:def calculate_opportunity_score(
+tradingagents/agents/utils/readiness_score.py:1129:def sanitize_forbidden_strong_actions(
+
+--- untracked test tail ---
+   260	        result, changes = sanitize_forbidden_strong_actions(
+   261	            text, gate, "has_position", 3, 3
+   262	        )
+   263	        # Should NOT replace for has_position
+   264	        assert "该持仓动作不适用" not in result
+   265	
+   266	    def test_stop_loss_field_name_preserved(self):
+   267	        """止损价/止损位等字段名不应被替换。"""
+   268	        text = "止损价：36.00元，建议减仓。"
+   269	        gate = {"passed": True, "failures": []}
+   270	        result, _ = sanitize_forbidden_strong_actions(
+   271	            text, gate, "no_position", 1, 1
+   272	        )
+   273	        assert "止损价" in result
+   274	        assert "36.00" in result
+   275	
+   276	    def test_format_execution_block_no_position(self):
+   277	        from tradingagents.agents.utils.readiness_score import format_execution_block
+   278	        block = format_execution_block(
+   279	            source_coverage=80,
+   280	            evidence_coverage=75,
+   281	            confidence="中",
+   282	            opportunity_score=50,
+   283	            risk_level=1,
+   284	            buy_level=1,
+   285	            position_status="no_position",
+   286	        )
+   287	        assert "WAIT" in block or "观察" in block
+   288	
+   289	
+   290	# ═══════════════════════════════════════════════════════════════
+   291	# P1-5: Buy/Risk Level 冲突
+   292	# ═══════════════════════════════════════════════════════════════
+   293	
+   294	class TestFix5BuyRiskLevelConflict:
+   295	    """未持仓时 Buy Level 和 Risk Level 有上限约束。"""
+   296	
+   297	    def test_no_position_risk_level_cap_at_1(self):
+   298	        result = calculate_risk_level(
+   299	            source_coverage=80,
+   300	            evidence_coverage=80,
+   301	            broke_support=True,
+   302	            main_capital_outflow_days=3,
+   303	            volume_breakdown=True,
+   304	            position_status="no_position",
+   305	        )
+   306	        assert result["level"] <= 1
+   307	        assert "未持仓" in result["note"]
+   308	
+   309	    def test_no_position_buy_level_cap_at_1_without_entry_conditions(self):
+   310	        result = calculate_buy_level(
+   311	            source_coverage=80,
+   312	            evidence_coverage=80,
+   313	            trend_confirmed=False,
+   314	            main_capital_inflow_days=0,
+   315	            position_status="no_position",
+   316	        )
+   317	        assert result["level"] <= 1
+   318	
+   319	    def test_no_position_buy_level_0_when_bearish(self):
+   320	        result = calculate_buy_level(
+   321	            source_coverage=80,
+   322	            evidence_coverage=80,
+   323	            position_status="no_position",
+   324	            research_bearish=True,
+   325	        )
+   326	        assert result["level"] == 0
+   327	        assert "偏空" in result["note"] or "禁止买入" in result["note"]
+   328	
+   329	    def test_no_position_buy_level_2_when_entry_ready(self):
+   330	        result = calculate_buy_level(
+   331	            source_coverage=80,
+   332	            evidence_coverage=80,
+   333	            trend_confirmed=True,
+   334	            main_capital_inflow_days=1,
+   335	            no_execution_conflict=True,
+   336	            no_unresolved_analyst_conflict=True,
+   337	            has_major_negative_announcement=False,
+   338	            position_status="no_position",
+   339	        )
+   340	        # Entry ready: level can reach 2+ (conditional candidate)
+   341	        assert result["level"] >= 2
+   342	        assert "入场条件已确认" in result["note"]
+   343	
+   344	    def test_has_position_risk_level_can_reach_4(self):
+   345	        result = calculate_risk_level(
+   346	            source_coverage=90,
+   347	            evidence_coverage=90,
+   348	            broke_support=True,
+   349	            main_capital_outflow_days=2,
+   350	            volume_breakdown=True,
+   351	            has_major_positive_announcement=False,
+   352	            position_status="has_position",
+   353	        )
+   354	        assert result["level"] == 4
+   355	
+   356	
+   357	# ═══════════════════════════════════════════════════════════════
+   358	# P1-6: 舆情 VERDICT 矛盾
+   359	# ═══════════════════════════════════════════════════════════════
+   360	
+   361	class TestFix6SentimentVerdictContradiction:
+   362	    """VERDICT 标签提取与冲突检测。"""
+   363	
+   364	    def test_extract_verdict_basic(self):
+   365	        text = '一些分析文本\n<!-- VERDICT: {"direction": "偏多", "reason": "业绩超预期"} -->'
+   366	        direction, confidence = extract_verdict(text)
+   367	        assert direction == "偏多"
+   368	        assert confidence == "中"
+   369	
+   370	    def test_extract_verdict_bearish(self):
+   371	        text = '分析结论\n<!-- VERDICT: {"direction": "偏空", "reason": "业绩下滑"} -->'
+   372	        direction, _ = extract_verdict(text)
+   373	        assert direction == "偏空"
+   374	
+   375	    def test_extract_verdict_neutral(self):
+   376	        text = '中性分析\n<!-- VERDICT: {"direction": "中性", "reason": "信号不明确"} -->'
+   377	        direction, _ = extract_verdict(text)
+   378	        assert direction == "中性"
+   379	
+   380	    def test_no_verdict_returns_neutral(self):
+   381	        text = "普通分析文本，无VERDICT标签。"
+   382	        direction, confidence = extract_verdict(text)
+   383	        assert direction == "中性"
+   384	        assert confidence == "低"
+   385	
+   386	    def test_analyst_conflict_detection_in_signals(self):
+   387	        from tradingagents.agents.utils.readiness_score import extract_execution_signals
+   388	        state = {}
+   389	        reports = {"market_report": "分析师存在分歧，多空双方对立。"}
+   390	        signals = extract_execution_signals(state, "", reports)
+   391	        assert signals["no_unresolved_analyst_conflict"] is False
+   392	
+   393	
+   394	# ═══════════════════════════════════════════════════════════════
+   395	# P1-7: 入场区间误识别
+   396	# ═══════════════════════════════════════════════════════════════
+   397	
+   398	class TestFix7EntryZoneMisidentification:
+   399	    """入场区间只接受明确入场标签，排除震荡/观察/阻力区间。"""
+   400	
+   401	    def test_explicit_entry_range_extracted(self):
+   402	        text = "入场区间：35.50-36.50元"
+   403	        result = _find_price_range(text)
+   404	        assert result == "35.50-36.50"
+   405	
+   406	    def test_buy_range_extracted(self):
+   407	        text = "买入区间：28.00-30.00元"
+   408	        result = _find_price_range(text)
+   409	        assert result == "28.00-30.00"
+   410	
+   411	    def test_no_entry_statement_returns_none(self):
+   412	        text = "不建议入场，当前估值偏高。"
+   413	        result = _find_price_range(text)
+   414	        assert result is None
+   415	
+   416	    def test_no_entry_zone_statement_returns_none(self):
+   417	        text = "无入场区间，暂观望。"
+   418	        result = _find_price_range(text)
+   419	        assert result is None
+   420	
+   421	    def test_oscillation_range_not_treated_as_entry(self):
+   422	        """震荡区间不应被误识别为入场区间。"""
+   423	        text = "股价处于35.00-38.00元震荡区间，观察等待方向。"
+   424	        result = _find_price_range(text)
+   425	        # 震荡区间 without entry labels should return None
+   426	        assert result is None
+   427	
+   428	    def test_support_zone_not_treated_as_entry(self):
+   429	        text = "支撑区：30.00元附近，阻力区：40.00元附近。"
+   430	        result = _find_price_range(text)
+   431	        assert result is None
+   432	
+   433	    def test_entry_condition_with_range(self):
+   434	        text = "入场条件：股价回调至35.50-36.50元区间可以买入"
+   435	        result = _find_price_range(text)
+   436	        assert result is not None
+   437	        assert "35" in result
+   438	
+   439	    def test_inline_entry_pattern(self):
+   440	        text = "建议在35.50至36.50元区间建仓"
+   441	        result = _find_price_range(text)
+   442	        assert result is not None
+   443	
+   444	    def test_priority_final_range(self):
+   445	        text = (
+   446	            "初步入场区间：35.00-38.00元\n"
+   447	            "最终有效入场区间：36.00-37.00元"
+   448	        )
+   449	        result = _find_price_range(text)
+   450	        assert result == "36.00-37.00"
+   451	
+   452	
+   453	# ═══════════════════════════════════════════════════════════════
+   454	# P2-8: 打法标签
+   455	# ═══════════════════════════════════════════════════════════════
+   456	
+   457	class TestFix8SetupTypeTags:
+   458	    """打法标签从事实事件派生，不从看多模板生成。"""
+   459	
+   460	    def test_performance_pressure_tag(self):
+   461	        text = "公司业绩不及预期，净利润大幅下降。"
+   462	        tag = _setup_type(text)
+   463	        assert "业绩承压" in tag
+   464	
+   465	    def test_performance_beat_tag(self):
+   466	        text = "公司业绩超预期，净利润大幅增长。"
+   467	        tag = _setup_type(text)
+   468	        assert "业绩超预期" in tag
+   469	
+   470	    def test_theme_expectation_tag(self):
+   471	        text = "受AI算力政策利好，国产替代板块受益。"
+   472	        tag = _setup_type(text)
+   473	        assert "题材预期" in tag
+   474	
+   475	    def test_event_driven_tag(self):
+   476	        text = "公司公告回购计划，解禁在即。"
+   477	        tag = _setup_type(text)
+   478	        assert "事件驱动" in tag
+   479	
+   480	    def test_volume_price_tag(self):
+   481	        text = "缩量下跌后放量反弹，主力吸筹迹象明显。"
+   482	        tag = _setup_type(text)
+   483	        assert "量价低吸" in tag
+   484	
+   485	    def test_trend_breakout_tag(self):
+   486	        text = "股价突破新高，均线多头排列。"
+   487	        tag = _setup_type(text)
+   488	        assert "趋势突破" in tag
+   489	
+   490	    def test_no_match_returns_unidentified(self):
+   491	        text = "普通分析文本，无特定事件。"
+   492	        tag = _setup_type(text)
+   493	        assert tag == "未识别"
+   494	
+   495	    def test_max_three_tags(self):
+   496	        text = "业绩超预期，AI算力政策利好，解禁公告，缩量下跌放量反弹，突破新高，持仓成本附近。"
+   497	        tag = _setup_type(text)
+   498	        assert len(tag.split(" + ")) <= 3
+   499	
+   500	    def test_performance_direction_unclear(self):
+   501	        text = "公司业绩同比略有变化，净利润和营收数据需关注。"
+   502	        tag = _setup_type(text)
+   503	        assert "业绩关注" in tag
+   504	
+   505	    def test_quality_check_includes_setup_type(self):
+   506	        check = build_trade_quality_check(
+   507	            investment_plan="公司业绩超预期，AI政策利好。",
+   508	            trader_plan="入场区间：35-38元，止损价：33元。",
+   509	            final_decision="建议条件买入。",
+   510	        )
+   511	        assert check["setup_type"] != "未识别"
+   512	        formatted = format_trade_quality_check(check)
+   513	        assert "打法标签" in formatted
+   514	
+   515	
+   516	# ═══════════════════════════════════════════════════════════════
+   517	# P2-9: A股做空措辞
+   518	# ═══════════════════════════════════════════════════════════════
+   519	
+   520	class TestFix9ShortSellingWording:
+   521	    """A股默认不能做空，做空措辞应被替换为适当表达。"""
+   522	
+   523	    def test_short_strategy_replaced(self):
+   524	        text = "建议采用做空策略。"
+   525	        result, changes = _sanitize_short_selling_text(text)
+   526	        assert "做空策略" not in result
+   527	        assert "看空信号" in result
+   528	        assert len(changes) > 0
+   529	
+   530	    def test_short_open_replaced(self):
+   531	        text = "空头开仓信号出现。"
+   532	        result, _ = _sanitize_short_selling_text(text)
+   533	        assert "空头开仓" not in result
+   534	        assert "离场信号" in result
+   535	
+   536	    def test_consider_short_replaced(self):
+   537	        text = "考虑做空。"
+   538	        result, _ = _sanitize_short_selling_text(text)
+   539	        assert "做空" not in result
+   540	
+   541	    def test_suggest_short_replaced(self):
+   542	        text = "建议做空该股。"
+   543	        result, _ = _sanitize_short_selling_text(text)
+   544	        assert "建议做空" not in result
+   545	
+   546	    def test_can_short_replaced(self):
+   547	        text = "可以做空。"
+   548	        result, _ = _sanitize_short_selling_text(text)
+   549	        assert "可以做空" not in result
+   550	
+   551	    def test_no_short_selling_no_changes(self):
+   552	        text = "建议观望，等待确认信号。"
+   553	        result, changes = _sanitize_short_selling_text(text)
+   554	        assert result == text
+   555	        assert len(changes) == 0
+   556	
+   557	    def test_risk_manager_integrates_short_filter(self):
+   558	        """验证 risk_manager 集成了做空措辞过滤。"""
+   559	        from tradingagents.agents.managers.risk_manager import create_risk_manager
+   560	        import asyncio
+   561	        from unittest.mock import MagicMock
+   562	
+   563	        class _FakeLLM:
+   564	            async def astream(self, _prompt):
+   565	                yield MagicMock(
+   566	                    content=(
+   567	                        "建议做空策略，考虑做空。\n"
+   568	                        "<!-- RISK_JUDGE: {"
+   569	                        "\"verdict\":\"pass\","
+   570	                        "\"hard_constraints\":[],"
+   571	                        "\"soft_constraints\":[],"
+   572	                        "\"execution_preconditions\":[],"
+   573	                        "\"de_risk_triggers\":[],"
+   574	                        "\"revision_reason\":\"\""
+   575	                        "} -->"
+   576	                    )
+   577	                )
+   578	
+   579	        class _Memory:
+   580	            def get_memories(self, _situation, n_matches=2):
+   581	                return []
+   582	
+   583	        state = {
+   584	            "company_of_interest": "002837.SZ",
+   585	            "market_report": "技术面报告",
+   586	            "sentiment_report": "情绪面报告",
+   587	            "news_report": "新闻报告",
+   588	            "fundamentals_report": "基本面报告",
+   589	            "investment_plan": "方案",
+   590	            "trader_investment_plan": "交易计划",
+   591	            "user_context": {"current_position": 100},
+   592	            "risk_feedback_state": {"retry_count": 0, "max_retries": 1},
+   593	            "risk_debate_state": {
+   594	                "history": "", "aggressive_history": "",
+   595	                "conservative_history": "", "neutral_history": "",
+   596	                "current_aggressive_response": "",
+   597	                "current_conservative_response": "",
+   598	                "current_neutral_response": "",
+   599	                "count": 0, "claims": [], "focus_claim_ids": [],
+   600	                "open_claim_ids": [], "resolved_claim_ids": [],
+   601	                "unresolved_claim_ids": [], "round_summary": "",
+   602	                "round_goal": "", "claim_counter": 0,
+   603	            },
+   604	        }
+   605	        node = create_risk_manager(_FakeLLM(), _Memory())
+   606	        result = asyncio.run(node(state))
+   607	        # 做空策略 should have been replaced
+   608	        assert "做空策略" not in result["final_trade_decision"]
+   609	        assert "看空信号" in result["final_trade_decision"]
+   610	
+   611	
+   612	# ═══════════════════════════════════════════════════════════════
+   613	# P2-10: Evidence Coverage 保守化
+   614	# ═══════════════════════════════════════════════════════════════
+   615	
+   616	class TestFix10EvidenceCoverageConservative:
+   617	    """Evidence Coverage 加权评分：HAS_DATA=1.0, NORMAL_NO_DATA=0.5。"""
+   618	
+   619	    def test_all_has_data_gives_100(self):
+   620	        cov = calculate_evidence_coverage(
+
+2026-07-22T18:07:41.034551Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "nl -ba tests/test_f001_report_execution_fixes.py | sed -n '620,980p'
+printf '\\n--- maybe staged ---\\n'; git diff --cached --stat && git diff --cached --" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   620	        cov = calculate_evidence_coverage(
+   621	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   622	            volume=EvidenceStatus.HAS_DATA,
+   623	            turnover_rate=EvidenceStatus.HAS_DATA,
+   624	            volume_ratio=EvidenceStatus.HAS_DATA,
+   625	            individual_fund_flow=EvidenceStatus.HAS_DATA,
+   626	            lhb_status=EvidenceStatus.HAS_DATA,
+   627	            margin_trading=EvidenceStatus.HAS_DATA,
+   628	            announcements=EvidenceStatus.HAS_DATA,
+   629	            research_report=EvidenceStatus.HAS_DATA,
+   630	        )
+   631	        assert cov == 100
+   632	
+   633	    def test_normal_no_data_counts_half(self):
+   634	        """NORMAL_NO_DATA 不应算作完整覆盖。"""
+   635	        cov_all_has = calculate_evidence_coverage(
+   636	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   637	            volume=EvidenceStatus.HAS_DATA,
+   638	            turnover_rate=EvidenceStatus.HAS_DATA,
+   639	            volume_ratio=EvidenceStatus.HAS_DATA,
+   640	            individual_fund_flow=EvidenceStatus.HAS_DATA,
+   641	            lhb_status=EvidenceStatus.HAS_DATA,
+   642	            margin_trading=EvidenceStatus.HAS_DATA,
+   643	            announcements=EvidenceStatus.HAS_DATA,
+   644	            research_report=EvidenceStatus.HAS_DATA,
+   645	        )
+   646	        cov_mixed = calculate_evidence_coverage(
+   647	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   648	            volume=EvidenceStatus.HAS_DATA,
+   649	            turnover_rate=EvidenceStatus.HAS_DATA,
+   650	            volume_ratio=EvidenceStatus.HAS_DATA,
+   651	            individual_fund_flow=EvidenceStatus.HAS_DATA,
+   652	            lhb_status=EvidenceStatus.HAS_DATA,
+   653	            margin_trading=EvidenceStatus.HAS_DATA,
+   654	            announcements=EvidenceStatus.HAS_DATA,
+   655	            research_report=EvidenceStatus.NORMAL_NO_DATA,
+   656	        )
+   657	        assert cov_mixed < cov_all_has
+   658	        # 8 HAS_DATA * 1.0 + 1 NORMAL_NO_DATA * 0.5 = 8.5 / 9 ≈ 94
+   659	        assert cov_mixed == 94
+   660	
+   661	    def test_all_normal_no_data_gives_50(self):
+   662	        cov = calculate_evidence_coverage(
+   663	            ohlcv_5d=EvidenceStatus.NORMAL_NO_DATA,
+   664	            volume=EvidenceStatus.NORMAL_NO_DATA,
+   665	            turnover_rate=EvidenceStatus.NORMAL_NO_DATA,
+   666	            volume_ratio=EvidenceStatus.NORMAL_NO_DATA,
+   667	            individual_fund_flow=EvidenceStatus.NORMAL_NO_DATA,
+   668	            lhb_status=EvidenceStatus.NORMAL_NO_DATA,
+   669	            margin_trading=EvidenceStatus.NORMAL_NO_DATA,
+   670	            announcements=EvidenceStatus.NORMAL_NO_DATA,
+   671	            research_report=EvidenceStatus.NORMAL_NO_DATA,
+   672	        )
+   673	        assert cov == 50
+   674	
+   675	    def test_not_available_excluded_from_denominator(self):
+   676	        cov_with_ratings = calculate_evidence_coverage(
+   677	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   678	            volume=EvidenceStatus.HAS_DATA,
+   679	            turnover_rate=EvidenceStatus.HAS_DATA,
+   680	            volume_ratio=EvidenceStatus.HAS_DATA,
+   681	            individual_fund_flow=EvidenceStatus.HAS_DATA,
+   682	            lhb_status=EvidenceStatus.HAS_DATA,
+   683	            margin_trading=EvidenceStatus.HAS_DATA,
+   684	            announcements=EvidenceStatus.HAS_DATA,
+   685	            research_report=EvidenceStatus.HAS_DATA,
+   686	            ratings=EvidenceStatus.NOT_AVAILABLE,
+   687	            buybacks=EvidenceStatus.NOT_AVAILABLE,
+   688	        )
+   689	        assert cov_with_ratings == 100
+   690	
+   691	    def test_low_coverage_caps_confidence(self):
+   692	        """evidence_coverage < 70 时置信度不能为 HIGH。"""
+   693	        conf = assess_confidence(
+   694	            data_completeness=80,
+   695	            evidence_coverage=50,
+   696	        )
+   697	        assert conf != ConfidenceLevel.HIGH
+   698	
+   699	    def test_query_failed_counts_zero(self):
+   700	        cov = calculate_evidence_coverage(
+   701	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   702	            volume=EvidenceStatus.QUERY_FAILED,
+   703	            turnover_rate=EvidenceStatus.QUERY_FAILED,
+   704	            volume_ratio=EvidenceStatus.QUERY_FAILED,
+   705	            individual_fund_flow=EvidenceStatus.QUERY_FAILED,
+   706	            lhb_status=EvidenceStatus.QUERY_FAILED,
+   707	            margin_trading=EvidenceStatus.QUERY_FAILED,
+   708	            announcements=EvidenceStatus.QUERY_FAILED,
+   709	            research_report=EvidenceStatus.QUERY_FAILED,
+   710	        )
+   711	        # 1 * 1.0 + 8 * 0 = 1/9 ≈ 11
+   712	        assert cov < 20
+   713	
+   714	    def test_gate_fails_below_70(self):
+   715	        gate = get_strong_action_gate(
+   716	            source_coverage=80,
+   717	            evidence_coverage=50,
+   718	        )
+   719	        assert gate["passed"] is False
+   720	        assert any("evidence_coverage" in f for f in gate["failures"])
+   721	
+   722	
+   723	# ═══════════════════════════════════════════════════════════════
+   724	# 综合集成测试
+   725	# ═══════════════════════════════════════════════════════════════
+   726	
+   727	class TestF001Integration:
+   728	    """端到端验证：多个修复协同工作。"""
+   729	
+   730	    def test_full_quality_check_output(self):
+   731	        """验证执行质检区块包含所有必要字段。"""
+   732	        check = build_trade_quality_check(
+   733	            investment_plan="公司业绩承压，AI算力政策利好，解禁公告。",
+   734	            trader_plan="入场区间：35.50-36.50元，止损价：33.00元，触发价：37.00元。",
+   735	            final_decision="条件触发买入，跌破33元止损。",
+   736	            user_context={"current_position": 0, "constraints": []},
+   737	        )
+   738	        formatted = format_trade_quality_check(check)
+   739	
+   740	        assert "打法标签" in formatted
+   741	        assert "入场区间" in formatted
+   742	        assert "止损价" in formatted
+   743	        assert "触发价" in formatted
+   744	        assert "执行质检" in formatted
+   745	        assert check["entry_range"] is not None
+   746	        assert check["stop_loss_price"] is not None
+   747	
+   748	    def test_position_status_detection(self):
+   749	        assert get_position_status({"current_position": 100}) == "has_position"
+   750	        assert get_position_status({"current_position": 0}) == "no_position"
+   751	        assert get_position_status({}) == "unknown"
+
+--- maybe staged ---
+
+2026-07-22T18:07:44.389884Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest -q tests/test_f001_report_execution_fixes.py' in /Users/maybee/TradingAgents-AShare
+2026-07-22T18:08:01.767309Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 11452ms:
+......................................................................   [100%]
+70 passed in 10.74s
+
+exec
+/bin/zsh -lc "du -ah docs/task_runs/F-001-20260723-015057 docs/reviews/F-001-20260723-round1.txt tests/test_f001_report_execution_fixes.py | sort -h | tail -20
+printf '\\n--- grep secrets patterns ---\\n'
+grep -RInE \"sk-[A-Za-z0-9_-]{20,}|api[_-]?key|OPENAI_API_KEY|ANTHROPIC|DEEPSEEK|ZHIPU|base_url|Authorization|Bearer\" docs/task_runs/F-001-20260723-015057 docs/reviews/F-001-20260723-round1.txt tests/test_f001_report_execution_fixes.py || true" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+4.0K	docs/task_runs/F-001-20260723-015057/codegraph-context.txt
+4.0K	docs/task_runs/F-001-20260723-015057/codegraph-impact.txt
+4.0K	docs/task_runs/F-001-20260723-015057/codegraph-status.json
+4.0K	docs/task_runs/F-001-20260723-015057/prompt-round1.md
+4.0K	docs/task_runs/F-001-20260723-015057/prompt-round2.md
+4.0K	docs/task_runs/F-001-20260723-015057/review-meta-round1.json
+4.0K	docs/task_runs/F-001-20260723-015057/task.md
+4.0K	docs/task_runs/F-001-20260723-015057/tests-round1.txt
+4.0K	docs/task_runs/F-001-20260723-015057/tests-round2.txt
+8.0K	docs/task_runs/F-001-20260723-015057/opencode-round2.txt
+ 32K	tests/test_f001_report_execution_fixes.py
+ 56K	docs/task_runs/F-001-20260723-015057/opencode-round1.txt
+ 96K	docs/reviews/F-001-20260723-round1.txt
+ 96K	docs/task_runs/F-001-20260723-015057/codex-review-round1.txt
+196K	docs/task_runs/F-001-20260723-015057
+
+--- grep secrets patterns ---
+
+2026-07-22T18:08:18.181456Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "grep -n \"F-001\\|Buy Level\\|条件试仓\\|未持仓\" -C 3 docs/TASKS.md | sed -n '1,220p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+80-- 完成标准：专项与相关回归全绿，`codex review --uncommitted` 无 P0/P1/P2 correctness finding；不调 live LLM，不写生产数据库。
+81-
+82-
+83:### F-001: TA研报执行层修复（P0-P2共10项）
+84:- **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+85-- **优先级**：P0
+86-- **状态**：done — 70 项专项通过，279 项回归通过
+87-- **预计耗时**：60-90 分钟
+--
+257-20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+258-21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+259-22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+260:23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+261-24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+262-25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+263-26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+--
+274-37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+275-38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+276-39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+277:40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+278-41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+279-42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+280-43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+--
+789-- **前置条件**：PLAYBOOK-002、PLAYBOOK-003、DECISION-004 完成。
+790-- **执行约束**：
+791-  - 不改 prompts。
+792:  - 不绕过现有 Buy Level / Risk Level / 强动作门禁。
+793-  - 数据不足时不得输出强动作。
+794-- **实现要点**：
+795-  1. `StructuredReport` / API response 可选透传 `playbook_stage`、四项评分、仓位建议、触发条件。
+--
+799-  4. 本地知识/研报关注度只影响证据评分，不直接覆盖动作语义。
+800-- **验收方式**：
+801-  - 回放 WAIT/ENTER/HOLD/REDUCE/EXIT 五类报告，新字段不破坏旧字段。
+802:  - 未持仓 + 只满足试错条件：只能输出试错仓/观察，不能输出重仓。
+803-  - 已持仓 + 逻辑证伪：可输出减机动仓/减到核心仓/证伪退出。
+804-- **代码标注要求**：`# [PLAYBOOK-004] report_playbook_semantics`
+805-
+--
+849-
+850-> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+851-
+852:### PERF-001: 运行层级与速度预算契约（P1）
+853-- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+854-- **优先级**：P1
+855-- **状态**：done -- commit ca08846
+--
+886-  - 前端能显示运行层级和预计耗时。
+887-  - 没有用户确认时，full TA 入口不可直接触发。
+888-  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+889:- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+890-
+891-### PERF-002: 轻量 TA Profile 与模块路由（P1）
+892-- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+--
+1033-  1. `/analysis` 页面增加控件：
+1034-     - 周期：`短线` / `中线`
+1035-     - 意图：`观察` / `入场研究` / `持仓复盘` / `加仓判断` / `减仓止损`
+1036:     - 持仓状态：`未持仓` / `已持仓`
+1037-  2. 提交 `/v1/analyze` 时写入：
+1038-     - `horizons: ["short"|"medium"]`
+1039-     - `user_context.analysis_intent`
+--
+1041-     - 或后端当前接受的等价字段。
+1042-  3. UI 选择优先于自然语言推断；自然语言仍可补充具体问题。
+1043-  4. 报告/聊天状态顶部展示本次上下文：
+1044:     - `本次分析：中线｜入场研究｜未持仓`
+1045-  5. 从 TradeFlow 跳转 `/analysis?symbol=...` 时：
+1046-     - `POLICY_AMBUSH` 默认中线 + 政策验证/入场研究。
+1047-     - `TECH_TRADE` 默认短线 + 趋势确认。
+1048-- **验收方式**：
+1049-  - 前端选择中线后，请求 payload 含 `medium`。
+1050:  - 选择未持仓入场研究时，后端最终 `analysis_intent=entry` 且 `position_context.has_position=false`。
+1051-  - 选择已持仓复盘时，后端最终 `analysis_intent=holding` 且 `position_context.has_position=true`。
+1052-  - TradeFlow 左侧候选跳转智能分析时默认中线。
+1053-  - `npm run build` 通过；相关 API/前端测试通过。
+--
+2022-  4. 与 G-001 的 `analysis_intent/position_context` 不冲突。
+2023-- **验收方式**：
+2024-  - 构造四类候选，队列分流稳定。
+2025:  - 未持仓/已持仓上下文不被覆盖。
+2026-  - 无强交易词。
+2027-- **代码标注要求**：`# [H-007] mandate_ta_queue_router`
+2028-
+--
+2349-
+2350-## M. 框架路线总任务池（2026-05-28 新增）
+2351-
+2352:### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+2353-- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+2354-- **优先级**：P0
+2355-- **状态**：done — commit 54a8292
+--
+2370-  - `bash -n scripts/auto_dev_loop.sh` 通过。
+2371-  - 新增或补充脚本测试/静态验证，确认 dry-run 不改文件。
+2372-  - 模拟领取任务后，TASKS 状态变为 `in_progress`，PASS 后变为 `done`。
+2373:- **代码标注要求**：`# [INF-001] task_claim_lock`
+2374-
+2375-### M-002: 任务运行档案索引与夜间日报聚合（P1）
+2376-- **描述**：把 `docs/task_runs/` 中的运行档案汇总成可读索引，让第二天白天快速知道昨晚做了什么、成功/失败、风险在哪里。
+--
+2449-- **执行约束**：
+2450-  - 默认不调用 DeepSeek。
+2451-  - 每日 TA 深度分析次数设置硬上限。
+2452:  - 未持仓/已持仓必须带 position_context。
+2453-- **实现要点**：
+2454-  1. 定义 `need_deep_ta` 的可执行条件。
+2455-  2. 记录触发 TA 的原因、模型、耗时、报告路径。
+--
+2581-- **描述**：把 CodeGraph 的 symbol/context/impact 输出接入每个任务的运行档案，帮助 OpenCode 开发前知道影响范围，也方便 Codex review 时检查调用方覆盖。
+2582-- **优先级**：P2
+2583-- **状态**：done（2026-06-07，commit 589e373）
+2584:- **前置条件**：`INF-001` 完成 ✓；CodeGraph 已本地安装或可优雅跳过。
+2585-- **执行约束**：
+2586-  - CodeGraph 不可用时不能阻塞任务执行，只记录 `SKIPPED`。
+2587-  - 不提交 `.codegraph/` 索引。
+--
+2929-
+2930-## A. 当前进行中
+2931-
+2932:### F-001: TA研报执行层修复（P0-P2共10项）
+2933:- **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+2934-- **优先级**：P0（1-3）+ P1（4-7）+ P2（8-10）
+2935-- **验收**：重跑002837报告，10项全部通过
+2936-- **状态**：done — 70 项专项通过，279 项回归通过
+--
+3261-  3. schema 只允许 `WAIT/ENTER/HOLD/REDUCE/EXIT` 动作枚举。
+3262-  4. 不改变现有报告文本输出，只新增结构化副产物。
+3263-- **验证方式**：
+3264:  - 新增测试覆盖未持仓 WAIT、条件入场 ENTER、已持仓 HOLD/REDUCE/EXIT。
+3265-  - 字段冲突时 schema 标记 `data_quality_flags`，不强行给高等级动作。
+3266-- **代码标注要求**：`# [N-005] execution_schema`
+3267-
+3268----
+3269-
+3270-### DECISION-001: 最终动作语义分层 — 禁止默认 HOLD（P0）
+3271:- **描述**：当前 HOLD 被过度复用（已持仓持有、未持仓观望、偏多等待、数据不足、风控降级全压成 HOLD）。拆成 3 层语义：`research_direction`（看多/偏多/中性/偏空/看空）、`execution_action`（WAIT/ENTER/HOLD/REDUCE/EXIT）、`action_label`（回避/等待触发/条件入场/持有/减仓/清仓）。禁止默认 HOLD。
+3272-- **优先级**：P0
+3273-- **状态**：done — commit dee415c
+3274-- **前置条件**：`N-005` 完成（已有 WAIT/ENTER/HOLD/REDUCE/EXIT 枚举和 execution_schema）✓。
+--
+3280-  1. `signal_processing.py`：`process_signal` 返回值从单一 `decision` 扩展为 3 层结构。`_extract_decision_keyword` 重构为 `_extract_decision_semantics`，分别提取方向、动作、标签。
+3281-  2. `report_service.py`：`StructuredReport` 新增 `research_direction`、`execution_action`、`action_label` 字段，`decision` 保留但不再作为唯一展示源。
+3282-  3. `signal_processing.py`：`_execution_layer_overrides_hold` 改为返回结构化动作（WAIT/ENTER/HOLD/REDUCE/EXIT），不再一律返回 HOLD。
+3283:  4. `direction_map` 扩展：偏多→WAIT（未持仓）或 ENTER（有触发价），中性→HOLD（已持仓）或 WAIT（未持仓），偏空→WAIT（未持仓）。
+3284-  5. 新增 `_derive_action_label(has_position, research_direction, execution_action, trigger_price, invalid_price)` 函数生成中文标签。
+3285-- **验收方式**：
+3286:  - 新增测试覆盖 6 种场景（未持仓偏多等待触发、未持仓强偏多条件入场、未持仓偏空回避、已持仓中性持有、已持仓风险升高减仓、数据不足）。
+3287-  - `pytest tests/test_signal_processing.py -q` 通过。
+3288-  - `pytest tests/test_report_service.py -q` 通过（如有）。
+3289-  - 旧报告 `decision` 字段不受影响。
+--
+3565-  - 测试使用历史报告 fixtures 或临时数据库。
+3566-- **实现要点**：
+3567-  1. 建立端到端回放脚本/测试：
+3568:     - 未持仓偏多无触发价 → 等待触发/WAIT。
+3569:     - 未持仓看多有触发价 → 条件入场/ENTER。
+3570:     - 未持仓偏空 → 回避/WAIT。
+3571-     - 已持仓中性 → 持有/HOLD。
+3572-     - 已持仓偏空 → 条件减仓/REDUCE。
+3573-  2. 验证 DB 轻量列、报告详情 result_data、前端 Report 类型、通知 payload 一致。
+--
+4212-  1. 构造至少 3 个报告 fixture：主力资金失败 + 龙虎榜正常无数据；公告失败 + 评级正常无数据；行情缺失 + skipped 辅助源。
+4213-  2. 通过 `report_service.create_report()` 或 API schema 回放，确认 `result_data.data_blockers` 与 response 顶层字段一致。
+4214-  3. 验证前端类型/构建不回归，报告详情能显示 `query_failed`、`normal_no_data`、`skipped`。
+4215:  4. 验证 `decision/action_label/Buy Level/Risk Level` 不因 DATA-021 metadata 被改写。
+4216-- **验收方式**：
+4217-  - 新增回放测试通过。
+4218-  - `npm run build` 通过。
+--
+6081-  - 未知阶段不得回退为 `hold`；缺持仓不得生成持仓动作。
+6082-  - 知识分不能单独触发 `trial/confirm/attack`，价格上涨也不能单独触发确认。
+6083-- **实现要点**：
+6084:  1. 研究分高但时机差：未持仓映射 `observe + WAIT`；已持仓且无风险映射 `hold + HOLD`。
+6085-  2. 研究分高、时机合格、组合允许且无 veto：可依次进入 `trial/confirm/attack`；确认必须有产业/客户订单/业绩至少两类证据增强，进攻必须已有确认状态及明确撤退条件。
+6086:  3. 研究分下降、冲突/反证增加：已持仓映射 `risk + REDUCE`，未持仓保持 `observe + WAIT` 并阻断进入。
+6087:  4. 核心假设证伪：已持仓映射 `exit + EXIT`；未持仓映射 `exit + WAIT` 并移出研究/观察候选，不违反 C-001。
+6088-  5. 输出 `playbook_stage/playbook_action_label/execution_action/stage_reason_codes/upgrade_conditions/downgrade_conditions/invalidation_conditions`。
+6089-- **验收方式**：
+6090:  - 覆盖用户给出的四类映射，以及持仓/未持仓、分数不变/上升/下降、冲突和证伪组合。
+6091-  - 回放 WAIT/ENTER/HOLD/REDUCE/EXIT，旧字段兼容且不会再次全部退化为“观察”。
+6092-- **代码标注要求**：`# [SCORE-005] four_card_stage_resolver`
+6093-
+--
+6584-- **描述**：新增 source_coverage/evidence_coverage 双维度评分；get_strong_action_gate 检查 7 项条件；gate 未通过时真正移除/替换强动作文本
+6585-- **验证方式**：coverage<70 时强动作被替换为中性表达，原关键词不再出现在最终报告
+6586-
+6587:### D-003: Risk Level / Buy Level 双等级输出 ✅ 已完成（含真信号修复）
+6588:- **描述**：Risk Level 0-4 + Buy Level 0-4；从报告文本提取 14 项交易信号传入计算；持仓未知时 gate 语义修正
+6589-- **验证方式**：Level 4 需全部条件满足；持仓未知+无强动作时 gate 通过
+6590-
+6591-### D-004: Opportunity Score 机会评分 ✅ 已完成（含真信号修复）
+6592-- **描述**：5 维加权 Opportunity Score 0-100；从报告文本提取趋势/资金共振/催化/盈亏比/入场质量信号传入计算
+6593:- **验证方式**：Opportunity Score=100 但 coverage<70 时 Buy Level 仍受限；正向信号文本下 Score 明显高于默认值
+6594-
+6595----
+6596-
+
+2026-07-22T18:08:26.063776Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "git show HEAD:tradingagents/agents/utils/readiness_score.py | nl -ba | sed -n '615,680p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   615	    max_level = 2 if position_status == "unknown" else 4
+   616	    if name_mismatch:
+   617	        max_level = min(max_level, 3)
+   618	
+   619	    # [P1-2] No-position + research bearish → force level 0
+   620	    if position_status == "no_position" and research_bearish:
+   621	        return {"level": 0, "note": "未持仓且研究经理偏空/不建议入场，Buy Level 降为 0（禁止买入）"}
+   622	
+   623	    # [Fix-5] No-position: cap at level 1 unless real entry conditions met
+   624	    if position_status == "no_position":
+   625	        # Only allow level 2+ if ALL actual entry conditions are confirmed
+   626	        real_entry_ready = (
+   627	            trend_confirmed
+   628	            and main_capital_inflow_days >= 1
+   629	            and no_execution_conflict
+   630	            and no_unresolved_analyst_conflict
+   631	            and not has_major_negative_announcement
+   632	        )
+   633	        if not real_entry_ready:
+   634	            max_level = min(max_level, 1)
+   635	            note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
+   636	        else:
+   637	            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+   638	    elif position_status == "unknown":
+   639	        note_prefix = "持仓状态未知，Buy Level 上限为 2"
+   640	    else:
+   641	        note_prefix = ""
+   642	
+   643	    level_4_ok = (
+   644	        source_coverage >= 85
+   645	        and evidence_coverage >= 85
+   646	        and trend_confirmed
+   647	        and main_capital_inflow_days >= 2
+   648	        and volume_healthy_expansion
+   649	        and not has_major_negative_announcement
+   650	        and no_execution_conflict
+   651	        and no_unresolved_analyst_conflict
+   652	    )
+   653	    if not level_4_ok:
+   654	        note_suffix = "Buy Level 4 条件证据不足" if source_coverage >= 85 and evidence_coverage >= 85 else ""
+   655	    else:
+   656	        note_suffix = ""
+   657	
+   658	    note = (note_prefix + "；" + note_suffix).strip("；") if note_prefix and note_suffix else (note_prefix or note_suffix)
+   659	
+   660	    if level_4_ok:
+   661	        return {"level": min(4, max_level), "note": note}
+   662	
+   663	    level_3_ok = (
+   664	        source_coverage >= 70
+   665	        and evidence_coverage >= 70
+   666	        and trend_confirmed
+   667	        and main_capital_inflow_days >= 1
+   668	    )
+   669	    if level_3_ok:
+   670	        return {"level": min(3, max_level), "note": note}
+   671	
+   672	    level_2_ok = trend_confirmed or main_capital_inflow_days >= 1
+   673	    if level_2_ok:
+   674	        return {"level": min(2, max_level), "note": note}
+   675	
+   676	    return {"level": 1 if source_coverage >= 50 else 0, "note": note}
+   677	
+   678	
+   679	def calculate_opportunity_score(
+   680	    trend_confirmed: bool = False,
+
+2026-07-22T18:08:29.507712Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "grep -R \"calculate_buy_level\" -n tests tradingagents | head -60 && grep -R \"Buy Level 可达 2\\|条件试仓\\|未持仓但入场\" -n . | head -60" in /Users/maybee/TradingAgents-AShare
+2026-07-22T18:08:53.903766Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-22T18:09:02.143712Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 20932ms:
+tests/test_p0_p1_acceptance.py:23:    calculate_buy_level,
+tests/test_p0_p1_acceptance.py:117:        result = calculate_buy_level(
+tests/test_p0_p1_acceptance.py:134:        result = calculate_buy_level(
+Binary file tests/__pycache__/test_f001_report_execution_fixes.cpython-312.pyc matches
+Binary file tests/__pycache__/test_f001_report_execution_fixes.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_readiness_score.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_p0_p1_acceptance.cpython-312-pytest-9.0.2.pyc matches
+tests/test_f001_report_execution_fixes.py:28:    calculate_buy_level,
+tests/test_f001_report_execution_fixes.py:310:        result = calculate_buy_level(
+tests/test_f001_report_execution_fixes.py:320:        result = calculate_buy_level(
+tests/test_f001_report_execution_fixes.py:330:        result = calculate_buy_level(
+tests/test_readiness_score.py:17:    calculate_buy_level,
+tests/test_readiness_score.py:254:    result = calculate_buy_level(
+tests/test_readiness_score.py:268:    result = calculate_buy_level(
+tests/test_readiness_score.py:280:    result = calculate_buy_level(
+tests/test_readiness_score.py:291:    result = calculate_buy_level(
+tests/test_readiness_score.py:303:    result = calculate_buy_level(
+tests/test_readiness_score.py:621:    result = calculate_buy_level(
+tests/test_readiness_score.py:725:    result = calculate_buy_level(
+tests/test_readiness_score.py:963:    result = calculate_buy_level(
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-312.pyc matches
+tradingagents/agents/managers/risk_manager.py:37:    calculate_buy_level,
+tradingagents/agents/managers/risk_manager.py:352:        buy_result = calculate_buy_level(
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-312.pyc matches
+tradingagents/agents/utils/readiness_score.py:589:def calculate_buy_level(
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+./tests/test_g001_three_layer.py:197:        """未持仓 + 数据 50-74%：允许观察和条件试仓。"""
+./tests/test_g001_three_layer.py:200:        assert "条件试仓" in result["allowed"]
+./tests/test_p0_p1_acceptance.py:116:        """Buy Level 2 (条件试仓) is achievable when entry conditions are confirmed."""
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:749:-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:750:+            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:1626:/bin/zsh -lc "nl -ba tradingagents/agents/utils/readiness_score.py | sed -n '560,700p' && grep -R \"Buy Level 可达 2\" -n ." in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:1629:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:284:         note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:1630:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:581:-        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:1631:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:582:+        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:1632:./tradingagents/agents/utils/readiness_score.py:637:            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/task_runs/F-001-20260723-015057/opencode-round2.txt:35:-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/opencode-round2.txt:36:+            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:284:         note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:581:-        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:582:+        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/task_runs/REPORT-UX-003-20260630-180010/codex-review-round1.txt:2780:            if not re.search(r"(?:确认建仓|积极建仓|条件试仓|买入|BUY)", text):
+./docs/task_runs/HK-001-20260625-175657/codex-review-round1.txt:6633:_BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
+./docs/reviews/HK-001-20260625-round1.txt:6633:_BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
+./docs/reviews/REPORT-UX-003-20260630-round1.txt:2780:            if not re.search(r"(?:确认建仓|积极建仓|条件试仓|买入|BUY)", text):
+./docs/reviews/F-001-20260723-round1.txt:749:-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/reviews/F-001-20260723-round1.txt:750:+            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/reviews/F-001-20260723-round1.txt:1626:/bin/zsh -lc "nl -ba tradingagents/agents/utils/readiness_score.py | sed -n '560,700p' && grep -R \"Buy Level 可达 2\" -n ." in /Users/maybee/TradingAgents-AShare
+./docs/reviews/F-001-20260723-round1.txt:1629:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:284:         note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/reviews/F-001-20260723-round1.txt:1630:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:581:-        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/reviews/F-001-20260723-round1.txt:1631:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:582:+        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./docs/reviews/F-001-20260723-round1.txt:1632:./tradingagents/agents/utils/readiness_score.py:637:            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./tradingagents/graph/signal_processing.py:393:            if not re.search(r"(?:确认建仓|积极建仓|条件试仓|买入|BUY)", text):
+./tradingagents/agents/utils/readiness_score.py:204:_BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
+./tradingagents/agents/utils/readiness_score.py:402:                "allowed": ["观察", "条件试仓"],
+./tradingagents/agents/utils/readiness_score.py:405:                "message": "未持仓，数据50-74%，仅允许观察和条件试仓，禁止买入/加仓/追涨。",
+./tradingagents/agents/utils/readiness_score.py:410:                "allowed": ["观察", "条件试仓", "确认建仓"],
+./tradingagents/agents/utils/readiness_score.py:607:    - "条件试仓" (level 2) requires actual entry conditions to be met
+./tradingagents/agents/utils/readiness_score.py:637:            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./TASK_BATCH.md:156:- Buy Level 2：条件试仓
+
+2026-07-22T18:09:06.084292Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "grep -n \"findings\\|P[0-3]\\|条件试仓\\|line 637\\|overall\" -C 3 docs/reviews/F-001-20260723-round1.txt | tail -200" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+594-- **边界**：本次仅更新任务治理文档；未修改业务代码、prompt、生产数据库，未调用 live LLM，未提交现有工作区改动。
+--
+615-  - Source Coverage 主要按 Agent 报告字符串是否非空计分；本次达到 100%，但 Evidence Coverage 仅 61%，公告 0 条仍被标记 `HAS_DATA`，说明现有质量分只能限制强动作，不能证明语义正确。
+616-  - 用户持久配置为 MiMo quick/deep，fundamentals 路由使用 mid tier 且运行时将 mid 映射到 deep；按配置应为 `mimo-v2.5-pro`，但历史报告未保存逐 Agent 实际模型 trace，无法做运行级百分百证明。
+617-- **任务释放**：
+618:  - P0 ready：FUND-001（身份硬门禁）、FUND-002（期间口径结构化）。
+619:  - P1 ready：FUND-005（逐 Agent 模型/输入契约脱敏 trace）。
+620-  - blocked-auto：FUND-003（官方解释/会计口径）、FUND-004（语义门禁/C-006 接线）、FUND-006（603629 跨行业对抗回放）。
+621-- **执行顺序**：先专项收口当前未提交 SCORE-001，恢复干净工作区；随后 FUND-001 → FUND-002 → FUND-005。FUND-003/004/006 由依赖完成后释放。模型 A/B 必须排在系统门禁修复之后，并单独征得 live LLM 调用确认。
+622-
+--
+625-## 2026-07-14 | SCORE-001 TA 只读 research_score_snapshot 契约与安全接入
+626-
+627-- **执行者**:OpenCode
+628:- **任务**:SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
+629-- **类型**:feature / read-only snapshot loader
+630-- **状态**:✅ 完成（待外层 commit）
+631-
+--
+693-@@ -1,5 +1,25 @@
+694- # 修改日志
+695- 
+696:+## 2026-07-23 | F-001 TA研报执行层修复（P0-P2 共 10 项）
+697-+
+698-+- **目标**：修复 002837 英维克报告暴露的 10 个执行层问题，建立专项测试覆盖。
+699-+- **修复内容**：
+700:+  1. **P0-1 止损价解析**（`trade_setup.py:_extract_stop_loss`）：风控段优先、条件止损、bold markdown、多价格行。
+701:+  2. **P0-2 估值 sanity check**（`readiness_score.py:check_valuation_mismatch`）：估值段引用价偏离当前价 >20% 标记 mismatch。
+702:+  3. **P0-3 Opportunity Score 封顶**（`readiness_score.py:calculate_opportunity_score`）：gate 未通过/偏空/交易员禁买/数据不足/持仓未知各有限制，取最低封顶。
+703:+  4. **P1-4 未持仓语义**（`readiness_score.py:sanitize_forbidden_strong_actions`）：减仓/清仓/止损/HOLD 替换为观察语义，止损价字段名保留。
+704:+  5. **P1-5 Buy/Risk Level 冲突**（`readiness_score.py:calculate_buy_level/calculate_risk_level`）：未持仓 Risk Level 上限 1；未持仓+入场条件未满足 Buy Level 上限 1；未持仓+偏空 Buy Level 0。
+705:+  6. **P1-6 舆情 VERDICT 矛盾**（`agent_states.py:extract_verdict`）：VERDICT 标签提取与分析师冲突检测。
+706:+  7. **P1-7 入场区间误识别**（`trade_setup.py:_find_price_range`）：排除震荡/观察/阻力区间，硬排除"不建议入场"，优先最终有效区间。
+707:+  8. **P2-8 打法标签**（`trade_setup.py:_setup_type`）：从事实事件派生（业绩承压/超预期/题材预期/事件驱动/量价低吸/趋势突破/持仓风控），最多 3 个。
+708:+  9. **P2-9 A股做空措辞**（`readiness_score.py:_sanitize_short_selling_text`）：做空策略→看空信号、考虑做空→考虑减仓/止损等 8 条替换。
+709:+  10. **P2-10 Evidence Coverage 保守化**（`readiness_score.py:calculate_evidence_coverage`）：HAS_DATA=1.0、NORMAL_NO_DATA=0.5 加权，NOT_AVAILABLE 排除分母。
+710-+- **代码变更**：
+711-+  - `tradingagents/agents/utils/readiness_score.py` — 修复 `calculate_buy_level()` 未持仓+入场条件确认时的 note 准确性。
+712-+  - `tests/test_f001_report_execution_fixes.py`（新增）— 70 项专项测试，覆盖全部 10 个修复点 + 集成测试。
+--
+721---- a/docs/TASKS.md
+722-+++ b/docs/TASKS.md
+723-@@ -83,7 +83,7 @@
+724: ### F-001: TA研报执行层修复（P0-P2共10项）
+725- - **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+726: - **优先级**：P0
+727--- **状态**：ready
+728-+- **状态**：done — 70 项专项通过，279 项回归通过
+729- - **预计耗时**：60-90 分钟
+--
+731- - **auto_release**：true
+732-@@ -2933,7 +2933,7 @@
+733- - **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+734: - **优先级**：P0（1-3）+ P1（4-7）+ P2（8-10）
+735- - **验收**：重跑002837报告，10项全部通过
+736--- **状态**：已派发OpenCode执行
+737-+- **状态**：done — 70 项专项通过，279 项回归通过
+738- 
+739: ### R-001: 2026-05-26 自动开发收尾巡检（P0） ✅ 已完成
+740- - **描述**：对昨日 OpenClaw/OpenCode 自动开发结果做收口验收，先处理未提交 diff、临时文件、脚本可靠性和 G-008 接线问题，再允许进入新功能开发。
+741-diff --git a/tradingagents/agents/utils/readiness_score.py b/tradingagents/agents/utils/readiness_score.py
+742-index 9ba3b8d..af81078 100644
+--
+747-             note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
+748-         else:
+749--            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+750:+            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+751-     elif position_status == "unknown":
+752-         note_prefix = "持仓状态未知，Buy Level 上限为 2"
+753-     else:
+--
+756-"""F-001: TA研报执行层修复 — 10 项专项测试。
+757-
+758-覆盖 002837 英维克报告暴露的 10 个问题：
+759:  P0-1  止损价解析
+760:  P0-2  估值 sanity check
+761:  P0-3  Opportunity Score 封顶
+762:  P1-4  未持仓语义
+763:  P1-5  Buy/Risk Level 冲突
+764:  P1-6  舆情 VERDICT 矛盾
+765:  P1-7  入场区间误识别
+766:  P2-8  打法标签
+767:  P2-9  A股做空措辞
+768:  P2-10 Evidence Coverage 保守化
+769-"""
+770-
+771-import pytest
+--
+795-
+796-
+797-# ═══════════════════════════════════════════════════════════════
+798:# P0-1: 止损价解析
+799-# ═══════════════════════════════════════════════════════════════
+800-
+801-class TestFix1StopLossParsing:
+--
+834-        assert price is None
+835-
+836-    def test_no_position_without_entry_no_error(self):
+837:        """[P1-3] 未持仓 + 无条件入场 → 止损价缺失不报错。"""
+838-        check = build_trade_quality_check(
+839-            investment_plan="当前空仓观望。",
+840-            trader_plan="不建议入场，止损价：不适用。",
+--
+846-
+847-
+848-# ═══════════════════════════════════════════════════════════════
+849:# P0-2: 估值 sanity check
+850-# ═══════════════════════════════════════════════════════════════
+851-
+852-class TestFix2ValuationSanityCheck:
+--
+884-
+885-
+886-# ═══════════════════════════════════════════════════════════════
+887:# P0-3: Opportunity Score 封顶
+888-# ═══════════════════════════════════════════════════════════════
+889-
+890-class TestFix3OpportunityScoreCap:
+--
+975-
+976-
+977-# ═══════════════════════════════════════════════════════════════
+978:# P1-4: 未持仓语义
+979-# ═══════════════════════════════════════════════════════════════
+980-
+981-class TestFix4NoPositionSemantics:
+--
+1047-
+1048-
+1049-# ═══════════════════════════════════════════════════════════════
+1050:# P1-5: Buy/Risk Level 冲突
+1051-# ═══════════════════════════════════════════════════════════════
+1052-
+1053-class TestFix5BuyRiskLevelConflict:
+--
+1114-
+1115-
+1116-# ═══════════════════════════════════════════════════════════════
+1117:# P1-6: 舆情 VERDICT 矛盾
+1118-# ═══════════════════════════════════════════════════════════════
+1119-
+1120-class TestFix6SentimentVerdictContradiction:
+--
+1151-
+1152-
+1153-# ═══════════════════════════════════════════════════════════════
+1154:# P1-7: 入场区间误识别
+1155-# ═══════════════════════════════════════════════════════════════
+1156-
+1157-class TestFix7EntryZoneMisidentification:
+--
+1210-
+1211-
+1212-# ═══════════════════════════════════════════════════════════════
+1213:# P2-8: 打法标签
+1214-# ═══════════════════════════════════════════════════════════════
+1215-
+1216-class TestFix8SetupTypeTags:
+--
+1273-
+1274-
+1275-# ═══════════════════════════════════════════════════════════════
+1276:# P2-9: A股做空措辞
+1277-# ═══════════════════════════════════════════════════════════════
+1278-
+1279-class TestFix9ShortSellingWording:
+--
+1369-
+1370-
+1371-# ═══════════════════════════════════════════════════════════════
+1372:# P2-10: Evidence Coverage 保守化
+1373-# ═══════════════════════════════════════════════════════════════
+1374-
+1375-class TestFix10EvidenceCoverageConservative:
+--
+1530-   514	
+1531-   515	
+1532-   516	# ═══════════════════════════════════════════════════════════════
+1533:   517	# P2-9: A股做空措辞
+1534-   518	# ═══════════════════════════════════════════════════════════════
+1535-   519	
+1536-   520	class TestFix9ShortSellingWording:
+--
+1577-   610	
+1578-   611	
+1579-   612	# ═══════════════════════════════════════════════════════════════
+1580:   613	# P2-10: Evidence Coverage 保守化
+1581-   614	# ═══════════════════════════════════════════════════════════════
+1582-   615	
+1583-   616	class TestFix10EvidenceCoverageConservative:
+--
+1628-grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+1629-./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:284:         note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+1630-./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:581:-        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+1631:./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:582:+        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+1632:./tradingagents/agents/utils/readiness_score.py:637:            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+1633-
+1634-exec
+1635-/bin/zsh -lc 'git diff --check && source .venv/bin/activate && pytest -q tests/test_f001_report_execution_fixes.py' in /Users/maybee/TradingAgents-AShare
+
+2026-07-22T18:09:09.449869Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc 'tail -120 docs/reviews/F-001-20260723-round1.txt' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   507	            investment_plan="公司业绩超预期，AI政策利好。",
+   508	            trader_plan="入场区间：35-38元，止损价：33元。",
+   509	            final_decision="建议条件买入。",
+   510	        )
+   511	        assert check["setup_type"] != "未识别"
+   512	        formatted = format_trade_quality_check(check)
+   513	        assert "打法标签" in formatted
+   514	
+   515	
+   516	# ═══════════════════════════════════════════════════════════════
+   517	# P2-9: A股做空措辞
+   518	# ═══════════════════════════════════════════════════════════════
+   519	
+   520	class TestFix9ShortSellingWording:
+   521	    """A股默认不能做空，做空措辞应被替换为适当表达。"""
+   522	
+   523	    def test_short_strategy_replaced(self):
+   524	        text = "建议采用做空策略。"
+   525	        result, changes = _sanitize_short_selling_text(text)
+   526	        assert "做空策略" not in result
+   527	        assert "看空信号" in result
+   528	        assert len(changes) > 0
+   529	
+   530	    def test_short_open_replaced(self):
+   531	        text = "空头开仓信号出现。"
+   532	        result, _ = _sanitize_short_selling_text(text)
+   533	        assert "空头开仓" not in result
+   534	        assert "离场信号" in result
+   535	
+   536	    def test_consider_short_replaced(self):
+   537	        text = "考虑做空。"
+   538	        result, _ = _sanitize_short_selling_text(text)
+   539	        assert "做空" not in result
+   540	
+   541	    def test_suggest_short_replaced(self):
+   542	        text = "建议做空该股。"
+   543	        result, _ = _sanitize_short_selling_text(text)
+   544	        assert "建议做空" not in result
+   545	
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "nl -ba tests/test_f001_report_execution_fixes.py | sed -n '600,650p'; source .venv/bin/activate && python -m py_compile tests/test_f001_report_execution_fixes.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   600	                "open_claim_ids": [], "resolved_claim_ids": [],
+   601	                "unresolved_claim_ids": [], "round_summary": "",
+   602	                "round_goal": "", "claim_counter": 0,
+   603	            },
+   604	        }
+   605	        node = create_risk_manager(_FakeLLM(), _Memory())
+   606	        result = asyncio.run(node(state))
+   607	        # 做空策略 should have been replaced
+   608	        assert "做空策略" not in result["final_trade_decision"]
+   609	        assert "看空信号" in result["final_trade_decision"]
+   610	
+   611	
+   612	# ═══════════════════════════════════════════════════════════════
+   613	# P2-10: Evidence Coverage 保守化
+   614	# ═══════════════════════════════════════════════════════════════
+   615	
+   616	class TestFix10EvidenceCoverageConservative:
+   617	    """Evidence Coverage 加权评分：HAS_DATA=1.0, NORMAL_NO_DATA=0.5。"""
+   618	
+   619	    def test_all_has_data_gives_100(self):
+   620	        cov = calculate_evidence_coverage(
+   621	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   622	            volume=EvidenceStatus.HAS_DATA,
+   623	            turnover_rate=EvidenceStatus.HAS_DATA,
+   624	            volume_ratio=EvidenceStatus.HAS_DATA,
+   625	            individual_fund_flow=EvidenceStatus.HAS_DATA,
+   626	            lhb_status=EvidenceStatus.HAS_DATA,
+   627	            margin_trading=EvidenceStatus.HAS_DATA,
+   628	            announcements=EvidenceStatus.HAS_DATA,
+   629	            research_report=EvidenceStatus.HAS_DATA,
+   630	        )
+   631	        assert cov == 100
+   632	
+   633	    def test_normal_no_data_counts_half(self):
+   634	        """NORMAL_NO_DATA 不应算作完整覆盖。"""
+   635	        cov_all_has = calculate_evidence_coverage(
+   636	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   637	            volume=EvidenceStatus.HAS_DATA,
+   638	            turnover_rate=EvidenceStatus.HAS_DATA,
+   639	            volume_ratio=EvidenceStatus.HAS_DATA,
+   640	            individual_fund_flow=EvidenceStatus.HAS_DATA,
+   641	            lhb_status=EvidenceStatus.HAS_DATA,
+   642	            margin_trading=EvidenceStatus.HAS_DATA,
+   643	            announcements=EvidenceStatus.HAS_DATA,
+   644	            research_report=EvidenceStatus.HAS_DATA,
+   645	        )
+   646	        cov_mixed = calculate_evidence_coverage(
+   647	            ohlcv_5d=EvidenceStatus.HAS_DATA,
+   648	            volume=EvidenceStatus.HAS_DATA,
+   649	            turnover_rate=EvidenceStatus.HAS_DATA,
+   650	            volume_ratio=EvidenceStatus.HAS_DATA,
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest -q tests/test_f001_report_execution_fixes.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 12316ms:
+......................................................................   [100%]
+70 passed in 11.62s
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/agents/utils/readiness_score.py | sed -n '560,700p' && grep -R \"Buy Level 可达 2\" -n ." in /Users/maybee/TradingAgents-AShare
+ exited 2 in 11181ms:
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:284:         note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:581:-        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+./docs/task_runs/F-001-20260723-015057/opencode-round1.txt:582:+        note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+./tradingagents/agents/utils/readiness_score.py:637:            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+
+exec
+/bin/zsh -lc 'git diff --check && source .venv/bin/activate && pytest -q tests/test_f001_report_execution_fixes.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 11364ms:
+......................................................................   [100%]
+70 passed in 10.66s
+
+codex
+No discrete correctness issues were found in the current staged, unstaged, or untracked changes. The added F-001 test file compiles and its 70 tests pass locally.
+No discrete correctness issues were found in the current staged, unstaged, or untracked changes. The added F-001 test file compiles and its 70 tests pass locally.
+
+2026-07-22T18:09:14.545881Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.agents.utils.readiness_score import calculate_buy_level
+print(calculate_buy_level(90,90, trend_confirmed=True, main_capital_inflow_days=2, volume_healthy_expansion=True, position_status='no_position'))
+print(calculate_buy_level(80,80, trend_confirmed=True, main_capital_inflow_days=1, position_status='no_position'))
+PY" in /Users/maybee/TradingAgents-AShare
+2026-07-22T18:09:20.669095Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 1565ms:
+{'level': 4, 'note': '未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）'}
+{'level': 3, 'note': '未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）'}
+
+codex
+The changed no-position Buy Level messaging now explicitly labels the state as a level-2 conditional trial, but the calculation can still return higher buy levels for the same branch. This leaves execution semantics inconsistent for strong no-position signals.
+
+Review comment:
+
+- [P2] Cap no-position trial entries at Buy Level 2 — /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/readiness_score.py:637-637
+  When `position_status == "no_position"` and the signals also satisfy `level_3_ok` or `level_4_ok`, this branch only changes the note and still leaves `max_level` at 4, so the function can return Buy Level 3/4 while saying the no-position case is only a level-2 conditional trial. For strong no-position inputs such as high coverage, confirmed trend, and 2 inflow days, the report can still present an aggressive buy level instead of the intended trial-entry semantics.
+The changed no-position Buy Level messaging now explicitly labels the state as a level-2 conditional trial, but the calculation can still return higher buy levels for the same branch. This leaves execution semantics inconsistent for strong no-position signals.
+
+Review comment:
+
+- [P2] Cap no-position trial entries at Buy Level 2 — /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/readiness_score.py:637-637
+  When `position_status == "no_position"` and the signals also satisfy `level_3_ok` or `level_4_ok`, this branch only changes the note and still leaves `max_level` at 4, so the function can return Buy Level 3/4 while saying the no-position case is only a level-2 conditional trial. For strong no-position inputs such as high coverage, confirmed trend, and 2 inflow days, the report can still present an aggressive buy level instead of the intended trial-entry semantics.
