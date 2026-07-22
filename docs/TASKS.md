@@ -79,6 +79,160 @@
 - 必测对抗样例：中性首次出现+后文上涨；`未采用净额法，仍采用总额法`；`原材料下降+合同负债增加`；同指标多条相反声明；多术语长证据片段。
 - 完成标准：专项与相关回归全绿，`codex review --uncommitted` 无 P0/P1/P2 correctness finding；不调 live LLM，不写生产数据库。
 
+
+### F-001: TA研报执行层修复（P0-P2共10项）
+- **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+- **优先级**：P0
+- **状态**：ready
+- **预计耗时**：60-90 分钟
+- **depends_on**：无
+- **auto_release**：true
+- **验收方式**：重跑002837报告，10项全部通过
+
+### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+- **描述**：把"计划最大仓位 + 试错仓/确认仓/进攻仓"写成可测试规则，禁止系统因为下跌简单提示补仓。
+- **优先级**：P1
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：PLAYBOOK-001
+- **auto_release**：true
+- **验收方式**：fixture覆盖可试错/不可试错/可加确认仓/不可加确认仓/回踩进攻/突破进攻/跌停不补。"跌了/便宜/回调"单独出现不能触发补仓。
+- **代码标注要求**：`# [PLAYBOOK-002] staged_entry_rules`
+
+### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
+- **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 research_score_snapshot v1.1.0 可被稳定读取和降级。本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
+- **优先级**：P1
+- **状态**：ready
+- **预计耗时**：35-45 分钟
+- **depends_on**：KB-001, KB-014
+- **auto_release**：true
+- **验收方式**：fixture覆盖五类状态、完整/缺字段、过期、损坏、symbol错配。断言drafts不会被生产loader选中；同标的多版本严格按analysis_time选择。
+
+### B-001: 接入小米 MiMo 模型到 TA 系统
+- **描述**：在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
+- **优先级**：高
+- **状态**：ready
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-001: position_validation_gate（P2）
+- **描述**：每份报告生成前必须读取 current_positions.json，根据持仓状态决定可输出的动作类型
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-003: 禁止做空策略输出（P1）
+- **描述**：如果 can_short=false，做空相关策略在生成阶段就不进入候选池
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：25-35 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-004: 动作枚举重设计（P1）
+- **描述**：将最终动作枚举精简为 5 个
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-005: same_symbol_delta_check（P2）
+- **描述**：同一股票结论翻转时，必须输出对比信息
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：25-35 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-006: financial_data_validator — 分期实现（P2）
+- **描述**：财报数据异常检测，分两期做
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-007: event_risk_gate（P1）
+- **描述**：重大事件发生时，进入风控优先模式
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### C-008: execution_readiness_score — 简化版（P2）
+- **描述**：每份报告输出两个核心质量指标
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：25-35 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### B-002: 定时任务与 OpenClaw 联动
+- **描述**：定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书
+- **优先级**：中
+- **状态**：ready
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### B-003: 研报导出为飞书文档
+- **描述**：分析结果支持导出为飞书云文档，方便分享和存档
+- **优先级**：中
+- **状态**：ready
+- **预计耗时**：35-45 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### B-004: 持仓快照与 investment-controller 同步
+- **描述**：TA 系统的持仓数据与 investment-controller 项目的 current_holdings.json 双向同步
+- **优先级**：中
+- **状态**：ready
+- **预计耗时**：30-40 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### HY-009: 半年报增量刷新、缓存失效与事实冲突审计（P2）
+- **描述**：让 HY-003 半年报事实索引能识别新披露、修订稿和知识库页面更新，安全刷新缓存并标记跨版本事实冲突。
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：HY-003, HY-005, HY-008
+- **auto_release**：true
+- **验收方式**：fixture覆盖新增、修订、删除、缓存损坏、同周期冲突和无变化六类。重复执行幂等；无变化不重建全量索引。
+- **代码标注要求**：`# [HY-009] half_year_incremental_refresh`
+
+### M-009: TradeFlow 前端观察池面板（P2）
+- **描述**：在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA。
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：35-45 分钟
+- **depends_on**：M-003, M-005
+- **auto_release**：true
+
+### M-010: 飞书/通知链路人工确认版（P2）
+- **描述**：把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发。
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：35-45 分钟
+- **depends_on**：无
+- **auto_release**：true
+
+### UI-014: TA 研报证据中心与来源下钻（P2）
+- **描述**：在报告查看体验中增加轻量"研报证据"入口，让用户看到同股研报共识、分歧、半年报事实、待验证项和来源路径。
+- **优先级**：P2
+- **状态**：ready
+- **预计耗时**：40-50 分钟
+- **depends_on**：KB-011, KB-020, REPORT-UX-005
+- **auto_release**：true
+- **验收方式**：前端类型检查与build通过。组件测试覆盖完整/空/部分失败/冲突四态。
+- **代码标注要求**：`// [UI-014] research_evidence_center`
+
+
 ### 历史任务总表（按创建顺序）
 
 1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
