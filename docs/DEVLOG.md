@@ -1,5 +1,19 @@
 # 修改日志
 
+## 2026-07-22 | FUND-007A 财报错误模式基准集与持续回归报告
+
+- **目标**：把 603629 及跨行业财报回放中暴露的错误模式固化为确定性基准集，使后续 provider、解析器或模型路由调整都能先证明没有重新引入"数字大体正确、因果解释错误"的故障。
+- **实现**：
+  - 新增 `tests/test_fund007a_error_benchmark.py`（21 项），包含 11 个负向样本和 5 个正向控制样本。
+  - 负向覆盖 8 类错误模式：身份错配、年度累计冒充 Q4、跨日期计算、跨单位计算、无解释季节性猜测、净额法/总额法误判、预收款现金流误读、来源全面缺失、证据冲突、否定会计口径、单季度派生冲突。
+  - 正向覆盖 5 类控制：纯事实报告、有证据因果、合法会计口径、无因果关键词、否定一致。
+  - 每个 case 保存稳定 `case_id/expected_gate/expected_rule_ids/actual_result`；故意篡改 expected rule 时测试必须失败。
+  - 新增 CLI runner（`python tests/test_fund007a_error_benchmark.py`），输出机器可读 JSON + 人读 Markdown 报告到 `docs/benchmark_results/`，失败时 exit 1。
+  - 修复 `_extract_relation_at()` 中"主要系...所致"模式检测缺失：当 "主要系" 出现在关键词之前且 "所致" 出现在关键词之后时，正确返回因果关系。
+  - 修复 "是/为" 倒装句检测的正则：从 `(?:的)?(?:是|为)\s*$` 改为 `.+(?:的)?(?:是|为)\s*$`，避免无结果前缀误匹配。
+- **验证**：FUND-007A 专项 21 项通过；FUND 组合 215 项通过；API/runtime smoke 122 项通过；`py_compile` 通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-22 | FUND-006A 真实 provider 格式与生产图离线回放验收
 
 - **目标**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链，作为 live 603629 前的唯一放行门。
@@ -13752,3 +13766,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/FUND-006A-20260722-round1.txt
 - **Run archive**: docs/task_runs/FUND-006A-20260722-205540/
+
+## 2026-07-22 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-007A - 财报错误模式基准集与持续回归报告（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/FUND-007A-20260722-round1.txt
+- **Run archive**: docs/task_runs/FUND-007A-20260722-211827/

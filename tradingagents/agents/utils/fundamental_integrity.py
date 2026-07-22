@@ -290,13 +290,27 @@ def _extract_relation_at(text: str, keyword: str, pos: int) -> tuple[str | None,
     preceding = text[max(clause_start, pos - 24):pos]
     if re.search(r"(?:主要)?原因(?:是|为|包括)\s*$", preceding):
         return "causal", "原因"
+    # [FUND-007A] Handle "主要系/主要原因 <keyword> ... 所致" pattern.
+    # The cue is before the keyword and "所致" is after; the verb "是/为"
+    # between keyword and "所致" marks the result boundary.
+    _zws_pos = preceding.rfind("主要系")
+    _zycy_pos = preceding.rfind("主要原因")
+    _zy_pos = max(_zws_pos, _zycy_pos)
+    if _zy_pos >= 0:
+        _zy_end = max(_zy_pos + len("主要系"), _zy_pos + len("主要原因"))
+        _result_seg = text[_zy_end:pos]
+        if re.search(r"(?:是|为)\s*$", _result_seg):
+            return "causal", "主要系"
+        _所致_match = re.search(r"所致", text[keyword_end:clause_end])
+        if _所致_match and _所致_match.start() > 0:
+            return "causal", "主要系"
     for cue in _CAUSE_BEFORE_RESULT_CUES:
         cue_pos = preceding.rfind(cue)
         if cue_pos < 0:
             continue
         cleft_result = preceding[cue_pos + len(cue):]
         if (
-            re.search(r"(?:的)?(?:是|为)\s*$", cleft_result)
+            re.search(r".+(?:的)?(?:是|为)\s*$", cleft_result)
             and any(target in cleft_result for target in _RELATION_TARGET_MAP)
         ):
             return "causal", cue
