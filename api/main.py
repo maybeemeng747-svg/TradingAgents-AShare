@@ -42,6 +42,7 @@ import pandas as pd
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
 from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
+from api.services import feishu_export_service  # [B-003] feishu_doc_export
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -974,6 +975,15 @@ class LatestReportsBySymbolsRequest(BaseModel):
 
 class LatestReportsBySymbolsResponse(BaseModel):
     reports: List[ReportSummaryResponse]
+
+
+class FeishuExportResponse(BaseModel):
+    """[B-003] Response for Feishu document export."""
+    success: bool
+    document_url: Optional[str] = None
+    document_token: Optional[str] = None
+    title: Optional[str] = None
+    error: Optional[str] = None
 
 
 class PortfolioOverviewResponse(BaseModel):
@@ -4051,6 +4061,24 @@ def batch_delete_reports_endpoint(
         return report_service.batch_delete_reports(db, body.report_ids, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/v1/reports/{report_id}/export/feishu", response_model=FeishuExportResponse)
+def export_report_to_feishu_endpoint(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """[B-003] 导出报告为飞书云文档."""
+    report = report_service.get_report(db, report_id, user_id=current_user.id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    if str(report.status or "") != "completed":
+        raise HTTPException(status_code=400, detail="报告尚未完成，无法导出")
+    result = feishu_export_service.export_report_to_feishu(report)
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail=result.get("error", "导出失败"))
+    return FeishuExportResponse(**result)
 
 
 # ─── API Token Endpoints ────────────────────────────────────────────────────

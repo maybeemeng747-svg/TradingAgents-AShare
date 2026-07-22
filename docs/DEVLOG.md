@@ -1,5 +1,34 @@
 # 修改日志
 
+## 2026-07-23 | B-003 研报导出为飞书文档
+
+- **任务**：B-003 — 分析结果支持导出为飞书云文档，方便分享和存档（中优先级）
+- **实现**：
+  - `api/services/feishu_export_service.py`（新增）— 飞书文档导出 service。
+    - **`render_report_markdown()`**：将 ReportDB 渲染为飞书友好的 Markdown 文档，包含摘要表格、各方观点、关键指标、风险提示、最终决策、投资计划、本地知识补充和半年报事实对照等完整区块。
+    - **`markdown_to_blocks()`**：将 Markdown 子集转换为飞书文档 API 的 block 结构，支持标题、粗体、有序/无序列表、分隔线和段落。
+    - **`export_report_to_feishu()`**：同步导出入口，完整流程：获取 tenant_access_token → 创建文档 → 渲染 Markdown → 转换 blocks → 分批写入（每批 ≤50 blocks）。
+    - **`export_report_to_feishu_async()`**：异步包装器。
+    - **Token 缓存**：模块级单例缓存 tenant_access_token，TTL 9000 秒（2 小时有效期，提前刷新）。
+    - **`is_feishu_configured()`**：检查环境变量是否配置。
+    - 设计契约：不读取/打印 API key/secret，不写数据库，不调 LLM，不改 prompts；失败返回结构化错误，不抛异常。
+  - `api/main.py` — 新增 API 端点和响应模型。
+    - `POST /v1/reports/{report_id}/export/feishu`：用户触发导出，返回飞书文档 URL。
+    - `FeishuExportResponse` 响应模型：`success`, `document_url`, `document_token`, `title`, `error`。
+    - 仅允许 `status=completed` 的报告导出。
+- **环境变量**：
+  - `FEISHU_APP_ID`：飞书应用 ID（必填）
+  - `FEISHU_APP_SECRET`：飞书应用密钥（必填）
+  - `FEISHU_FOLDER_TOKEN`：目标文件夹 token（可选，不设则创建在应用根目录）
+- **测试**：
+  - `tests/test_b003_feishu_export.py`（新增）— **47 tests passed**。
+  - 覆盖 13 个测试类：配置检查（3）、Markdown 渲染（16）、block 转换（9）、导出配置校验（1）、导出成功路径（2）、错误处理（2）、Token 缓存（2）、文档创建 API（2）、Verdict 提取（4）、语义字段（3）、分批插入（1）、异步包装（1）。
+- **回归**：
+  - `pytest tests/test_email_report_service.py tests/test_bark_notification_service.py -q`：**36 passed**（通知服务回归）。
+  - `py_compile api/services/feishu_export_service.py api/main.py` 通过。
+  - `from api.main import app` 导入正常。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | B-002 定时任务与 OpenClaw 联动
 
 - **任务**：B-002 — 定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书（中优先级）
@@ -14329,3 +14358,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/B-002-20260723-round1.txt
 - **Run archive**: docs/task_runs/B-002-20260723-050801/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: B-003 - 研报导出为飞书文档
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/B-003-20260723-round1.txt
+- **Run archive**: docs/task_runs/B-003-20260723-051718/
