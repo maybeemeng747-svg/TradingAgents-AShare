@@ -111,7 +111,7 @@
 ### B-001: 接入小米 MiMo 模型到 TA 系统
 - **描述**：在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
 - **优先级**：高
-- **状态**：ready
+- **状态**：done -- B-001-20260723-mimo
 - **预计耗时**：30-40 分钟
 - **depends_on**：无
 - **auto_release**：true

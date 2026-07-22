@@ -63,6 +63,16 @@ VALID_MODELS = {
         "grok-4-fast-reasoning",
         "grok-4-fast-non-reasoning",
     ],
+    "mimo": [
+        # Token Plan models
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
+        # Standard endpoint models (xiaomi/ prefix)
+        "xiaomi/mimo-v2-flash",
+        "xiaomi/mimo-v2-pro",
+        "xiaomi/mimo-v2.5",
+        "xiaomi/mimo-v2.5-pro",
+    ],
 }
 
 

@@ -1,5 +1,29 @@
 # 修改日志
 
+## 2026-07-23 | B-001 接入小米 MiMo 模型到 TA 系统
+
+- **任务**：B-001 — 在 llm_clients/ 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro（高优先级）
+- **实现**：
+  - `tradingagents/llm_clients/mimo_client.py`（新增）— 专用 MiMo 客户端适配器，继承 `BaseLLMClient`，内部使用 `UnifiedChatOpenAI`（MiMo 兼容 OpenAI 协议）。
+    - 双端点支持：标准端点 `https://api.xiaomimimo.com/v1`、Token Plan 端点 `https://token-plan-cn.xiaomimimo.com/v1`（默认）。
+    - 推理模型检测：`mimo-v2.5-pro` 识别为推理模型，自动跳过 temperature 参数。
+    - API Key 解析：`TA_API_KEY` > `OPENAI_API_KEY`，与现有 OpenAI-compatible 端点一致。
+    - 超时默认 300s，与 OpenAIClient 保持一致。
+  - `tradingagents/llm_clients/factory.py` — 新增 `mimo` provider 路由，`create_llm_client("mimo", ...)` 返回 `MiMoClient`。
+  - `tradingagents/llm_clients/model_catalog.py` — `xiaomi-mimo` 和 `xiaomi-token-plan` 条目 provider 从 `openai` 改为 `mimo`，`xiaomi-mimo` 模型名从旧版 `xiaomi/mimo-v2-flash`/`xiaomi/mimo-v2-pro` 升级为 `mimo-v2.5`/`mimo-v2.5-pro`。
+  - `tradingagents/llm_clients/validators.py` — 新增 `mimo` provider 的 `VALID_MODELS` 列表（6 个模型名：`mimo-v2.5`、`mimo-v2.5-pro`、`xiaomi/mimo-v2-flash`、`xiaomi/mimo-v2-pro`、`xiaomi/mimo-v2.5`、`xiaomi/mimo-v2.5-pro`）。
+  - `tradingagents/llm_clients/__init__.py` — 导出 `MiMoClient`。
+- **测试**：
+  - `tests/test_mimo_client.py`（新增）— **45 tests passed**。
+  - 覆盖 11 个测试类：工厂路由（6）、客户端实例化（3）、Base URL 解析（3）、推理模型检测（6）、模型验证（6）、模型目录（7）、get_llm 输出（6）、向后兼容（2）、常量（4）、导入（2）。
+- **回归**：
+  - `pytest tests/test_config_fallback.py tests/test_llm_rate_limiter.py -q`：**42 passed**（LLM/config 回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `pytest tests/test_fund005_agent_trace.py -q`：**24 passed**（引用 MiMo 模型名的 trace 测试）。
+  - `py_compile` 全部修改文件通过。
+- **向后兼容**：`llm_provider=openai` + MiMo base_url 的旧配置路径仍然工作，不受影响。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | SCORE-003 账户上下文 portfolio_fit 评分卡
 
 - **任务**：SCORE-003 — 账户上下文 `portfolio_fit` 评分卡（P1）
@@ -14008,3 +14032,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/SCORE-003-20260723-round1.txt
 - **Run archive**: docs/task_runs/SCORE-003-20260723-025306/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: B-001 - 接入小米 MiMo 模型到 TA 系统
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/B-001-20260723-round1.txt
+- **Run archive**: docs/task_runs/B-001-20260723-030842/

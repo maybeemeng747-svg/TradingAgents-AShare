@@ -35,8 +35,8 @@ python scripts/audit_llm_config.py
 | `zhipu-coding` | Zhipu Coding Plan | `openai` | `https://open.bigmodel.cn/api/coding/paas/v4` | `glm-4.5-air` | `glm-5-turbo` | 建议本地默认 |
 | `deepseek` | DeepSeek | `openai` | `https://api.deepseek.com/v1` | `deepseek-chat` | `deepseek-reasoner` | 余额低时避免默认使用 |
 | `moonshot` | Moonshot AI (Kimi) | `openai` | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | `moonshot-v1-32k` | Kimi |
-| `xiaomi-mimo` | Xiaomi MiMo | `openai` | `https://api.xiaomimimo.com/v1` | `xiaomi/mimo-v2-flash` | `xiaomi/mimo-v2-pro` | MiMo 标准端点 |
-| `xiaomi-token-plan` | Xiaomi MiMo Token Plan | `openai` | `https://token-plan-cn.xiaomimimo.com/v1` | `mimo-v2.5` | `mimo-v2.5-pro` | Token Plan |
+| `xiaomi-mimo` | Xiaomi MiMo | `mimo` | `https://api.xiaomimimo.com/v1` | `mimo-v2.5` | `mimo-v2.5-pro` | MiMo 专用适配器 |
+| `xiaomi-token-plan` | Xiaomi MiMo Token Plan | `mimo` | `https://token-plan-cn.xiaomimimo.com/v1` | `mimo-v2.5` | `mimo-v2.5-pro` | Token Plan，MiMo 专用适配器 |
 | `dashscope` | Alibaba DashScope | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | `qwen-max` | OpenAI 兼容 |
 | `siliconflow` | SiliconFlow | `openai` | `https://api.siliconflow.cn/v1` | 自填 | 自填 | 依 route 决定模型名 |
 | `anthropic` | Anthropic Claude | `anthropic` | 空 | `claude-haiku-4-5` | `claude-sonnet-4-5` | Anthropic SDK |

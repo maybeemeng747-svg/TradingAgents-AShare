@@ -78,11 +78,11 @@ MODEL_API_CATALOG: list[dict[str, Any]] = [
     {
         "id": "xiaomi-mimo",
         "label": "Xiaomi MiMo",
-        "provider": "openai",
+        "provider": "mimo",
         "protocol": "OpenAI-compatible",
         "base_url": "https://api.xiaomimimo.com/v1",
-        "quick_model": "xiaomi/mimo-v2-flash",
-        "deep_model": "xiaomi/mimo-v2-pro",
+        "quick_model": "mimo-v2.5",
+        "deep_model": "mimo-v2.5-pro",
         "key_scope": "openai:https://api.xiaomimimo.com/v1",
         "status": "supported",
         "cost_note": "Paid Xiaomi MiMo quota.",
@@ -90,7 +90,7 @@ MODEL_API_CATALOG: list[dict[str, Any]] = [
     {
         "id": "xiaomi-token-plan",
         "label": "Xiaomi MiMo Token Plan",
-        "provider": "openai",
+        "provider": "mimo",
         "protocol": "OpenAI-compatible",
         "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
         "quick_model": "mimo-v2.5",
