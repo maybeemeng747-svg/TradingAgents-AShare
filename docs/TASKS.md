@@ -5987,7 +5987,7 @@
 ### SCORE-001B: 研究快照接入聚合响应与 TradeFlow candidate detail（P1）
 - **描述**：在 SCORE-001 loader 验收后，把只读摘要接入 KB-020 聚合响应、TA metadata 和 TradeFlow candidate detail；本任务只透传研究卡，不参与候选原分、动作或阶段计算。
 - **优先级**：P1
-- **状态**：done — SCORE-001B-20260723-022706
+- **状态**：done -- commit f366724
 - **前置条件**：SCORE-001、KB-020 完成。
 - **depends_on**：SCORE-001, KB-020
 - **auto_release**：true
