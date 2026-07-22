@@ -495,6 +495,89 @@ def _enrich_candidates_with_entry_timing(items: List[dict]) -> List[dict]:
     return items
 
 
+# [SCORE-003] portfolio_fit_card
+def _enrich_candidate_with_portfolio_fit(
+    item: dict,
+    *,
+    user_permissions: Optional[dict] = None,
+    cash_available: Optional[float] = None,
+    holdings_topics: Optional[list[str]] = None,
+    budget_utilization_pct: Optional[float] = None,
+    daily_new_today: Optional[int] = None,
+    daily_new_max: Optional[int] = None,
+    tracking_count: Optional[int] = None,
+    max_concurrent_tracking: Optional[int] = None,
+) -> dict:
+    """单条候选注入 portfolio_fit 评分卡（[SCORE-003]）。
+
+    纯确定性映射，只读、不调用 LLM、不改变 tier / action 门禁。
+    账户上下文缺失时 context_unknown=True，不得假定"适配良好"。
+    """
+    try:
+        from tradingagents.tradeflow.portfolio_fit_score import (
+            compute_portfolio_fit,
+            portfolio_fit_to_dict,
+        )
+        from tradingagents.tradeflow.staged_entry_rules import (
+            classify_asset_type,
+            compute_planned_max_position,
+            StagedEntryContext,
+        )
+
+        # Infer asset type from strategy_tags
+        ctx = StagedEntryContext(strategy_tags=item.get("strategy_tags") or [])
+        asset_type = classify_asset_type(ctx)
+        planned_max = compute_planned_max_position(asset_type)
+
+        # Count same-topic holdings
+        topic = item.get("mandate_topic") or ""
+        same_count = 0
+        if holdings_topics and topic:
+            same_count = sum(1 for t in holdings_topics if t == topic)
+
+        result = compute_portfolio_fit(
+            symbol=item.get("symbol") or "",
+            current_price=item.get("current_price"),
+            asset_type=asset_type,
+            strategy_tags=item.get("strategy_tags"),
+            mandate_topic=topic,
+            avg_daily_volume=item.get("avg_daily_volume"),
+            bid_ask_spread_pct=item.get("bid_ask_spread_pct"),
+            user_permissions=user_permissions,
+            cash_available=cash_available,
+            current_position_pct=item.get("current_position_pct"),
+            planned_max_position_pct=planned_max,
+            holdings_topics=holdings_topics,
+            same_topic_holding_count=same_count,
+            concentration_per_topic_max=3,
+            budget_utilization_pct=budget_utilization_pct,
+            daily_new_today=daily_new_today,
+            daily_new_max=daily_new_max,
+            tracking_count=tracking_count,
+            max_concurrent_tracking=max_concurrent_tracking,
+        )
+        item["portfolio_fit_card"] = portfolio_fit_to_dict(result)
+    except Exception:
+        item.setdefault("portfolio_fit_card", None)
+    return item
+
+
+def _enrich_candidates_with_portfolio_fit(
+    items: List[dict],
+    **kwargs,
+) -> List[dict]:
+    """批量注入 portfolio_fit 评分卡（[SCORE-003]）。
+
+    只读叠加层，不改变 tier / action 门禁；异常静默跳过。
+    """
+    if not items:
+        return items
+    for it in items:
+        if isinstance(it, dict):
+            _enrich_candidate_with_portfolio_fit(it, **kwargs)
+    return items
+
+
 # [KB-004] tradeflow_knowledge_score
 def _resolve_knowledge_root() -> str:
     """解析当前生效的本地知识库根目录（环境变量优先）。
@@ -1093,6 +1176,10 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
         # 只读、不调用 LLM、不改变 tier / action 门禁；缺数据降级为 None。
         candidate_items = _enrich_candidates_with_entry_timing(candidate_items)
 
+        # [SCORE-003] portfolio_fit_card — 注入账户适配评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；账户上下文缺失时 context_unknown=True。
+        candidate_items = _enrich_candidates_with_portfolio_fit(candidate_items)
+
         return {
             "status": "ok",
             "trade_date": _rget(plan_row, "trade_date", trade_date),
@@ -1199,6 +1286,10 @@ def get_candidates(
         # 只读、不调用 LLM、不改变 tier / action 门禁；缺数据降级为 None。
         items = _enrich_candidates_with_entry_timing(items)
 
+        # [SCORE-003] portfolio_fit_card — 注入账户适配评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；账户上下文缺失时 context_unknown=True。
+        items = _enrich_candidates_with_portfolio_fit(items)
+
         # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
         # while exposing the strict main/observation/filtered split separately.
         from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
@@ -1280,6 +1371,10 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         # [SCORE-002] entry_timing_adapter — 候选详情注入入场时机评分卡。
         # 只读、不调用 LLM、不改变 tier / action 门禁。
         detail = _enrich_candidate_with_entry_timing(detail)
+
+        # [SCORE-003] portfolio_fit_card — 候选详情注入账户适配评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁。
+        detail = _enrich_candidate_with_portfolio_fit(detail)
 
         return {
             "status": "ok",
@@ -2625,6 +2720,10 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
         # [SCORE-002] entry_timing_adapter — 注入入场时机评分卡。
         # 只读、不调用 LLM、不改变 tier / action 门禁；缺数据降级为 None。
         all_items = _enrich_candidates_with_entry_timing(all_items)
+
+        # [SCORE-003] portfolio_fit_card — 注入账户适配评分卡。
+        # 只读、不调用 LLM、不改变 tier / action 门禁；账户上下文缺失时 context_unknown=True。
+        all_items = _enrich_candidates_with_portfolio_fit(all_items)
 
         # [TF-QUALITY-001A] pool_gate_contract — tiered view intentionally
         # groups main candidates but keeps the other pools visible.

@@ -1,5 +1,39 @@
 # 修改日志
 
+## 2026-07-23 | SCORE-003 账户上下文 portfolio_fit 评分卡
+
+- **任务**：SCORE-003 — 账户上下文 `portfolio_fit` 评分卡（P1）
+- **实现**：
+  - `tradingagents/tradeflow/portfolio_fit_score.py`（新增，`# [SCORE-003] portfolio_fit_card`）— 纯确定性评分卡模块，不调用 LLM / 网络 / prompts。
+    - 六维度评分：交易权限（0.20）、仓位与上限（0.20）、现金防守空间（0.15）、相关性集中度（0.15）、流动性执行难度（0.15）、账户风险预算（0.15）。
+    - 每维度携带 `score/weight/status/source_fields/reasons/missing_fields`，可追溯到输入字段。
+    - 板块权限推断：科创板（688/689）、创业板（300/301）、北交所（8/4）、主板（6/0），按 symbol 前缀确定性映射。
+    - 仓位评估：当前仓位 vs 计划上限（复用 PLAYBOOK-002 `classify_asset_type` + `compute_planned_max_position`），按 room_pct 四档评分。
+    - 现金评估：可用资金 vs 最低一手成本（考虑板块差异手数：STAR=200、主板/创业板=100、北交所=1）。
+    - 集中度评估：同主题持仓计数 vs `concentration_per_topic_max`，四档评分。
+    - 流动性评估：价格水平 + 日均成交量 + 买卖价差，各独立评分取均值。
+    - 风险预算评估：预算利用率 + 当日新开仓限额 + 并发跟踪数，各独立评分取均值。
+    - 加权合成 `portfolio_fit` 0-100，缺维度时按可用权重归一化（`data_status=partial`）；全缺返回 0 + `missing`。
+    - 布尔/三态事实：`tradable_by_user / position_overweight / insufficient_cash / concentration_exceeded / risk_budget_exceeded / context_unknown`。
+    - `context_unknown` 在 3 个关键维度（权限/仓位/现金）中 ≥2 个非 "ok" 时为 True，确保缺省上下文不被解释为"适配良好"。
+    - `portfolio_fit_to_dict()` 序列化为 JSON-safe dict。
+  - `api/services/tradeflow_service.py` — 新增 `_enrich_candidate_with_portfolio_fit()` / `_enrich_candidates_with_portfolio_fit()`，注入到 `get_candidates` / `get_daily_plan` / `get_candidate_detail` / `get_candidates_tiered` 四条数据通路。
+    - 与 SCORE-002 entry_timing 同模式：只读、不调用 LLM、不改变 tier / action 门禁；异常静默降级为 `portfolio_fit_card=None`。
+    - 自动从候选 `strategy_tags` 推断资产类型，从 `staged_entry_rules` 获取计划仓位上限。
+    - 账户级上下文（permissions / cash / risk budget）通过 kwargs 传入，缺省时各维度 graceful 降级。
+- **测试**：
+  - `tests/test_score003_portfolio_fit.py` — **116 tests passed**。
+  - 覆盖 16 个测试类：板块推断（15）、交易权限（10）、仓位与上限（11）、现金防守（13）、相关性集中度（6）、流动性执行（8）、风险预算（12）、集成计算（10）、序列化（3）、权重正确性（2）、验收场景（9）、服务层注入（7）、边界情况（6）。
+- **改动文件**：
+  - `tradingagents/tradeflow/portfolio_fit_score.py`（新增）
+  - `api/services/tradeflow_service.py`（新增 enrichment 函数 + 4 处调用点）
+  - `tests/test_score003_portfolio_fit.py`（新增）
+- **回归**：
+  - `pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py tests/test_score002_entry_timing.py -q`：**158 passed**（SCORE-001/002 回归）。
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**（API smoke 回归）。
+  - `py_compile` 通过。
+- **约束遵守**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。`portfolio_fit` 不注入研究快照 JSON，不改变 `action_tier` / `tier` / `decision`。评分只描述适配度，硬性阻断由 SCORE-004 集中裁决。
+
 ## 2026-07-23 | SCORE-002 复用 TradeFlow 现有因子生成 entry_timing 评分卡
 
 - **任务**：SCORE-002 — 复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1）
@@ -13962,3 +13996,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/SCORE-002-20260723-round1.txt
 - **Run archive**: docs/task_runs/SCORE-002-20260723-023857/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: SCORE-003 - 账户上下文 portfolio_fit 评分卡（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/SCORE-003-20260723-round1.txt
+- **Run archive**: docs/task_runs/SCORE-003-20260723-025306/
