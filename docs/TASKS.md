@@ -5718,7 +5718,7 @@
 ### FUND-004B: C-006 同日期/同期间口径计算补修（P0）
 - **描述**：修复 C-006 按指标各取最新值导致收入、成本、资产和负债跨日期或跨累计/单季度口径混算的问题。
 - **优先级**：P0
-- **状态**：in_progress — claimed FUND-004B-20260722-200203
+- **状态**：done -- commit 33fa819
 - **预计耗时**：30-40 分钟
 - **depends_on**：FUND-002, FUND-003A-B
 - **auto_release**：true
@@ -5735,7 +5735,7 @@
 ### FUND-004A: 基本面语义门禁前移并剔除无效研究权重（P0）
 - **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
 - **优先级**：P0
-- **状态**：blocked-auto — 等待 FUND-001A/FUND-003A-B/FUND-004B
+- **状态**：ready
 - **预计耗时**：40-50 分钟
 - **depends_on**：FUND-001A, FUND-003A-B, FUND-004B, FUND-004
 - **auto_release**：true
