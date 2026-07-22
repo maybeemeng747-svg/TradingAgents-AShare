@@ -6007,7 +6007,7 @@
 ### SCORE-002: 复用 TradeFlow 现有因子生成 entry_timing 评分卡（P1）
 - **描述**：把 TradeFlow 已有技术、资金、事件、拥挤/过热、触发距离和赔率字段组合成独立 `entry_timing` 评分卡，禁止另造一套行情和资金计算。
 - **优先级**：P1
-- **状态**：done — SCORE-002-20260723-023857
+- **状态**：done -- commit 594d742
 - **前置条件**：SCORE-001、TF-QUALITY-004、TF-RISK-001 完成。
 - **depends_on**：SCORE-001, TF-QUALITY-004, TF-RISK-001
 - **auto_release**：true
