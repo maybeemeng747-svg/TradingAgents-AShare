@@ -1,5 +1,26 @@
 # 修改日志
 
+## 2026-07-23 | C-005 same_symbol_delta_check 结论翻转检测增强
+
+- **任务**：C-005 — 同一股票结论翻转时，必须输出对比信息（P2）
+- **实现**：
+  - `tradingagents/agents/utils/delta_check.py` — 增强结论翻转检测模块。
+    - `_extract_direction(text)` — 增强方向提取，使用 TradeAction 枚举 + 中文关键词 + 混合信号强度判断。
+    - `_extract_action_summary(text)` — 新增动作摘要提取，返回标准动作描述。
+    - `check_delta()` — 返回结构化翻转信息，包含方向变化、动作变化、时间窗口、新增数据源等。
+    - `format_delta_warning()` — 增强格式化输出，包含方向变化、动作变化、时间差、噪音警告。
+    - 保留 72 小时窗口和"无新增数据源"触发条件。
+    - neutral 方向不触发翻转检测（避免误报）。
+  - `tradingagents/agents/managers/risk_manager.py` — 已有集成，无需修改（使用相同的 `check_delta`/`save_conclusion`/`format_delta_warning` 接口）。
+- **测试**：
+  - `tests/test_c005_delta_check.py`（新增）— **48 tests passed**。
+  - 覆盖 7 个测试类：方向提取（13）、动作摘要提取（10）、保存/加载（3）、翻转检测（10）、格式化输出（8）、集成测试（4）。
+- **回归**：
+  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**。
+  - `pytest tests/test_c001_position_validation_gate.py tests/test_c003_short_strategy_filter.py -q`：**69 passed**。
+  - `py_compile` 全部修改文件通过。
+- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-23 | C-003 禁止做空策略输出
 
 - **任务**：C-003 — 如果 can_short=false，做空相关策略在生成阶段就不进入候选池（P1）
@@ -14140,3 +14161,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/C-004-20260723-round2.txt
 - **Run archive**: docs/task_runs/C-004-20260723-033945/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: C-005 - same_symbol_delta_check（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/C-005-20260723-round1.txt
+- **Run archive**: docs/task_runs/C-005-20260723-035736/

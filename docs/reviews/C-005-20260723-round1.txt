@@ -1,0 +1,2614 @@
+Task: C-005 - same_symbol_delta_check（P2）
+Date: 2026-07-23_04:05:36
+Codex exit code: 0
+Round: 1
+---
+2026-07-22T20:03:12.385248Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8b6c-d377-7c51-93cb-2869fbc92f94
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/agents/utils/delta_check.py
+?? docs/task_runs/C-005-20260723-035736/
+?? tests/test_c005_delta_check.py
+/Users/maybee/TradingAgents-AShare
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/agents/utils/delta_check.py tests/test_c005_delta_check.py docs/TASKS.md docs/DEVLOG.md && find docs/task_runs/C-005-20260723-035736 -maxdepth 2 -type f -print -exec sed -n '1,200p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index cb9e083..34d3cac 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,26 @@
+ # 修改日志
+ 
++## 2026-07-23 | C-005 same_symbol_delta_check 结论翻转检测增强
++
++- **任务**：C-005 — 同一股票结论翻转时，必须输出对比信息（P2）
++- **实现**：
++  - `tradingagents/agents/utils/delta_check.py` — 增强结论翻转检测模块。
++    - `_extract_direction(text)` — 增强方向提取，使用 TradeAction 枚举 + 中文关键词 + 混合信号强度判断。
++    - `_extract_action_summary(text)` — 新增动作摘要提取，返回标准动作描述。
++    - `check_delta()` — 返回结构化翻转信息，包含方向变化、动作变化、时间窗口、新增数据源等。
++    - `format_delta_warning()` — 增强格式化输出，包含方向变化、动作变化、时间差、噪音警告。
++    - 保留 72 小时窗口和"无新增数据源"触发条件。
++    - neutral 方向不触发翻转检测（避免误报）。
++  - `tradingagents/agents/managers/risk_manager.py` — 已有集成，无需修改（使用相同的 `check_delta`/`save_conclusion`/`format_delta_warning` 接口）。
++- **测试**：
++  - `tests/test_c005_delta_check.py`（新增）— **48 tests passed**。
++  - 覆盖 7 个测试类：方向提取（13）、动作摘要提取（10）、保存/加载（3）、翻转检测（10）、格式化输出（8）、集成测试（4）。
++- **回归**：
++  - `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**。
++  - `pytest tests/test_c001_position_validation_gate.py tests/test_c003_short_strategy_filter.py -q`：**69 passed**。
++  - `py_compile` 全部修改文件通过。
++- **约束遵守**：未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-23 | C-003 禁止做空策略输出
+ 
+ - **任务**：C-003 — 如果 can_short=false，做空相关策略在生成阶段就不进入候选池（P1）
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index f24602c..86663ec 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -143,7 +143,7 @@
+ ### C-005: same_symbol_delta_check（P2）
+ - **描述**：同一股票结论翻转时，必须输出对比信息
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：done — C-005-20260723-035736，48 tests passed
+ - **预计耗时**：25-35 分钟
+ - **depends_on**：无
+ - **auto_release**：true
+diff --git a/tradingagents/agents/utils/delta_check.py b/tradingagents/agents/utils/delta_check.py
+index d3eb561..3d483d3 100644
+--- a/tradingagents/agents/utils/delta_check.py
++++ b/tradingagents/agents/utils/delta_check.py
+@@ -1,17 +1,38 @@
+ # [C-005] delta_check
+-"""同股票结论翻转检测"""
++"""同股票结论翻转检测
++
++功能：
++- 检测同一股票在 72 小时窗口内结论方向翻转
++- 翻转时输出对比信息：上一版结论、本版结论、变化方向、新增证据、是否可能噪音
++- 支持使用 TradeAction 枚举进行方向判断
++"""
+ 
+ import json
++import logging
+ import os
++import re
+ from datetime import datetime, timedelta
+ from typing import Optional
+ 
++from tradingagents.agents.utils.trade_actions import TradeAction
++
++_logger = logging.getLogger(__name__)
+ 
+ DELTA_LOG_DIR = os.path.join(
+     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+     "portfolio", "analysis", "delta_log"
+ )
+ 
++# ── 方向关键词映射 ──
++_BULLISH_KEYWORDS = [
++    "看多", "偏多", "买入", "建仓", "加仓", "积极",
++    "BUY", "ENTER", "BULLISH", "LONG",
++]
++_BEARISH_KEYWORDS = [
++    "看空", "偏空", "卖出", "清仓", "减仓", "回避", "止损",
++    "SELL", "EXIT", "BEARISH", "SHORT", "REDUCE",
++]
++
+ 
+ def _ensure_delta_log_dir():
+     """确保 delta_log 目录存在"""
+@@ -51,11 +72,101 @@ def save_conclusion(stock_code: str, conclusion: str, confidence: str, data_sour
+         json.dump(record, f, ensure_ascii=False, indent=2)
+ 
+ 
++def _extract_direction(text: str) -> str:
++    """从结论文本中提取方向判断。
++
++    使用 TradeAction 枚举进行标准化判断，同时保留中文关键词兼容。
++
++    Returns:
++        "bullish" / "bearish" / "neutral"
++    """
++    if not text:
++        return "neutral"
++
++    text_upper = text.upper()
++
++    # 使用 TradeAction 枚举判断
++    has_enter = TradeAction.ENTER.value in text_upper
++    has_reduce = TradeAction.REDUCE.value in text_upper
++    has_exit = TradeAction.EXIT.value in text_upper
++    has_wait = TradeAction.WAIT.value in text_upper
++
++    # 中文关键词判断
++    has_bull = any(kw in text for kw in _BULLISH_KEYWORDS) or has_enter
++    has_bear = any(kw in text for kw in _BEARISH_KEYWORDS) or has_reduce or has_exit
++
++    # 如果同时有看多和看空信号，根据强度判断
++    if has_bull and has_bear:
++        # 看看是否有更强的信号
++        strong_bull = any(kw in text for kw in ["强烈", "积极", "建议买入", "建议建仓"])
++        strong_bear = any(kw in text for kw in ["止损", "清仓", "建议卖出", "建议减仓"])
++        if strong_bear:
++            return "bearish"
++        if strong_bull:
++            return "bullish"
++        return "neutral"
++
++    if has_bull:
++        return "bullish"
++    if has_bear:
++        return "bearish"
++    return "neutral"
++
++
++def _extract_action_summary(text: str) -> str:
++    """从结论文本中提取动作摘要。
++
++    Returns:
++        动作描述字符串，如 "ENTER (建仓)" / "HOLD (持有)" / "混合" / "无明确动作"
++    """
++    if not text:
++        return "无明确动作"
++
++    text_upper = text.upper()
++
++    # 优先检查 TradeAction 枚举
++    for action in TradeAction:
++        if action.value in text_upper:
++            from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS
++            return f"{action.value} ({ACTION_DESCRIPTIONS.get(action, '')})"
++
++    # 中文关键词匹配
++    action_mapping = {
++        "买入": "ENTER", "建仓": "ENTER", "加仓": "ENTER",
++        "卖出": "EXIT", "清仓": "EXIT",
++        "减仓": "REDUCE", "止损": "REDUCE", "止盈": "REDUCE",
++        "持有": "HOLD", "观望": "WAIT",
++    }
++
++    found_actions = set()
++    for cn_keyword, action in action_mapping.items():
++        if cn_keyword in text:
++            found_actions.add(action)
++
++    if len(found_actions) == 1:
++        action = found_actions.pop()
++        from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS, TradeAction as TA
++        ta = TA(action)
++        return f"{action} ({ACTION_DESCRIPTIONS.get(ta, '')})"
++    elif len(found_actions) > 1:
++        return "混合"
++
++    return "无明确动作"
++
++
+ def check_delta(stock_code: str, new_conclusion: str, new_data_sources: list[str]) -> Optional[dict]:
+     """
+     检查结论是否翻转。
++
+     返回 None 表示无翻转，否则返回翻转信息 dict。
+-    触发条件：结论翻转 且 72 小时内没有新增数据源。
++
++    触发条件：结论翻转 且 72 小时内。
++
++    翻转判断逻辑：
++    - 提取上一次和本次结论的方向（bullish/bearish/neutral）
++    - neutral 不触发翻转检测
++    - 方向相同不触发
++    - 方向相反触发翻转
+     """
+     last = load_last_conclusion(stock_code)
+     if last is None:
+@@ -65,6 +176,7 @@ def check_delta(stock_code: str, new_conclusion: str, new_data_sources: list[str
+     now = datetime.now()
+     hours_since = (now - last_ts).total_seconds() / 3600
+ 
++    # 72 小时窗口
+     if hours_since > 72:
+         return None
+ 
+@@ -72,57 +184,86 @@ def check_delta(stock_code: str, new_conclusion: str, new_data_sources: list[str
+     last_sources = set(last.get("data_sources", []))
+     new_sources = set(new_data_sources)
+ 
+-    # 判断结论是否翻转（简单方向判断）
+-    bullish_keywords = ["看多", "偏多", "买入", "BUY", "ENTER"]
+-    bearish_keywords = ["看空", "偏空", "卖出", "SELL", "EXIT", "回避"]
++    last_dir = _extract_direction(last_conclusion)
++    new_dir = _extract_direction(new_conclusion)
+ 
+-    def _direction(text):
+-        text_lower = text.lower()
+-        has_bull = any(kw in text_lower for kw in bullish_keywords)
+-        has_bear = any(kw in text_lower for kw in bearish_keywords)
+-        if has_bull and not has_bear:
+-            return "bullish"
+-        if has_bear and not has_bull:
+-            return "bearish"
+-        return "neutral"
+-
+-    last_dir = _direction(last_conclusion)
+-    new_dir = _direction(new_conclusion)
++    # neutral 不触发翻转检测
++    if last_dir == "neutral" or new_dir == "neutral":
++        return None
+ 
+-    if last_dir == new_dir or last_dir == "neutral" or new_dir == "neutral":
++    # 方向相同不触发
++    if last_dir == new_dir:
+         return None
+ 
+     # 结论翻转了，检查是否有新增数据源
+     has_new_data = len(new_sources - last_sources) > 0
++    new_data_added = list(new_sources - last_sources)
++
++    # 提取动作摘要
++    last_action = _extract_action_summary(last_conclusion)
++    new_action = _extract_action_summary(new_conclusion)
+ 
+     return {
+         "stock_code": stock_code,
+         "last_conclusion": last_conclusion,
+         "new_conclusion": new_conclusion,
++        "last_direction": last_dir,
++        "new_direction": new_dir,
++        "last_action": last_action,
++        "new_action": new_action,
+         "last_timestamp": last["timestamp"],
+         "new_timestamp": now.isoformat(),
++        "hours_since_last": round(hours_since, 1),
+         "has_new_data": has_new_data,
+-        "new_data_added": list(new_sources - last_sources),
++        "new_data_added": new_data_added,
+         "possible_noise": not has_new_data,
+     }
+ 
+ 
+ def format_delta_warning(delta_info: dict) -> str:
+-    """格式化翻转警告信息"""
++    """格式化翻转警告信息。
++
++    输出内容：
++    - 股票代码
++    - 方向变化（如 看多 → 看空）
++    - 动作变化（如 ENTER → EXIT）
++    - 上一版结论摘要
++    - 本版结论摘要
++    - 变化时间
++    - 新增证据
++    - 是否可能噪音
++    """
+     if delta_info is None:
+         return ""
+ 
++    # 方向中文映射
++    dir_cn = {
++        "bullish": "看多",
++        "bearish": "看空",
++        "neutral": "中性",
++    }
++
++    last_dir_cn = dir_cn.get(delta_info["last_direction"], delta_info["last_direction"])
++    new_dir_cn = dir_cn.get(delta_info["new_direction"], delta_info["new_direction"])
++
++    # 截取结论摘要（避免过长）
++    last_summary = delta_info["last_conclusion"][:300]
++    new_summary = delta_info["new_conclusion"][:300]
++
+     warning = (
+         f"\n\n⚠️ [C-005] 同股票结论翻转警告\n"
+         f"股票：{delta_info['stock_code']}\n"
+-        f"上一版结论：{delta_info['last_conclusion'][:200]}\n"
+-        f"本版结论：{delta_info['new_conclusion'][:200]}\n"
++        f"方向变化：{last_dir_cn} → {new_dir_cn}\n"
++        f"动作变化：{delta_info['last_action']} → {delta_info['new_action']}\n"
++        f"上一版结论：{last_summary}\n"
++        f"本版结论：{new_summary}\n"
+         f"变化时间：{delta_info['last_timestamp']} → {delta_info['new_timestamp']}\n"
++        f"距上次：{delta_info['hours_since_last']} 小时\n"
+     )
+ 
+     if delta_info["has_new_data"]:
+         warning += f"新增数据源：{', '.join(delta_info['new_data_added'])}\n"
+-        warning += "结论：有新数据支撑，翻转合理。\n"
++        warning += "结论：有新数据支撑，翻转可能合理。\n"
+     else:
+         warning += "新增数据源：无\n"
+         warning += "⚠️ 可能是模型噪音，建议人工复核。\n"
+docs/task_runs/C-005-20260723-035736/tests-round1.txt
+## pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 28.50s
+
+Exit code: 0
+docs/task_runs/C-005-20260723-035736/codegraph-status.json
+{
+  "task_id": "C-005",
+  "generated_at": "2026-07-23T03:57:36.863731",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 6,
+  "post_generated_at": "2026-07-23T04:03:11.434791",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "tradingagents/agents/utils/delta_check.py"
+  ]
+}docs/task_runs/C-005-20260723-035736/prompt-round1.md
+# Task: C-005: same_symbol_delta_check（P2）
+
+Read task "C-005" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt
+# CodeGraph Context for C-005
+# Task: same_symbol_delta_check（P2）
+# Generated: 2026-07-23T03:57:37.005315
+# Keywords: same_symbol_delta_check（p2）
+
+## Code Context
+
+**Query:** same_symbol_delta_check（p2）
+
+### Entry Points
+
+- **check_delta** (function) - tradingagents/agents/utils/delta_check.py:54
+  `(stock_code: str, new_conclusion: str, new_data_sources: list[str]) -> Optional[dict]`
+- **symbols** (method) - tradingagents/tradeflow/universe.py:147
+  `(self) -> list[str]`
+- **DELTA_LOG_DIR** (variable) - tradingagents/agents/utils/delta_check.py:10
+  `= os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+    "portfol...`
+
+### Related Symbols
+
+- tradingagents/agents/utils/delta_check.py: _direction:79, load_last_conclusion:26
+- tradingagents/agents/managers/risk_manager.py: risk_manager_node:59
+- tradingagents/tradeflow/universe.py: UniverseManager:89
+
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m✱ [0mGlob "docs/task_runs/C-005*/**"[90m 4 matches[0m
+[0m✱ [0mGlob "docs/task_runs/C-005*"[90m 0 matches[0m
+[0m→ [0mRead docs/task_runs/C-005-20260723-035736/task.md
+[0m→ [0mRead docs/task_runs/C-005-20260723-035736/prompt-round1.md
+[0m→ [0mRead docs/task_runs/C-005-20260723-035736/codegraph-context.txt
+[0m
+[0m# [0mTodos
+[•] Read existing delta_check.py and understand current implementation
+[ ] Explore related code: risk_manager, report service, graph nodes
+[ ] Implement same_symbol_delta_check logic
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/agents/utils/delta_check.py
+[0m→ [0mRead tradingagents/agents/managers/risk_manager.py
+[0m✱ [0mGlob "tests/*delta*"[90m 1 match[0m
+[0m✱ [0mGrep "C-005"[90m in . · 240 matches[0m
+[0m✱ [0mGrep "delta_check"[90m in . · 135 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=6510, limit=100][0m
+[0m→ [0mRead docs/DEVLOG.md[90m [offset=11950, limit=50][0m
+[0m✱ [0mGlob "tests/test_*delta*"[90m 1 match[0m
+[0m✱ [0mGlob "tests/test_c005*"[90m 0 matches[0m
+[0m
+[0m$ [0mls -la /Users/maybee/TradingAgents-AShare/tests/ | head -30
+total 12000
+drwx------  244 maybee  staff   7808 Jul 23 03:51 .
+drwx------   54 maybee  staff   1728 Jul 23 01:50 ..
+-rw-------    1 maybee  staff      0 May  1 18:29 __init__.py
+drwx------@ 252 maybee  staff   8064 Jul 23 03:56 __pycache__
+-rw-r--r--@   1 maybee  staff   1077 Jul  1 13:00 conftest.py
+-rw-------@   1 maybee  staff  21747 Jul  7 03:46 half_year_fixtures.py
+-rw-------@   1 maybee  staff  19568 Jul 14 19:14 research_score_snapshot_fixtures.py
+-rw-------    1 maybee  staff   1580 May  1 18:29 test_agent_states.py
+-rw-------@   1 maybee  staff  44062 Jul  6 17:42 test_api_smoke.py
+-rw-------    1 maybee  staff   8057 Jun  1 11:14 test_astock_signal_tags.py
+-rw-------    1 maybee  staff  25067 Jul  2 23:20 test_auto004_runtime_budget.py
+-rw-------    1 maybee  staff  26909 Jul  7 02:37 test_auto005_db_hygiene_preflight.py
+-rw-------@   1 maybee  staff  31477 Jul  7 03:30 test_auto006_codex_review_watchdog.py
+-rw-------@   1 maybee  staff  33734 Jul 22 19:19 test_auto007_dependency_aware_claim.py
+-rw-------@   1 maybee  staff  10207 Jul 17 23:02 test_auto_dev_loop_static.py
+-rw-r--r--@   1 maybee  staff   9143 Jul 13 16:40 test_bark_notification_service.py
+-rw-------@   1 maybee  staff  15915 Jul 23 03:24 test_c001_position_validation_gate.py
+-rw-------@   1 maybee  staff  14317 Jul 23 03:34 test_c003_short_strategy_filter.py
+-rw-r--r--@   1 maybee  staff   5794 Jul  1 12:59 test_cleanup_test_db_pollution.py
+-rw-------@   1 maybee  staff  10605 Jul 16 03:00 test_cn_astock_provider.py
+-rw-------@   1 maybee  staff   3843 May  7 18:35 test_config_fallback.py
+-rw-------@   1 maybee  staff  10209 May  8 15:04 test_dashboard_tracking.py
+-rw-------    1 maybee  staff  32634 Jun  2 01:05 test_data003_mandate_event_normalizer.py
+-rw-------    1 maybee  staff  22597 Jun  2 01:18 test_data004_evidence_contract.py
+-rw-------    1 maybee  staff  33660 Jun  8 05:23 test_data005_fixture_replay.py
+-rw-------    1 maybee  staff  31926 Jun  7 23:21 test_data006_daily_digest.py
+-rw-------    1 maybee  staff  27868 Jun  4 13:24 test_data007_evidence_coverage_audit.py
+-rw-------    1 maybee  staff  28317 Jun  4 13:37 test_data008_astock_fallback_replay.py
+-rw-------    1 maybee  staff  15301 Jun  4 13:47 test_data009_watchlist_notes_persistence.py
+[0m
+[0m✱ [0mGrep "def test_"[90m in tests · 10203 matches[0m
+[0m→ [0mRead tests/test_c001_position_validation_gate.py[90m [limit=100][0m
+[0m
+[0m# [0mTodos
+[✓] Read existing delta_check.py and understand current implementation
+[•] Explore related code: risk_manager, report service, graph nodes
+[ ] Implement same_symbol_delta_check logic
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m✱ [0mGrep "delta_check"[90m in tradingagents/graph · 0 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/trade_actions.py
+[0m→ [0mRead tradingagents/agents/utils/position_validation_gate.py
+[0m
+[0m# [0mTodos
+[✓] Read existing delta_check.py and understand current implementation
+[✓] Explore related code: risk_manager, report service, graph nodes
+[•] Implement same_symbol_delta_check logic
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit tradingagents/agents/utils/delta_check.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/delta_check.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/delta_check.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/delta_check.py
+@@ -1,19 +1,40 @@
+ # [C-005] delta_check
+-"""同股票结论翻转检测"""
++"""同股票结论翻转检测
+ 
++功能：
++- 检测同一股票在 72 小时窗口内结论方向翻转
++- 翻转时输出对比信息：上一版结论、本版结论、变化方向、新增证据、是否可能噪音
++- 支持使用 TradeAction 枚举进行方向判断
++"""
++
+ import json
++import logging
+ import os
++import re
+ from datetime import datetime, timedelta
+ from typing import Optional
+ 
++from tradingagents.agents.utils.trade_actions import TradeAction
+ 
++_logger = logging.getLogger(__name__)
++
+ DELTA_LOG_DIR = os.path.join(
+     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+     "portfolio", "analysis", "delta_log"
+ )
+ 
++# ── 方向关键词映射 ──
++_BULLISH_KEYWORDS = [
++    "看多", "偏多", "买入", "建仓", "加仓", "积极",
++    "BUY", "ENTER", "BULLISH", "LONG",
++]
++_BEARISH_KEYWORDS = [
++    "看空", "偏空", "卖出", "清仓", "减仓", "回避", "止损",
++    "SELL", "EXIT", "BEARISH", "SHORT", "REDUCE",
++]
+ 
++
+ def _ensure_delta_log_dir():
+     """确保 delta_log 目录存在"""
+     os.makedirs(DELTA_LOG_DIR, exist_ok=True)
+ 
+@@ -50,13 +71,103 @@
+     with open(path, "w", encoding="utf-8") as f:
+         json.dump(record, f, ensure_ascii=False, indent=2)
+ 
+ 
++def _extract_direction(text: str) -> str:
++    """从结论文本中提取方向判断。
++
++    使用 TradeAction 枚举进行标准化判断，同时保留中文关键词兼容。
++
++    Returns:
++        "bullish" / "bearish" / "neutral"
++    """
++    if not text:
++        return "neutral"
++
++    text_upper = text.upper()
++
++    # 使用 TradeAction 枚举判断
++    has_enter = TradeAction.ENTER.value in text_upper
++    has_reduce = TradeAction.REDUCE.value in text_upper
++    has_exit = TradeAction.EXIT.value in text_upper
++    has_wait = TradeAction.WAIT.value in text_upper
++
++    # 中文关键词判断
++    has_bull = any(kw in text for kw in _BULLISH_KEYWORDS) or has_enter
++    has_bear = any(kw in text for kw in _BEARISH_KEYWORDS) or has_reduce or has_exit
++
++    # 如果同时有看多和看空信号，根据强度判断
++    if has_bull and has_bear:
++        # 看看是否有更强的信号
++        strong_bull = any(kw in text for kw in ["强烈", "积极", "建议买入", "建议建仓"])
++        strong_bear = any(kw in text for kw in ["止损", "清仓", "建议卖出", "建议减仓"])
++        if strong_bear:
++            return "bearish"
++        if strong_bull:
++            return "bullish"
++        return "neutral"
++
++    if has_bull:
++        return "bullish"
++    if has_bear:
++        return "bearish"
++    return "neutral"
++
++
++def _extract_action_summary(text: str) -> str:
++    """从结论文本中提取动作摘要。
++
++    Returns:
++        动作描述字符串，如 "ENTER (建仓)" / "HOLD (持有)" / "混合" / "无明确动作"
++    """
++    if not text:
++        return "无明确动作"
++
++    text_upper = text.upper()
++
++    # 优先检查 TradeAction 枚举
++    for action in TradeAction:
++        if action.value in text_upper:
++            from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS
++            return f"{action.value} ({ACTION_DESCRIPTIONS.get(action, '')})"
++
++    # 中文关键词匹配
++    action_mapping = {
++        "买入": "ENTER", "建仓": "ENTER", "加仓": "ENTER",
++        "卖出": "EXIT", "清仓": "EXIT",
++        "减仓": "REDUCE", "止损": "REDUCE", "止盈": "REDUCE",
++        "持有": "HOLD", "观望": "WAIT",
+docs/task_runs/C-005-20260723-035736/task.md
+# Auto Dev Task Run
+
+- Task: C-005 - same_symbol_delta_check（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-07-23_03:57:36
+- Git HEAD: 69baa6a
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Codex review timeout seconds: 1200
+- OpenCode binary: /opt/homebrew/bin/opencode
+- OpenCode version: 1.15.12
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/C-005-20260723-035736/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-07-23T04:03:11.434817
+# Changed files: 3
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: tradingagents/agents/utils/delta_check.py
+[1m
+Impact of changing "tradingagents/agents/utils/delta_check.py" — 1 affected symbols:
+[0m
+[36mtradingagents/agents/utils/delta_check.py[0m
+  [2mfile        [0mdelta_check.py[2m:1[0m
+
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/agents/utils/delta_check.py && printf '\\n--- test file ---\\n' && sed -n '1,260p' tests/test_c005_delta_check.py && printf '\\n--- trade_actions ---\\n' && sed -n '1,220p' tradingagents/agents/utils/trade_actions.py && printf '\\n--- risk manager relevant ---\\n' && sed -n '1,160p' tradingagents/agents/managers/risk_manager.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [C-005] delta_check
+"""同股票结论翻转检测
+
+功能：
+- 检测同一股票在 72 小时窗口内结论方向翻转
+- 翻转时输出对比信息：上一版结论、本版结论、变化方向、新增证据、是否可能噪音
+- 支持使用 TradeAction 枚举进行方向判断
+"""
+
+import json
+import logging
+import os
+import re
+from datetime import datetime, timedelta
+from typing import Optional
+
+from tradingagents.agents.utils.trade_actions import TradeAction
+
+_logger = logging.getLogger(__name__)
+
+DELTA_LOG_DIR = os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+    "portfolio", "analysis", "delta_log"
+)
+
+# ── 方向关键词映射 ──
+_BULLISH_KEYWORDS = [
+    "看多", "偏多", "买入", "建仓", "加仓", "积极",
+    "BUY", "ENTER", "BULLISH", "LONG",
+]
+_BEARISH_KEYWORDS = [
+    "看空", "偏空", "卖出", "清仓", "减仓", "回避", "止损",
+    "SELL", "EXIT", "BEARISH", "SHORT", "REDUCE",
+]
+
+
+def _ensure_delta_log_dir():
+    """确保 delta_log 目录存在"""
+    os.makedirs(DELTA_LOG_DIR, exist_ok=True)
+
+
+def _get_delta_log_path(stock_code: str) -> str:
+    """获取某只股票的 delta_log 文件路径"""
+    return os.path.join(DELTA_LOG_DIR, f"{stock_code}.json")
+
+
+def load_last_conclusion(stock_code: str) -> Optional[dict]:
+    """加载上一次的结论"""
+    path = _get_delta_log_path(stock_code)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def save_conclusion(stock_code: str, conclusion: str, confidence: str, data_sources: list[str]):
+    """保存本次结论"""
+    _ensure_delta_log_dir()
+    path = _get_delta_log_path(stock_code)
+    record = {
+        "stock_code": stock_code,
+        "conclusion": conclusion,
+        "confidence": confidence,
+        "data_sources": data_sources,
+        "timestamp": datetime.now().isoformat(),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False, indent=2)
+
+
+def _extract_direction(text: str) -> str:
+    """从结论文本中提取方向判断。
+
+    使用 TradeAction 枚举进行标准化判断，同时保留中文关键词兼容。
+
+    Returns:
+        "bullish" / "bearish" / "neutral"
+    """
+    if not text:
+        return "neutral"
+
+    text_upper = text.upper()
+
+    # 使用 TradeAction 枚举判断
+    has_enter = TradeAction.ENTER.value in text_upper
+    has_reduce = TradeAction.REDUCE.value in text_upper
+    has_exit = TradeAction.EXIT.value in text_upper
+    has_wait = TradeAction.WAIT.value in text_upper
+
+    # 中文关键词判断
+    has_bull = any(kw in text for kw in _BULLISH_KEYWORDS) or has_enter
+    has_bear = any(kw in text for kw in _BEARISH_KEYWORDS) or has_reduce or has_exit
+
+    # 如果同时有看多和看空信号，根据强度判断
+    if has_bull and has_bear:
+        # 看看是否有更强的信号
+        strong_bull = any(kw in text for kw in ["强烈", "积极", "建议买入", "建议建仓"])
+        strong_bear = any(kw in text for kw in ["止损", "清仓", "建议卖出", "建议减仓"])
+        if strong_bear:
+            return "bearish"
+        if strong_bull:
+            return "bullish"
+        return "neutral"
+
+    if has_bull:
+        return "bullish"
+    if has_bear:
+        return "bearish"
+    return "neutral"
+
+
+def _extract_action_summary(text: str) -> str:
+    """从结论文本中提取动作摘要。
+
+    Returns:
+        动作描述字符串，如 "ENTER (建仓)" / "HOLD (持有)" / "混合" / "无明确动作"
+    """
+    if not text:
+        return "无明确动作"
+
+    text_upper = text.upper()
+
+    # 优先检查 TradeAction 枚举
+    for action in TradeAction:
+        if action.value in text_upper:
+            from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS
+            return f"{action.value} ({ACTION_DESCRIPTIONS.get(action, '')})"
+
+    # 中文关键词匹配
+    action_mapping = {
+        "买入": "ENTER", "建仓": "ENTER", "加仓": "ENTER",
+        "卖出": "EXIT", "清仓": "EXIT",
+        "减仓": "REDUCE", "止损": "REDUCE", "止盈": "REDUCE",
+        "持有": "HOLD", "观望": "WAIT",
+    }
+
+    found_actions = set()
+    for cn_keyword, action in action_mapping.items():
+        if cn_keyword in text:
+            found_actions.add(action)
+
+    if len(found_actions) == 1:
+        action = found_actions.pop()
+        from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS, TradeAction as TA
+        ta = TA(action)
+        return f"{action} ({ACTION_DESCRIPTIONS.get(ta, '')})"
+    elif len(found_actions) > 1:
+        return "混合"
+
+    return "无明确动作"
+
+
+def check_delta(stock_code: str, new_conclusion: str, new_data_sources: list[str]) -> Optional[dict]:
+    """
+    检查结论是否翻转。
+
+    返回 None 表示无翻转，否则返回翻转信息 dict。
+
+    触发条件：结论翻转 且 72 小时内。
+
+    翻转判断逻辑：
+    - 提取上一次和本次结论的方向（bullish/bearish/neutral）
+    - neutral 不触发翻转检测
+    - 方向相同不触发
+    - 方向相反触发翻转
+    """
+    last = load_last_conclusion(stock_code)
+    if last is None:
+        return None
+
+    last_ts = datetime.fromisoformat(last["timestamp"])
+    now = datetime.now()
+    hours_since = (now - last_ts).total_seconds() / 3600
+
+    # 72 小时窗口
+    if hours_since > 72:
+        return None
+
+    last_conclusion = last["conclusion"]
+    last_sources = set(last.get("data_sources", []))
+    new_sources = set(new_data_sources)
+
+    last_dir = _extract_direction(last_conclusion)
+    new_dir = _extract_direction(new_conclusion)
+
+    # neutral 不触发翻转检测
+    if last_dir == "neutral" or new_dir == "neutral":
+        return None
+
+    # 方向相同不触发
+    if last_dir == new_dir:
+        return None
+
+    # 结论翻转了，检查是否有新增数据源
+    has_new_data = len(new_sources - last_sources) > 0
+    new_data_added = list(new_sources - last_sources)
+
+    # 提取动作摘要
+    last_action = _extract_action_summary(last_conclusion)
+    new_action = _extract_action_summary(new_conclusion)
+
+    return {
+        "stock_code": stock_code,
+        "last_conclusion": last_conclusion,
+        "new_conclusion": new_conclusion,
+        "last_direction": last_dir,
+        "new_direction": new_dir,
+        "last_action": last_action,
+        "new_action": new_action,
+        "last_timestamp": last["timestamp"],
+        "new_timestamp": now.isoformat(),
+        "hours_since_last": round(hours_since, 1),
+        "has_new_data": has_new_data,
+        "new_data_added": new_data_added,
+        "possible_noise": not has_new_data,
+    }
+
+
+def format_delta_warning(delta_info: dict) -> str:
+    """格式化翻转警告信息。
+
+    输出内容：
+    - 股票代码
+    - 方向变化（如 看多 → 看空）
+    - 动作变化（如 ENTER → EXIT）
+    - 上一版结论摘要
+    - 本版结论摘要
+    - 变化时间
+    - 新增证据
+    - 是否可能噪音
+    """
+    if delta_info is None:
+        return ""
+
+    # 方向中文映射
+    dir_cn = {
+        "bullish": "看多",
+        "bearish": "看空",
+        "neutral": "中性",
+    }
+
+    last_dir_cn = dir_cn.get(delta_info["last_direction"], delta_info["last_direction"])
+    new_dir_cn = dir_cn.get(delta_info["new_direction"], delta_info["new_direction"])
+
+    # 截取结论摘要（避免过长）
+    last_summary = delta_info["last_conclusion"][:300]
+    new_summary = delta_info["new_conclusion"][:300]
+
+    warning = (
+        f"\n\n⚠️ [C-005] 同股票结论翻转警告\n"
+        f"股票：{delta_info['stock_code']}\n"
+        f"方向变化：{last_dir_cn} → {new_dir_cn}\n"
+        f"动作变化：{delta_info['last_action']} → {delta_info['new_action']}\n"
+        f"上一版结论：{last_summary}\n"
+        f"本版结论：{new_summary}\n"
+        f"变化时间：{delta_info['last_timestamp']} → {delta_info['new_timestamp']}\n"
+
+--- test file ---
+"""C-005: Tests for same_symbol_delta_check.
+
+Verifies that:
+1. Direction extraction works correctly for bullish/bearish/neutral
+2. Delta detection triggers on direction flip within 72h window
+3. Delta detection does NOT trigger when:
+   - Same direction
+   - Neutral direction
+   - Outside 72h window
+   - No previous conclusion exists
+4. New data source tracking works correctly
+5. Possible noise flag is set when no new data sources
+6. Action summary extraction works
+7. Format warning output contains all required fields
+8. Save/load conclusion round-trip works
+"""
+
+import json
+import os
+import tempfile
+from datetime import datetime, timedelta
+from unittest.mock import patch
+
+import pytest
+
+from tradingagents.agents.utils.delta_check import (
+    _extract_direction,
+    _extract_action_summary,
+    check_delta,
+    format_delta_warning,
+    load_last_conclusion,
+    save_conclusion,
+)
+
+
+# ── _extract_direction: core direction detection ──
+
+
+class TestExtractDirection:
+    """方向提取测试"""
+
+    def test_bullish_chinese_keywords(self):
+        assert _extract_direction("看多，建议买入建仓") == "bullish"
+
+    def test_bearish_chinese_keywords(self):
+        assert _extract_direction("看空，建议卖出清仓") == "bearish"
+
+    def test_bullish_english_keywords(self):
+        assert _extract_direction("Recommend BUY and ENTER position") == "bullish"
+
+    def test_bearish_english_keywords(self):
+        assert _extract_direction("Recommend SELL and EXIT position") == "bearish"
+
+    def test_trade_action_enter(self):
+        assert _extract_direction("Action: ENTER") == "bullish"
+
+    def test_trade_action_exit(self):
+        assert _extract_direction("Action: EXIT") == "bearish"
+
+    def test_trade_action_reduce(self):
+        assert _extract_direction("Action: REDUCE") == "bearish"
+
+    def test_neutral_text(self):
+        assert _extract_direction("当前市场震荡，建议观望") == "neutral"
+
+    def test_empty_text(self):
+        assert _extract_direction("") == "neutral"
+
+    def test_none_text(self):
+        assert _extract_direction(None) == "neutral"
+
+    def test_mixed_signals_bearish_dominant(self):
+        """止损信号强于看多信号"""
+        assert _extract_direction("虽然基本面看多，但建议止损离场") == "bearish"
+
+    def test_mixed_signals_bullish_dominant(self):
+        """强烈看多信号"""
+        assert _extract_direction("强烈建议买入建仓") == "bullish"
+
+    def test_mixed_signals_neutral(self):
+        """看多看空信号强度相当"""
+        result = _extract_direction("买入和卖出信号并存")
+        assert result == "neutral"
+
+
+# ── _extract_action_summary: action summary extraction ──
+
+
+class TestExtractActionSummary:
+    """动作摘要提取测试"""
+
+    def test_enter_action(self):
+        summary = _extract_action_summary("ENTER")
+        assert "ENTER" in summary
+
+    def test_exit_action(self):
+        summary = _extract_action_summary("EXIT")
+        assert "EXIT" in summary
+
+    def test_chinese_buy(self):
+        summary = _extract_action_summary("建议买入")
+        assert "ENTER" in summary
+
+    def test_chinese_sell(self):
+        summary = _extract_action_summary("建议卖出")
+        assert "EXIT" in summary
+
+    def test_chinese_hold(self):
+        summary = _extract_action_summary("建议持有")
+        assert "HOLD" in summary
+
+    def test_chinese_reduce(self):
+        summary = _extract_action_summary("建议减仓")
+        assert "REDUCE" in summary
+
+    def test_chinese_wait(self):
+        summary = _extract_action_summary("建议观望")
+        assert "WAIT" in summary
+
+    def test_mixed_actions(self):
+        summary = _extract_action_summary("买入和卖出信号并存")
+        assert "混合" in summary
+
+    def test_no_clear_action(self):
+        summary = _extract_action_summary("当前市场震荡")
+        assert "无明确动作" in summary
+
+    def test_empty_text(self):
+        summary = _extract_action_summary("")
+        assert "无明确动作" in summary
+
+
+# ── save_conclusion / load_last_conclusion: round-trip ──
+
+
+class TestSaveLoadConclusion:
+    """保存/加载结论测试"""
+
+    def test_save_and_load(self, tmp_path):
+        """保存后加载，数据一致"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            save_conclusion("603629", "看多买入", "high", ["market", "news"])
+
+            loaded = load_last_conclusion("603629")
+            assert loaded is not None
+            assert loaded["stock_code"] == "603629"
+            assert loaded["conclusion"] == "看多买入"
+            assert loaded["confidence"] == "high"
+            assert loaded["data_sources"] == ["market", "news"]
+            assert "timestamp" in loaded
+
+    def test_load_nonexistent(self, tmp_path):
+        """不存在的股票返回 None"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            assert load_last_conclusion("999999") is None
+
+    def test_load_corrupted_json(self, tmp_path):
+        """损坏的 JSON 文件返回 None"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            os.makedirs(tmp_path, exist_ok=True)
+            path = tmp_path / "603629.json"
+            path.write_text("not valid json", encoding="utf-8")
+            assert load_last_conclusion("603629") is None
+
+
+# ── check_delta: core delta detection logic ──
+
+
+class TestCheckDelta:
+    """结论翻转检测测试"""
+
+    def _make_conclusion_file(self, tmp_path, stock_code, conclusion, data_sources, hours_ago=0):
+        """辅助方法：创建结论文件"""
+        os.makedirs(tmp_path, exist_ok=True)
+        ts = datetime.now() - timedelta(hours=hours_ago)
+        record = {
+            "stock_code": stock_code,
+            "conclusion": conclusion,
+            "confidence": "medium",
+            "data_sources": data_sources,
+            "timestamp": ts.isoformat(),
+        }
+        path = tmp_path / f"{stock_code}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+    def test_no_previous_conclusion(self, tmp_path):
+        """没有历史结论时返回 None"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            result = check_delta("603629", "看多买入", ["market"])
+            assert result is None
+
+    def test_same_direction_no_flip(self, tmp_path):
+        """同方向不触发翻转"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market"], hours_ago=10)
+            result = check_delta("603629", "继续看多，建议买入", ["market"])
+            assert result is None
+
+    def test_bullish_to_bearish_flip(self, tmp_path):
+        """看多→看空：触发翻转"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market"], hours_ago=10)
+            result = check_delta("603629", "看空，建议卖出", ["market"])
+            assert result is not None
+            assert result["last_direction"] == "bullish"
+            assert result["new_direction"] == "bearish"
+            assert result["possible_noise"] is True  # 无新数据源
+
+    def test_bearish_to_bullish_flip(self, tmp_path):
+        """看空→看多：触发翻转"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看空卖出", ["market"], hours_ago=10)
+            result = check_delta("603629", "看多，建议买入", ["market"])
+            assert result is not None
+            assert result["last_direction"] == "bearish"
+            assert result["new_direction"] == "bullish"
+
+    def test_neutral_no_flip(self, tmp_path):
+        """中性方向不触发翻转"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "当前市场震荡", ["market"], hours_ago=10)
+            result = check_delta("603629", "看多买入", ["market"])
+            assert result is None
+
+    def test_outside_72h_window(self, tmp_path):
+        """超过 72 小时不触发翻转"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market"], hours_ago=73)
+            result = check_delta("603629", "看空卖出", ["market"])
+            assert result is None
+
+    def test_exactly_72h_window(self, tmp_path):
+        """刚好 72 小时应该不触发（> 72 才不触发）"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            # 使用 71.9 小时，确保在窗口内
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market"], hours_ago=71.9)
+            result = check_delta("603629", "看空卖出", ["market"])
+            assert result is not None
+
+    def test_with_new_data_source(self, tmp_path):
+        """有新数据源时，possible_noise=False"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market"], hours_ago=10)
+            result = check_delta("603629", "看空卖出", ["market", "news", "fundamentals"])
+            assert result is not None
+            assert result["has_new_data"] is True
+            assert "news" in result["new_data_added"]
+            assert "fundamentals" in result["new_data_added"]
+            assert result["possible_noise"] is False
+
+    def test_no_new_data_source(self, tmp_path):
+        """无新数据源时，possible_noise=True"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market", "news"], hours_ago=10)
+            result = check_delta("603629", "看空卖出", ["market"])
+            assert result is not None
+            assert result["has_new_data"] is False
+            assert result["possible_noise"] is True
+
+    def test_result_contains_all_fields(self, tmp_path):
+
+--- trade_actions ---
+# [C-004] action_enum
+"""交易动作枚举定义"""
+
+from enum import Enum
+
+
+class TradeAction(Enum):
+    """交易动作枚举 — 5 个标准动作"""
+    WAIT = "WAIT"           # 观望/等条件（含回避，备注说明原因）
+    ENTER = "ENTER"         # 建仓
+    HOLD = "HOLD"           # 持有
+    REDUCE = "REDUCE"       # 减仓/止损/止盈
+    EXIT = "EXIT"           # 清仓
+
+
+# 动作描述
+ACTION_DESCRIPTIONS = {
+    TradeAction.WAIT: "观望，等待更好的入场条件",
+    TradeAction.ENTER: "建仓买入",
+    TradeAction.HOLD: "继续持有",
+    TradeAction.REDUCE: "减仓或止损",
+    TradeAction.EXIT: "清仓离场",
+}
+
+# 持仓状态与允许的动作
+POSITION_STATE_ACTIONS = {
+    False: [TradeAction.WAIT, TradeAction.ENTER],              # 未持仓：只能观望或建仓
+    True: [TradeAction.HOLD, TradeAction.REDUCE, TradeAction.EXIT],  # 已持仓：持有、减仓、清仓
+}
+
+# 旧动作 → 新动作映射（兼容现有 prompt 输出）
+ACTION_MAPPING = {
+    "BUY": TradeAction.ENTER,
+    "SELL": TradeAction.EXIT,
+    "HOLD": TradeAction.HOLD,
+    "买入": TradeAction.ENTER,
+    "卖出": TradeAction.EXIT,
+    "观望": TradeAction.WAIT,
+    "减仓": TradeAction.REDUCE,
+    "清仓": TradeAction.EXIT,
+    "止损": TradeAction.REDUCE,
+    "止盈": TradeAction.REDUCE,
+}
+
+
+def validate_action(action_str: str, has_position: bool) -> TradeAction:
+    """校验动作是否合法，返回合法的 TradeAction"""
+    action_str_upper = action_str.strip().upper()
+
+    # 尝试直接匹配
+    for action in TradeAction:
+        if action.value == action_str_upper:
+            return action
+
+    # 尝试中文匹配
+    mapped = ACTION_MAPPING.get(action_str.strip())
+    if mapped:
+        return mapped
+
+    # 尝试模糊匹配
+    for key, action in ACTION_MAPPING.items():
+        if key in action_str:
+            return action
+
+    # 默认返回 WAIT
+    return TradeAction.WAIT
+
+--- risk manager relevant ---
+import time
+import json
+import logging
+from tradingagents.dataflows.config import get_config
+from tradingagents.prompts import get_prompt
+from tradingagents.agents.utils.agent_states import current_tracker_var
+from tradingagents.agents.utils.context_utils import build_agent_context_view
+from tradingagents.agents.utils.trade_setup import (
+    build_trade_quality_check,
+    format_trade_quality_check,
+)
+from tradingagents.agents.utils.debate_utils import (
+    extract_risk_judge_result,
+    format_claim_subset_for_prompt,
+    format_claims_for_prompt,
+    safe_int,
+)
+from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning
+from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
+from tradingagents.agents.utils.fundamental_integrity import (  # [FUND-004] fundamental_semantic_gate
+    evaluate_fundamental_integrity,
+    extract_financial_anomaly_inputs,
+    format_fundamental_integrity_block,
+)
+from tradingagents.agents.utils.readiness_score import (
+    calculate_data_completeness,
+    calculate_source_coverage,
+    calculate_evidence_coverage,
+    EvidenceStatus,
+    assess_confidence,
+    generate_readiness_score,
+    format_readiness_score,
+    get_position_status,
+    get_strong_action_gate,
+    calculate_risk_level,
+    calculate_buy_level,
+    calculate_opportunity_score,
+    format_execution_block,
+    sanitize_forbidden_strong_actions,
+    infer_evidence_statuses,
+    extract_execution_signals,
+    _split_llm_body_and_system_blocks,
+    ConfidenceLevel,
+    validate_stock_name,
+    check_valuation_mismatch,
+    _sanitize_short_selling_text,
+)
+
+_logger = logging.getLogger(__name__)
+
+_STRONG_BUY_KEYWORDS = [
+    '强买', '重仓买入', '立即买入', '立刻买入', '强烈买入', '满仓买入',
+    '重仓布局', '强力买入',
+    '建议加仓', '执行加仓', '加仓买入', '可以加仓', '应该加仓', '考虑加仓',
+    '建议追涨', '可以追涨', '追涨买入',
+]
+_STRONG_SELL_KEYWORDS = [
+    '立即清仓', '立刻清仓', '强制清仓', '清仓离场', '清仓出局', '全部卖出离场',
+]
+
+
+def create_risk_manager(llm, memory):
+    async def risk_manager_node(state) -> dict:
+        # [C-001] position_validation_gate
+        user_context = state.get('user_context', {})
+
+        company_name = state["company_of_interest"]
+
+        history = state["risk_debate_state"]["history"]
+        risk_debate_state = state["risk_debate_state"]
+        market_research_report = state["market_report"]
+        news_report = state["news_report"]
+        fundamentals_report = state["fundamentals_report"]
+        sentiment_report = state["sentiment_report"]
+        trader_plan = state["trader_investment_plan"]
+        investment_plan = state.get("investment_plan", "")  # research_manager output
+        risk_feedback_state = state.get("risk_feedback_state", {})
+
+        # [P1-2] Detect research_manager bearish direction
+        _research_bearish = _is_direction_bearish(investment_plan)
+
+        curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
+        past_memories = memory.get_memories(curr_situation, n_matches=2)
+
+        past_memory_str = ""
+        for i, rec in enumerate(past_memories, 1):
+            past_memory_str += rec["recommendation"] + "\n\n"
+
+        context_view = build_agent_context_view(state, "risk")
+        claims = risk_debate_state.get("claims", [])
+        unresolved_claim_ids = risk_debate_state.get("unresolved_claim_ids", [])
+        prompt = get_prompt("risk_manager_prompt", config=get_config()).format(
+            trader_plan=trader_plan,
+            past_memory_str=past_memory_str,
+            history=history,
+            market_context_summary=context_view["market_context_summary"],
+            user_context_summary=context_view["user_context_summary"],
+            claims_text=format_claims_for_prompt(claims, empty_message="当前没有已登记风控 claim。"),
+            unresolved_claims_text=format_claim_subset_for_prompt(claims, unresolved_claim_ids),
+            round_summary=risk_debate_state.get("round_summary", "暂无风险轮次摘要。"),
+        )
+
+        # ── 流式输出 ──
+        tracker = current_tracker_var.get()
+        full_content = ""
+        async for chunk in llm.astream(prompt):
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            full_content += content
+            if tracker:
+                tracker.emit_debate_token(
+                    debate="risk", agent="Portfolio Manager",
+                    round_num=-1, token=content,
+                )
+
+        judge_result = extract_risk_judge_result(full_content)
+        cleaned_response = judge_result["cleaned_response"]
+        verdict = judge_result["verdict"]
+        hard_constraints = judge_result["hard_constraints"]
+        soft_constraints = judge_result["soft_constraints"]
+        execution_preconditions = judge_result["execution_preconditions"]
+        de_risk_triggers = judge_result["de_risk_triggers"]
+        revision_reason = judge_result["revision_reason"]
+        trade_quality_check = build_trade_quality_check(
+            investment_plan=state.get("investment_plan", ""),
+            trader_plan=trader_plan,
+            final_decision=cleaned_response,
+            user_context=state.get("user_context", {}),
+        )
+        final_response = cleaned_response + "\n\n" + format_trade_quality_check(trade_quality_check)
+
+        # [C-001] position_validation_gate — 校验输出动作
+        from tradingagents.agents.utils.position_validation_gate import (
+            validate_position_actions,
+            format_position_validation_warning,
+        )
+        gate_result = validate_position_actions(final_response, user_context)
+        if not gate_result["passed"]:
+            final_response += format_position_validation_warning(gate_result)
+
+        # [C-005] delta_check — 检测结论是否翻转
+        stock_code = state.get("ticker", company_name)
+        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+        if delta_info is not None:
+            final_response += format_delta_warning(delta_info)
+            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+
+        # [C-007] event_risk_gate — 检查重大风险事件
+        event_risk_info = check_event_risk(stock_code)
+        if event_risk_info["has_risk"]:
+            final_response += format_event_risk_warning(event_risk_info)
+            _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
+
+        # [FUND-004] fundamental_semantic_gate — the integrity check consumes
+        # deterministic sidecars, not a model's interpretation of them.
+        # [FUND-004A] Use pre-computed integrity from gate node if available,
+        # otherwise compute here (fallback for runs without the gate node).
+        raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
+        pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tests/test_c005_delta_check.py && sed -n '220,320p' tradingagents/agents/utils/delta_check.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    def test_result_contains_all_fields(self, tmp_path):
+        """返回结果包含所有必要字段"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            self._make_conclusion_file(tmp_path, "603629", "看多买入", ["market"], hours_ago=10)
+            result = check_delta("603629", "看空卖出", ["market", "news"])
+            assert result is not None
+
+            required_fields = [
+                "stock_code", "last_conclusion", "new_conclusion",
+                "last_direction", "new_direction",
+                "last_action", "new_action",
+                "last_timestamp", "new_timestamp",
+                "hours_since_last",
+                "has_new_data", "new_data_added", "possible_noise",
+            ]
+            for field in required_fields:
+                assert field in result, f"Missing field: {field}"
+
+
+# ── format_delta_warning: output format ──
+
+
+class TestFormatDeltaWarning:
+    """格式化警告输出测试"""
+
+    def test_none_input(self):
+        assert format_delta_warning(None) == ""
+
+    def test_contains_stock_code(self):
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": False,
+            "new_data_added": [],
+            "possible_noise": True,
+        }
+        output = format_delta_warning(info)
+        assert "603629" in output
+
+    def test_contains_direction_change(self):
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": False,
+            "new_data_added": [],
+            "possible_noise": True,
+        }
+        output = format_delta_warning(info)
+        assert "看多" in output
+        assert "看空" in output
+
+    def test_contains_action_change(self):
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": False,
+            "new_data_added": [],
+            "possible_noise": True,
+        }
+        output = format_delta_warning(info)
+        assert "ENTER" in output
+        assert "EXIT" in output
+
+    def test_contains_noise_warning(self):
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": False,
+            "new_data_added": [],
+            "possible_noise": True,
+        }
+        output = format_delta_warning(info)
+        assert "模型噪音" in output
+        assert "人工复核" in output
+
+    def test_contains_new_data_info(self):
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": True,
+            "new_data_added": ["news", "fundamentals"],
+            "possible_noise": False,
+        }
+        output = format_delta_warning(info)
+        assert "news" in output
+        assert "fundamentals" in output
+        assert "新数据支撑" in output
+
+    def test_contains_hours_since(self):
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": False,
+            "new_data_added": [],
+            "possible_noise": True,
+        }
+        output = format_delta_warning(info)
+        assert "24.0" in output
+
+    def test_c005_marker_present(self):
+        """输出包含 C-005 标记"""
+        info = {
+            "stock_code": "603629",
+            "last_conclusion": "看多",
+            "new_conclusion": "看空",
+            "last_direction": "bullish",
+            "new_direction": "bearish",
+            "last_action": "ENTER (建仓)",
+            "new_action": "EXIT (清仓)",
+            "last_timestamp": "2026-07-22T10:00:00",
+            "new_timestamp": "2026-07-23T10:00:00",
+            "hours_since_last": 24.0,
+            "has_new_data": False,
+            "new_data_added": [],
+            "possible_noise": True,
+        }
+        output = format_delta_warning(info)
+        assert "[C-005]" in output
+
+
+# ── Integration: end-to-end flow ──
+
+
+class TestIntegration:
+    """集成测试：完整的 save → check → format 流程"""
+
+    def test_full_flow_with_flip(self, tmp_path):
+        """完整流程：保存结论 → 翻转检测 → 格式化输出"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            # 第一次分析：看多
+            save_conclusion("603629", "看多买入，建议 ENTER", "high", ["market", "news"])
+
+            # 第二次分析：看空（翻转）
+            result = check_delta("603629", "看空卖出，建议 EXIT", ["market", "news"])
+
+            assert result is not None
+            assert result["last_direction"] == "bullish"
+            assert result["new_direction"] == "bearish"
+            assert result["possible_noise"] is True  # 无新数据源
+
+            warning = format_delta_warning(result)
+            assert "[C-005]" in warning
+            assert "看多" in warning
+            assert "看空" in warning
+            assert "模型噪音" in warning
+
+    def test_full_flow_no_flip(self, tmp_path):
+        """完整流程：同方向不触发"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            save_conclusion("603629", "看多买入", "high", ["market"])
+            result = check_delta("603629", "继续看多，建议买入", ["market"])
+            assert result is None
+
+    def test_full_flow_with_new_data(self, tmp_path):
+        """完整流程：有新数据源时翻转合理"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            save_conclusion("603629", "看多买入", "high", ["market"])
+
+            # 新增了 news 和 fundamentals 数据源
+            result = check_delta("603629", "看空卖出", ["market", "news", "fundamentals"])
+
+            assert result is not None
+            assert result["has_new_data"] is True
+            assert result["possible_noise"] is False
+            assert "news" in result["new_data_added"]
+            assert "fundamentals" in result["new_data_added"]
+
+    def test_multiple_symbols_independent(self, tmp_path):
+        """不同股票的结论互不影响"""
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            save_conclusion("603629", "看多买入", "high", ["market"])
+            save_conclusion("000001", "看空卖出", "medium", ["market"])
+
+            # 603629 翻转
+            result1 = check_delta("603629", "看空卖出", ["market"])
+            assert result1 is not None
+
+            # 000001 同方向
+            result2 = check_delta("000001", "继续看空", ["market"])
+            assert result2 is None
+    }
+
+
+def format_delta_warning(delta_info: dict) -> str:
+    """格式化翻转警告信息。
+
+    输出内容：
+    - 股票代码
+    - 方向变化（如 看多 → 看空）
+    - 动作变化（如 ENTER → EXIT）
+    - 上一版结论摘要
+    - 本版结论摘要
+    - 变化时间
+    - 新增证据
+    - 是否可能噪音
+    """
+    if delta_info is None:
+        return ""
+
+    # 方向中文映射
+    dir_cn = {
+        "bullish": "看多",
+        "bearish": "看空",
+        "neutral": "中性",
+    }
+
+    last_dir_cn = dir_cn.get(delta_info["last_direction"], delta_info["last_direction"])
+    new_dir_cn = dir_cn.get(delta_info["new_direction"], delta_info["new_direction"])
+
+    # 截取结论摘要（避免过长）
+    last_summary = delta_info["last_conclusion"][:300]
+    new_summary = delta_info["new_conclusion"][:300]
+
+    warning = (
+        f"\n\n⚠️ [C-005] 同股票结论翻转警告\n"
+        f"股票：{delta_info['stock_code']}\n"
+        f"方向变化：{last_dir_cn} → {new_dir_cn}\n"
+        f"动作变化：{delta_info['last_action']} → {delta_info['new_action']}\n"
+        f"上一版结论：{last_summary}\n"
+        f"本版结论：{new_summary}\n"
+        f"变化时间：{delta_info['last_timestamp']} → {delta_info['new_timestamp']}\n"
+        f"距上次：{delta_info['hours_since_last']} 小时\n"
+    )
+
+    if delta_info["has_new_data"]:
+        warning += f"新增数据源：{', '.join(delta_info['new_data_added'])}\n"
+        warning += "结论：有新数据支撑，翻转可能合理。\n"
+    else:
+        warning += "新增数据源：无\n"
+        warning += "⚠️ 可能是模型噪音，建议人工复核。\n"
+
+    return warning
+
+exec
+/bin/zsh -lc "git show HEAD:tradingagents/agents/utils/delta_check.py | sed -n '1,180p' && grep -R \"format_delta_warning\\|check_delta\\|save_conclusion\" -n . --exclude-dir=.git --exclude-dir=__pycache__ | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 18473ms:
+./tests/test_c005_delta_check.py:29:    check_delta,
+./tests/test_c005_delta_check.py:30:    format_delta_warning,
+./tests/test_c005_delta_check.py:32:    save_conclusion,
+./tests/test_c005_delta_check.py:133:# ── save_conclusion / load_last_conclusion: round-trip ──
+./tests/test_c005_delta_check.py:142:            save_conclusion("603629", "看多买入", "high", ["market", "news"])
+./tests/test_c005_delta_check.py:166:# ── check_delta: core delta detection logic ──
+./tests/test_c005_delta_check.py:189:            result = check_delta("603629", "看多买入", ["market"])
+./tests/test_c005_delta_check.py:196:            result = check_delta("603629", "继续看多，建议买入", ["market"])
+./tests/test_c005_delta_check.py:203:            result = check_delta("603629", "看空，建议卖出", ["market"])
+./tests/test_c005_delta_check.py:213:            result = check_delta("603629", "看多，建议买入", ["market"])
+./tests/test_c005_delta_check.py:222:            result = check_delta("603629", "看多买入", ["market"])
+./tests/test_c005_delta_check.py:229:            result = check_delta("603629", "看空卖出", ["market"])
+./tests/test_c005_delta_check.py:237:            result = check_delta("603629", "看空卖出", ["market"])
+./tests/test_c005_delta_check.py:244:            result = check_delta("603629", "看空卖出", ["market", "news", "fundamentals"])
+./tests/test_c005_delta_check.py:255:            result = check_delta("603629", "看空卖出", ["market"])
+./tests/test_c005_delta_check.py:264:            result = check_delta("603629", "看空卖出", ["market", "news"])
+./tests/test_c005_delta_check.py:279:# ── format_delta_warning: output format ──
+./tests/test_c005_delta_check.py:286:        assert format_delta_warning(None) == ""
+./tests/test_c005_delta_check.py:304:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:323:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:343:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:363:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:383:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:404:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:424:        output = format_delta_warning(info)
+./tests/test_c005_delta_check.py:438:            save_conclusion("603629", "看多买入，建议 ENTER", "high", ["market", "news"])
+./tests/test_c005_delta_check.py:441:            result = check_delta("603629", "看空卖出，建议 EXIT", ["market", "news"])
+./tests/test_c005_delta_check.py:448:            warning = format_delta_warning(result)
+./tests/test_c005_delta_check.py:457:            save_conclusion("603629", "看多买入", "high", ["market"])
+./tests/test_c005_delta_check.py:458:            result = check_delta("603629", "继续看多，建议买入", ["market"])
+./tests/test_c005_delta_check.py:464:            save_conclusion("603629", "看多买入", "high", ["market"])
+./tests/test_c005_delta_check.py:467:            result = check_delta("603629", "看空卖出", ["market", "news", "fundamentals"])
+./tests/test_c005_delta_check.py:478:            save_conclusion("603629", "看多买入", "high", ["market"])
+./tests/test_c005_delta_check.py:479:            save_conclusion("000001", "看空卖出", "medium", ["market"])
+./tests/test_c005_delta_check.py:482:            result1 = check_delta("603629", "看空卖出", ["market"])
+./tests/test_c005_delta_check.py:486:            result2 = check_delta("000001", "继续看空", ["market"])
+./docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1623:from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+./docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1748:        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1750:            final_response += format_delta_warning(delta_info)
+./docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1752:        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:2970:   145	            final_response += format_delta_warning(delta_info)
+./docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:2972:   147	        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:360: delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1402:from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1527:        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1529:            final_response += format_delta_warning(delta_info)
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1531:        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:3104:   143	        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:3106:   145	            final_response += format_delta_warning(delta_info)
+./docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:3108:   147	        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/task_runs/C-001-20260723-031813/opencode-round1.txt:119: delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/task_runs/C-005-20260723-035736/codegraph-context.txt:12:- **check_delta** (function) - tradingagents/agents/utils/delta_check.py:54
+./docs/task_runs/C-005-20260723-035736/opencode-round1.txt:219: def check_delta(stock_code: str, new_conclusion: str, new_data_sources: list[str]) -> Optional[dict]:
+./docs/task_runs/C-005-20260723-035736/opencode-round1.txt:303: def format_delta_warning(delta_info: dict) -> str:
+./docs/task_runs/C-005-20260723-035736/opencode-round1.txt:445:[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning, _extract_direction, _extract_action_summary; print('All imports successful')" 2>&1
+./docs/task_runs/C-005-20260723-035736/opencode-round1.txt:476:+    - `check_delta()` — 返回结构化翻转信息，包含方向变化、动作变化、时间窗口、新增数据源等。
+./docs/task_runs/C-005-20260723-035736/opencode-round1.txt:477:+    - `format_delta_warning()` — 增强格式化输出，包含方向变化、动作变化、时间差、噪音警告。
+./docs/task_runs/C-005-20260723-035736/opencode-round1.txt:480:+  - `tradingagents/agents/managers/risk_manager.py` — 已有集成，无需修改（使用相同的 `check_delta`/`save_conclusion`/`format_delta_warning` 接口）。
+./docs/task_runs/HY-011-20260713-235938/codegraph-context.txt:12:- **check_delta** (function) - tradingagents/agents/utils/delta_check.py:54
+./docs/task_runs/FUND-004B-20260722-200203/codex-review-round1.txt:2700:        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/task_runs/FUND-004B-20260722-200203/codex-review-round1.txt:2702:            final_response += format_delta_warning(delta_info)
+./docs/task_runs/FUND-004B-20260722-200203/codex-review-round1.txt:2704:        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/DEVLOG.md:10:    - `check_delta()` — 返回结构化翻转信息，包含方向变化、动作变化、时间窗口、新增数据源等。
+./docs/DEVLOG.md:11:    - `format_delta_warning()` — 增强格式化输出，包含方向变化、动作变化、时间差、噪音警告。
+./docs/DEVLOG.md:14:  - `tradingagents/agents/managers/risk_manager.py` — 已有集成，无需修改（使用相同的 `check_delta`/`save_conclusion`/`format_delta_warning` 接口）。
+./docs/reviews/FUND-004B-20260722-round1.txt:2700:        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/reviews/FUND-004B-20260722-round1.txt:2702:            final_response += format_delta_warning(delta_info)
+./docs/reviews/FUND-004B-20260722-round1.txt:2704:        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/reviews/FUND-004A-20260722-round1.txt:1623:from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+./docs/reviews/FUND-004A-20260722-round1.txt:1748:        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/reviews/FUND-004A-20260722-round1.txt:1750:            final_response += format_delta_warning(delta_info)
+./docs/reviews/FUND-004A-20260722-round1.txt:1752:        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/reviews/FUND-004A-20260722-round1.txt:2970:   145	            final_response += format_delta_warning(delta_info)
+./docs/reviews/FUND-004A-20260722-round1.txt:2972:   147	        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/reviews/C-001-20260723-round1.txt:360: delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/reviews/C-001-20260723-round1.txt:1402:from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+./docs/reviews/C-001-20260723-round1.txt:1527:        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+./docs/reviews/C-001-20260723-round1.txt:1529:            final_response += format_delta_warning(delta_info)
+./docs/reviews/C-001-20260723-round1.txt:1531:        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+./docs/reviews/C-001-20260723-round1.txt:3104:   143	        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/agents/utils/delta_check.py | sed -n '80,220p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    80	    Returns:
+    81	        "bullish" / "bearish" / "neutral"
+    82	    """
+    83	    if not text:
+    84	        return "neutral"
+    85	
+    86	    text_upper = text.upper()
+    87	
+    88	    # 使用 TradeAction 枚举判断
+    89	    has_enter = TradeAction.ENTER.value in text_upper
+    90	    has_reduce = TradeAction.REDUCE.value in text_upper
+    91	    has_exit = TradeAction.EXIT.value in text_upper
+    92	    has_wait = TradeAction.WAIT.value in text_upper
+    93	
+    94	    # 中文关键词判断
+    95	    has_bull = any(kw in text for kw in _BULLISH_KEYWORDS) or has_enter
+    96	    has_bear = any(kw in text for kw in _BEARISH_KEYWORDS) or has_reduce or has_exit
+    97	
+    98	    # 如果同时有看多和看空信号，根据强度判断
+    99	    if has_bull and has_bear:
+   100	        # 看看是否有更强的信号
+   101	        strong_bull = any(kw in text for kw in ["强烈", "积极", "建议买入", "建议建仓"])
+   102	        strong_bear = any(kw in text for kw in ["止损", "清仓", "建议卖出", "建议减仓"])
+   103	        if strong_bear:
+   104	            return "bearish"
+   105	        if strong_bull:
+   106	            return "bullish"
+   107	        return "neutral"
+   108	
+   109	    if has_bull:
+   110	        return "bullish"
+   111	    if has_bear:
+   112	        return "bearish"
+   113	    return "neutral"
+   114	
+   115	
+   116	def _extract_action_summary(text: str) -> str:
+   117	    """从结论文本中提取动作摘要。
+   118	
+   119	    Returns:
+   120	        动作描述字符串，如 "ENTER (建仓)" / "HOLD (持有)" / "混合" / "无明确动作"
+   121	    """
+   122	    if not text:
+   123	        return "无明确动作"
+   124	
+   125	    text_upper = text.upper()
+   126	
+   127	    # 优先检查 TradeAction 枚举
+   128	    for action in TradeAction:
+   129	        if action.value in text_upper:
+   130	            from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS
+   131	            return f"{action.value} ({ACTION_DESCRIPTIONS.get(action, '')})"
+   132	
+   133	    # 中文关键词匹配
+   134	    action_mapping = {
+   135	        "买入": "ENTER", "建仓": "ENTER", "加仓": "ENTER",
+   136	        "卖出": "EXIT", "清仓": "EXIT",
+   137	        "减仓": "REDUCE", "止损": "REDUCE", "止盈": "REDUCE",
+   138	        "持有": "HOLD", "观望": "WAIT",
+   139	    }
+   140	
+   141	    found_actions = set()
+   142	    for cn_keyword, action in action_mapping.items():
+   143	        if cn_keyword in text:
+   144	            found_actions.add(action)
+   145	
+   146	    if len(found_actions) == 1:
+   147	        action = found_actions.pop()
+   148	        from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS, TradeAction as TA
+   149	        ta = TA(action)
+   150	        return f"{action} ({ACTION_DESCRIPTIONS.get(ta, '')})"
+   151	    elif len(found_actions) > 1:
+   152	        return "混合"
+   153	
+   154	    return "无明确动作"
+   155	
+   156	
+   157	def check_delta(stock_code: str, new_conclusion: str, new_data_sources: list[str]) -> Optional[dict]:
+   158	    """
+   159	    检查结论是否翻转。
+   160	
+   161	    返回 None 表示无翻转，否则返回翻转信息 dict。
+   162	
+   163	    触发条件：结论翻转 且 72 小时内。
+   164	
+   165	    翻转判断逻辑：
+   166	    - 提取上一次和本次结论的方向（bullish/bearish/neutral）
+   167	    - neutral 不触发翻转检测
+   168	    - 方向相同不触发
+   169	    - 方向相反触发翻转
+   170	    """
+   171	    last = load_last_conclusion(stock_code)
+   172	    if last is None:
+   173	        return None
+   174	
+   175	    last_ts = datetime.fromisoformat(last["timestamp"])
+   176	    now = datetime.now()
+   177	    hours_since = (now - last_ts).total_seconds() / 3600
+   178	
+   179	    # 72 小时窗口
+   180	    if hours_since > 72:
+   181	        return None
+   182	
+   183	    last_conclusion = last["conclusion"]
+   184	    last_sources = set(last.get("data_sources", []))
+   185	    new_sources = set(new_data_sources)
+   186	
+   187	    last_dir = _extract_direction(last_conclusion)
+   188	    new_dir = _extract_direction(new_conclusion)
+   189	
+   190	    # neutral 不触发翻转检测
+   191	    if last_dir == "neutral" or new_dir == "neutral":
+   192	        return None
+   193	
+   194	    # 方向相同不触发
+   195	    if last_dir == new_dir:
+   196	        return None
+   197	
+   198	    # 结论翻转了，检查是否有新增数据源
+   199	    has_new_data = len(new_sources - last_sources) > 0
+   200	    new_data_added = list(new_sources - last_sources)
+   201	
+   202	    # 提取动作摘要
+   203	    last_action = _extract_action_summary(last_conclusion)
+   204	    new_action = _extract_action_summary(new_conclusion)
+   205	
+   206	    return {
+   207	        "stock_code": stock_code,
+   208	        "last_conclusion": last_conclusion,
+   209	        "new_conclusion": new_conclusion,
+   210	        "last_direction": last_dir,
+   211	        "new_direction": new_dir,
+   212	        "last_action": last_action,
+   213	        "new_action": new_action,
+   214	        "last_timestamp": last["timestamp"],
+   215	        "new_timestamp": now.isoformat(),
+   216	        "hours_since_last": round(hours_since, 1),
+   217	        "has_new_data": has_new_data,
+   218	        "new_data_added": new_data_added,
+   219	        "possible_noise": not has_new_data,
+   220	    }
+
+exec
+/bin/zsh -lc "sed -n '130,170p' docs/TASKS.md && grep -R \"same_symbol_delta\\|C-005\\|delta_check\" -n docs | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 1111ms:
+docs/task_runs/F-001-20260723-015057/codex-review-round1.txt:294:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:1918:  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:5273:  - `tradingagents/agents/utils/delta_check.py` — 新建，C-005 结论翻转检测
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:5283:  - `ed73926` — Phase 2+3 (C-005~C-008)
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:5285:  - `4231144` — C-005 集成到 risk_manager.py
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:10593:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:10600:- **代码标注要求**：`# [C-005] delta_check`
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:10650:Phase 2（稳定后）：C-005 + C-007
+docs/task_runs/C-004-20260723-033945/codex-review-round2.txt:412:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1623:from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1746:        # [C-005] delta_check — 检测结论是否翻转
+docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:1751:            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+docs/task_runs/FUND-004A-20260722-202004/codex-review-round1.txt:2971:   146	            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:569:  - `tradingagents/agents/utils/delta_check.py` — 新建，C-005 结论翻转检测
+docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:579:  - `ed73926` — Phase 2+3 (C-005~C-008)
+docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:581:  - `4231144` — C-005 集成到 risk_manager.py
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:4520:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:4527:- **代码标注要求**：`# [C-005] delta_check`
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:4577:Phase 2（稳定后）：C-005 + C-007
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:7371:  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:10726:  - `tradingagents/agents/utils/delta_check.py` — 新建，C-005 结论翻转检测
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:10736:  - `ed73926` — Phase 2+3 (C-005~C-008)
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:10738:  - `4231144` — C-005 集成到 risk_manager.py
+docs/task_runs/TF-OBS-001-20260601-220225/codex-review-round1.txt:2060:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/TF-OBS-001-20260601-220225/codex-review-round1.txt:2067:- **代码标注要求**：`# [C-005] delta_check`
+docs/task_runs/TF-OBS-001-20260601-220225/codex-review-round1.txt:2117:Phase 2（稳定后）：C-005 + C-007
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:4356:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:4363:- **代码标注要求**：`# [C-005] delta_check`
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:4413:Phase 2（稳定后）：C-005 + C-007
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:6934:  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:10289:  - `tradingagents/agents/utils/delta_check.py` — 新建，C-005 结论翻转检测
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:10299:  - `ed73926` — Phase 2+3 (C-005~C-008)
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:10301:  - `4231144` — C-005 集成到 risk_manager.py
+docs/task_runs/TF-OBS-002-20260613-225218/codex-review-round2.txt:419:  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+docs/task_runs/DATA-017-20260614-001936/codex-review-round1.txt:579:  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:155:         # [C-005] delta_check — 检测结论是否翻转
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:358: # [C-005] delta_check — 检测结论是否翻转
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:640:        "⚠️ [C-005]",
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1402:from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1525:        # [C-005] delta_check — 检测结论是否翻转
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1530:            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:1791:   139	        "⚠️ [C-005]",
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:3102:   141	        # [C-005] delta_check — 检测结论是否翻转
+docs/task_runs/C-001-20260723-031813/codex-review-round1.txt:3107:   146	            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+docs/task_runs/C-001-20260723-031813/opencode-round1.txt:117: # [C-005] delta_check — 检测结论是否翻转
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:3654:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:3661:- **代码标注要求**：`# [C-005] delta_check`
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:3711:Phase 2（稳定后）：C-005 + C-007
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:3965:  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:7320:  - `tradingagents/agents/utils/delta_check.py` — 新建，C-005 结论翻转检测
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:7330:  - `ed73926` — Phase 2+3 (C-005~C-008)
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:7332:  - `4231144` — C-005 集成到 risk_manager.py
+docs/task_runs/TF-UI-011-20260614-000121/codex-review-round1.txt:3654:### C-005: same_symbol_delta_check（P2）
+docs/task_runs/TF-UI-011-20260614-000121/codex-review-round1.txt:3661:- **代码标注要求**：`# [C-005] delta_check`
+docs/task_runs/TF-UI-011-20260614-000121/codex-review-round1.txt:3711:Phase 2（稳定后）：C-005 + C-007
+docs/task_runs/C-005-20260723-035736/codegraph-status.json:2:  "task_id": "C-005",
+docs/task_runs/C-005-20260723-035736/codegraph-status.json:32:    "tradingagents/agents/utils/delta_check.py"
+docs/task_runs/C-005-20260723-035736/prompt-round1.md:1:# Task: C-005: same_symbol_delta_check（P2）
+docs/task_runs/C-005-20260723-035736/prompt-round1.md:3:Read task "C-005" from docs/TASKS.md and implement as described.
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:1:# CodeGraph Context for C-005
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:2:# Task: same_symbol_delta_check（P2）
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:4:# Keywords: same_symbol_delta_check（p2）
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:8:**Query:** same_symbol_delta_check（p2）
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:12:- **check_delta** (function) - tradingagents/agents/utils/delta_check.py:54
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:16:- **DELTA_LOG_DIR** (variable) - tradingagents/agents/utils/delta_check.py:10
+docs/task_runs/C-005-20260723-035736/codegraph-context.txt:23:- tradingagents/agents/utils/delta_check.py: _direction:79, load_last_conclusion:26
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:6:[0m✱ [0mGlob "docs/task_runs/C-005*/**"[90m 4 matches[0m
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:7:[0m✱ [0mGlob "docs/task_runs/C-005*"[90m 0 matches[0m
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:8:[0m→ [0mRead docs/task_runs/C-005-20260723-035736/task.md
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:9:[0m→ [0mRead docs/task_runs/C-005-20260723-035736/prompt-round1.md
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:10:[0m→ [0mRead docs/task_runs/C-005-20260723-035736/codegraph-context.txt
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:13:[•] Read existing delta_check.py and understand current implementation
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:15:[ ] Implement same_symbol_delta_check logic
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:20:[0m→ [0mRead tradingagents/agents/utils/delta_check.py
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:23:[0m✱ [0mGrep "C-005"[90m in . · 240 matches[0m
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:24:[0m✱ [0mGrep "delta_check"[90m in . · 135 matches[0m
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:66:[✓] Read existing delta_check.py and understand current implementation
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:68:[ ] Implement same_symbol_delta_check logic
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:73:[0m✱ [0mGrep "delta_check"[90m in tradingagents/graph · 0 matches[0m
+docs/task_runs/C-005-20260723-035736/opencode-round1.txt:78:[✓] Read existing delta_check.py and understand current implementation
+
+exec
+/bin/zsh -lc "grep -R \"VERDICT\\|最终动作\\|TradeAction\" -n tradingagents/prompts tradingagents/agents tests | head -120" in /Users/maybee/TradingAgents-AShare
+ succeeded in 528ms:
+Binary file tradingagents/prompts/__pycache__/en.cpython-312.pyc matches
+Binary file tradingagents/prompts/__pycache__/zh.cpython-312.pyc matches
+tradingagents/prompts/zh.py:24:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/zh.py:44:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/zh.py:57:[Fix-6] VERDICT 一致性规则:
+tradingagents/prompts/zh.py:58:- VERDICT 的 direction 必须与正文主情绪方向一致。
+tradingagents/prompts/zh.py:59:- 若正文主情绪为偏冷/偏空/悲观/恐慌,VERDICT 不得直接写"看多"或"偏多"。
+tradingagents/prompts/zh.py:60:- 若有修复因素(如利空出尽、情绪冰点反转),VERDICT 最多写"中性"或"中性偏多",并写清楚反转条件。
+tradingagents/prompts/zh.py:61:- 生成 VERDICT 前,必须自检正文中的情绪关键词是否与 direction 一致。
+tradingagents/prompts/zh.py:72:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/zh.py:101:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/zh.py:218:<!-- VERDICT: {{"direction": "看多", "reason": "不超过20字的一句话核心结论"}} -->
+tradingagents/prompts/zh.py:228:- 未持仓时，最终动作统一为 WAIT/观察，不使用 HOLD。
+tradingagents/prompts/zh.py:274:<!-- VERDICT: {{"direction": "看多", "reason": "不超过20字的一句话核心结论"}} -->
+tradingagents/prompts/zh.py:363:    "trader_system_prompt": "你是交易员。请基于研究经理的投资方案,结合市场上下文与用户持仓情况,形成可执行交易决策。输出需包含方向、仓位、入场区间、止损与减仓条件。\n\n[Fix-9] A股做空措辞限制：\n- A股默认不允许做空(can_short=false)。\n- 禁止输出\"做空策略、空头开仓、若做空\"等措辞。\n- 使用替代表述：\"看空信号\"、\"回避信号\"、\"离场信号\"、\"减仓/止损信号\"。\n\n[Fix-4] 未持仓语义统一：\n- 未持仓时，最终动作统一为 WAIT/观察，不使用 HOLD 作为最终动作。\n- 不把\“条件减仓\”作为未持仓主等级。\n- 可输出\“若未来持仓后，止损/减仓条件如下\”，但不能作为当前动作。\n\n方向锚定规则(严格遵守):\n- 你的交易方向必须与研究经理的结论一致(Buy/Sell/Hold)。\n- 用户持仓约束只影响仓位大小和执行节奏,不可用于翻转方向。\n- 仅当风控 Judge 明确要求 revise 时,才可调整方向。\n- 📋 持仓状态判定(必须首先执行):\n检查用户上下文中的 current_position 字段,确定用户持仓状态:\n- 若 current_position > 0 → 已持仓\n- 若 current_position 为空、0 或未说明 → 未持仓\n\n根据持仓状态,输出必须区分以下两种策略模板:\n\n【未持仓策略】(current_position 为空/0/未说明):\n- 是否允许买入及理由\n- 建议入场触发价或入场区间\n- 回踩买点参考\n- 禁止追高条件(如:突破X元后不追)\n- 建议初始仓位(占总资金比例)\n- 止损价\n- 止盈区间\n\n【已持仓策略】(current_position > 0):\n- 当前持仓是否继续持有(Hold)/ 减仓 / 清仓\n- 动态止盈调整(如:成本X元,当前Y元,止盈上移至Z元)\n- 成本价风险管理(跌破成本X%触发减仓)\n- 加仓条件(如有)\n若存在风控打回要求,必须逐条满足硬约束,不允许忽略。请全程使用中文,不要输出 FINAL TRANSACTION PROPOSAL、FINAL VERDICT 等英文模板。\n\n买入信号确认:技术面趋势支撑或突破信号、资金面主力净流入、基本面正面催化剂,满足其一即可确认。但若情绪面处于极度贪婪区间,需额外警惕追涨风险。\n\n卖出信号确认:技术面趋势破位或资金面持续净流出,满足其一即可确认。\n\n观望(HOLD)限制条件--HOLD 不是默认选项,必须同时满足以下全部条件才可给出 HOLD:\n1. 技术面无明确趋势(均线纠缠、无突破无破位)。\n2. 资金面无明确方向(主力无显著净流入或净流出)。\n3. 基本面和新闻面无近期催化剂。\n若以上任一条件不满足,说明市场有方向信号,必须在 BUY 和 SELL 之间选择,不允许逃避到 HOLD。\n\n最后一行统一写成:最终交易建议:买入 / 卖出 / 观望(对应 BUY / SELL / HOLD)。在决策末尾追加机读摘要(格式固定,不可省略,不可改动键名):<!-- VERDICT: {{\"direction\": \"看多\", \"reason\": \"不超过20字的一句话核心结论\"}} -->direction 只可填:看多 / 偏多 / 中性 / 偏空 / 看空(数据有方向倾向时必须选偏多或偏空,仅数据确实不足时可选中性)。",
+tradingagents/prompts/zh.py:383:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/zh.py:417:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/zh.py:571:<!-- VERDICT: {"direction": "看多", "reason": "不超过20字的一句话核心结论"} -->
+tradingagents/prompts/en.py:13:<!-- VERDICT: {"direction": "BULLISH", "reason": "one-sentence conclusion under 15 words"} -->
+tradingagents/prompts/en.py:16:    "news_system_message": "You are a news researcher analyzing recent market and macro trends over the past week. Use get_news for company-specific news and get_global_news for macro news. Write a comprehensive, detailed report and append a Markdown summary table at the end. At the very end, append this machine-readable line (fixed format, do not omit): <!-- VERDICT: {\"direction\": \"BULLISH\", \"reason\": \"one-sentence conclusion under 15 words\"} --> direction must be one of: BULLISH / LEAN_BULLISH / NEUTRAL / LEAN_BEARISH / BEARISH (use LEAN_BULLISH or LEAN_BEARISH when data leans directionally but lacks full confirmation; use NEUTRAL only when data is genuinely insufficient)",
+tradingagents/prompts/en.py:18:    "social_system_message": "You are a social sentiment analyst. Analyze social/media sentiment and company-specific news over the past week via get_news. Provide a comprehensive report with implications for traders/investors, and append a Markdown summary table. At the very end, append this machine-readable line (fixed format, do not omit): <!-- VERDICT: {\"direction\": \"BULLISH\", \"reason\": \"one-sentence conclusion under 15 words\"} --> direction must be one of: BULLISH / LEAN_BULLISH / NEUTRAL / LEAN_BEARISH / BEARISH (use LEAN_BULLISH or LEAN_BEARISH when data leans directionally but lacks full confirmation; use NEUTRAL only when data is genuinely insufficient)",
+tradingagents/prompts/en.py:105:<!-- VERDICT: {{"direction": "BULLISH", "reason": "one-sentence conclusion under 15 words"}} -->
+tradingagents/prompts/en.py:151:<!-- VERDICT: {{"direction": "BULLISH", "reason": "one-sentence conclusion under 15 words"}} -->
+tradingagents/prompts/en.py:225:    "trader_system_prompt": "You are a trading agent. Produce a concrete Buy/Sell/Hold recommendation from analyst plans, market context, user constraints, risk feedback, and lessons learned. If the user already holds the position, explicitly decide whether this is a new entry, add, reduce, hold, or exit plan. If risk feedback requests a revision, satisfy every hard constraint explicitly. End with: FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**. At the very end append this machine-readable line: <!-- VERDICT: {{\"direction\": \"BULLISH\", \"reason\": \"one-sentence conclusion under 15 words\"}} --> direction must be one of: BULLISH / LEAN_BULLISH / NEUTRAL / LEAN_BEARISH / BEARISH (use LEAN_BULLISH or LEAN_BEARISH when data leans directionally but lacks full confirmation; use NEUTRAL only when data is genuinely insufficient).",
+tradingagents/prompts/en.py:381:- At the very end, append: <!-- VERDICT: {"direction": "BULLISH", "reason": "one-sentence under 15 words"} -->
+Binary file tradingagents/agents/managers/__pycache__/research_manager.cpython-312.pyc matches
+tradingagents/agents/managers/research_manager.py:13:from tradingagents.agents.utils.trade_actions import validate_action, TradeAction
+tradingagents/agents/utils/trade_actions.py:7:class TradeAction(Enum):
+tradingagents/agents/utils/trade_actions.py:18:    TradeAction.WAIT: "观望，等待更好的入场条件",
+tradingagents/agents/utils/trade_actions.py:19:    TradeAction.ENTER: "建仓买入",
+tradingagents/agents/utils/trade_actions.py:20:    TradeAction.HOLD: "继续持有",
+tradingagents/agents/utils/trade_actions.py:21:    TradeAction.REDUCE: "减仓或止损",
+tradingagents/agents/utils/trade_actions.py:22:    TradeAction.EXIT: "清仓离场",
+tradingagents/agents/utils/trade_actions.py:27:    False: [TradeAction.WAIT, TradeAction.ENTER],              # 未持仓：只能观望或建仓
+tradingagents/agents/utils/trade_actions.py:28:    True: [TradeAction.HOLD, TradeAction.REDUCE, TradeAction.EXIT],  # 已持仓：持有、减仓、清仓
+tradingagents/agents/utils/trade_actions.py:33:    "BUY": TradeAction.ENTER,
+tradingagents/agents/utils/trade_actions.py:34:    "SELL": TradeAction.EXIT,
+tradingagents/agents/utils/trade_actions.py:35:    "HOLD": TradeAction.HOLD,
+tradingagents/agents/utils/trade_actions.py:36:    "买入": TradeAction.ENTER,
+tradingagents/agents/utils/trade_actions.py:37:    "卖出": TradeAction.EXIT,
+tradingagents/agents/utils/trade_actions.py:38:    "观望": TradeAction.WAIT,
+tradingagents/agents/utils/trade_actions.py:39:    "减仓": TradeAction.REDUCE,
+tradingagents/agents/utils/trade_actions.py:40:    "清仓": TradeAction.EXIT,
+tradingagents/agents/utils/trade_actions.py:41:    "止损": TradeAction.REDUCE,
+tradingagents/agents/utils/trade_actions.py:42:    "止盈": TradeAction.REDUCE,
+tradingagents/agents/utils/trade_actions.py:46:def validate_action(action_str: str, has_position: bool) -> TradeAction:
+tradingagents/agents/utils/trade_actions.py:47:    """校验动作是否合法，返回合法的 TradeAction"""
+tradingagents/agents/utils/trade_actions.py:51:    for action in TradeAction:
+tradingagents/agents/utils/trade_actions.py:66:    return TradeAction.WAIT
+tradingagents/agents/utils/trade_setup.py:323:        lines.append("- 冲突检查：发现冲突，最终动作降级为等待人工复核。")
+tradingagents/agents/utils/execution_schema.py:14:from tradingagents.agents.utils.trade_actions import TradeAction
+tradingagents/agents/utils/execution_schema.py:17:Action = TradeAction
+Binary file tradingagents/agents/utils/__pycache__/agent_states.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/position_validation_gate.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/delta_check.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/execution_schema.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/trade_actions.cpython-312.pyc matches
+tradingagents/agents/utils/delta_check.py:7:- 支持使用 TradeAction 枚举进行方向判断
+tradingagents/agents/utils/delta_check.py:17:from tradingagents.agents.utils.trade_actions import TradeAction
+tradingagents/agents/utils/delta_check.py:78:    使用 TradeAction 枚举进行标准化判断，同时保留中文关键词兼容。
+tradingagents/agents/utils/delta_check.py:88:    # 使用 TradeAction 枚举判断
+tradingagents/agents/utils/delta_check.py:89:    has_enter = TradeAction.ENTER.value in text_upper
+tradingagents/agents/utils/delta_check.py:90:    has_reduce = TradeAction.REDUCE.value in text_upper
+tradingagents/agents/utils/delta_check.py:91:    has_exit = TradeAction.EXIT.value in text_upper
+tradingagents/agents/utils/delta_check.py:92:    has_wait = TradeAction.WAIT.value in text_upper
+tradingagents/agents/utils/delta_check.py:127:    # 优先检查 TradeAction 枚举
+tradingagents/agents/utils/delta_check.py:128:    for action in TradeAction:
+tradingagents/agents/utils/delta_check.py:148:        from tradingagents.agents.utils.trade_actions import ACTION_DESCRIPTIONS, TradeAction as TA
+tradingagents/agents/utils/agent_states.py:19:    """Extract VERDICT block from analyst output. Returns (direction, confidence)."""
+tradingagents/agents/utils/agent_states.py:20:    m = re.search(r'<!--\s*VERDICT:\s*(\{.*?\})\s*-->', text or "", re.DOTALL)
+tradingagents/agents/utils/position_validation_gate.py:14:    TradeAction,
+tradingagents/agents/utils/position_validation_gate.py:193:        forbidden_actions = [a.value for a in TradeAction if a not in POSITION_STATE_ACTIONS[False]]
+tradingagents/agents/utils/position_validation_gate.py:196:        forbidden_actions = [a.value for a in TradeAction if a not in POSITION_STATE_ACTIONS[True]]
+tests/test_fund006a_provider_replay.py:426:        "market_report": f'<!-- VERDICT: {{"direction": "看多"}} -->',
+tests/test_fund006a_provider_replay.py:427:        "sentiment_report": f'<!-- VERDICT: {{"direction": "看多"}} -->',
+tests/test_fund006a_provider_replay.py:428:        "news_report": f'<!-- VERDICT: {{"direction": "偏多"}} -->',
+tests/test_fund006a_provider_replay.py:429:        "fundamentals_report": f'<!-- VERDICT: {{"direction": "{fundamentals_verdict}"}} -->',
+tests/test_fund006a_provider_replay.py:430:        "smart_money_report": f'<!-- VERDICT: {{"direction": "看多"}} -->',
+tests/test_fund006a_provider_replay.py:431:        "volume_price_report": f'<!-- VERDICT: {{"direction": "看多"}} -->',
+tests/test_fund006a_provider_replay.py:432:        "game_theory_report": f'<!-- VERDICT: {{"direction": "中性"}} -->',
+tests/test_fund006a_provider_replay.py:806:            "market_report": '<!-- VERDICT: {"direction": "看多"} -->',
+tests/test_fund006a_provider_replay.py:807:            "sentiment_report": '<!-- VERDICT: {"direction": "看多"} -->',
+tests/test_fund006a_provider_replay.py:808:            "news_report": '<!-- VERDICT: {"direction": "偏多"} -->',
+tests/test_fund006a_provider_replay.py:810:            "smart_money_report": '<!-- VERDICT: {"direction": "看多"} -->',
+tests/test_fund006a_provider_replay.py:811:            "volume_price_report": '<!-- VERDICT: {"direction": "看多"} -->',
+tests/test_fund006a_provider_replay.py:812:            "game_theory_report": '<!-- VERDICT: {"direction": "中性"} -->',
+tests/test_h013_topic_heatmap.py:733:class TestNoTradeActions:
+tests/test_decision_semantics.py:22:            "<!-- VERDICT: {\"direction\": \"偏多\"} -->\n"
+tests/test_decision_semantics.py:34:            "<!-- VERDICT: {\"direction\": \"看多\"} -->\n"
+tests/test_decision_semantics.py:45:            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+tests/test_decision_semantics.py:56:            "<!-- VERDICT: {\"direction\": \"中性\"} -->\n"
+tests/test_decision_semantics.py:67:            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+tests/test_decision_semantics.py:78:            "<!-- VERDICT: {\"direction\": \"中性\"} -->\n"
+tests/test_decision_semantics.py:89:            "<!-- VERDICT: {\"direction\": \"偏多\"} -->\n"
+tests/test_decision_semantics.py:103:            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+tests/test_decision_semantics.py:147:        text = '<!-- VERDICT: {"direction": "看多"} -->\n建议买入'
+tests/test_decision_semantics.py:151:        text = '<!-- VERDICT: {"direction": "看空"} -->\n建议卖出'
+tests/test_decision_semantics.py:155:        text = '<!-- VERDICT: {"direction": "中性"} -->\n建议持有'
+tests/test_decision_semantics.py:160:            '<!-- VERDICT: {"direction": "看多"} -->\n'
+tests/test_decision_semantics.py:174:        text = "<!-- VERDICT: {\"direction\": \"中性\"} -->\n正常分析"
+tests/test_decision_semantics.py:183:            "<!-- VERDICT: {\"direction\": \"看多\"} -->\n"
+tests/test_decision_semantics.py:193:            "<!-- VERDICT: {\"direction\": \"偏多\", \"reason\": \"技术分析师早期结论\"} -->\n"
+tests/test_decision_semantics.py:195:            "<!-- VERDICT: {\"direction\": \"看空\", \"reason\": \"最终风控结论\"} -->\n"
+tests/test_decision_semantics.py:207:            "<!-- VERDICT: {\"direction\": \"看空\", \"reason\": \"最终风控结论\"} -->\n"
+tests/test_decision_semantics.py:211:            "上一版结论：<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"历史旧结论\"} -->\n"
+tests/test_decision_semantics.py:224:            "上一版结论：<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"历史旧结论\"} -->\n"
+tests/test_decision_semantics.py:258:        text = '<!-- VERDICT: {"direction": "偏空"} -->\n最终建议：不建议买入'
+tests/test_decision_semantics.py:269:            "final_trade_decision": '<!-- VERDICT: {"direction": "偏多"} -->\n偏多方向',
+tests/test_decision_semantics.py:280:            "final_trade_decision": '<!-- VERDICT: {"direction": "看多"} -->\n放量突破触发价后条件入场',
+tests/test_p0_p1_acceptance.py:41:            "<!-- VERDICT: {\"direction\": \"中性\"} -->\n"
+tests/test_p0_p1_acceptance.py:66:            "<!-- VERDICT: {\"direction\": \"看空\"} -->\n"
+tests/test_p0_p1_acceptance.py:176:            "<!-- VERDICT: {\"direction\": \"中性\"} -->\n"
+tests/test_agent_states.py:35:    text = '分析结论 <!-- VERDICT: {"direction": "看多", "reason": "量价配合"} --> 结束'
+tests/test_agent_states.py:42:    direction, confidence = extract_verdict("没有VERDICT标签的文本")
+tests/test_p11_has_position.py:84:        text = "VERDICT: {\"direction\": \"中性\"}\n### 决策\n建议：HOLD"
+tests/test_report_ux003_wait_reason_codes.py:242:    text = "<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"trend confirmed\"} -->\n建议买入。"
+tests/test_report_ux003_wait_reason_codes.py:458:            "<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"trend confirmed\"} -->\n"
+Binary file tests/__pycache__/test_decision_semantics.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_report_ux003_wait_reason_codes.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_p11_has_position.cpython-312-pytest-9.0.2.pyc matches
+
+exec
+/bin/zsh -lc "sed -n '1,280p' tests/test_decision_semantics.py && sed -n '1,120p' tradingagents/agents/utils/agent_states.py && grep -R \"extract.*verdict\\|VERDICT\" -n tradingagents/graph tradingagents/agents/utils | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""DECISION-001: Final action semantic layering tests.
+
+Covers 6 key scenarios where HOLD was previously overused, now differentiated
+into structured research_direction / execution_action / action_label.
+"""
+
+import pytest
+from types import SimpleNamespace
+from tradingagents.graph.signal_processing import (
+    _extract_decision_semantics,
+    _derive_action_label,
+    _extract_decision_keyword,
+    _execution_layer_overrides_hold,
+)
+
+
+class TestDecisionSemanticsSixScenarios:
+    """6 core scenarios from DECISION-001 spec."""
+
+    def test_no_position_bullish_no_trigger(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏多\"} -->\n"
+            "### 建议\n"
+            "偏多方向，但当前价格尚未到理想买点，建议等待。\n"
+            "系统动作：等待触发\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False, trigger_price=None)
+        assert result.research_direction == "偏多"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "等待触发"
+
+    def test_no_position_strong_bullish_with_trigger(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"看多\"} -->\n"
+            "### 建议\n"
+            "看多方向，放量突破50.00元可建仓。\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False, trigger_price=50.0)
+        assert result.research_direction == "看多"
+        assert result.execution_action == "ENTER"
+        assert result.action_label == "条件入场"
+
+    def test_no_position_bearish(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+            "### 建议\n"
+            "偏空方向，不建议介入。\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
+    def test_has_position_neutral(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"中性\"} -->\n"
+            "### 建议\n"
+            "中性方向，已持仓建议继续持有。\n"
+        )
+        result = _extract_decision_semantics(text, has_position=True)
+        assert result.research_direction == "中性"
+        assert result.execution_action == "HOLD"
+        assert result.action_label == "持有"
+
+    def test_has_position_risk_rising(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+            "### 建议\n"
+            "风险升高，建议减仓至半仓，止损价31.00元。\n"
+        )
+        result = _extract_decision_semantics(text, has_position=True, trigger_price=31.0)
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "REDUCE"
+        assert result.action_label == "条件减仓"
+
+    def test_data_insufficient(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"中性\"} -->\n"
+            "### 建议\n"
+            "数据不足，无法给出明确判断，建议继续观察。\n"
+        )
+        result = _extract_decision_semantics(text, has_position=None)
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "数据不足观察"
+
+    def test_data_insufficient_bullish_keeps_waiting_trigger_label(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏多\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "- 数据完整度：75%\n"
+            "- Evidence Coverage：57%\n"
+            "⚠️ 数据完整度不足，中线判断仅供参考\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "偏多"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "等待触发"
+
+    def test_data_insufficient_bearish_keeps_avoid_label(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "- Evidence Coverage：57%\n"
+            "⚠️ 数据完整度不足，中线判断仅供参考\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
+
+class TestDeriveActionLabel:
+    """Unit tests for _derive_action_label."""
+
+    def test_wait_bullish_no_trigger(self):
+        label = _derive_action_label(False, "偏多", "WAIT")
+        assert label == "等待触发"
+
+    def test_enter_with_trigger(self):
+        label = _derive_action_label(False, "看多", "ENTER", trigger_price=50.0)
+        assert label == "条件入场"
+
+    def test_wait_bearish_no_position(self):
+        label = _derive_action_label(False, "偏空", "WAIT")
+        assert label == "回避"
+
+    def test_hold_with_position(self):
+        label = _derive_action_label(True, "中性", "HOLD")
+        assert label == "持有"
+
+    def test_reduce_with_position(self):
+        label = _derive_action_label(True, "偏空", "REDUCE")
+        assert label == "条件减仓"
+
+    def test_exit_with_position(self):
+        label = _derive_action_label(True, "看空", "EXIT")
+        assert label == "条件清仓"
+
+
+class TestExtractDecisionKeywordBackwardCompat:
+    """Verify _extract_decision_keyword still works after refactor."""
+
+    def test_verdict_buy(self):
+        text = '<!-- VERDICT: {"direction": "看多"} -->\n建议买入'
+        assert _extract_decision_keyword(text) == "BUY"
+
+    def test_verdict_sell(self):
+        text = '<!-- VERDICT: {"direction": "看空"} -->\n建议卖出'
+        assert _extract_decision_keyword(text) == "SELL"
+
+    def test_verdict_hold(self):
+        text = '<!-- VERDICT: {"direction": "中性"} -->\n建议持有'
+        assert _extract_decision_keyword(text) == "HOLD"
+
+    def test_gate_failed_returns_hold(self):
+        text = (
+            '<!-- VERDICT: {"direction": "看多"} -->\n'
+            "- Strong Action Gate：未通过\n"
+        )
+        assert _extract_decision_keyword(text) == "HOLD"
+
+
+class TestExecutionLayerOverridesBackwardCompat:
+    """Verify _execution_layer_overrides_hold still returns bool."""
+
+    def test_gate_failed(self):
+        text = "- Strong Action Gate：未通过\n"
+        assert _execution_layer_overrides_hold(text) is True
+
+    def test_no_override(self):
+        text = "<!-- VERDICT: {\"direction\": \"中性\"} -->\n正常分析"
+        assert _execution_layer_overrides_hold(text) is False
+
+
+class TestExtractDecisionSemanticsGateBlocked:
+    """When gate blocks, execution_action is WAIT regardless of direction."""
+
+    def test_gate_blocked_bullish_becomes_wait(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"看多\"} -->\n"
+            "### 执行等级与证据门禁\n"
+            "- Strong Action Gate：未通过\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False, trigger_price=50.0)
+        assert result.execution_action == "WAIT"
+        assert result.decision == "HOLD"
+
+    def test_uses_last_verdict_for_multi_agent_report(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏多\", \"reason\": \"技术分析师早期结论\"} -->\n"
+            "中间分析内容\n"
+            "<!-- VERDICT: {\"direction\": \"看空\", \"reason\": \"最终风控结论\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "- Evidence Coverage：57%\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "看空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
+    def test_ignores_historical_verdict_after_quality_section(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"看空\", \"reason\": \"最终风控结论\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "⚠️ [C-005] 同股票结论翻转警告\n"
+            "上一版结论：<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"历史旧结论\"} -->\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "看空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
+    def test_without_current_verdict_does_not_use_historical_verdict_after_quality_section(self):
+        text = (
+            "最终建议：观望，等待更明确的量价确认。\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "⚠️ [C-005] 同股票结论翻转警告\n"
+            "上一版结论：<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"历史旧结论\"} -->\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "观望"
+
+
+class TestC001OverrideNoise:
+    """C-001 auto-conversion line should not pollute research direction."""
+
+    def test_c001_clearance_in_suggestion_hold(self):
+        text = (
+            "建议持有。假设约25.30元\n\n"
+            "### 执行质检\n"
+            "- 系统动作：人工复核\n"
+            "- 触发价：—\n\n"
+            "⚠️ [C-001] 未持仓状态，已将减仓/清仓建议自动转换为观望（WAIT）。"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "观望"
+
+
+class TestNegationHandling:
+    """Negated buy phrases should produce 中性, not 偏多."""
+
+    def test_negated_buy_in_explicit_pattern(self):
+        text = "最终建议：不建议买入，继续观望"
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "中性"
+
+    def test_negated_buy_with_verdict_uses_verdict(self):
+        text = '<!-- VERDICT: {"direction": "偏空"} -->\n最终建议：不建议买入'
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "偏空"
+
+
+class TestResolveReportFieldsSemantics:
+    """Verify resolve_report_fields populates semantic fields."""
+
+    def test_semantic_fields_populated(self):
+        from api.services.report_service import resolve_report_fields
+        result_data = {
+            "final_trade_decision": '<!-- VERDICT: {"direction": "偏多"} -->\n偏多方向',
+        }
+        resolved = resolve_report_fields(result_data=result_data, has_position=False)
+        assert resolved["research_direction"] == "偏多"
+        assert resolved["execution_action"] == "WAIT"
+        assert resolved["action_label"] == "等待触发"
+
+    def test_preserves_position_aware_semantics_from_result_data(self):
+        from api.services.report_service import resolve_report_fields
+
+        result_data = {
+            "final_trade_decision": '<!-- VERDICT: {"direction": "看多"} -->\n放量突破触发价后条件入场',
+import contextvars
+import json
+import operator
+import re
+from typing import Annotated, Any, List, Tuple
+
+from typing_extensions import Optional, TypedDict
+from langgraph.graph import MessagesState
+
+# ContextVar used to pass the AgentProgressTracker into async graph nodes
+# without putting it in the LangGraph state (which would require serialization).
+# Set by the API layer before each graph.astream() call; read by analyst nodes.
+current_tracker_var: contextvars.ContextVar = contextvars.ContextVar(
+    "current_tracker", default=None
+)
+
+
+def extract_verdict(text: str) -> Tuple[str, str]:
+    """Extract VERDICT block from analyst output. Returns (direction, confidence)."""
+    m = re.search(r'<!--\s*VERDICT:\s*(\{.*?\})\s*-->', text or "", re.DOTALL)
+    if m:
+        try:
+            d = json.loads(m.group(1))
+            return d.get("direction", "中性"), "中"
+        except Exception:
+            pass
+    return "中性", "低"
+
+
+class PositionContext(TypedDict, total=False):
+    has_position: bool
+    avg_cost: float
+    shares: float
+    position_pct: float
+    holding_days: int
+
+
+class UserIntent(TypedDict, total=False):
+    raw_query: str
+    ticker: str
+    horizons: List[str]
+    analysis_intent: str  # watch / entry / holding / add / reduce / stop_loss
+    position_context: PositionContext
+    focus_areas: List[str]
+    specific_questions: List[str]
+    user_context: "UserContext"
+
+
+class TraceItem(TypedDict, total=False):
+    agent: str
+    horizon: str
+    data_window: str
+    key_finding: str
+    verdict: str
+    confidence: str
+    started_at: float
+    finished_at: float
+    latency_ms: float
+    actual_model: str
+    fallback_from: str
+
+
+class InstrumentContext(TypedDict):
+    symbol: Annotated[str, "Normalized symbol"]
+    security_name: Annotated[str, "Display name or fallback symbol"]
+    market_country: Annotated[str, "Market country such as CN or US"]
+    exchange: Annotated[str, "Exchange code"]
+    currency: Annotated[str, "Trading currency"]
+    asset_type: Annotated[str, "Asset type"]
+
+
+class MarketContext(TypedDict):
+    trade_date: Annotated[str, "Requested trade date"]
+    timezone: Annotated[str, "Market timezone"]
+    market_country: Annotated[str, "Market country"]
+    exchange: Annotated[str, "Exchange code"]
+    market_session: Annotated[str, "Current session for the requested trade date"]
+    market_is_open: Annotated[bool, "Whether the market is currently open"]
+    analysis_mode: Annotated[str, "Analysis mode such as pre_market, intraday, post_market, t_plus_1"]
+    data_as_of: Annotated[str, "Latest date the analysis should treat as confirmed data"]
+    session_note: Annotated[str, "Explanation for the current session inference"]
+
+
+class UserContext(TypedDict, total=False):
+    objective: Annotated[str, "User's desired action"]
+    risk_profile: Annotated[str, "User's risk profile"]
+    investment_horizon: Annotated[str, "User's intended holding horizon"]
+    cash_available: Annotated[float, "Available cash"]
+    current_position: Annotated[float, "Current position size"]
+    current_position_pct: Annotated[float, "Current position percentage"]
+    average_cost: Annotated[float, "Average holding cost"]
+    max_loss_pct: Annotated[float, "Maximum tolerated loss percentage"]
+    constraints: Annotated[list[str], "Hard trading constraints"]
+    user_notes: Annotated[str, "Additional user notes"]
+
+
+class WorkflowContext(TypedDict):
+    context_version: Annotated[str, "Workflow context version"]
+    request_source: Annotated[str, "Request origin such as api or chat"]
+    selected_analysts: Annotated[list[str], "Requested analyst roster"]
+
+
+class InvestDebateState(TypedDict):
+    bull_history: Annotated[str, "Bullish conversation history"]
+    bear_history: Annotated[str, "Bearish conversation history"]
+    history: Annotated[str, "Conversation history"]
+    current_speaker: Annotated[str, "Speaker that spoke last"]
+    current_response: Annotated[str, "Latest response"]
+    
+    # ── Parallel Rebuttal Fields ──────────────────────────────────────
+    bull_initial: Annotated[str, "Bull's initial opening statement"]
+    bear_initial: Annotated[str, "Bear's initial opening statement"]
+    bull_rebuttal: Annotated[str, "Bull's rebuttal to Bear's initial"]
+    bear_rebuttal: Annotated[str, "Bear's rebuttal to Bull's initial"]
+    # ──────────────────────────────────────────────────────────────────
+
+    judge_decision: Annotated[str, "Final judge decision"]
+    count: Annotated[int, "Length of the current conversation"]
+    claims: Annotated[list[dict[str, Any]], "Tracked research claims"]
+    focus_claim_ids: Annotated[list[str], "Claim ids that must be answered in the next round"]
+Binary file tradingagents/graph/__pycache__/signal_processing.cpython-312.pyc matches
+tradingagents/graph/signal_processing.py:177:    matches = list(re.finditer(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", verdict_scope, re.IGNORECASE | re.DOTALL))
+tradingagents/graph/signal_processing.py:404:    HOLD regardless of what VERDICT says.
+tradingagents/graph/signal_processing.py:426:        match = re.search(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", raw_text, re.IGNORECASE | re.DOTALL)
+Binary file tradingagents/agents/utils/__pycache__/agent_states.cpython-312.pyc matches
+tradingagents/agents/utils/agent_states.py:18:def extract_verdict(text: str) -> Tuple[str, str]:
+tradingagents/agents/utils/agent_states.py:19:    """Extract VERDICT block from analyst output. Returns (direction, confidence)."""
+tradingagents/agents/utils/agent_states.py:20:    m = re.search(r'<!--\s*VERDICT:\s*(\{.*?\})\s*-->', text or "", re.DOTALL)
+
+exec
+/bin/zsh -lc "python - <<'PY'
+from tradingagents.agents.utils.delta_check import _extract_direction
+for s in ['看多，建议买入，止损价10元', '<"'!-- VERDICT: {"direction":"看多"} -->'"\\n建议买入，止损价10元', '看多，建仓，设置止损']:
+ print(s, '=>', _extract_direction(s))
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from tradingagents.agents.utils.delta_check import _extract_direction
+for s in ['看多，建议买入，止损价10元', '<"'!-- VERDICT: {"direction":"看多"} -->'"\\n建议买入，止损价10元', '看多，建仓，设置止损']:
+ print(s, '=>', _extract_direction(s))
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 1 in 0ms:
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/Users/maybee/TradingAgents-AShare/tradingagents/agents/__init__.py", line 1, in <module>
+    from .utils.agent_utils import create_msg_delete
+  File "/Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_utils.py", line 1, in <module>
+    from langchain_core.messages import HumanMessage, RemoveMessage
+ModuleNotFoundError: No module named 'langchain_core'
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.agents.utils.delta_check import _extract_direction
+for s in ['看多，建议买入，止损价10元', '<"'!-- VERDICT: {"direction":"看多"} -->'"\\n建议买入，止损价10元', '看多，建仓，设置止损']:
+ print(s, '=>', _extract_direction(s))
+PY" in /Users/maybee/TradingAgents-AShare
+2026-07-22T20:05:10.687025Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 1313ms:
+看多，建议买入，止损价10元 => bearish
+<!-- VERDICT: {"direction":"看多"} -->
+建议买入，止损价10元 => bearish
+看多，建仓，设置止损 => bearish
+
+codex
+The enhanced direction extraction misclassifies common bullish recommendations that include stop-loss risk controls, which undermines the core delta-flip detection feature.
+
+Review comment:
+
+- [P2] Avoid treating stop-loss text as bearish direction — /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/delta_check.py:101-104
+  When a bullish entry plan includes a stop-loss condition, e.g. `看多，建议买入，止损价10元`, this new `strong_bear` check classifies the whole conclusion as `bearish`. The risk/trader prompts require buy plans to include stop-loss details, so normal bullish conclusions can be saved as bearish and later flips will be missed or reported incorrectly.
+The enhanced direction extraction misclassifies common bullish recommendations that include stop-loss risk controls, which undermines the core delta-flip detection feature.
+
+Review comment:
+
+- [P2] Avoid treating stop-loss text as bearish direction — /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/delta_check.py:101-104
+  When a bullish entry plan includes a stop-loss condition, e.g. `看多，建议买入，止损价10元`, this new `strong_bear` check classifies the whole conclusion as `bearish`. The risk/trader prompts require buy plans to include stop-loss details, so normal bullish conclusions can be saved as bearish and later flips will be missed or reported incorrectly.
