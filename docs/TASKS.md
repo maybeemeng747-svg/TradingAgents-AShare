@@ -135,7 +135,7 @@
 ### C-004: 动作枚举重设计（P1）
 - **描述**：将最终动作枚举精简为 5 个
 - **优先级**：P2
-- **状态**：done — codex review passed
+- **状态**：done -- commit abb151c
 - **预计耗时**：30-40 分钟
 - **depends_on**：无
 - **auto_release**：true
