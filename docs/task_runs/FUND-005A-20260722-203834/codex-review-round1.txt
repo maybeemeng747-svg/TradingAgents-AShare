@@ -1,0 +1,3027 @@
+Task: FUND-005A - 逐 Agent 真实模型与运行时 trace 补修（P1）
+Date: 2026-07-22_20:55:39
+Codex exit code: 0
+Round: 1
+---
+2026-07-22T12:53:11.537146Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-22T12:53:12.984404Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-22T12:53:12.984428Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f89e3-2612-7591-9c5b-a42d7593d263
+--------
+user
+current changes
+2026-07-22T12:53:18.861436Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_P5c1GIL2GclAwgTf9VCbpnNM"
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_fund005_agent_trace.py
+ M tradingagents/agents/analysts/fundamentals_analyst.py
+ M tradingagents/agents/analysts/macro_analyst.py
+ M tradingagents/agents/analysts/market_analyst.py
+ M tradingagents/agents/analysts/news_analyst.py
+ M tradingagents/agents/analysts/smart_money_analyst.py
+ M tradingagents/agents/analysts/social_media_analyst.py
+ M tradingagents/agents/analysts/volume_price_analyst.py
+ M tradingagents/agents/utils/agent_states.py
+ M tradingagents/agents/utils/agent_trace.py
+?? docs/task_runs/FUND-005A-20260722-203834/
+/Users/maybee/TradingAgents-AShare
+local/tradingagents-custom
+
+2026-07-22T12:53:18.869215Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:53:22.158603Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_E93S4A1IHECLj6meDvJ4rJ7d"
+exec
+/bin/zsh -lc 'git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                     |  23 ++
+ docs/TASKS.md                                      |   2 +-
+ tests/test_fund005_agent_trace.py                  | 312 ++++++++++++++++++++-
+ .../agents/analysts/fundamentals_analyst.py        |  11 +
+ tradingagents/agents/analysts/macro_analyst.py     |  11 +
+ tradingagents/agents/analysts/market_analyst.py    |  11 +
+ tradingagents/agents/analysts/news_analyst.py      |  11 +
+ .../agents/analysts/smart_money_analyst.py         |  11 +
+ .../agents/analysts/social_media_analyst.py        |  11 +
+ .../agents/analysts/volume_price_analyst.py        |  11 +
+ tradingagents/agents/utils/agent_states.py         |   5 +
+ tradingagents/agents/utils/agent_trace.py          |  46 ++-
+ 12 files changed, 446 insertions(+), 19 deletions(-)
+
+2026-07-22T12:53:22.162078Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc 'git diff -- tradingagents/agents/utils/agent_trace.py tradingagents/agents/utils/agent_states.py tests/test_fund005_agent_trace.py' in /Users/maybee/TradingAgents-AShare
+2026-07-22T12:53:25.059914Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_kT1gv9PJ7ZHyrp0BzYq09IAH"
+ succeeded in 0ms:
+diff --git a/tests/test_fund005_agent_trace.py b/tests/test_fund005_agent_trace.py
+index 8be3a01..4c97482 100644
+--- a/tests/test_fund005_agent_trace.py
++++ b/tests/test_fund005_agent_trace.py
+@@ -1,4 +1,22 @@
++"""FUND-005A: Per-agent real model and runtime trace tests.
++
++Five mock scenarios:
++  1. No fallback — actual model matches requested
++  2. Config-level tier fallback — actual model from fallback tier
++  3. Runtime actual_model from LLM response metadata
++  4. Actual model unknown (no response metadata, empty stream)
++  5. Historical config change — snapshot immutability
++"""
++
++from __future__ import annotations
++
++import time
++from types import SimpleNamespace
++from typing import Any
++
+ from tradingagents.agents.utils.agent_trace import (
++    _extract_actual_model_from_response,
++    _model_for_tier_with_fallback,
+     annotate_agent_traces,
+     build_run_model_snapshot,
+ )
+@@ -23,20 +41,224 @@ def _evidence():
+     }
+ 
+ 
+-def test_fundamentals_trace_has_actual_run_snapshot_and_safe_digest():
++# ── Scenario 1: No fallback — actual model matches requested ──
++
++
++def test_no_fallback_actual_matches_requested():
++    """When all tier keys are populated, actual_model == requested_model and
++    fallback_from is absent."""
+     traces = annotate_agent_traces(
+         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
+         config=_config(), raw_evidence=_evidence(),
+     )
+     trace = traces[0]
+-    assert trace["provider"] == "zhipu"
+-    assert trace["model_tier"] == "mid"
++    assert trace["requested_model"] == "glm-mid"
+     assert trace["actual_model"] == "glm-mid"
+-    assert trace["input_contract_digest"].startswith("sha256:")
+-    assert trace["input_statuses"] == [
+-        {"field": "company_profile", "status": "PARTIAL", "vendor": "akshare"},
+-        {"field": "fundamentals", "status": "HAS_DATA", "vendor": "akshare"},
+-    ]
++    assert "fallback_from" not in trace
++    assert trace["model_tier"] == "mid"
++    assert trace["provider"] == "zhipu"
++
++
++def test_no_fallback_timing_fields_present_when_analyst_provides():
++    """When analyst emits started_at/finished_at/latency_ms, annotate_agent_traces
++    preserves them."""
++    now = time.time()
++    traces = annotate_agent_traces(
++        [{
++            "agent": "market_analyst",
++            "verdict": "看多",
++            "started_at": now,
++            "finished_at": now + 1.5,
++            "latency_ms": 1500.0,
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    trace = traces[0]
++    assert trace["started_at"] == now
++    assert trace["finished_at"] == now + 1.5
++    assert trace["latency_ms"] == 1500.0
++
++
++# ── Scenario 2: Config-level tier fallback ──
++
++
++def test_tier_fallback_from_mid_to_deep():
++    """When mid_think_llm is empty, tier falls back to deep_think_llm and
++    fallback_from is set."""
++    cfg = _config()
++    del cfg["mid_think_llm"]
++    model, fallback_from = _model_for_tier_with_fallback(cfg, "mid")
++    assert model == "glm-deep"
++    assert fallback_from == "mid_think_llm"
++
++
++def test_tier_fallback_from_ultra_to_deep():
++    """When ultra_think_llm is empty, tier falls back to deep_think_llm."""
++    cfg = _config()
++    del cfg["ultra_think_llm"]
++    model, fallback_from = _model_for_tier_with_fallback(cfg, "ultra")
++    assert model == "glm-deep"
++    assert fallback_from == "ultra_think_llm"
++
++
++def test_tier_fallback_annotate_preserves_analyst_actual_model():
++    """annotate_agent_traces sets fallback_from from config but preserves
++    analyst-provided actual_model."""
++    cfg = _config()
++    del cfg["mid_think_llm"]  # triggers fallback to deep_think_llm
++    traces = annotate_agent_traces(
++        [{
++            "agent": "fundamentals_analyst",
++            "verdict": "看多",
++            "actual_model": "mimo-v2.5-pro",  # runtime-detected
++        }],
++        config=cfg, raw_evidence=_evidence(),
++    )
++    trace = traces[0]
++    assert trace["requested_model"] == "glm-deep"  # config fallback
++    assert trace["actual_model"] == "mimo-v2.5-pro"  # preserved from analyst
++    assert trace["fallback_from"] == "mid_think_llm"
++
++
++def test_tier_fallback_no_fallback_when_first_key_populated():
++    """When the first candidate key is populated, no fallback_from is set."""
++    model, fallback_from = _model_for_tier_with_fallback(_config(), "quick")
++    assert model == "glm-quick"
++    assert fallback_from is None
++
++
++def test_tier_fallback_all_keys_missing():
++    """When all tier keys are missing, returns unknown with no fallback_from
++    (no fallback occurred — the entire tier is empty)."""
++    cfg = {"llm_provider": "test"}
++    model, fallback_from = _model_for_tier_with_fallback(cfg, "mid")
++    assert model == "unknown"
++    assert fallback_from is None
++
++
++# ── Scenario 3: Runtime actual_model from LLM response metadata ──
++
++
++def test_extract_actual_model_from_response_with_model_field():
++    """Chunks with response_metadata['model'] yield the actual model name."""
++    chunk = SimpleNamespace(response_metadata={"model": "mimo-v2.5-pro", "token_usage": {}})
++    assert _extract_actual_model_from_response(chunk) == "mimo-v2.5-pro"
++
++
++def test_extract_actual_model_from_response_with_model_name_field():
++    """Some providers use 'model_name' instead of 'model'."""
++    chunk = SimpleNamespace(response_metadata={"model_name": "deepseek-chat"})
++    assert _extract_actual_model_from_response(chunk) == "deepseek-chat"
++
++
++def test_extract_actual_model_from_response_none_chunk():
++    """None chunk (empty stream) yields None."""
++    assert _extract_actual_model_from_response(None) is None
++
++
++def test_extract_actual_model_from_response_no_metadata():
++    """Chunk without response_metadata yields None."""
++    chunk = SimpleNamespace(content="hello")
++    assert _extract_actual_model_from_response(chunk) is None
++
++
++def test_extract_actual_model_from_response_empty_metadata():
++    """Chunk with empty response_metadata yields None."""
++    chunk = SimpleNamespace(response_metadata={})
++    assert _extract_actual_model_from_response(chunk) is None
++
++
++def test_annotate_preserves_runtime_actual_model():
++    """When analyst provides actual_model from runtime, annotate does not
++    overwrite it with the config-derived value."""
++    traces = annotate_agent_traces(
++        [{
++            "agent": "fundamentals_analyst",
++            "verdict": "看多",
++            "actual_model": "gpt-4o-real",  # runtime-detected from response
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "gpt-4o-real"
++    assert traces[0]["requested_model"] == "glm-mid"
++
++
++# ── Scenario 4: Actual model unknown ──
++
++
++def test_actual_model_unknown_when_not_provided_by_analyst():
++    """When analyst does not provide actual_model, annotate sets it to the
++    config-derived model (no runtime detection available)."""
++    traces = annotate_agent_traces(
++        [{"agent": "news_analyst", "verdict": "中性"}],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    # Without runtime detection, actual_model falls back to requested
++    assert traces[0]["actual_model"] == "glm-quick"
++    assert traces[0]["requested_model"] == "glm-quick"
++
++
++def test_actual_model_unknown_explicit():
++    """When analyst explicitly sets actual_model to 'unknown' (no response
++    metadata), annotate preserves it."""
++    traces = annotate_agent_traces(
++        [{
++            "agent": "news_analyst",
++            "verdict": "中性",
++            "actual_model": "unknown",
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "unknown"
++    assert traces[0]["requested_model"] == "glm-quick"
++
++
++def test_actual_model_unknown_with_fallback():
++    """When config has fallback AND analyst reports unknown actual_model."""
++    cfg = _config()
++    del cfg["mid_think_llm"]
++    traces = annotate_agent_traces(
++        [{
++            "agent": "fundamentals_analyst",
++            "verdict": "中性",
++            "actual_model": "unknown",
++        }],
++        config=cfg, raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "unknown"
++    assert traces[0]["requested_model"] == "glm-deep"  # config fallback
++    assert traces[0]["fallback_from"] == "mid_think_llm"
++
++
++# ── Scenario 5: Historical config change — snapshot immutability ──
++
++
++def test_history_snapshot_is_independent_from_later_config_changes():
++    """Once a run snapshot is taken, later config mutations do not affect it."""
++    snapshot = build_run_model_snapshot(_config())
++    changed = _config()
++    changed["mid_think_llm"] = "new-model"
++    assert snapshot["mid"] == "glm-mid"
++    assert changed["mid_think_llm"] == "new-model"
++
++
++def test_history_traces_not_affected_by_config_mutation():
++    """Traces annotated with a config are not affected if the config dict
++    is later mutated."""
++    cfg = _config()
++    traces = annotate_agent_traces(
++        [{"agent": "fundamentals_analyst", "verdict": "中性"}],
++        config=cfg, raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "glm-mid"
++    # Mutate config after annotation
++    cfg["mid_think_llm"] = "different-model"
++    # Original trace unchanged
++    assert traces[0]["actual_model"] == "glm-mid"
++    assert traces[0]["requested_model"] == "glm-mid"
++
++
++# ── Privacy tests (carried from FUND-005) ──
+ 
+ 
+ def test_trace_never_contains_secret_or_raw_evidence_content():
+@@ -49,9 +271,75 @@ def test_trace_never_contains_secret_or_raw_evidence_content():
+     assert "very long text" not in serialized
+ 
+ 
+-def test_history_snapshot_is_independent_from_later_config_changes():
++def test_trace_never_contains_api_key_or_base_url():
++    """Even with fallback, secrets are not leaked."""
++    cfg = _config()
++    cfg["api_key"] = "super-secret-key"
++    cfg["backend_url"] = "https://secret-url.example/v1"
++    del cfg["mid_think_llm"]
++    traces = annotate_agent_traces(
++        [{"agent": "fundamentals_analyst"}], config=cfg, raw_evidence=_evidence()
++    )
++    serialized = str(traces)
++    assert "super-secret-key" not in serialized
++    assert "secret-url.example" not in serialized
++
++
++# ── Snapshot includes all tiers ──
++
++
++def test_build_run_model_snapshot_all_tiers():
+     snapshot = build_run_model_snapshot(_config())
+-    changed = _config()
+-    changed["mid_think_llm"] = "new-model"
++    assert snapshot["provider"] == "zhipu"
++    assert snapshot["quick"] == "glm-quick"
+     assert snapshot["mid"] == "glm-mid"
+-    assert changed["mid_think_llm"] == "new-model"
++    assert snapshot["deep"] == "glm-deep"
++    assert snapshot["ultra"] == "glm-ultra"
++
++
++def test_build_run_model_snapshot_unknown_for_missing_tier():
++    cfg = {"llm_provider": "test", "quick_think_llm": "q"}
++    snapshot = build_run_model_snapshot(cfg)
++    assert snapshot["quick"] == "q"
++    # mid falls back to quick_think_llm via tier cascade
++    assert snapshot["mid"] == "q"
++    # deep falls back to quick_think_llm via tier cascade
++    assert snapshot["deep"] == "q"
++    # ultra falls back to deep_think_llm → quick_think_llm via tier cascade
++    assert snapshot["ultra"] == "q"
++
++
++# ── Timing integration ──
++
++
++def test_latency_ms_is_positive_when_timing_provided():
++    """When analyst provides timing, latency_ms is positive."""
++    now = time.time()
++    traces = annotate_agent_traces(
++        [{
++            "agent": "macro_analyst",
++            "verdict": "看空",
++            "started_at": now,
++            "finished_at": now + 2.3,
++            "latency_ms": 2300.0,
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    assert traces[0]["latency_ms"] == 2300.0
++    assert traces[0]["finished_at"] > traces[0]["started_at"]
++
++
++# ── All 7 agents covered ──
++
++
++def test_all_analyst_tiers_covered():
++    """Every known analyst agent has a tier mapping."""
++    expected = {
++        "market_analyst": "quick", "social_media_analyst": "quick",
++        "news_analyst": "quick", "smart_money_analyst": "quick",
++        "volume_price_analyst": "quick", "fundamentals_analyst": "mid",
++        "macro_analyst": "mid",
++    }
++    from tradingagents.agents.utils.agent_trace import _TIER_BY_AGENT
++    for agent, tier in expected.items():
++        assert _TIER_BY_AGENT.get(agent) == tier, f"{agent} tier mismatch"
+diff --git a/tradingagents/agents/utils/agent_states.py b/tradingagents/agents/utils/agent_states.py
+index 4de1e12..507c01f 100644
+--- a/tradingagents/agents/utils/agent_states.py
++++ b/tradingagents/agents/utils/agent_states.py
+@@ -53,6 +53,11 @@ class TraceItem(TypedDict, total=False):
+     key_finding: str
+     verdict: str
+     confidence: str
++    started_at: float
++    finished_at: float
++    latency_ms: float
++    actual_model: str
++    fallback_from: str
+ 
+ 
+ class InstrumentContext(TypedDict):
+diff --git a/tradingagents/agents/utils/agent_trace.py b/tradingagents/agents/utils/agent_trace.py
+index b61a4ff..473a823 100644
+--- a/tradingagents/agents/utils/agent_trace.py
++++ b/tradingagents/agents/utils/agent_trace.py
+@@ -27,12 +27,16 @@ def annotate_agent_traces(
+     for raw_trace in traces or []:
+         trace = dict(raw_trace)
+         tier = _TIER_BY_AGENT.get(str(trace.get("agent") or ""), "unknown")
+-        model = _model_for_tier(config, tier)
++        model, fallback_from = _model_for_tier_with_fallback(config, tier)
+         trace.update({
+             "provider": provider, "model": model, "model_tier": tier,
+             "prompt_version": "config-driven", "input_contract_digest": digest,
+-            "input_statuses": statuses, "requested_model": model, "actual_model": model,
++            "input_statuses": statuses, "requested_model": model,
+         })
++        if "actual_model" not in trace:
++            trace["actual_model"] = model
++        if fallback_from and "fallback_from" not in trace:
++            trace["fallback_from"] = fallback_from
+         output.append(trace)
+     return output
+ 
+@@ -43,17 +47,47 @@ def build_run_model_snapshot(config: Mapping[str, Any]) -> dict[str, str]:
+     }}
+ 
+ 
++def _extract_actual_model_from_response(last_chunk: Any) -> str | None:
++    """Extract the actual model name from the last LLM response chunk.
++
++    Returns the model name if available in response metadata, else None.
++    Caller should treat None as "unknown".
++    """
++    if last_chunk is None:
++        return None
++    response_meta = getattr(last_chunk, "response_metadata", None) or {}
++    model = response_meta.get("model") or response_meta.get("model_name")
++    if model:
++        return str(model)
++    return None
++
++
+ def _model_for_tier(config: Mapping[str, Any], tier: str) -> str:
++    model, _ = _model_for_tier_with_fallback(config, tier)
++    return model
++
++
++def _model_for_tier_with_fallback(config: Mapping[str, Any], tier: str) -> tuple[str, str | None]:
++    """Return (resolved_model, fallback_from) for a tier.
++
++    fallback_from is the first-choice config key when it was empty and
++    the resolved model came from a subsequent candidate.
++    """
+     candidates = {
+         "quick": ("quick_think_llm",),
+         "mid": ("mid_think_llm", "deep_think_llm", "quick_think_llm"),
+         "deep": ("deep_think_llm", "quick_think_llm"),
+         "ultra": ("ultra_think_llm", "deep_think_llm", "quick_think_llm"),
+     }.get(tier, ())
+-    for key in candidates:
+-        if config.get(key):
+-            return str(config[key])
+-    return "unknown"
++    if candidates:
++        first_key = candidates[0]
++        for key in candidates:
++            if config.get(key):
++                resolved = str(config[key])
++                if key != first_key:
++                    return resolved, first_key
++                return resolved, None
++    return "unknown", None
+ 
+ 
+ def _input_statuses(raw_evidence: Mapping[str, Any]) -> list[dict[str, str]]:
+
+2026-07-22T12:53:25.064588Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:53:27.475969Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_AxydgmqC0lfEQBAzxVIYDUla"
+exec
+/bin/zsh -lc 'git diff -- tradingagents/agents/analysts/*.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/tradingagents/agents/analysts/fundamentals_analyst.py b/tradingagents/agents/analysts/fundamentals_analyst.py
+index b9a865f..61f64af 100644
+--- a/tradingagents/agents/analysts/fundamentals_analyst.py
++++ b/tradingagents/agents/analysts/fundamentals_analyst.py
+@@ -1,10 +1,12 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ from tradingagents.agents.utils.data_consistency import append_financial_consistency_warnings
+ from tradingagents.dataflows.financial_periods import render_financial_period_context
+@@ -77,7 +79,10 @@ def create_fundamentals_analyst(llm, data_collector=None):
+         # ── 实现 Token 级流式输出 ──────────────────
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+@@ -92,6 +97,8 @@ def create_fundamentals_analyst(llm, data_collector=None):
+             )
+         full_content = checked_content
+ 
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         verdict, confidence = extract_verdict(full_content)
+         return {
+             "fundamentals_report": full_content,
+@@ -102,6 +109,10 @@ def create_fundamentals_analyst(llm, data_collector=None):
+                 "key_finding": f"基本面分析结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+diff --git a/tradingagents/agents/analysts/macro_analyst.py b/tradingagents/agents/analysts/macro_analyst.py
+index 27ff160..899647d 100644
+--- a/tradingagents/agents/analysts/macro_analyst.py
++++ b/tradingagents/agents/analysts/macro_analyst.py
+@@ -1,10 +1,12 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+@@ -67,12 +69,17 @@ def create_macro_analyst(llm, data_collector=None):
+         # ── 实现 Token 级流式输出 ──────────────────
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+                 tracker._emit_token("Macro Analyst", "macro_report", content)
+ 
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         print(f"[Macro Analyst] DONE {ticker}, report length={len(full_content)}")
+         verdict, confidence = extract_verdict(full_content)
+ 
+@@ -94,6 +101,10 @@ def create_macro_analyst(llm, data_collector=None):
+                 "key_finding": f"宏观板块分析结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+diff --git a/tradingagents/agents/analysts/market_analyst.py b/tradingagents/agents/analysts/market_analyst.py
+index e4bb575..afd305a 100644
+--- a/tradingagents/agents/analysts/market_analyst.py
++++ b/tradingagents/agents/analysts/market_analyst.py
+@@ -1,4 +1,5 @@
+ import asyncio
++import time
+ from datetime import datetime, timedelta
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+@@ -7,6 +8,7 @@ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ # List of technical indicators to retrieve
+@@ -69,12 +71,17 @@ def create_market_analyst(llm, data_collector=None):
+         # ── 实现 Token 级流式输出 ──────────────────
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+                 tracker._emit_token("Market Analyst", "market_report", content)
+         
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         verdict, confidence = extract_verdict(full_content)
+ 
+         return {
+@@ -86,6 +93,10 @@ def create_market_analyst(llm, data_collector=None):
+                 "key_finding": f"市场技术面结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+diff --git a/tradingagents/agents/analysts/news_analyst.py b/tradingagents/agents/analysts/news_analyst.py
+index 51da61d..7fbf09a 100644
+--- a/tradingagents/agents/analysts/news_analyst.py
++++ b/tradingagents/agents/analysts/news_analyst.py
+@@ -1,10 +1,12 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+@@ -70,12 +72,17 @@ def create_news_analyst(llm, data_collector=None):
+         # ── 实现 Token 级流式输出 ──────────────────
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+                 tracker._emit_token("News Analyst", "news_report", content)
+ 
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         verdict, confidence = extract_verdict(full_content)
+         return {
+             "news_report": full_content,
+@@ -86,6 +93,10 @@ def create_news_analyst(llm, data_collector=None):
+                 "key_finding": f"新闻分析结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+diff --git a/tradingagents/agents/analysts/smart_money_analyst.py b/tradingagents/agents/analysts/smart_money_analyst.py
+index f0432df..6d77c02 100644
+--- a/tradingagents/agents/analysts/smart_money_analyst.py
++++ b/tradingagents/agents/analysts/smart_money_analyst.py
+@@ -1,11 +1,13 @@
+ import asyncio
+ import re
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+@@ -193,12 +195,17 @@ def create_smart_money_analyst(llm, data_collector=None):
+         # ── 实现 Token 级流式输出 ──────────────────
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+                 tracker._emit_token("Smart Money Analyst", "smart_money_report", content)
+ 
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         print(f"[Smart Money Analyst] DONE {ticker}, report length={len(full_content)}")
+         verdict, confidence = extract_verdict(full_content)
+         return {
+@@ -210,6 +217,10 @@ def create_smart_money_analyst(llm, data_collector=None):
+                 "key_finding": f"主力资金分析结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+diff --git a/tradingagents/agents/analysts/social_media_analyst.py b/tradingagents/agents/analysts/social_media_analyst.py
+index 3b0f599..282977c 100644
+--- a/tradingagents/agents/analysts/social_media_analyst.py
++++ b/tradingagents/agents/analysts/social_media_analyst.py
+@@ -1,10 +1,12 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+@@ -69,12 +71,17 @@ def create_social_media_analyst(llm, data_collector=None):
+         # ── 实现 Token 级流式输出 ──────────────────
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+                 tracker._emit_token("Social Analyst", "sentiment_report", content)
+ 
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         verdict, confidence = extract_verdict(full_content)
+         return {
+             "sentiment_report": full_content,
+@@ -85,6 +92,10 @@ def create_social_media_analyst(llm, data_collector=None):
+                 "key_finding": f"舆情分析结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+diff --git a/tradingagents/agents/analysts/volume_price_analyst.py b/tradingagents/agents/analysts/volume_price_analyst.py
+index 604bea8..c6cb9c8 100644
+--- a/tradingagents/agents/analysts/volume_price_analyst.py
++++ b/tradingagents/agents/analysts/volume_price_analyst.py
+@@ -1,4 +1,5 @@
+ import logging
++import time
+ from langchain_core.messages import HumanMessage, SystemMessage
+ 
+ from tradingagents.dataflows.config import get_config
+@@ -8,6 +9,7 @@ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ logger = logging.getLogger("volume_price_analyst")
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ 
+ 
+ def create_volume_price_analyst(llm, data_collector=None):
+@@ -89,12 +91,17 @@ def create_volume_price_analyst(llm, data_collector=None):
+ 
+         tracker = current_tracker_var.get()
+         full_content = ""
++        started_at = time.time()
++        last_chunk = None
+         async for chunk in llm.astream(messages):
++            last_chunk = chunk
+             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+             full_content += content
+             if tracker:
+                 tracker._emit_token("Volume Price Analyst", "volume_price_report", content)
+ 
++        finished_at = time.time()
++        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+         verdict, confidence = extract_verdict(full_content)
+ 
+         # Override confidence to low if data was partial
+@@ -111,6 +118,10 @@ def create_volume_price_analyst(llm, data_collector=None):
+                 "key_finding": f"量价分析结论：{verdict}",
+                 "verdict": verdict,
+                 "confidence": confidence,
++                "started_at": started_at,
++                "finished_at": finished_at,
++                "latency_ms": round((finished_at - started_at) * 1000, 1),
++                "actual_model": actual_model,
+             }],
+         }
+ 
+
+2026-07-22T12:53:27.480817Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc "sed -n '1,220p' tradingagents/agents/utils/agent_trace.py && sed -n '1,130p' tradingagents/agents/utils/agent_states.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Privacy-safe model and input-contract traces for completed TA runs."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Any, Iterable, Mapping
+
+
+_TIER_BY_AGENT = {
+    "market_analyst": "quick", "social_media_analyst": "quick",
+    "news_analyst": "quick", "smart_money_analyst": "quick",
+    "volume_price_analyst": "quick", "fundamentals_analyst": "mid",
+    "macro_analyst": "mid",
+}
+
+
+def annotate_agent_traces(
+    traces: Iterable[Mapping[str, Any]] | None,
+    *, config: Mapping[str, Any], raw_evidence: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Attach immutable routing facts and a digest, never prompts or secrets."""
+    statuses = _input_statuses(raw_evidence or {})
+    digest = _digest(statuses)
+    provider = str(config.get("llm_provider") or "unknown")
+    output: list[dict[str, Any]] = []
+    for raw_trace in traces or []:
+        trace = dict(raw_trace)
+        tier = _TIER_BY_AGENT.get(str(trace.get("agent") or ""), "unknown")
+        model, fallback_from = _model_for_tier_with_fallback(config, tier)
+        trace.update({
+            "provider": provider, "model": model, "model_tier": tier,
+            "prompt_version": "config-driven", "input_contract_digest": digest,
+            "input_statuses": statuses, "requested_model": model,
+        })
+        if "actual_model" not in trace:
+            trace["actual_model"] = model
+        if fallback_from and "fallback_from" not in trace:
+            trace["fallback_from"] = fallback_from
+        output.append(trace)
+    return output
+
+
+def build_run_model_snapshot(config: Mapping[str, Any]) -> dict[str, str]:
+    return {"provider": str(config.get("llm_provider") or "unknown"), **{
+        tier: _model_for_tier(config, tier) for tier in ("quick", "mid", "deep", "ultra")
+    }}
+
+
+def _extract_actual_model_from_response(last_chunk: Any) -> str | None:
+    """Extract the actual model name from the last LLM response chunk.
+
+    Returns the model name if available in response metadata, else None.
+    Caller should treat None as "unknown".
+    """
+    if last_chunk is None:
+        return None
+    response_meta = getattr(last_chunk, "response_metadata", None) or {}
+    model = response_meta.get("model") or response_meta.get("model_name")
+    if model:
+        return str(model)
+    return None
+
+
+def _model_for_tier(config: Mapping[str, Any], tier: str) -> str:
+    model, _ = _model_for_tier_with_fallback(config, tier)
+    return model
+
+
+def _model_for_tier_with_fallback(config: Mapping[str, Any], tier: str) -> tuple[str, str | None]:
+    """Return (resolved_model, fallback_from) for a tier.
+
+    fallback_from is the first-choice config key when it was empty and
+    the resolved model came from a subsequent candidate.
+    """
+    candidates = {
+        "quick": ("quick_think_llm",),
+        "mid": ("mid_think_llm", "deep_think_llm", "quick_think_llm"),
+        "deep": ("deep_think_llm", "quick_think_llm"),
+        "ultra": ("ultra_think_llm", "deep_think_llm", "quick_think_llm"),
+    }.get(tier, ())
+    if candidates:
+        first_key = candidates[0]
+        for key in candidates:
+            if config.get(key):
+                resolved = str(config[key])
+                if key != first_key:
+                    return resolved, first_key
+                return resolved, None
+    return "unknown", None
+
+
+def _input_statuses(raw_evidence: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"field": str(key), "status": str(entry.get("status") or "UNKNOWN"),
+         "vendor": str(entry.get("vendor") or "unknown")}
+        for key, entry in sorted(raw_evidence.items())
+        if isinstance(entry, Mapping)
+    ]
+
+
+def _digest(statuses: list[dict[str, str]]) -> str:
+    canonical = json.dumps(statuses, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+import contextvars
+import json
+import operator
+import re
+from typing import Annotated, Any, List, Tuple
+
+from typing_extensions import Optional, TypedDict
+from langgraph.graph import MessagesState
+
+# ContextVar used to pass the AgentProgressTracker into async graph nodes
+# without putting it in the LangGraph state (which would require serialization).
+# Set by the API layer before each graph.astream() call; read by analyst nodes.
+current_tracker_var: contextvars.ContextVar = contextvars.ContextVar(
+    "current_tracker", default=None
+)
+
+
+def extract_verdict(text: str) -> Tuple[str, str]:
+    """Extract VERDICT block from analyst output. Returns (direction, confidence)."""
+    m = re.search(r'<!--\s*VERDICT:\s*(\{.*?\})\s*-->', text or "", re.DOTALL)
+    if m:
+        try:
+            d = json.loads(m.group(1))
+            return d.get("direction", "中性"), "中"
+        except Exception:
+            pass
+    return "中性", "低"
+
+
+class PositionContext(TypedDict, total=False):
+    has_position: bool
+    avg_cost: float
+    shares: float
+    position_pct: float
+    holding_days: int
+
+
+class UserIntent(TypedDict, total=False):
+    raw_query: str
+    ticker: str
+    horizons: List[str]
+    analysis_intent: str  # watch / entry / holding / add / reduce / stop_loss
+    position_context: PositionContext
+    focus_areas: List[str]
+    specific_questions: List[str]
+    user_context: "UserContext"
+
+
+class TraceItem(TypedDict, total=False):
+    agent: str
+    horizon: str
+    data_window: str
+    key_finding: str
+    verdict: str
+    confidence: str
+    started_at: float
+    finished_at: float
+    latency_ms: float
+    actual_model: str
+    fallback_from: str
+
+
+class InstrumentContext(TypedDict):
+    symbol: Annotated[str, "Normalized symbol"]
+    security_name: Annotated[str, "Display name or fallback symbol"]
+    market_country: Annotated[str, "Market country such as CN or US"]
+    exchange: Annotated[str, "Exchange code"]
+    currency: Annotated[str, "Trading currency"]
+    asset_type: Annotated[str, "Asset type"]
+
+
+class MarketContext(TypedDict):
+    trade_date: Annotated[str, "Requested trade date"]
+    timezone: Annotated[str, "Market timezone"]
+    market_country: Annotated[str, "Market country"]
+    exchange: Annotated[str, "Exchange code"]
+    market_session: Annotated[str, "Current session for the requested trade date"]
+    market_is_open: Annotated[bool, "Whether the market is currently open"]
+    analysis_mode: Annotated[str, "Analysis mode such as pre_market, intraday, post_market, t_plus_1"]
+    data_as_of: Annotated[str, "Latest date the analysis should treat as confirmed data"]
+    session_note: Annotated[str, "Explanation for the current session inference"]
+
+
+class UserContext(TypedDict, total=False):
+    objective: Annotated[str, "User's desired action"]
+    risk_profile: Annotated[str, "User's risk profile"]
+    investment_horizon: Annotated[str, "User's intended holding horizon"]
+    cash_available: Annotated[float, "Available cash"]
+    current_position: Annotated[float, "Current position size"]
+    current_position_pct: Annotated[float, "Current position percentage"]
+    average_cost: Annotated[float, "Average holding cost"]
+    max_loss_pct: Annotated[float, "Maximum tolerated loss percentage"]
+    constraints: Annotated[list[str], "Hard trading constraints"]
+    user_notes: Annotated[str, "Additional user notes"]
+
+
+class WorkflowContext(TypedDict):
+    context_version: Annotated[str, "Workflow context version"]
+    request_source: Annotated[str, "Request origin such as api or chat"]
+    selected_analysts: Annotated[list[str], "Requested analyst roster"]
+
+
+class InvestDebateState(TypedDict):
+    bull_history: Annotated[str, "Bullish conversation history"]
+    bear_history: Annotated[str, "Bearish conversation history"]
+    history: Annotated[str, "Conversation history"]
+    current_speaker: Annotated[str, "Speaker that spoke last"]
+    current_response: Annotated[str, "Latest response"]
+    
+    # ── Parallel Rebuttal Fields ──────────────────────────────────────
+    bull_initial: Annotated[str, "Bull's initial opening statement"]
+    bear_initial: Annotated[str, "Bear's initial opening statement"]
+    bull_rebuttal: Annotated[str, "Bull's rebuttal to Bear's initial"]
+    bear_rebuttal: Annotated[str, "Bear's rebuttal to Bull's initial"]
+    # ──────────────────────────────────────────────────────────────────
+
+    judge_decision: Annotated[str, "Final judge decision"]
+    count: Annotated[int, "Length of the current conversation"]
+    claims: Annotated[list[dict[str, Any]], "Tracked research claims"]
+    focus_claim_ids: Annotated[list[str], "Claim ids that must be answered in the next round"]
+    open_claim_ids: Annotated[list[str], "Claim ids still open"]
+    resolved_claim_ids: Annotated[list[str], "Claim ids considered resolved"]
+    unresolved_claim_ids: Annotated[list[str], "Claim ids still materially disputed"]
+    round_summary: Annotated[str, "Summary of the latest debate round"]
+    round_goal: Annotated[str, "Current round objective"]
+    claim_counter: Annotated[int, "Claim counter for unique ids"]
+
+
+class RiskDebateState(TypedDict):
+    aggressive_history: Annotated[str, "Aggressive analyst history"]
+
+2026-07-22T12:53:30.745348Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_X2TZrgHUx5CJFYZXpyzaRh7l"
+2026-07-22T12:53:30.750540Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc "rg \"agent_trace|agent_traces|annotate_agent_traces|build_run_model_snapshot|actual_model|fallback_from|astream\\(\" -n" in /Users/maybee/TradingAgents-AShare
+2026-07-22T12:53:34.315489Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:53:34.415674Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_N7KzMr02kQRtCl1bbxXSVT7x"
+ succeeded in 108ms:
+docs/task_runs/FUND-005A-20260722-203834/codegraph-status.json:32:    "tests/test_fund005_agent_trace.py",
+docs/task_runs/FUND-005A-20260722-203834/codegraph-status.json:41:    "tradingagents/agents/utils/agent_trace.py"
+
+2026-07-22T12:53:37.351737Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_RKdUCsNlE1bgrzwez0LhtFQS"
+exec
+/bin/zsh -lc "rg \"annotate_agent_traces|agent_traces\" tradingagents api tests -n --glob '"'!docs/**'"'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/agents/utils/agent_trace.py:18:def annotate_agent_traces(
+tradingagents/graph/trading_graph.py:25:    annotate_agent_traces,
+tradingagents/graph/trading_graph.py:454:        final_state["analyst_traces"] = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:20:    annotate_agent_traces,
+tests/test_fund005_agent_trace.py:50:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:63:    """When analyst emits started_at/finished_at/latency_ms, annotate_agent_traces
+tests/test_fund005_agent_trace.py:66:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:105:    """annotate_agent_traces sets fallback_from from config but preserves
+tests/test_fund005_agent_trace.py:109:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:174:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:192:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:204:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:220:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:249:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:265:    trace = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:280:    traces = annotate_agent_traces(
+tests/test_fund005_agent_trace.py:318:    traces = annotate_agent_traces(
+
+2026-07-22T12:53:37.355758Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc "sed -n '1,90p' tradingagents/graph/trading_graph.py && sed -n '430,470p' tradingagents/graph/trading_graph.py && rg \"analyst_traces\" -n tradingagents/agents tradingagents/graph api | head -80" in /Users/maybee/TradingAgents-AShare
+2026-07-22T12:53:40.717339Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_mwRNWo01bQYvKiPdTIIecOmx"
+ succeeded in 0ms:
+# TradingAgents/graph/trading_graph.py
+
+import asyncio
+import os
+import re
+from pathlib import Path
+import json
+from datetime import date
+from typing import Dict, Any, Tuple, List, Optional
+import sqlite3
+
+from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
+
+from tradingagents.llm_clients import create_llm_client
+
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.agents.utils.memory import FinancialSituationMemory
+from tradingagents.agents.utils.agent_states import (
+    AgentState,
+    InvestDebateState,
+    RiskDebateState,
+)
+from tradingagents.agents.utils.agent_trace import (  # [FUND-005] agent_model_input_trace
+    annotate_agent_traces,
+    build_run_model_snapshot,
+)
+from tradingagents.dataflows.config import set_config
+
+# Import the new abstract tool methods from agent_utils
+from tradingagents.agents.utils.agent_utils import (
+    get_stock_data,
+    get_indicators,
+    get_fundamentals,
+    get_balance_sheet,
+    get_cashflow,
+    get_income_statement,
+    get_news,
+    get_insider_transactions,
+    get_global_news,
+    get_board_fund_flow,
+    get_individual_fund_flow,
+    get_lhb_detail,
+)
+
+from .conditional_logic import ConditionalLogic
+from .data_collector import DataCollector
+from .intent_parser import parse_intent
+from .setup import GraphSetup
+from .propagation import Propagator
+from .reflection import Reflector
+from .signal_processing import SignalProcessor
+
+
+class TradingAgentsGraph:
+    """Main class that orchestrates the trading agents framework."""
+
+    # Class-level cache for persistence to handle concurrency
+    _shared_checkpointer = None
+
+    def __init__(
+        self,
+        selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"],
+        debug=False,
+        config: Dict[str, Any] = None,
+        callbacks: Optional[List] = None,
+        data_collector: Optional["DataCollector"] = None,
+    ):
+        """Initialize the trading agents graph and components."""
+        self.debug = debug
+        self.config = config or DEFAULT_CONFIG
+        self.callbacks = callbacks or []
+
+        # Update the interface's config
+        set_config(self.config)
+
+        # Initialize persistence (Singleton Pattern for concurrency)
+        if TradingAgentsGraph._shared_checkpointer is None:
+            TradingAgentsGraph._shared_checkpointer = MemorySaver()
+        
+        self.checkpointer = TradingAgentsGraph._shared_checkpointer
+
+        # Create necessary directories
+        os.makedirs(
+            os.path.join(self.config["project_dir"], "dataflows/data_cache"),
+            exist_ok=True,
+        )
+
+        # Initialize LLMs with provider-specific thinking configuration
+        llm_kwargs = self._get_provider_kwargs()
+            "horizon": horizon,
+            "company_of_interest": final_state.get("company_of_interest", ""),
+            "trade_date": final_state.get("trade_date", ""),
+            "final_trade_decision": final_state.get("final_trade_decision", ""),
+            "investment_plan": final_state.get("investment_plan", ""),
+            "trader_investment_plan": final_state.get("trader_investment_plan", ""),
+            "metadata": metadata,
+            "trade_quality_check": metadata.get("trade_quality_check"),
+            "analyst_traces": final_state.get("analyst_traces", []),
+            "analysis_intent": final_state.get("analysis_intent", "watch"),
+            "position_context": final_state.get("position_context"),
+            "market_report": final_state.get("market_report", ""),
+            "sentiment_report": final_state.get("sentiment_report", ""),
+            "news_report": final_state.get("news_report", ""),
+            "fundamentals_report": final_state.get("fundamentals_report", ""),
+            "macro_report": final_state.get("macro_report", ""),
+            "smart_money_report": final_state.get("smart_money_report", ""),
+            "volume_price_report": final_state.get("volume_price_report", ""),
+        }
+
+    def _attach_agent_trace_metadata(self, final_state: Dict[str, Any]) -> None:
+        """Attach a run-time model snapshot without retaining prompt content."""
+        metadata = dict(final_state.get("metadata") or {})
+        raw_evidence = metadata.get("raw_evidence") or {}
+        final_state["analyst_traces"] = annotate_agent_traces(
+            final_state.get("analyst_traces"), config=self.config, raw_evidence=raw_evidence
+        )
+        metadata["agent_model_snapshot"] = build_run_model_snapshot(self.config)
+        final_state["metadata"] = metadata
+
+    @staticmethod
+    def _safe_ticker(ticker: str) -> str:
+        """Sanitize ticker for use in filesystem paths."""
+        return re.sub(r"[^A-Za-z0-9._-]", "_", ticker) or "unknown"
+
+    def _log_state_dual(
+        self,
+        trade_date: str,
+        short_result: Dict[str, Any],
+        medium_result: Dict[str, Any],
+        user_intent: Dict[str, Any],
+tradingagents/graph/propagation.py:104:            "analyst_traces": [],
+tradingagents/agents/analysts/fundamentals_analyst.py:105:            "analyst_traces": [{
+tradingagents/agents/analysts/news_analyst.py:89:            "analyst_traces": [{
+tradingagents/graph/trading_graph.py:438:            "analyst_traces": final_state.get("analyst_traces", []),
+tradingagents/graph/trading_graph.py:454:        final_state["analyst_traces"] = annotate_agent_traces(
+tradingagents/graph/trading_graph.py:455:            final_state.get("analyst_traces"), config=self.config, raw_evidence=raw_evidence
+tradingagents/agents/analysts/social_media_analyst.py:88:            "analyst_traces": [{
+tradingagents/agents/analysts/smart_money_analyst.py:213:            "analyst_traces": [{
+tradingagents/agents/analysts/volume_price_analyst.py:58:                "analyst_traces": [{
+tradingagents/agents/analysts/volume_price_analyst.py:114:            "analyst_traces": [{
+tradingagents/agents/analysts/macro_analyst.py:97:            "analyst_traces": [{
+tradingagents/agents/analysts/market_analyst.py:89:            "analyst_traces": [{
+api/services/report_service.py:38:    ReportDB.analyst_traces,
+api/services/report_service.py:1138:    analyst_traces: Optional[List[dict]] = None,
+api/services/report_service.py:1195:        db_report.analyst_traces = analyst_traces
+api/services/report_service.py:1227:            analyst_traces=analyst_traces,
+tradingagents/agents/utils/agent_states.py:208:    analyst_traces: Annotated[List[TraceItem], operator.add]
+api/database.py:141:            if "analyst_traces" not in columns:
+api/database.py:142:                conn.execute(text("ALTER TABLE reports ADD COLUMN analyst_traces JSON"))
+api/database.py:394:    analyst_traces = Column(JSON, nullable=True) # [{"agent": "...", "verdict": "...", "key_finding": "..."}]
+api/database.py:431:            "analyst_traces": self.analyst_traces,
+api/main.py:845:    analyst_traces: Optional[List[Dict[str, Any]]] = None
+api/main.py:929:    analyst_traces: Optional[List[Dict[str, Any]]] = None
+api/main.py:1515:        "analyst_traces": final_state.get("analyst_traces"),
+api/main.py:2280:                "analyst_traces": (
+api/main.py:2281:                    short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])
+api/main.py:2339:                            analyst_traces=result.get("analyst_traces"),
+api/main.py:2598:                        analyst_traces=result.get("analyst_traces"),
+
+2026-07-22T12:53:40.721254Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:53:47.064427Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_V8PnKztisxzg26umf80Js9qy"
+exec
+/bin/zsh -lc "sed -n '180,230p' tradingagents/agents/utils/agent_states.py && sed -n '80,115p' tradingagents/graph/propagation.py && sed -n '2200,2305p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    workflow_context: Annotated[WorkflowContext, "Workflow metadata for the current run"]
+
+    market_report: Annotated[str, "Report from the Market Analyst"]
+    sentiment_report: Annotated[str, "Report from the Social Media Analyst"]
+    news_report: Annotated[str, "Report from the News Researcher of current world affairs"]
+    fundamentals_report: Annotated[str, "Report from the Fundamentals Researcher"]
+
+    investment_debate_state: Annotated[
+        InvestDebateState, "Current state of the debate on if to invest or not"
+    ]
+    investment_plan: Annotated[str, "Plan generated by the Analyst"]
+    trader_investment_plan: Annotated[str, "Plan generated by the Trader"]
+
+    risk_debate_state: Annotated[
+        RiskDebateState, "Current state of the debate on evaluating risk"
+    ]
+    risk_feedback_state: Annotated[
+        RiskFeedbackState, "Risk-judge feedback used for trader revision"
+    ]
+    final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+
+    macro_report: Annotated[str, "Report from the Macro/Sector Analyst"]
+    smart_money_report: Annotated[str, "Report from the Smart Money Analyst"]
+    volume_price_report: Annotated[str, "Report from the Volume Price Analyst"]
+    user_intent: Annotated[Optional[UserIntent], "Parsed user intent from natural language"]
+    analysis_intent: Annotated[str, "Trading purpose: watch/entry/holding/add/reduce/stop_loss"]
+    position_context: Annotated[Optional[PositionContext], "Current position details"]
+    horizon: Annotated[str, "Current analysis horizon: short or medium"]
+    analyst_traces: Annotated[List[TraceItem], operator.add]
+    short_term_result: Annotated[Optional[dict], "Final short-term analysis result"]
+    medium_term_result: Annotated[Optional[dict], "Final medium-term analysis result"]
+    metadata: Annotated[dict[str, Any], merge_metadata]
+            ),
+            "risk_debate_state": RiskDebateState(build_empty_risk_debate_state()),
+            "risk_feedback_state": {
+                "retry_count": 0,
+                "max_retries": 1,
+                "revision_required": False,
+                "latest_risk_verdict": "",
+                "hard_constraints": [],
+                "soft_constraints": [],
+                "execution_preconditions": [],
+                "de_risk_triggers": [],
+                "revision_reason": "",
+            },
+            "market_report": "",
+            "fundamentals_report": "",
+            "sentiment_report": "",
+            "news_report": "",
+            "macro_report": "",
+            "smart_money_report": "",
+            "investment_plan": "",
+            "trader_investment_plan": "",
+            "final_trade_decision": "",
+            "sender": "",
+            "metadata": {},
+            "analyst_traces": [],
+            "horizon": horizon,
+            "analysis_intent": "watch",  # G-001: default, overridden by user_intent
+            "position_context": None,    # G-001: populated from user_intent
+            "short_term_result": None,
+            "medium_term_result": None,
+        }
+        if user_intent is not None:
+            state["user_intent"] = user_intent
+            # G-001: Extract analysis_intent and position_context from user_intent
+            if isinstance(user_intent, dict):
+                state["analysis_intent"] = user_intent.get("analysis_intent", "watch")
+                                db_updates[key] = str(value)
+                                h_tracker._emit_report_chunked(job_id, key, str(value))
+
+                        if db_updates:
+                            await asyncio.to_thread(_horizon_partial_update, db_updates)
+                except Exception as e:
+                    _log(
+                        f"Error during horizon streaming ({horizon}): {e!r}\n"
+                        f"{traceback.format_exc()}"
+                    )
+                    raise
+                finally:
+                    current_tracker_var.reset(_tracker_token)
+
+                horizon_states[horizon] = horizon_final
+                for agent, st in h_tracker.status.items():
+                    if st not in ("completed", "skipped"):
+                        h_tracker._set_status(agent, "completed")
+                _emit_job_event(job_id, "agent.horizon_done", {"horizon": horizon})
+
+            # 3. 按解析出的 horizons 并行运行 astream()，事件实时推给前端
+            results = await asyncio.gather(
+                *[_process_horizon(h) for h in request.horizons],
+                return_exceptions=True,
+            )
+            horizon_errors = []
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    tb = "".join(traceback.format_exception(type(r), r, r.__traceback__))
+                    _log(f"Horizon '{request.horizons[i]}' failed: {r!r}\n{tb}")
+                    horizon_errors.append(f"{request.horizons[i]}: {r}")
+            if horizon_errors:
+                raise RuntimeError(f"Horizon analysis failed: {'; '.join(horizon_errors)}")
+
+            short_r = graph._build_horizon_result("short", horizon_states.get("short") or {})
+            medium_r = graph._build_horizon_result("medium", horizon_states.get("medium") or {})
+            primary_r = short_r if horizon_states.get("short") else medium_r
+            decision = graph.process_signal(
+                primary_r.get("final_trade_decision", ""),
+                has_position=_resolve_has_position(user_intent, request),
+            ) or "UNKNOWN"
+
+            # E-009: Add override disclaimer when execution layer overrides VERDICT
+            ftd = primary_r.get("final_trade_decision", "")
+            if decision in ("HOLD", "WAIT") and ftd:
+                from tradingagents.graph.signal_processing import _execution_layer_overrides_hold
+                if _execution_layer_overrides_hold(ftd):
+                    # Detect upstream direction for more specific disclaimer
+                    upstream_buy = any(k in ftd for k in ["买入", "看多", "偏多", "BUY"])
+                    upstream_sell = any(k in ftd for k in ["卖出", "看空", "偏空", "SELL"])
+                    upstream_dir = "买入" if upstream_buy else ("卖出" if upstream_sell else "交易")
+                    override_note = (
+                        f"\n\n---\n"
+                        f"⚠️ **上游{upstream_dir}建议已被最终门禁降级，系统最终动作以 WAIT/等待触发为准。**\n"
+                        f"请以「系统动作」和「最终裁决」字段为执行依据，上游中间层建议仅供参考。"
+                    )
+                    if "系统最终动作以 WAIT/等待触发为准" not in ftd:  # idempotent
+                        ftd = ftd + override_note
+                        primary_r["final_trade_decision"] = ftd
+
+            result = {
+                "symbol": ticker,
+                "trade_date": request.trade_date,
+                "mode": "dual_horizon",
+                "user_intent": user_intent,
+                "short_term": short_r,
+                "medium_term": medium_r,
+                "decision": decision,
+                # Hoist primary horizon's report fields to top level so that
+                # resolve_report_fields / create_report can find them directly.
+                "final_trade_decision": primary_r.get("final_trade_decision", ""),
+                "investment_plan": primary_r.get("investment_plan", ""),
+                "trader_investment_plan": primary_r.get("trader_investment_plan", ""),
+                "market_report": primary_r.get("market_report", ""),
+                "sentiment_report": primary_r.get("sentiment_report", ""),
+                "news_report": primary_r.get("news_report", ""),
+                "fundamentals_report": primary_r.get("fundamentals_report", ""),
+                "macro_report": primary_r.get("macro_report", ""),
+                "smart_money_report": primary_r.get("smart_money_report", ""),
+                "volume_price_report": primary_r.get("volume_price_report", ""),
+                "analyst_traces": (
+                    short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])
+                ),
+                "analysis_intent": user_intent.get("analysis_intent", "watch"),
+                "position_context": user_intent.get("position_context"),
+            }
+            # [G-006] raw_evidence_snapshot: hoist metadata to top-level
+            primary_metadata = primary_r.get("metadata", {})
+            if primary_metadata:
+                result["metadata"] = primary_metadata
+            # LLM 结构化提取（目标价、止损、信心、风险、关键指标）
+            # 注意：必须在 _set_job(status="completed") 之前完成，否则 SSE 超时
+            # 会因为看到 status="completed" 而提前关闭流，导致 job.completed 事件丢失。
+            structured = None
+            try:
+                structured = await asyncio.to_thread(
+                    report_service.extract_structured_data,
+                    final_trade_decision=primary_r.get("final_trade_decision", ""),
+                    fundamentals_report=primary_r.get("fundamentals_report", ""),
+                    config=config,
+                )
+            except Exception as e:
+                _log(f"Structured extraction failed (non-fatal): {e}")
+
+            resolved = await asyncio.to_thread(
+                report_service.resolve_report_fields,
+
+2026-07-22T12:53:47.069040Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc "ls tradingagents/llm_clients && sed -n '1,140p' tradingagents/llm_clients/anthropic_client.py && sed -n '1,220p' tradingagents/llm_clients/factory.py 2>/dev/null || true && rg \"class .*astream|response_metadata|model_name|model\" tradingagents/llm_clients -n" in /Users/maybee/TradingAgents-AShare
+2026-07-22T12:53:51.679918Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_VE0YyPVmNE5comQDBqSugEjb"
+ succeeded in 0ms:
+TODO.md
+__init__.py
+__pycache__
+anthropic_client.py
+base_client.py
+factory.py
+google_client.py
+model_catalog.py
+openai_client.py
+rate_limiter.py
+validators.py
+from typing import Any, Optional
+
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessageChunk
+
+from .base_client import BaseLLMClient
+from .validators import validate_model
+
+
+def _extract_text_from_content(content):
+    """Extract text from extended thinking content blocks.
+
+    When extended thinking is enabled, Anthropic returns content as a list:
+        [{"type": "thinking", "thinking": "..."}, {"type": "text", "text": "..."}]
+    This helper extracts only the text blocks and joins them into a string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") not in ("thinking",):
+                    # Unknown block type, try to get text
+                    parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return str(content)
+
+
+class NormalizedChatAnthropic(ChatAnthropic):
+    """ChatAnthropic with normalized content output.
+
+    Claude models with extended thinking return content as a list of blocks.
+    This normalizes to string for consistent downstream handling.
+    """
+
+    def _normalize_content(self, response):
+        response.content = _extract_text_from_content(response.content)
+        return response
+
+    def invoke(self, input, config=None, **kwargs):
+        return self._normalize_content(super().invoke(input, config, **kwargs))
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        return self._normalize_content(await super().ainvoke(input, config, **kwargs))
+
+    def _normalize_chunk(self, chunk):
+        if isinstance(chunk, AIMessageChunk) and isinstance(chunk.content, list):
+            chunk.content = _extract_text_from_content(chunk.content)
+        return chunk
+
+    def stream(self, input, config=None, **kwargs):
+        for chunk in super().stream(input, config, **kwargs):
+            yield self._normalize_chunk(chunk)
+
+    async def astream(self, input, config=None, **kwargs):
+        async for chunk in super().astream(input, config, **kwargs):
+            yield self._normalize_chunk(chunk)
+
+
+class AnthropicClient(BaseLLMClient):
+    """Client for Anthropic Claude models."""
+
+    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+        super().__init__(model, base_url, **kwargs)
+
+    def get_llm(self) -> Any:
+        """Return configured ChatAnthropic instance."""
+        llm_kwargs = {"model": self.model}
+
+        if self.base_url:
+            # ChatAnthropic auto-appends /v1, so strip it if present
+            base = self.base_url.rstrip("/")
+            if base.endswith("/v1"):
+                base = base[:-3]
+            llm_kwargs["base_url"] = base
+
+        for key in ("timeout", "max_retries", "api_key", "max_tokens", "callbacks"):
+            if key in self.kwargs:
+                llm_kwargs[key] = self.kwargs[key]
+
+        return NormalizedChatAnthropic(**llm_kwargs)
+
+    def validate_model(self) -> bool:
+        """Validate model for Anthropic."""
+        return validate_model("anthropic", self.model)
+from typing import Optional
+
+from .base_client import BaseLLMClient
+from .openai_client import OpenAIClient
+from .anthropic_client import AnthropicClient
+from .google_client import GoogleClient
+
+
+def create_llm_client(
+    provider: str,
+    model: str,
+    base_url: Optional[str] = None,
+    **kwargs,
+) -> BaseLLMClient:
+    """Create an LLM client for the specified provider.
+
+    Args:
+        provider: LLM provider (openai, anthropic, google, xai, ollama, openrouter)
+        model: Model name/identifier
+        base_url: Optional base URL for API endpoint
+        **kwargs: Additional provider-specific arguments
+
+    Returns:
+        Configured BaseLLMClient instance
+
+    Raises:
+        ValueError: If provider is not supported
+    """
+    provider_lower = provider.lower()
+
+    if provider_lower in ("openai", "ollama", "openrouter"):
+        return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)
+
+    if provider_lower == "xai":
+        return OpenAIClient(model, base_url, provider="xai", **kwargs)
+
+    if provider_lower == "anthropic":
+        return AnthropicClient(model, base_url, **kwargs)
+
+    if provider_lower == "google":
+        return GoogleClient(model, base_url, **kwargs)
+
+    raise ValueError(f"Unsupported LLM provider: {provider}")
+tradingagents/llm_clients/anthropic_client.py:7:from .validators import validate_model
+tradingagents/llm_clients/anthropic_client.py:37:    Claude models with extended thinking return content as a list of blocks.
+tradingagents/llm_clients/anthropic_client.py:66:    """Client for Anthropic Claude models."""
+tradingagents/llm_clients/anthropic_client.py:68:    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+tradingagents/llm_clients/anthropic_client.py:69:        super().__init__(model, base_url, **kwargs)
+tradingagents/llm_clients/anthropic_client.py:73:        llm_kwargs = {"model": self.model}
+tradingagents/llm_clients/anthropic_client.py:88:    def validate_model(self) -> bool:
+tradingagents/llm_clients/anthropic_client.py:89:        """Validate model for Anthropic."""
+tradingagents/llm_clients/anthropic_client.py:90:        return validate_model("anthropic", self.model)
+tradingagents/llm_clients/openai_client.py:13:from .validators import validate_model
+tradingagents/llm_clients/openai_client.py:17:    """ChatOpenAI subclass that strips incompatible params for certain models."""
+tradingagents/llm_clients/openai_client.py:24:        model = kwargs.get("model") or kwargs.get("model_name", "")
+tradingagents/llm_clients/openai_client.py:31:        # 1. Reasoning models (O1 etc) typically don't support temperature
+tradingagents/llm_clients/openai_client.py:32:        if self._is_reasoning_model(model):
+tradingagents/llm_clients/openai_client.py:36:        # 2. Moonshot (Kimi) models often strictly require temperature=1
+tradingagents/llm_clients/openai_client.py:37:        if self._is_moonshot_model(model, base_url):
+tradingagents/llm_clients/openai_client.py:47:            _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
+tradingagents/llm_clients/openai_client.py:55:            _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
+tradingagents/llm_clients/openai_client.py:59:    def _is_reasoning_model(model: str) -> bool:
+tradingagents/llm_clients/openai_client.py:60:        """Check if model is a reasoning model."""
+tradingagents/llm_clients/openai_client.py:61:        model_lower = str(model).lower()
+tradingagents/llm_clients/openai_client.py:63:            model_lower.startswith("o1")
+tradingagents/llm_clients/openai_client.py:64:            or model_lower.startswith("o3")
+tradingagents/llm_clients/openai_client.py:65:            or "gpt-5" in model_lower
+tradingagents/llm_clients/openai_client.py:66:            or "-r1" in model_lower
+tradingagents/llm_clients/openai_client.py:67:            or "thinking" in model_lower
+tradingagents/llm_clients/openai_client.py:68:            or "reasoning" in model_lower
+tradingagents/llm_clients/openai_client.py:69:            or "deepseek-v4-pro" in model_lower
+tradingagents/llm_clients/openai_client.py:70:            or "reasoner" in model_lower  # deepseek-reasoner
+tradingagents/llm_clients/openai_client.py:74:    def _is_moonshot_model(model: str, base_url: Optional[str] = None) -> bool:
+tradingagents/llm_clients/openai_client.py:75:        """Check if model or base_url is from Moonshot (Kimi)."""
+tradingagents/llm_clients/openai_client.py:76:        m = str(model).lower()
+tradingagents/llm_clients/openai_client.py:86:        model: str,
+tradingagents/llm_clients/openai_client.py:91:        super().__init__(model, base_url, **kwargs)
+tradingagents/llm_clients/openai_client.py:96:        llm_kwargs = {"model": self.model}
+tradingagents/llm_clients/openai_client.py:98:        if not UnifiedChatOpenAI._is_reasoning_model(self.model):
+tradingagents/llm_clients/openai_client.py:113:        print(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=rate_limiter, Timeout={llm_kwargs['timeout']}s)")
+tradingagents/llm_clients/openai_client.py:140:    def validate_model(self) -> bool:
+tradingagents/llm_clients/openai_client.py:141:        return validate_model(self.provider, self.model)
+tradingagents/llm_clients/model_catalog.py:1:"""Shared model/API catalog for UI, docs, and operator audits.
+tradingagents/llm_clients/model_catalog.py:24:        "quick_model": "gpt-4o-mini",
+tradingagents/llm_clients/model_catalog.py:25:        "deep_model": "gpt-4o",
+tradingagents/llm_clients/model_catalog.py:35:        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+tradingagents/llm_clients/model_catalog.py:36:        "quick_model": "glm-4.5-air",
+tradingagents/llm_clients/model_catalog.py:37:        "deep_model": "glm-4.5",
+tradingagents/llm_clients/model_catalog.py:38:        "key_scope": "openai:https://open.bigmodel.cn/api/paas/v4",
+tradingagents/llm_clients/model_catalog.py:47:        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+tradingagents/llm_clients/model_catalog.py:48:        "quick_model": "glm-4.5-air",
+tradingagents/llm_clients/model_catalog.py:49:        "deep_model": "glm-5-turbo",
+tradingagents/llm_clients/model_catalog.py:50:        "key_scope": "openai:https://open.bigmodel.cn/api/coding/paas/v4",
+tradingagents/llm_clients/model_catalog.py:60:        "quick_model": "deepseek-v4-flash",
+tradingagents/llm_clients/model_catalog.py:61:        "deep_model": "deepseek-v4-pro",
+tradingagents/llm_clients/model_catalog.py:72:        "quick_model": "moonshot-v1-8k",
+tradingagents/llm_clients/model_catalog.py:73:        "deep_model": "moonshot-v1-32k",
+tradingagents/llm_clients/model_catalog.py:84:        "quick_model": "xiaomi/mimo-v2-flash",
+tradingagents/llm_clients/model_catalog.py:85:        "deep_model": "xiaomi/mimo-v2-pro",
+tradingagents/llm_clients/model_catalog.py:96:        "quick_model": "mimo-v2.5",
+tradingagents/llm_clients/model_catalog.py:97:        "deep_model": "mimo-v2.5-pro",
+tradingagents/llm_clients/model_catalog.py:108:        "quick_model": "qwen-plus",
+tradingagents/llm_clients/model_catalog.py:109:        "deep_model": "qwen-max",
+tradingagents/llm_clients/model_catalog.py:120:        "quick_model": "",
+tradingagents/llm_clients/model_catalog.py:121:        "deep_model": "",
+tradingagents/llm_clients/model_catalog.py:123:        "status": "custom-model",
+tradingagents/llm_clients/model_catalog.py:132:        "quick_model": "claude-haiku-4-5",
+tradingagents/llm_clients/model_catalog.py:133:        "deep_model": "claude-sonnet-4-5",
+tradingagents/llm_clients/model_catalog.py:144:        "quick_model": "gemini-2.5-flash",
+tradingagents/llm_clients/model_catalog.py:145:        "deep_model": "gemini-2.5-pro",
+tradingagents/llm_clients/model_catalog.py:156:        "quick_model": "",
+tradingagents/llm_clients/model_catalog.py:157:        "deep_model": "",
+tradingagents/llm_clients/model_catalog.py:159:        "status": "custom-model",
+tradingagents/llm_clients/model_catalog.py:160:        "cost_note": "Cost depends on the routed model.",
+tradingagents/llm_clients/model_catalog.py:168:        "quick_model": "",
+tradingagents/llm_clients/model_catalog.py:169:        "deep_model": "",
+tradingagents/llm_clients/model_catalog.py:177:def get_model_api_catalog() -> dict[str, Any]:
+tradingagents/llm_clients/google_client.py:6:from .validators import validate_model
+tradingagents/llm_clients/google_client.py:12:    Gemini 3 models return content as list: [{'type': 'text', 'text': '...'}]
+tradingagents/llm_clients/google_client.py:32:    """Client for Google Gemini models."""
+tradingagents/llm_clients/google_client.py:34:    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+tradingagents/llm_clients/google_client.py:35:        super().__init__(model, base_url, **kwargs)
+tradingagents/llm_clients/google_client.py:39:        llm_kwargs = {"model": self.model}
+tradingagents/llm_clients/google_client.py:47:        # Map thinking_level to appropriate API param based on model
+tradingagents/llm_clients/google_client.py:53:            model_lower = self.model.lower()
+tradingagents/llm_clients/google_client.py:54:            if "gemini-3" in model_lower:
+tradingagents/llm_clients/google_client.py:56:                if "pro" in model_lower and thinking_level == "minimal":
+tradingagents/llm_clients/google_client.py:65:    def validate_model(self) -> bool:
+tradingagents/llm_clients/google_client.py:66:        """Validate model for Google."""
+tradingagents/llm_clients/google_client.py:67:        return validate_model("google", self.model)
+tradingagents/llm_clients/factory.py:11:    model: str,
+tradingagents/llm_clients/factory.py:19:        model: Model name/identifier
+tradingagents/llm_clients/factory.py:32:        return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)
+tradingagents/llm_clients/factory.py:35:        return OpenAIClient(model, base_url, provider="xai", **kwargs)
+tradingagents/llm_clients/factory.py:38:        return AnthropicClient(model, base_url, **kwargs)
+tradingagents/llm_clients/factory.py:41:        return GoogleClient(model, base_url, **kwargs)
+tradingagents/llm_clients/TODO.md:5:### 1. `validate_model()` is never called
+tradingagents/llm_clients/TODO.md:6:- Add validation call in `get_llm()` with warning (not error) for unknown models
+tradingagents/llm_clients/TODO.md:23:### 4. Update validators.py with models from CLI
+tradingagents/llm_clients/TODO.md:24:- Sync `VALID_MODELS` dict with CLI model options after Feature 2 is complete
+tradingagents/llm_clients/__init__.py:3:from .model_catalog import MODEL_API_CATALOG, MODEL_API_CATALOG_VERSION, get_model_api_catalog
+tradingagents/llm_clients/__init__.py:10:    "get_model_api_catalog",
+tradingagents/llm_clients/base_client.py:8:    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+tradingagents/llm_clients/base_client.py:9:        self.model = model
+tradingagents/llm_clients/base_client.py:19:    def validate_model(self) -> bool:
+tradingagents/llm_clients/base_client.py:20:        """Validate that the model is supported by this client."""
+tradingagents/llm_clients/validators.py:3:Only validates model names - does NOT enforce limits.
+tradingagents/llm_clients/validators.py:19:        # o-series reasoning models
+tradingagents/llm_clients/validators.py:69:def validate_model(provider: str, model: str) -> bool:
+tradingagents/llm_clients/validators.py:70:    """Check if model name is valid for the given provider.
+tradingagents/llm_clients/validators.py:72:    For ollama, openrouter - any model is accepted.
+tradingagents/llm_clients/validators.py:82:    return model in VALID_MODELS[provider_lower]
+
+2026-07-22T12:53:51.684356Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc "sed -n '1,180p' tradingagents/llm_clients/openai_client.py && sed -n '1,100p' tradingagents/llm_clients/google_client.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import logging
+import os
+import time
+from json import JSONDecodeError
+from typing import Any, Optional
+
+from langchain_openai import ChatOpenAI
+
+_logger = logging.getLogger(__name__)
+
+from .base_client import BaseLLMClient
+from .rate_limiter import invoke_with_retry, ainvoke_with_retry
+from .validators import validate_model
+
+
+class UnifiedChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that strips incompatible params for certain models."""
+
+    def __init__(self, **kwargs):
+        # 彻底移除重试参数，由构造函数统一控制
+        kwargs.pop("response_parse_retries", None)
+        kwargs.pop("response_parse_retry_delay", None)
+
+        model = kwargs.get("model") or kwargs.get("model_name", "")
+        base_url = kwargs.get("base_url")
+
+        # LOG_LEVEL=DEBUG 时开启 LangChain verbose，打印完整的 LLM 请求和响应
+        if os.environ.get("LOG_LEVEL", "").upper() == "DEBUG":
+            kwargs["verbose"] = True
+
+        # 1. Reasoning models (O1 etc) typically don't support temperature
+        if self._is_reasoning_model(model):
+            kwargs.pop("temperature", None)
+            kwargs.pop("top_p", None)
+
+        # 2. Moonshot (Kimi) models often strictly require temperature=1
+        if self._is_moonshot_model(model, base_url):
+            kwargs["temperature"] = 1
+
+        super().__init__(**kwargs)
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        """Invoke with retry + concurrency control via rate_limiter."""
+        result = invoke_with_retry(self, input, config=config, **kwargs)
+        if _logger.isEnabledFor(logging.DEBUG):
+            content = result.content if hasattr(result, "content") else str(result)
+            _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
+        return result
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        """Async invoke with retry + concurrency control via rate_limiter."""
+        result = await ainvoke_with_retry(self, input, config=config, **kwargs)
+        if _logger.isEnabledFor(logging.DEBUG):
+            content = result.content if hasattr(result, "content") else str(result)
+            _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
+        return result
+
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        """Check if model is a reasoning model."""
+        model_lower = str(model).lower()
+        return (
+            model_lower.startswith("o1")
+            or model_lower.startswith("o3")
+            or "gpt-5" in model_lower
+            or "-r1" in model_lower
+            or "thinking" in model_lower
+            or "reasoning" in model_lower
+            or "deepseek-v4-pro" in model_lower
+            or "reasoner" in model_lower  # deepseek-reasoner
+        )
+
+    @staticmethod
+    def _is_moonshot_model(model: str, base_url: Optional[str] = None) -> bool:
+        """Check if model or base_url is from Moonshot (Kimi)."""
+        m = str(model).lower()
+        b = (base_url or "").lower()
+        return "moonshot" in m or "kimi" in m or "moonshot" in b or "kimi" in b
+
+
+class OpenAIClient(BaseLLMClient):
+    """Client for OpenAI, Ollama, OpenRouter, and xAI providers."""
+
+    def __init__(
+        self,
+        model: str,
+        base_url: Optional[str] = None,
+        provider: str = "openai",
+        **kwargs,
+    ):
+        super().__init__(model, base_url, **kwargs)
+        self.provider = provider.lower()
+
+    def get_llm(self) -> Any:
+        """Return configured ChatOpenAI instance with retry + concurrency control."""
+        llm_kwargs = {"model": self.model}
+
+        if not UnifiedChatOpenAI._is_reasoning_model(self.model):
+            llm_kwargs["temperature"] = self.kwargs.get("temperature", 0)
+
+        # ── 稳定性配置 ──
+        # 1. 禁用 LangChain 内置重试：由 rate_limiter 统一控制重试策略
+        llm_kwargs["max_retries"] = 0
+
+        # 2. 超长超时：默认 300 秒，给足推理模型思考时间
+        llm_kwargs["timeout"] = self.kwargs.get("timeout", 300.0)
+
+        target_url = self.base_url or "https://api.openai.com/v1"
+        if self.provider == "xai": target_url = "https://api.x.ai/v1"
+        elif self.provider == "openrouter": target_url = "https://openrouter.ai/api/v1"
+        elif self.provider == "ollama": target_url = "http://localhost:11434/v1"
+
+        print(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=rate_limiter, Timeout={llm_kwargs['timeout']}s)")
+
+        if self.provider == "xai":
+            llm_kwargs["base_url"] = "https://api.x.ai/v1"
+            api_key = os.environ.get("XAI_API_KEY")
+            if api_key: llm_kwargs["api_key"] = api_key
+        elif self.provider == "openrouter":
+            llm_kwargs["base_url"] = "https://openrouter.ai/api/v1"
+            api_key = os.environ.get("OPENROUTER_API_KEY")
+            if api_key: llm_kwargs["api_key"] = api_key
+        elif self.provider == "ollama":
+            llm_kwargs["base_url"] = "http://localhost:11434/v1"
+            llm_kwargs["api_key"] = "ollama"
+        elif self.base_url:
+            llm_kwargs["base_url"] = self.base_url
+            # For custom OpenAI-compatible endpoints (e.g. Zhipu), read TA_API_KEY
+            api_key = os.environ.get("TA_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            if api_key:
+                llm_kwargs["api_key"] = api_key
+
+        # Pass remaining keys
+        for key in ("api_key", "callbacks", "reasoning_effort"):
+            if key in self.kwargs:
+                llm_kwargs[key] = self.kwargs[key]
+
+        return UnifiedChatOpenAI(**llm_kwargs)
+
+    def validate_model(self) -> bool:
+        return validate_model(self.provider, self.model)
+from typing import Any, Optional
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+from .base_client import BaseLLMClient
+from .validators import validate_model
+
+
+class NormalizedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+    """ChatGoogleGenerativeAI with normalized content output.
+
+    Gemini 3 models return content as list: [{'type': 'text', 'text': '...'}]
+    This normalizes to string for consistent downstream handling.
+    """
+
+    def _normalize_content(self, response):
+        content = response.content
+        if isinstance(content, list):
+            texts = [
+                item.get("text", "") if isinstance(item, dict) and item.get("type") == "text"
+                else item if isinstance(item, str) else ""
+                for item in content
+            ]
+            response.content = "\n".join(t for t in texts if t)
+        return response
+
+    def invoke(self, input, config=None, **kwargs):
+        return self._normalize_content(super().invoke(input, config, **kwargs))
+
+
+class GoogleClient(BaseLLMClient):
+    """Client for Google Gemini models."""
+
+    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+        super().__init__(model, base_url, **kwargs)
+
+    def get_llm(self) -> Any:
+        """Return configured ChatGoogleGenerativeAI instance."""
+        llm_kwargs = {"model": self.model}
+
+        for key in ("timeout", "max_retries", "google_api_key", "callbacks"):
+            if key in self.kwargs:
+                llm_kwargs[key] = self.kwargs[key]
+        if "api_key" in self.kwargs and "google_api_key" not in llm_kwargs:
+            llm_kwargs["google_api_key"] = self.kwargs["api_key"]
+
+        # Map thinking_level to appropriate API param based on model
+        # Gemini 3 Pro: low, high
+        # Gemini 3 Flash: minimal, low, medium, high
+        # Gemini 2.5: thinking_budget (0=disable, -1=dynamic)
+        thinking_level = self.kwargs.get("thinking_level")
+        if thinking_level:
+            model_lower = self.model.lower()
+            if "gemini-3" in model_lower:
+                # Gemini 3 Pro doesn't support "minimal", use "low" instead
+                if "pro" in model_lower and thinking_level == "minimal":
+                    thinking_level = "low"
+                llm_kwargs["thinking_level"] = thinking_level
+            else:
+                # Gemini 2.5: map to thinking_budget
+                llm_kwargs["thinking_budget"] = -1 if thinking_level == "high" else 0
+
+        return NormalizedChatGoogleGenerativeAI(**llm_kwargs)
+
+    def validate_model(self) -> bool:
+        """Validate model for Google."""
+        return validate_model("google", self.model)
+
+2026-07-22T12:53:55.640973Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_jyuy3m3K3mg7GGFjvgLGP39c"
+2026-07-22T12:53:55.646343Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:53:59.964804Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_DUzjlW4ik5If26lhNiBGrGD2"
+exec
+/bin/zsh -lc "find docs/task_runs/FUND-005A-20260722-203834 -maxdepth 2 -type f -print -exec wc -l {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/FUND-005A-20260722-203834/tests-round1.txt
+       7 docs/task_runs/FUND-005A-20260722-203834/tests-round1.txt
+docs/task_runs/FUND-005A-20260722-203834/codegraph-status.json
+      42 docs/task_runs/FUND-005A-20260722-203834/codegraph-status.json
+docs/task_runs/FUND-005A-20260722-203834/prompt-round1.md
+      16 docs/task_runs/FUND-005A-20260722-203834/prompt-round1.md
+docs/task_runs/FUND-005A-20260722-203834/codegraph-context.txt
+      21 docs/task_runs/FUND-005A-20260722-203834/codegraph-context.txt
+docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt
+    1019 docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt
+docs/task_runs/FUND-005A-20260722-203834/task.md
+      23 docs/task_runs/FUND-005A-20260722-203834/task.md
+docs/task_runs/FUND-005A-20260722-203834/codegraph-impact.txt
+      93 docs/task_runs/FUND-005A-20260722-203834/codegraph-impact.txt
+
+2026-07-22T12:53:59.969112Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:03.378165Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_eypgCe9R7BVelIxjCeb4Ufv4"
+exec
+/bin/zsh -lc 'rg -n "sk-|api_key|API_KEY|secret|base_url|OPENAI|TA_API_KEY" docs/task_runs/FUND-005A-20260722-203834' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt:660:tests/test_fund005_agent_trace.py::test_trace_never_contains_secret_or_raw_evidence_content PASSED [ 79%]
+docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt:661:tests/test_fund005_agent_trace.py::test_trace_never_contains_api_key_or_base_url PASSED [ 83%]
+docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt:774:tests/test_fund005_agent_trace.py::test_trace_never_contains_secret_or_raw_evidence_content PASSED [ 79%]
+docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt:775:tests/test_fund005_agent_trace.py::test_trace_never_contains_api_key_or_base_url PASSED [ 83%]
+docs/task_runs/FUND-005A-20260722-203834/opencode-round1.txt:946:+- **新增测试**：`tests/test_fund005_agent_trace.py`（24 项），覆盖 5 类场景：无 fallback actual_model 匹配、config tier fallback、运行时 actual_model 提取、actual_model unknown（无响应元数据/显式 unknown）、历史配置变化快照不可变性。额外覆盖：隐私安全（secrets/URLs 不泄漏）、timing 字段保留、全 tier 快照、全部 7 个分析师 tier 映射。
+
+2026-07-22T12:54:03.383541Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:08.442801Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_gje5RWkYTrGGK7ftyeAKaV0L"
+exec
+/bin/zsh -lc "sed -n '1,150p' tradingagents/agents/analysts/volume_price_analyst.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import logging
+import time
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from tradingagents.dataflows.config import get_config
+from tradingagents.prompts import get_prompt
+from tradingagents.graph.intent_parser import build_horizon_context
+from tradingagents.agents.utils.context_utils import build_prompt_context_block
+
+logger = logging.getLogger("volume_price_analyst")
+from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+
+
+def create_volume_price_analyst(llm, data_collector=None):
+    async def volume_price_analyst_node(state):
+        current_date = state["trade_date"]
+        ticker = state["company_of_interest"]
+        horizon = "short"
+        user_intent = state.get("user_intent") or {}
+        focus_areas = user_intent.get("focus_areas", [])
+        specific_questions = user_intent.get("specific_questions", [])
+
+        config = get_config()
+        horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="volume_price")
+        context_block = build_prompt_context_block(state, "analyst")
+        system_message = get_prompt("volume_price_system_message", config=config)
+
+        if data_collector is not None:
+            pool = data_collector.get(ticker, current_date)
+            logger.info(f"[VPA-DEBUG] dc_id={id(data_collector)} ticker={ticker} date={current_date} pool={'None' if pool is None else type(pool).__name__} cache_keys={list(data_collector._cache.keys())}")
+            if pool is not None:
+                windowed = data_collector.get_window(pool, horizon, current_date)
+                vpa_data = windowed.get("vpa_indicators", "无数据")
+                stock_data = windowed.get("stock_data", "无数据")
+                data_window = windowed.get("_data_window", "14天")
+                logger.info(f"[VPA-DEBUG] vpa_len={len(vpa_data) if isinstance(vpa_data, str) else 'N/A'} stock_len={len(stock_data) if isinstance(stock_data, str) else 'N/A'} vpa_preview={vpa_data[:100] if isinstance(vpa_data, str) else vpa_data}")
+            else:
+                vpa_data, stock_data, data_window = "无数据", "无数据", "14天"
+                logger.warning("[VPA-DEBUG] pool is None!")
+        else:
+            vpa_data, stock_data, data_window = "无数据", "无数据", "14天"
+            logger.warning("[VPA-DEBUG] data_collector is None!")
+
+        # Detect data availability to prevent LLM from fabricating data
+        has_vpa = vpa_data not in ("无数据", "VPA 数据不足", "VPA 数据不足：缺少 OHLCV 列", "VPA 数据不足：历史 K 线数量不够") and not vpa_data.startswith("VPA 计算失败")
+        has_stock = stock_data not in ("无数据", "") and not stock_data.startswith("No data found") and len(stock_data) > 100
+
+        if not has_vpa and not has_stock:
+            full_content = (
+                f"量价分析数据不可用（{ticker}，{current_date}）。"
+                f"VPA 预计算指标和原始 K 线数据均获取失败，无法进行量价分析。"
+                f"\n\n⚠️ 数据缺失，本报告不提供任何价格、成交量或量价关系的判断。"
+                f"其他分析师的报告不应引用本量价分析作为证据。"
+            )
+            return {
+                "volume_price_report": full_content,
+                "analyst_traces": [{
+                    "agent": "volume_price_analyst",
+                    "horizon": horizon,
+                    "data_window": "数据不可用",
+                    "key_finding": "量价分析数据不可用，无法给出结论",
+                    "verdict": "中性",
+                    "confidence": "低",
+                }],
+            }
+
+        # Build data sections with clear availability markers
+        data_sections = []
+        if has_vpa:
+            data_sections.append(f"以下是 {ticker} 在 {current_date} 的量价分析预计算数据（数据窗口：{data_window}）。\n\n{vpa_data}")
+        else:
+            data_sections.append(f"⚠️ VPA 预计算指标数据不可用，跳过该部分分析。")
+
+        if has_stock:
+            data_sections.append(f"【原始 K 线数据参考】\n{stock_data}")
+        else:
+            data_sections.append(f"⚠️ 原始 K 线数据不可用，跳过该部分分析。")
+
+        no_fabricate_instruction = (
+            "\n\n【严禁事项】你只能基于以上提供的真实数据进行分析。"
+            "绝对禁止编造、假设或虚构任何价格、成交量、K线形态数据。"
+            "如果提供的数据不足以得出结论，你必须明确说明数据不足，给出'中性'判断，"
+            "而不是基于假设数据做分析。"
+        )
+
+        messages = [
+            SystemMessage(content=horizon_ctx + context_block + "\n\n" + system_message + "\n\n请全程使用中文。" + no_fabricate_instruction),
+            HumanMessage(content="\n\n".join(data_sections)),
+        ]
+
+        tracker = current_tracker_var.get()
+        full_content = ""
+        started_at = time.time()
+        last_chunk = None
+        async for chunk in llm.astream(messages):
+            last_chunk = chunk
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            full_content += content
+            if tracker:
+                tracker._emit_token("Volume Price Analyst", "volume_price_report", content)
+
+        finished_at = time.time()
+        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+        verdict, confidence = extract_verdict(full_content)
+
+        # Override confidence to low if data was partial
+        if not has_vpa or not has_stock:
+            confidence = "低"
+            full_content += "\n\n⚠️ 注意：本分析因部分数据缺失，置信度较低。"
+
+        return {
+            "volume_price_report": full_content,
+            "analyst_traces": [{
+                "agent": "volume_price_analyst",
+                "horizon": horizon,
+                "data_window": data_window,
+                "key_finding": f"量价分析结论：{verdict}",
+                "verdict": verdict,
+                "confidence": confidence,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "latency_ms": round((finished_at - started_at) * 1000, 1),
+                "actual_model": actual_model,
+            }],
+        }
+
+    return volume_price_analyst_node
+
+2026-07-22T12:54:08.448130Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:18.636853Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_TepAXCs981KhLAjljTuSDup2"
+exec
+/bin/zsh -lc "cat docs/task_runs/FUND-005A-20260722-203834/task.md && cat docs/task_runs/FUND-005A-20260722-203834/prompt-round1.md && git diff -- docs/TASKS.md docs/DEVLOG.md | sed -n '1,220p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# Auto Dev Task Run
+
+- Task: FUND-005A - 逐 Agent 真实模型与运行时 trace 补修（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-07-22_20:38:34
+- Git HEAD: 08f7ab8
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Codex review timeout seconds: 1200
+- OpenCode binary: /opt/homebrew/bin/opencode
+- OpenCode version: 1.15.12
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+# Task: FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
+
+Read task "FUND-005A" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index cc706f8..ae34f71 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,28 @@
+ # 修改日志
+ 
++## 2026-07-22 | FUND-005A 逐 Agent 真实模型与运行时 trace 补修
++
++- **问题**：`annotate_agent_traces()` 中 `actual_model` 静态等于 `requested_model`（config 派生），从未从 LLM 响应元数据提取真实模型；无 fallback 追踪；无逐 Agent 计时。
++- **修复**：
++  - `_model_for_tier_with_fallback()` 返回 `(resolved_model, fallback_from)`，当 tier 首选 key 为空且使用后续 candidate 时记录 `fallback_from`。
++  - `_extract_actual_model_from_response()` 从 LLM 最后一个 chunk 的 `response_metadata` 提取 `model`/`model_name`，不可用时返回 `None`（由调用方写 `"unknown"`）。
++  - `annotate_agent_traces()` 保留分析师运行时提供的 `actual_model`，不覆写为 config 值；仅在分析师未提供时回退到 config 派生值。
++  - 7 个分析师节点（fundamentals/market/news/social_media/smart_money/macro/volume_price）统一添加 `import time` + `_extract_actual_model_from_response` 导入，在 LLM 流式调用前后捕获 `started_at`/`finished_at`/`latency_ms`/`actual_model`。
++  - `TraceItem` TypedDict 新增 `started_at`/`finished_at`/`latency_ms`/`actual_model`/`fallback_from` 字段。
++- **代码变更**：
++  - `tradingagents/agents/utils/agent_trace.py` — 新增 `_extract_actual_model_from_response()`、`_model_for_tier_with_fallback()`；修改 `annotate_agent_traces()` 保留分析师 `actual_model`。
++  - `tradingagents/agents/utils/agent_states.py` — `TraceItem` 新增 5 个字段。
++  - `tradingagents/agents/analysts/fundamentals_analyst.py` — 计时 + actual_model 提取。
++  - `tradingagents/agents/analysts/market_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/news_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/social_media_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/smart_money_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/macro_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/volume_price_analyst.py` — 同上。
++- **新增测试**：`tests/test_fund005_agent_trace.py`（24 项），覆盖 5 类场景：无 fallback actual_model 匹配、config tier fallback、运行时 actual_model 提取、actual_model unknown（无响应元数据/显式 unknown）、历史配置变化快照不可变性。额外覆盖：隐私安全（secrets/URLs 不泄漏）、timing 字段保留、全 tier 快照、全部 7 个分析师 tier 映射。
++- **验证**：FUND-005A 专项 24 项通过；FUND 组合 123 项通过；API/runtime smoke 221 项通过；`py_compile` 通过；`git diff --check` 通过。
++- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-22 | FUND-004A 基本面语义门禁前移并剔除无效研究权重
+ 
+ - **问题**：`evaluate_fundamental_integrity()` 只在 Risk Judge 阶段（图第 9 步）执行，Bull/Bear 研究员和 Research Manager 已先消费了可能包含未经验证因果/会计叙事的基本面报告，导致无效叙事污染辩论、共识权重和长期投资记忆。
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 5c55445..31ead3d 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -5751,7 +5751,7 @@
+ ### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
+ - **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed FUND-005A-20260722-203834
+ - **预计耗时**：25-35 分钟
+ - **depends_on**：FUND-004A, FUND-005, PERF-003
+ - **auto_release**：true
+
+2026-07-22T12:54:18.640672Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:29.585597Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_53iYdSIS8poynKEkF3ASPQo4"
+exec
+/bin/zsh -lc "sed -n '1,110p' tests/test_market_analyst.py && sed -n '1,110p' tests/test_trade_setup.py && sed -n '80,130p' tests/test_g008_valuation_sanity.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from tradingagents.agents.analysts.market_analyst import create_market_analyst
+from tradingagents.graph.data_collector import DataCollector
+
+
+def _make_state(horizon="short"):
+    return {
+        "trade_date": "2026-03-12",
+        "company_of_interest": "600519",
+        "horizon": horizon,
+        "user_intent": {
+            "raw_query": "test", "ticker": "600519",
+            "horizons": ["short", "medium"], "focus_areas": [], "specific_questions": [],
+        },
+    }
+
+
+def _stub_pool(horizon="short"):
+    days = "14天" if horizon == "short" else "90天"
+    return {
+        "stock_data": "close,volume\n100,1000",
+        "indicators": {k: "50" for k in [
+            "close_50_sma","close_200_sma","close_10_ema",
+            "rsi","macd","boll","boll_ub","boll_lb","atr","vwma"
+        ]},
+        "_data_window": days, "_horizon": horizon,
+    }
+
+
+def test_market_analyst_returns_trace():
+    mock_llm = MagicMock()
+
+    async def _astream(_messages):
+        yield SimpleNamespace(
+            content='报告\n<!-- VERDICT: {"direction": "看多", "reason": "趋势向上"} -->'
+        )
+
+    mock_llm.astream = _astream
+    collector = DataCollector()
+    collector._cache["600519_2026-03-12"] = _stub_pool("short")
+    node = create_market_analyst(mock_llm, collector)
+    result = asyncio.run(node(_make_state("short")))
+    assert "market_report" in result
+    assert "analyst_traces" in result
+    assert len(result["analyst_traces"]) == 1
+    assert result["analyst_traces"][0]["agent"] == "market_analyst"
+    assert result["analyst_traces"][0]["verdict"] == "看多"
+    assert result["analyst_traces"][0]["horizon"] == "short"
+
+
+def test_market_analyst_uses_short_window_for_medium_request():
+    mock_llm = MagicMock()
+
+    async def _astream(_messages):
+        yield SimpleNamespace(content="report")
+
+    mock_llm.astream = _astream
+    collector = DataCollector()
+    collector._cache["600519_2026-03-12"] = _stub_pool("medium")
+    node = create_market_analyst(mock_llm, collector)
+    result = asyncio.run(node(_make_state("medium")))
+    assert result["analyst_traces"][0]["horizon"] == "short"
+    assert result["analyst_traces"][0]["data_window"] == "14天"
+
+
+def test_market_analyst_prompt_includes_user_context_constraints():
+    mock_llm = MagicMock()
+    captured = {}
+
+    async def _astream(messages):
+        captured["messages"] = messages
+        yield SimpleNamespace(content="report")
+
+    mock_llm.astream = _astream
+    collector = DataCollector()
+    collector._cache["600519_2026-03-12"] = _stub_pool("short")
+    node = create_market_analyst(mock_llm, collector)
+    state = _make_state("short")
+    state["user_context"] = {
+        "objective": "短线波段",
+        "risk_profile": "谨慎",
+        "constraints": ["不追高", "只在回调确认后入场"],
+        "user_notes": "优先看情绪和预期，不做长期价值投资。",
+    }
+
+    asyncio.run(node(state))
+
+    prompt_text = "\n".join(getattr(message, "content", "") for message in captured["messages"])
+    assert "【用户上下文】" in prompt_text
+    assert "不追高" in prompt_text
+    assert "只在回调确认后入场" in prompt_text
+import asyncio
+from types import SimpleNamespace
+
+from tradingagents.agents.managers.risk_manager import create_risk_manager
+from tradingagents.agents.utils.trade_setup import (
+    build_trade_quality_check,
+    format_trade_quality_check,
+)
+
+
+def test_trade_quality_check_detects_event_timing_conflict():
+    check = build_trade_quality_check(
+        investment_plan="业绩超预期，事件前低吸买入。",
+        trader_plan="入场区间：28.0-30.0，止损价：26.5。",
+        final_decision="只有解禁日平稳度过后再执行买入。",
+        user_context={"constraints": ["不追高"]},
+    )
+
+    assert "业绩超预期" in check["setup_type"]
+    assert "事件驱动" in check["setup_type"]
+    assert check["action"] == "等待人工复核"
+    assert check["entry_range"] == "28.0-30.0"
+    assert check["stop_loss_price"] == 26.5
+    assert check["conflicts"]
+    assert "执行时点冲突" in check["conflicts"][0]
+    assert "执行质检" in format_trade_quality_check(check)
+
+
+def test_trade_quality_check_ignores_ma_period_and_extracts_trigger_stop_levels():
+    check = build_trade_quality_check(
+        investment_plan="短线先观察，若重新站稳5日线再看承接。",
+        trader_plan="触发位：57.48 / 60.80；止损位：56.00 / 52.40；当前不追高。",
+        final_decision="未持仓者观望，只有放量重新站稳60.80后才重新评估机会。",
+    )
+
+    assert check["trigger_price"] == 57.48
+    assert check["stop_loss_price"] == 56.0
+    assert "无法从报告中解析出明确止损价。" not in check["do_not_trade_if"]
+
+
+def test_trade_quality_check_does_not_parse_numbered_risk_list_as_stop_loss():
+    check = build_trade_quality_check(
+        investment_plan="当前空仓观望。",
+        trader_plan="不建议入场，止损价：不适用（因不建议入场）。",
+        final_decision=(
+            "出现以下任一情况，应立即放弃任何入场计划，并对已持仓部分执行止损：\n"
+            "1. RISK-1恶化：后续财报显示盈利增速进一步下滑。\n"
+            "2. 技术面破位：股价放量跌破492.65元且无法收回。\n"
+            "目标价：—\n止损价：—"
+        ),
+    )
+
+    assert check["stop_loss_price"] is None
+    # [P1-3] No position + no conditional entry → stop-loss missing is NOT an error
+    assert "无法从报告中解析出明确止损价。" not in check["do_not_trade_if"]
+
+
+def test_p13_no_position_conditional_entry_requires_stop_loss():
+    """[P1-3] No position + conditional entry → stop-loss IS required."""
+    check = build_trade_quality_check(
+        investment_plan="未持仓，若突破可试仓。",
+        trader_plan="若股价放量突破50.00元，可考虑建仓。",
+        final_decision="触发条件：放量突破50.00元建仓买入。",
+    )
+    assert check["stop_loss_price"] is None
+    assert "无法从报告中解析出明确止损价。" in check["do_not_trade_if"]
+
+
+class _FakeLLM:
+    async def astream(self, _prompt):
+        yield SimpleNamespace(
+            content=(
+                "最终建议：条件型买入。事件前第一笔建仓，止损价：26.5。"
+                "但必须等解禁日平稳度过后再执行。"
+                "\n<!-- RISK_JUDGE: {"
+                "\"verdict\":\"pass\","
+                "\"hard_constraints\":[],"
+                "\"soft_constraints\":[],"
+                "\"execution_preconditions\":[\"等待触发\"],"
+                "\"de_risk_triggers\":[],"
+                "\"revision_reason\":\"\""
+                "} -->"
+            )
+        )
+
+
+class _Memory:
+    def get_memories(self, _situation, n_matches=2):
+        return []
+
+
+def _risk_state():
+    return {
+        "company_of_interest": "301200.SZ",
+        "market_report": "技术面报告",
+        "sentiment_report": "情绪面报告",
+        "news_report": "新闻报告",
+        "fundamentals_report": "基本面报告",
+        "investment_plan": "多头方案：业绩超预期，事件前低吸。",
+        "trader_investment_plan": "入场区间：28.0-30.0，买入；止损价：26.5。",
+        "user_context": {
+            "objective": "短线波段",
+            "constraints": ["不追高"],
+        },
+        "risk_feedback_state": {"retry_count": 0, "max_retries": 1},
+        "risk_debate_state": {
+            "history": "",
+            "aggressive_history": "",
+            "conservative_history": "",
+            "neutral_history": "",
+                "raw": raw_stock_csv,
+                "status": "HAS_DATA",
+                "vendor": "akshare",
+            }
+        }
+
+        captured_raw_evidence = {}
+
+        original_infer = __import__(
+            "tradingagents.agents.utils.readiness_score",
+            fromlist=["infer_evidence_statuses"],
+        ).infer_evidence_statuses
+
+        def mock_infer(reports, raw_evidence=None):
+            captured_raw_evidence["value"] = raw_evidence
+            return original_infer(reports, raw_evidence=raw_evidence)
+
+        class _FakeLLM:
+            async def astream(self, _prompt):
+                yield MagicMock(
+                    content=(
+                        "建议持有。\n"
+                        "<!-- RISK_JUDGE: {"
+                        "\"verdict\":\"pass\","
+                        "\"hard_constraints\":[],"
+                        "\"soft_constraints\":[],"
+                        "\"execution_preconditions\":[],"
+                        "\"de_risk_triggers\":[],"
+                        "\"revision_reason\":\"\""
+                        "} -->"
+                    )
+                )
+
+        class _Memory:
+            def get_memories(self, _situation, n_matches=2):
+                return []
+
+        state = {
+            "company_of_interest": "600584.SH",
+            "ticker": "600584.SH",
+            "market_report": "技术面报告",
+            "sentiment_report": "情绪面报告",
+            "news_report": "新闻报告",
+            "fundamentals_report": "基本面报告",
+            "smart_money_report": "主力资金报告",
+            "volume_price_report": "量价报告",
+            "investment_plan": "方案",
+            "trader_investment_plan": "交易计划",
+            "user_context": {"objective": "短线", "current_position": 0},
+            "metadata": {"raw_evidence": metadata_raw},
+            "risk_feedback_state": {"retry_count": 0, "max_retries": 1},
+
+2026-07-22T12:54:29.590548Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_market_analyst.py tests/test_fund005_agent_trace.py -q' in /Users/maybee/TradingAgents-AShare
+2026-07-22T12:54:34.363524Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:34.463799Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_ADO3vOVJdej4hqUOmwQTavdH"
+ succeeded in 1334ms:
+...........................                                              [100%]
+27 passed in 0.87s
+
+2026-07-22T12:54:41.520882Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_yl5Cjti1CTnEH4wIoAYbmVaV"
+exec
+/bin/zsh -lc "sed -n '80,220p' tradingagents/graph/trading_graph.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        
+        self.checkpointer = TradingAgentsGraph._shared_checkpointer
+
+        # Create necessary directories
+        os.makedirs(
+            os.path.join(self.config["project_dir"], "dataflows/data_cache"),
+            exist_ok=True,
+        )
+
+        # Initialize LLMs with provider-specific thinking configuration
+        llm_kwargs = self._get_provider_kwargs()
+
+        # Add callbacks to kwargs if provided (passed to LLM constructor)
+        if self.callbacks:
+            llm_kwargs["callbacks"] = self.callbacks
+
+        ultra_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["ultra_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
+        deep_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["deep_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
+        mid_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["mid_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
+        quick_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["quick_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
+
+        self.ultra_thinking_llm = ultra_client.get_llm()
+        self.deep_thinking_llm = deep_client.get_llm()
+        self.mid_thinking_llm = mid_client.get_llm()
+        self.quick_thinking_llm = quick_client.get_llm()
+        
+        # Initialize memories
+        self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
+        self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
+        self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
+        self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
+        self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
+
+        # Create tool nodes
+        self.tool_nodes = self._create_tool_nodes()
+
+        # Data collector — fetches once, shared across dual-horizon runs
+        self.data_collector = data_collector if data_collector is not None else DataCollector()
+
+        # Initialize components
+        self.conditional_logic = ConditionalLogic(
+            max_debate_rounds=self.config.get("max_debate_rounds", 1),
+            max_risk_discuss_rounds=self.config.get("max_risk_discuss_rounds", 1),
+        )
+        self.graph_setup = GraphSetup(
+            self.quick_thinking_llm,
+            self.mid_thinking_llm,
+            self.deep_thinking_llm,
+            self.ultra_thinking_llm,
+            self.tool_nodes,
+            self.bull_memory,
+            self.bear_memory,
+            self.trader_memory,
+            self.invest_judge_memory,
+            self.risk_manager_memory,
+            self.conditional_logic,
+            data_collector=self.data_collector,
+        )
+
+        self.propagator = Propagator(
+            max_recur_limit=self.config.get("max_recur_limit", 100)
+        )
+        self.reflector = Reflector(self.quick_thinking_llm)
+        self.signal_processor = SignalProcessor(self.quick_thinking_llm)
+
+        # State tracking
+        self.curr_state = None
+        self.ticker = None
+        self.log_states_dict = {}  # date to full state dict
+
+        # Set up the graph with checkpointer
+        self.graph = self.graph_setup.setup_graph(selected_analysts, checkpointer=self.checkpointer)
+
+    def get_state(self, thread_id: str):
+        """Retrieve the current state for a given thread_id."""
+        config = {"configurable": {"thread_id": thread_id}}
+        return self.graph.get_state(config)
+
+    def _get_provider_kwargs(self) -> Dict[str, Any]:
+        """Get provider-specific kwargs for LLM client creation."""
+        kwargs = {}
+        provider = self.config.get("llm_provider", "").lower()
+
+        if provider == "google":
+            thinking_level = self.config.get("google_thinking_level")
+            if thinking_level:
+                kwargs["thinking_level"] = thinking_level
+            api_key = self.config.get("api_key")
+            if api_key:
+                kwargs["api_key"] = api_key
+
+        elif provider == "openai":
+            reasoning_effort = self.config.get("openai_reasoning_effort")
+            if reasoning_effort:
+                kwargs["reasoning_effort"] = reasoning_effort
+            api_key = self.config.get("api_key")
+            if api_key:
+                kwargs["api_key"] = api_key
+
+        elif provider == "anthropic":
+            api_key = self.config.get("api_key")
+            if api_key:
+                kwargs["api_key"] = api_key
+
+        return kwargs
+
+    def _create_tool_nodes(self) -> Dict[str, ToolNode]:
+        """Create tool nodes for different data sources using abstract methods."""
+        return {
+            "market": ToolNode(
+                [
+                    # Core stock data tools
+                    get_stock_data,
+                    # Technical indicators
+                    get_indicators,
+                ]
+            ),
+            "social": ToolNode(
+                [
+                    # News tools for social media analysis
+                    get_news,
+
+2026-07-22T12:54:41.525590Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:46.906825Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_zZZKzPjZjy7y0OoIqsvpc5fY"
+exec
+/bin/zsh -lc 'rg "mid_think_llm|quick_think_llm|deep_think_llm|ultra_think_llm|mid_thinking_llm|fundamentals" tradingagents/graph/setup.py tradingagents/default_config.py api/main.py -n' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/default_config.py:12:    "deep_think_llm": os.getenv("TA_LLM_DEEP", "gpt-4o"),
+tradingagents/default_config.py:13:    "quick_think_llm": os.getenv("TA_LLM_QUICK", "gpt-4o-mini"),
+tradingagents/default_config.py:14:    "mid_think_llm": os.getenv("TA_LLM_MID", os.getenv("TA_LLM_DEEP", "gpt-4o")),
+tradingagents/default_config.py:15:    "ultra_think_llm": os.getenv("TA_LLM_ULTRA", os.getenv("TA_LLM_DEEP", "gpt-4o")),
+tradingagents/graph/setup.py:13:def create_fundamentals_integrity_gate(data_collector=None):
+tradingagents/graph/setup.py:14:    """[FUND-004A] Create a graph node that gates fundamentals report integrity.
+tradingagents/graph/setup.py:17:    replaces the fundamentals_report with a safe version containing only
+tradingagents/graph/setup.py:23:        build_gated_fundamentals_report,
+tradingagents/graph/setup.py:28:    async def fundamentals_integrity_gate_node(state):
+tradingagents/graph/setup.py:31:        fundamentals_report = state.get("fundamentals_report", "")
+tradingagents/graph/setup.py:33:        if not fundamentals_report:
+tradingagents/graph/setup.py:52:            report_text=fundamentals_report,
+tradingagents/graph/setup.py:59:            gated_report = build_gated_fundamentals_report(
+tradingagents/graph/setup.py:60:                original_report=fundamentals_report,
+tradingagents/graph/setup.py:65:                "[FUND-004A] Gate triggered for %s: %d blockers, replacing fundamentals_report",
+tradingagents/graph/setup.py:69:                "fundamentals_report": gated_report,
+tradingagents/graph/setup.py:75:    return fundamentals_integrity_gate_node
+tradingagents/graph/setup.py:87:    from tradingagents.agents.analysts.fundamentals_analyst import create_fundamentals_analyst
+tradingagents/graph/setup.py:108:        "create_fundamentals_analyst": create_fundamentals_analyst,
+tradingagents/graph/setup.py:109:        "create_fundamentals_integrity_gate": create_fundamentals_integrity_gate,
+tradingagents/graph/setup.py:129:        mid_thinking_llm: ChatOpenAI,
+tradingagents/graph/setup.py:143:        self.mid_thinking_llm = mid_thinking_llm
+tradingagents/graph/setup.py:156:        self, selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money"],
+tradingagents/graph/setup.py:205:        if "fundamentals" in selected_analysts:
+tradingagents/graph/setup.py:206:            analyst_nodes["fundamentals"] = factories["create_fundamentals_analyst"](
+tradingagents/graph/setup.py:207:                self.mid_thinking_llm, self.data_collector
+tradingagents/graph/setup.py:209:            tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
+tradingagents/graph/setup.py:210:            done_nodes["fundamentals"] = analyst_done_node
+tradingagents/graph/setup.py:214:                self.mid_thinking_llm, self.data_collector
+tradingagents/graph/setup.py:246:        fundamentals_integrity_gate_node = factories["create_fundamentals_integrity_gate"](
+tradingagents/graph/setup.py:251:        aggressive_analyst = factories["create_aggressive_debator"](self.mid_thinking_llm)
+tradingagents/graph/setup.py:252:        neutral_analyst = factories["create_neutral_debator"](self.mid_thinking_llm)
+tradingagents/graph/setup.py:253:        conservative_analyst = factories["create_conservative_debator"](self.mid_thinking_llm)
+tradingagents/graph/setup.py:281:        workflow.add_node("Fundamentals Integrity Gate", fundamentals_integrity_gate_node)
+tradingagents/graph/setup.py:307:        non_fundamentals_done = [
+tradingagents/graph/setup.py:310:            if analyst_type != "fundamentals"
+tradingagents/graph/setup.py:312:        if "fundamentals" in selected_analysts:
+tradingagents/graph/setup.py:315:                ["Fundamentals Integrity Gate"] + non_fundamentals_done,
+tradingagents/graph/setup.py:319:            # No fundamentals analyst selected — all done nodes go directly to Bull
+tradingagents/graph/setup.py:320:            workflow.add_edge(non_fundamentals_done, "Bull Researcher")
+api/main.py:394:    "llm_provider", "deep_think_llm", "quick_think_llm",
+api/main.py:647:ANALYST_ORDER = ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+api/main.py:652:    "fundamentals": "Fundamentals Analyst",
+api/main.py:673:    "fundamentals": "fundamentals_report",
+api/main.py:680:# (technical/funds → short, fundamentals/macro → medium)
+api/main.py:730:        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+api/main.py:799:        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+api/main.py:893:    fundamentals_report: Optional[str]
+api/main.py:1055:    deep_think_llm: str
+api/main.py:1056:    quick_think_llm: str
+api/main.py:1069:    default_analysts: List[str] = Field(default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"])
+api/main.py:1076:    deep_think_llm: Optional[str] = None
+api/main.py:1077:    quick_think_llm: Optional[str] = None
+api/main.py:1264:            "quick_think_llm",
+api/main.py:1265:            "deep_think_llm",
+api/main.py:1317:    quick = config.get("quick_think_llm")
+api/main.py:1318:    deep = config.get("deep_think_llm")
+api/main.py:1321:        config["deep_think_llm"] = quick
+api/main.py:1323:        config["quick_think_llm"] = deep
+api/main.py:1329:        config["mid_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+api/main.py:1330:        config["ultra_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+api/main.py:1509:        "fundamentals_report": final_state.get("fundamentals_report"),
+api/main.py:1533:        "fundamentals_analysis": "基本面分析完成",
+api/main.py:1550:            "fundamentals_report": None,
+api/main.py:1673:        elif stage == "fundamentals_analysis":
+api/main.py:1698:            "fundamentals_report": "基本面分析",
+api/main.py:1880:    elif tool_name == "get_fundamentals":
+api/main.py:2085:                "market_report", "sentiment_report", "news_report", "fundamentals_report",
+api/main.py:2276:                "fundamentals_report": primary_r.get("fundamentals_report", ""),
+api/main.py:2298:                    fundamentals_report=primary_r.get("fundamentals_report", ""),
+api/main.py:2401:                "fundamentals_report",
+api/main.py:2499:                                    "get_fundamentals": "基本面分析师",
+api/main.py:2554:                fundamentals_report=result.get("fundamentals_report", ""),
+api/main.py:3148:    llm_model = config.get("deep_think_llm", "")
+api/main.py:3361:            model=config.get("quick_think_llm"),
+api/main.py:3467:            model=config.get("quick_think_llm"),
+api/main.py:4102:    selected_analysts: List[str] = ["market", "news", "fundamentals", "sentiment"]
+api/main.py:4155:    "llm_provider", "deep_think_llm", "quick_think_llm",
+api/main.py:4159:_CONFIG_MODEL_KEYS = ("llm_provider", "backend_url", "quick_think_llm", "deep_think_llm")
+api/main.py:4161:    "quick_think_llm": "常规模型",
+api/main.py:4162:    "deep_think_llm": "推理模型",
+api/main.py:4204:    for key in ("quick_think_llm", "deep_think_llm"):
+api/main.py:4215:    for key in ("quick_think_llm", "deep_think_llm"):
+api/main.py:4253:    quick = config.get("quick_think_llm")
+api/main.py:4254:    deep = config.get("deep_think_llm")
+api/main.py:4256:        config["deep_think_llm"] = quick
+api/main.py:4258:        config["quick_think_llm"] = deep
+api/main.py:4304:    model = str(config.get("quick_think_llm") or config.get("deep_think_llm") or "").strip()
+api/main.py:4435:        deep_think_llm=cfg["deep_think_llm"],
+api/main.py:4436:        quick_think_llm=cfg["quick_think_llm"],
+api/main.py:4449:        default_analysts=json.loads(user_cfg.default_analysts) if user_cfg and user_cfg.default_analysts else ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"],
+api/main.py:4558:        deep_think_llm=updates.deep_think_llm,
+api/main.py:4559:        quick_think_llm=updates.quick_think_llm,
+
+2026-07-22T12:54:46.911746Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:52.749004Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_B6tW0TtSlT1PeSAVdyDv000g"
+exec
+/bin/zsh -lc "sed -n '1240,1340p' api/main.py && sed -n '4188,4230p' api/main.py && sed -n '200,220p' tradingagents/graph/setup.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    name: str
+
+
+def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    for k, v in overrides.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def _user_config_overrides(user_id: Optional[str], db: Optional[Session] = None) -> Dict[str, Any]:
+    if not user_id:
+        return {}
+
+    def _query(sess: Session) -> Dict[str, Any]:
+        user_cfg = auth_service.get_user_llm_config(sess, user_id)
+        if not user_cfg:
+            return {}
+        result: Dict[str, Any] = {}
+        for key in (
+            "llm_provider",
+            "backend_url",
+            "quick_think_llm",
+            "deep_think_llm",
+            "max_debate_rounds",
+            "max_risk_discuss_rounds",
+        ):
+            value = getattr(user_cfg, key, None)
+            if value is not None:
+                result[key] = value
+        api_key = auth_service.get_user_provider_api_key(
+            sess,
+            user_id,
+            result.get("llm_provider"),
+            result.get("backend_url"),
+        )
+        if not api_key and not auth_service.has_user_provider_keys(sess, user_id):
+            api_key = auth_service.decrypt_secret_with_fallback(user_cfg.api_key_encrypted)
+        if api_key:
+            result["api_key"] = api_key
+        return result
+
+    if db is not None:
+        return _query(db)
+    with get_db_ctx() as own_db:
+        return _query(own_db)
+
+
+def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = None, db: Optional[Session] = None) -> Dict[str, Any]:
+    config = deepcopy(DEFAULT_CONFIG)
+    server_fallback_enabled = os.getenv("ALLOW_SERVER_LLM_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on")
+    config["server_fallback_enabled"] = server_fallback_enabled
+
+    # Security: filter request overrides to allowlist only
+    overrides = {k: v for k, v in overrides.items() if k in _CONFIG_OVERRIDES_ALLOWLIST}
+
+    # Apply global config overrides (from PATCH /v1/config)
+    if _global_config_overrides:
+        config = _deep_merge(config, dict(_global_config_overrides))
+    
+    # Fetch user specific overrides from DB (pass db to reuse caller's session)
+    user_overrides = _user_config_overrides(user_id, db=db)
+
+    # ── Critical: Filter out empty strings before merging ──
+    # This prevents an empty DB field from wiping out an Env Var default.
+    filtered_user_overrides = {k: v for k, v in user_overrides.items() if v not in (None, "", [])}
+    filtered_request_overrides = {k: v for k, v in overrides.items() if v not in (None, "", [])}
+
+    if filtered_user_overrides:
+        config = _deep_merge(config, filtered_user_overrides)
+    if filtered_request_overrides:
+        config = _deep_merge(config, filtered_request_overrides)
+
+    # ── Intelligent fallback between models ──
+    # If one is provided but the other is missing (even after env var merge), cross-fill.
+    quick = config.get("quick_think_llm")
+    deep = config.get("deep_think_llm")
+
+    if not deep and quick:
+        config["deep_think_llm"] = quick
+    if not quick and deep:
+        config["quick_think_llm"] = deep
+
+    # UI/user configs currently expose quick/deep only. When a user switches to
+    # another OpenAI-compatible endpoint, keep hidden tiers on the same endpoint
+    # by mapping mid/ultra to deep instead of leaking env-level model names.
+    if filtered_user_overrides or filtered_request_overrides:
+        config["mid_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+        config["ultra_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+
+    if user_id and db is not None and auth_service.has_user_provider_keys(db, user_id):
+        config["api_key"] = auth_service.get_user_provider_api_key(
+            db,
+            user_id,
+            config.get("llm_provider"),
+            config.get("backend_url"),
+        ) or ""
+
+    return config
+        if "key=" in normalized:
+            base, key = normalized.rsplit("key=", 1)
+            return f"{base}key={_mask_secret_value(key)}"
+        return _mask_secret_value(normalized, head=18, tail=8)
+    return _mask_secret_value(normalized)
+
+
+def _mask_bark_url(bark_url: Optional[str]) -> Optional[str]:
+    from api.services.bark_notification_service import mask_bark_url
+
+    return mask_bark_url(bark_url)
+
+
+def _warmup_model_names(config: Dict[str, Any]) -> List[str]:
+    seen: set[str] = set()
+    models: List[str] = []
+    for key in ("quick_think_llm", "deep_think_llm"):
+        value = str(config.get(key) or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        models.append(value)
+    return models
+
+
+def _warmup_model_targets(config: Dict[str, Any]) -> List[Tuple[str, List[str]]]:
+    targets: Dict[str, List[str]] = {}
+    for key in ("quick_think_llm", "deep_think_llm"):
+        model = str(config.get(key) or "").strip()
+        if not model:
+            continue
+        labels = targets.setdefault(model, [])
+        label = _CONFIG_MODEL_LABELS.get(key, key)
+        if label not in labels:
+            labels.append(label)
+    return [(model, labels) for model, labels in targets.items()]
+
+
+def _should_trigger_config_warmup(
+    before_cfg: UserRuntimeConfigResponse,
+    after_cfg: UserRuntimeConfigResponse,
+    updates: UserRuntimeConfigUpdateRequest,
+) -> bool:
+                self.quick_thinking_llm, self.data_collector
+            )
+            tool_nodes["news"] = self.tool_nodes["news"]
+            done_nodes["news"] = analyst_done_node
+
+        if "fundamentals" in selected_analysts:
+            analyst_nodes["fundamentals"] = factories["create_fundamentals_analyst"](
+                self.mid_thinking_llm, self.data_collector
+            )
+            tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
+            done_nodes["fundamentals"] = analyst_done_node
+
+        if "macro" in selected_analysts:
+            analyst_nodes["macro"] = factories["create_macro_analyst"](
+                self.mid_thinking_llm, self.data_collector
+            )
+            tool_nodes["macro"] = self.tool_nodes["macro"]
+            done_nodes["macro"] = analyst_done_node
+
+        if "smart_money" in selected_analysts:
+            analyst_nodes["smart_money"] = factories["create_smart_money_analyst"](
+
+2026-07-22T12:54:52.753677Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:54:57.312713Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_OTVWLsTyfzF3iladJmOwMQ5Y"
+exec
+/bin/zsh -lc "sed -n '5748,5775p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  - 图级测试注入“603629 是化工股、Q1 化工淡季”，断言 Bull/Bear prompt 与研究经理决策输入不含该叙事，只含 blocker 和保留财务事实。
+  - 断言最终动作门禁失败、报告状态明确为 `NEEDS_REVIEW`，而非普通完成态。
+
+### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
+- **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
+- **优先级**：P1
+- **状态**：in_progress — claimed FUND-005A-20260722-203834
+- **预计耗时**：25-35 分钟
+- **depends_on**：FUND-004A, FUND-005, PERF-003
+- **auto_release**：true
+- **实现约束**：
+  - 从实际创建/调用的 client 或响应 metadata 获取 provider/model；无法确认时写 `unknown`，不得用 requested 冒充 actual。
+  - 记录 `requested_model/actual_model/model_tier/fallback_from/started_at/finished_at/latency_ms`。
+  - 不记录 key、URL 凭据、完整 prompt、长原文或本机敏感绝对路径。
+- **验收方式**：mock 覆盖无 fallback、模型 fallback、provider fallback、actual 不可知和历史配置变化五类场景。
+
+### FUND-006A: 真实 provider 格式与生产图离线回放验收（P1）
+- **描述**：用真实 provider 输出形态和完整 LangGraph 顺序重验 FUND 补修链；这是 live 603629 前的唯一放行门。
+- **优先级**：P1
+- **状态**：blocked-auto — 等待全部 FUND 补修任务
+- **预计耗时**：40-50 分钟
+- **depends_on**：FUND-001A, FUND-003A-B, FUND-004A, FUND-004B, FUND-005A
+- **auto_release**：true
+- **实现约束**：
+  - 使用脱敏的 `cn_akshare` 表格、`cn_astock` 列表、无关公告、累计/单季度混合数据 fixture。
+  - 覆盖 DataCollector → Fundamentals Analyst → Bull/Bear → Research Manager → Trader → Risk Judge 全链路，不调用 live LLM。
+  - 排除 4 份仅生成时间变化的 TradeFlow 验收文档；SCORE-001 与 FUND 补修精确拆分提交。
+- **验收方式**：
+
+2026-07-22T12:54:57.317501Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:55:06.003883Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_YzqnZ22Z4bPn0r6sqcdqwb3Z"
+exec
+/bin/zsh -lc 'rg "server_fallback|ALLOW_SERVER_LLM_FALLBACK|fallback_enabled|provider fallback|provider_fallback|llm_provider.*fallback|TA_.*FALLBACK" -n' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/types/index.ts:973:    server_fallback_enabled?: boolean
+api/main.py:1065:    server_fallback_enabled: bool = True
+api/main.py:1292:    server_fallback_enabled = os.getenv("ALLOW_SERVER_LLM_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on")
+api/main.py:1293:    config["server_fallback_enabled"] = server_fallback_enabled
+api/main.py:4445:        server_fallback_enabled=bool(cfg.get("server_fallback_enabled", True)),
+docs/reviews/DATA-024-20260629-round1.txt:157: - **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
+frontend/src/pages/Settings.tsx:157:                setServerFallbackEnabled(!!cfg.server_fallback_enabled)
+tests/test_data015_zt_pool.py:487:    def test_provider_fallback_text_detected(self):
+tradingagents/dataflows/instrument_identity.py:160:    appended by cninfo provider fallback.
+tests/test_data016_hot_stocks.py:523:    def test_provider_fallback_text_detected(self):
+docs/reviews/TF-OBS-002-20260613-round2.txt:2807:tests/test_data015_zt_pool.py:487:    def test_provider_fallback_text_detected(self):
+docs/TASKS.md:4449:- **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
+docs/TASKS.md:5633:  4. 对 provider fallback/模型 fallback 明确记录 requested 与 actual。
+docs/TASKS.md:5762:- **验收方式**：mock 覆盖无 fallback、模型 fallback、provider fallback、actual 不可知和历史配置变化五类场景。
+docs/task_runs/DATA-024-20260629-231953/opencode-round1.txt:350: - **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
+docs/task_runs/DATA-024-20260629-231953/codex-review-round1.txt:157: - **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
+docs/reviews/DATA-015-20260608-round1.txt:716:    def test_provider_fallback_text_detected(self):
+docs/reviews/DATA-016-20260608-round1.txt:1617:    def test_provider_fallback_text_detected(self):
+docs/reviews/FUND-004B-20260722-round1.txt:2864:- **验收方式**：mock 覆盖无 fallback、模型 fallback、provider fallback、actual 不可知和历史配置变化五类场景。
+docs/reviews/DATA-015-20260608-round2.txt:4332:    def test_provider_fallback_text_detected(self):
+docs/task_runs/TF-OBS-002-20260613-225218/codex-review-round2.txt:2807:tests/test_data015_zt_pool.py:487:    def test_provider_fallback_text_detected(self):
+docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:589:tests/test_data016_hot_stocks.py::TestAcceptanceDATA016::test_provider_fallback_text_detected PASSED [ 90%]
+docs/task_runs/DATA-016-20260608-060126/codex-review-round1.txt:1617:    def test_provider_fallback_text_detected(self):
+docs/task_runs/DATA-015-20260608-054126/codex-review-round1.txt:716:    def test_provider_fallback_text_detected(self):
+docs/task_runs/DATA-015-20260608-054126/opencode-round2.txt:923:    def test_provider_fallback_text_detected(self):
+docs/task_runs/DATA-015-20260608-054126/opencode-round2.txt:1019:tests/test_data015_zt_pool.py::TestAcceptanceDATA015::test_provider_fallback_text_detected PASSED [ 93%]
+docs/task_runs/DATA-015-20260608-054126/opencode-round2.txt:1508:tests/test_data015_zt_pool.py::TestAcceptanceDATA015::test_provider_fallback_text_detected PASSED [ 93%]
+docs/task_runs/DATA-015-20260608-054126/codex-review-round2.txt:4332:    def test_provider_fallback_text_detected(self):
+docs/task_runs/FUND-004B-20260722-200203/codex-review-round1.txt:2864:- **验收方式**：mock 覆盖无 fallback、模型 fallback、provider fallback、actual 不可知和历史配置变化五类场景。
+docs/task_runs/DATA-015-20260608-054126/opencode-round1.txt:602:tests/test_data015_zt_pool.py::TestAcceptanceDATA015::test_provider_fallback_text_detected PASSED [ 93%]
+
+2026-07-22T12:55:06.006638Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:55:11.929589Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_bKaq6pQXsK78sfRrM6XZYy8X"
+exec
+/bin/zsh -lc "nl -ba tradingagents/agents/utils/agent_trace.py | sed -n '24,43p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    24	    digest = _digest(statuses)
+    25	    provider = str(config.get("llm_provider") or "unknown")
+    26	    output: list[dict[str, Any]] = []
+    27	    for raw_trace in traces or []:
+    28	        trace = dict(raw_trace)
+    29	        tier = _TIER_BY_AGENT.get(str(trace.get("agent") or ""), "unknown")
+    30	        model, fallback_from = _model_for_tier_with_fallback(config, tier)
+    31	        trace.update({
+    32	            "provider": provider, "model": model, "model_tier": tier,
+    33	            "prompt_version": "config-driven", "input_contract_digest": digest,
+    34	            "input_statuses": statuses, "requested_model": model,
+    35	        })
+    36	        if "actual_model" not in trace:
+    37	            trace["actual_model"] = model
+    38	        if fallback_from and "fallback_from" not in trace:
+    39	            trace["fallback_from"] = fallback_from
+    40	        output.append(trace)
+    41	    return output
+    42	
+    43	
+
+2026-07-22T12:55:11.934210Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:55:22.601569Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_M8NWeQQ42tztgRtGKEg34QTQ"
+exec
+/bin/zsh -lc 'rg "create_(fundamentals|macro|news|social_media|smart_money|volume_price)_analyst|analyst_traces.*actual_model|actual_model" tests -n' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tests/test_trading_graph_multi_horizon.py:232:        "create_fundamentals_analyst": MagicMock(return_value="fundamentals_node"),
+tests/test_trading_graph_multi_horizon.py:233:        "create_macro_analyst": MagicMock(return_value="macro_node"),
+tests/test_trading_graph_multi_horizon.py:236:        "create_news_analyst": MagicMock(return_value="news_node"),
+tests/test_trading_graph_multi_horizon.py:239:        "create_smart_money_analyst": MagicMock(return_value="smart_money_node"),
+tests/test_trading_graph_multi_horizon.py:240:        "create_social_media_analyst": MagicMock(return_value="social_node"),
+tests/test_trading_graph_multi_horizon.py:241:        "create_volume_price_analyst": MagicMock(return_value="volume_price_node"),
+tests/test_e_series_fixes.py:258:        from tradingagents.agents.analysts.smart_money_analyst import create_smart_money_analyst
+tests/test_e_series_fixes.py:259:        assert callable(create_smart_money_analyst)
+tests/test_fund005_agent_trace.py:6:  3. Runtime actual_model from LLM response metadata
+tests/test_fund005_agent_trace.py:18:    _extract_actual_model_from_response,
+tests/test_fund005_agent_trace.py:48:    """When all tier keys are populated, actual_model == requested_model and
+tests/test_fund005_agent_trace.py:56:    assert trace["actual_model"] == "glm-mid"
+tests/test_fund005_agent_trace.py:104:def test_tier_fallback_annotate_preserves_analyst_actual_model():
+tests/test_fund005_agent_trace.py:106:    analyst-provided actual_model."""
+tests/test_fund005_agent_trace.py:113:            "actual_model": "mimo-v2.5-pro",  # runtime-detected
+tests/test_fund005_agent_trace.py:119:    assert trace["actual_model"] == "mimo-v2.5-pro"  # preserved from analyst
+tests/test_fund005_agent_trace.py:139:# ── Scenario 3: Runtime actual_model from LLM response metadata ──
+tests/test_fund005_agent_trace.py:142:def test_extract_actual_model_from_response_with_model_field():
+tests/test_fund005_agent_trace.py:145:    assert _extract_actual_model_from_response(chunk) == "mimo-v2.5-pro"
+tests/test_fund005_agent_trace.py:148:def test_extract_actual_model_from_response_with_model_name_field():
+tests/test_fund005_agent_trace.py:151:    assert _extract_actual_model_from_response(chunk) == "deepseek-chat"
+tests/test_fund005_agent_trace.py:154:def test_extract_actual_model_from_response_none_chunk():
+tests/test_fund005_agent_trace.py:156:    assert _extract_actual_model_from_response(None) is None
+tests/test_fund005_agent_trace.py:159:def test_extract_actual_model_from_response_no_metadata():
+tests/test_fund005_agent_trace.py:162:    assert _extract_actual_model_from_response(chunk) is None
+tests/test_fund005_agent_trace.py:165:def test_extract_actual_model_from_response_empty_metadata():
+tests/test_fund005_agent_trace.py:168:    assert _extract_actual_model_from_response(chunk) is None
+tests/test_fund005_agent_trace.py:171:def test_annotate_preserves_runtime_actual_model():
+tests/test_fund005_agent_trace.py:172:    """When analyst provides actual_model from runtime, annotate does not
+tests/test_fund005_agent_trace.py:178:            "actual_model": "gpt-4o-real",  # runtime-detected from response
+tests/test_fund005_agent_trace.py:182:    assert traces[0]["actual_model"] == "gpt-4o-real"
+tests/test_fund005_agent_trace.py:189:def test_actual_model_unknown_when_not_provided_by_analyst():
+tests/test_fund005_agent_trace.py:190:    """When analyst does not provide actual_model, annotate sets it to the
+tests/test_fund005_agent_trace.py:196:    # Without runtime detection, actual_model falls back to requested
+tests/test_fund005_agent_trace.py:197:    assert traces[0]["actual_model"] == "glm-quick"
+tests/test_fund005_agent_trace.py:201:def test_actual_model_unknown_explicit():
+tests/test_fund005_agent_trace.py:202:    """When analyst explicitly sets actual_model to 'unknown' (no response
+tests/test_fund005_agent_trace.py:208:            "actual_model": "unknown",
+tests/test_fund005_agent_trace.py:212:    assert traces[0]["actual_model"] == "unknown"
+tests/test_fund005_agent_trace.py:216:def test_actual_model_unknown_with_fallback():
+tests/test_fund005_agent_trace.py:217:    """When config has fallback AND analyst reports unknown actual_model."""
+tests/test_fund005_agent_trace.py:224:            "actual_model": "unknown",
+tests/test_fund005_agent_trace.py:228:    assert traces[0]["actual_model"] == "unknown"
+tests/test_fund005_agent_trace.py:253:    assert traces[0]["actual_model"] == "glm-mid"
+tests/test_fund005_agent_trace.py:257:    assert traces[0]["actual_model"] == "glm-mid"
+
+2026-07-22T12:55:22.605424Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:55:28.268875Z  WARN codex_analytics::reducer: dropping turn tool count update: missing turn state thread_id=019f89e3-2612-7591-9c5b-a42d7593d263 turn_id=019f89e3-2727-7fa0-84ba-0bf49ff7f937 item_id="call_1wptPFt2Uc2PKnQndblDIB44"
+exec
+/bin/zsh -lc 'git diff --cached --name-only' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+2026-07-22T12:55:28.273819Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+2026-07-22T12:55:38.727616Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.5 personality=pragmatic
+codex
+The patch still preserves the static requested-model-as-actual fallback in missing-metadata paths, violating the stated trace contract and producing misleading audit data.
+
+Review comment:
+
+- [P1] Do not report requested model as actual — /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py:36-37
+  When a trace omits `actual_model` (for example the `volume_price_analyst` no-data early return, which never calls an LLM, or any path that cannot read response metadata), this branch still writes the config-resolved requested model as the actual model. FUND-005A explicitly requires `unknown` when the actual model cannot be confirmed, so these persisted traces continue to falsely claim a model was actually used.
+The patch still preserves the static requested-model-as-actual fallback in missing-metadata paths, violating the stated trace contract and producing misleading audit data.
+
+Review comment:
+
+- [P1] Do not report requested model as actual — /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py:36-37
+  When a trace omits `actual_model` (for example the `volume_price_analyst` no-data early return, which never calls an LLM, or any path that cannot read response metadata), this branch still writes the config-resolved requested model as the actual model. FUND-005A explicitly requires `unknown` when the actual model cannot be confirmed, so these persisted traces continue to falsely claim a model was actually used.

@@ -5751,7 +5751,7 @@
 ### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
 - **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed FUND-005A-20260722-203834
 - **预计耗时**：25-35 分钟
 - **depends_on**：FUND-004A, FUND-005, PERF-003
 - **auto_release**：true

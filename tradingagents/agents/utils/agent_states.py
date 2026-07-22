@@ -53,6 +53,11 @@ class TraceItem(TypedDict, total=False):
     key_finding: str
     verdict: str
     confidence: str
+    started_at: float
+    finished_at: float
+    latency_ms: float
+    actual_model: str
+    fallback_from: str
 
 
 class InstrumentContext(TypedDict):

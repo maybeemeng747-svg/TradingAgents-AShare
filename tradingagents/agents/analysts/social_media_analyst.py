@@ -1,10 +1,12 @@
 import asyncio
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
 from tradingagents.agents.utils.context_utils import build_prompt_context_block
 
 
@@ -69,12 +71,17 @@ def create_social_media_analyst(llm, data_collector=None):
         # ── 实现 Token 级流式输出 ──────────────────
         tracker = current_tracker_var.get()
         full_content = ""
+        started_at = time.time()
+        last_chunk = None
         async for chunk in llm.astream(messages):
+            last_chunk = chunk
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
             full_content += content
             if tracker:
                 tracker._emit_token("Social Analyst", "sentiment_report", content)
 
+        finished_at = time.time()
+        actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
         verdict, confidence = extract_verdict(full_content)
         return {
             "sentiment_report": full_content,
@@ -85,6 +92,10 @@ def create_social_media_analyst(llm, data_collector=None):
                 "key_finding": f"舆情分析结论：{verdict}",
                 "verdict": verdict,
                 "confidence": confidence,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "latency_ms": round((finished_at - started_at) * 1000, 1),
+                "actual_model": actual_model,
             }],
         }
 

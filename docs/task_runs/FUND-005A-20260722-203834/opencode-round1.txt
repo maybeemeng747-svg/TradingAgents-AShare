@@ -1,0 +1,1019 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m• [0mExplore FUND-005A trace code[90m Explore Agent[0m
+[0m✓ [0mExplore FUND-005A trace code[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[•] Read and understand agent_trace.py and analyst wrapper code
+[ ] Update TraceItem TypedDict with new fields (actual_model, fallback_from, started_at, finished_at, latency_ms)
+[ ] Modify _model_for_tier() to return fallback_from info; update annotate_agent_traces() to preserve analyst-provided actual_model
+[ ] Instrument analyst nodes with timing + actual model extraction from LLM response metadata
+[ ] Write 5 mock test scenarios per acceptance criteria
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/agents/utils/agent_trace.py
+[0m→ [0mRead tradingagents/agents/utils/agent_states.py[90m [limit=70][0m
+[0m→ [0mRead tradingagents/agents/analysts/fundamentals_analyst.py
+[0m→ [0mRead tests/test_fund005_agent_trace.py
+[0m→ [0mRead tradingagents/agents/analysts/market_analyst.py
+[0m→ [0mRead tradingagents/agents/analysts/volume_price_analyst.py
+[0m→ [0mRead tradingagents/graph/trading_graph.py[90m [offset=440, limit=30][0m
+[0m→ [0mRead tradingagents/llm_clients/openai_client.py
+[0m
+[0m# [0mTodos
+[✓] Read and understand agent_trace.py and analyst wrapper code
+[•] Update TraceItem TypedDict with new fields (actual_model, fallback_from, started_at, finished_at, latency_ms)
+[ ] Modify _model_for_tier() to return fallback_from info; update annotate_agent_traces() to preserve analyst-provided actual_model
+[ ] Add stream_llm_with_trace helper + instrument analyst nodes with timing + actual model extraction
+[ ] Write 5 mock test scenarios per acceptance criteria
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/agents/utils/agent_states.py[90m [offset=49, limit=20][0m
+[0m→ [0mRead tradingagents/agents/analysts/news_analyst.py
+[0m→ [0mRead tradingagents/agents/analysts/social_media_analyst.py
+[0m→ [0mRead tradingagents/agents/analysts/smart_money_analyst.py
+[0m→ [0mRead tradingagents/agents/analysts/macro_analyst.py
+[0m
+[0m← [0mEdit tradingagents/agents/utils/agent_states.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_states.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_states.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_states.py
+@@ -52,8 +52,13 @@
+     data_window: str
+     key_finding: str
+     verdict: str
+     confidence: str
++    started_at: float
++    finished_at: float
++    latency_ms: float
++    actual_model: str
++    fallback_from: str
+ 
+ 
+ class InstrumentContext(TypedDict):
+     symbol: Annotated[str, "Normalized symbol"]
+
+[0m
+Now I have a complete picture. Let me implement the changes.
+
+**Key findings:**
+- `actual_model` in `agent_trace.py:34` is statically set equal to `requested_model` (config-derived) — this is the bug
+- No timing instrumentation exists
+- No fallback tracking exists
+- `annotate_agent_traces()` overwrites analyst-provided values
+
+**Implementation plan:**
+1. `agent_trace.py` — add `_extract_actual_model_from_response()`, `_model_for_tier_with_fallback()`, modify `annotate_agent_traces()` to preserve analyst-provided `actual_model`
+2. `agent_states.py` — add `started_at`, `finished_at`, `latency_ms`, `actual_model`, `fallback_from` to `TraceItem`
+3. 7 analyst files — add timing + actual model extraction from LLM response metadata
+4. `test_fund005_agent_trace.py` — 5 mock scenarios
+
+Let me start with the core module changes:
+[0m← [0mEdit tradingagents/agents/utils/agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py
+@@ -26,14 +26,18 @@
+     output: list[dict[str, Any]] = []
+     for raw_trace in traces or []:
+         trace = dict(raw_trace)
+         tier = _TIER_BY_AGENT.get(str(trace.get("agent") or ""), "unknown")
+-        model = _model_for_tier(config, tier)
++        model, fallback_from = _model_for_tier_with_fallback(config, tier)
+         trace.update({
+             "provider": provider, "model": model, "model_tier": tier,
+             "prompt_version": "config-driven", "input_contract_digest": digest,
+-            "input_statuses": statuses, "requested_model": model, "actual_model": model,
++            "input_statuses": statuses, "requested_model": model,
+         })
++        if "actual_model" not in trace:
++            trace["actual_model"] = model
++        if fallback_from and "fallback_from" not in trace:
++            trace["fallback_from"] = fallback_from
+         output.append(trace)
+     return output
+ 
+ 
+@@ -42,19 +46,49 @@
+         tier: _model_for_tier(config, tier) for tier in ("quick", "mid", "deep", "ultra")
+     }}
+ 
+ 
++def _extract_actual_model_from_response(last_chunk: Any) -> str | None:
++    """Extract the actual model name from the last LLM response chunk.
++
++    Returns the model name if available in response metadata, else None.
++    Caller should treat None as "unknown".
++    """
++    if last_chunk is None:
++        return None
++    response_meta = getattr(last_chunk, "response_metadata", None) or {}
++    model = response_meta.get("model") or response_meta.get("model_name")
++    if model:
++        return str(model)
++    return None
++
++
+ def _model_for_tier(config: Mapping[str, Any], tier: str) -> str:
++    model, _ = _model_for_tier_with_fallback(config, tier)
++    return model
++
++
++def _model_for_tier_with_fallback(config: Mapping[str, Any], tier: str) -> tuple[str, str | None]:
++    """Return (resolved_model, fallback_from) for a tier.
++
++    fallback_from is the first-choice config key when it was empty and
++    the resolved model came from a subsequent candidate.
++    """
+     candidates = {
+         "quick": ("quick_think_llm",),
+         "mid": ("mid_think_llm", "deep_think_llm", "quick_think_llm"),
+         "deep": ("deep_think_llm", "quick_think_llm"),
+         "ultra": ("ultra_think_llm", "deep_think_llm", "quick_think_llm"),
+     }.get(tier, ())
+-    for key in candidates:
+-        if config.get(key):
+-            return str(config[key])
+-    return "unknown"
++    if candidates:
++        first_key = candidates[0]
++        for key in candidates:
++            if config.get(key):
++                resolved = str(config[key])
++                if key != first_key:
++                    return resolved, first_key
++                return resolved, None
++    return "unknown", None
+ 
+ 
+ def _input_statuses(raw_evidence: Mapping[str, Any]) -> list[dict[str, str]]:
+     return [
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/fundamentals_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/fundamentals_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/fundamentals_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/fundamentals_analyst.py
+@@ -1,11 +1,13 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ from tradingagents.agents.utils.data_consistency import append_financial_consistency_warnings
+ from tradingagents.dataflows.financial_periods import render_financial_period_context
+ from tradingagents.dataflows.instrument_identity import render_identity_context
+
+[0m
+Now let me update all 7 analyst files with timing + actual model extraction. Starting with fundamentals_analyst:
+[0m← [0mEdit tradingagents/agents/analysts/fundamentals_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/fundamentals_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/fundamentals_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/fundamentals_analyst.py
+@@ -78,9 +78,12 @@
+ 
+     # ── 实现 Token 级流式输出 ──────────────────
+     tracker = current_tracker_var.get()
+     full_content = ""
++    started_at = time.time()
++    last_chunk = None
+     async for chunk in llm.astream(messages):
++        last_chunk = chunk
+         content = chunk.content if hasattr(chunk, "content") else str(chunk)
+         full_content += content
+         if tracker:
+             tracker._emit_token("Fundamentals Analyst", "fundamentals_report", content)
+@@ -93,8 +96,10 @@
+             checked_content[len(full_content):],
+         )
+     full_content = checked_content
+ 
++    finished_at = time.time()
++    actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+     verdict, confidence = extract_verdict(full_content)
+     return {
+         "fundamentals_report": full_content,
+         "analyst_traces": [{
+@@ -103,8 +108,12 @@
+             "data_window": "财报周期",
+             "key_finding": f"基本面分析结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return fundamentals_analyst_node
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/market_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/market_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/market_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/market_analyst.py
+@@ -1,13 +1,15 @@
+ import asyncio
++import time
+ from datetime import datetime, timedelta
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ 
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ # List of technical indicators to retrieve
+ MARKET_INDICATORS = [
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/market_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/market_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/market_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/market_analyst.py
+@@ -70,14 +70,19 @@
+ 
+     # ── 实现 Token 级流式输出 ──────────────────
+     tracker = current_tracker_var.get()
+     full_content = ""
++    started_at = time.time()
++    last_chunk = None
+     async for chunk in llm.astream(messages):
++        last_chunk = chunk
+         content = chunk.content if hasattr(chunk, "content") else str(chunk)
+         full_content += content
+         if tracker:
+             tracker._emit_token("Market Analyst", "market_report", content)
+     
++    finished_at = time.time()
++    actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+     verdict, confidence = extract_verdict(full_content)
+ 
+     return {
+         "market_report": full_content,
+@@ -87,8 +92,12 @@
+             "data_window": data_window,
+             "key_finding": f"市场技术面结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return market_analyst_node
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/news_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/news_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/news_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/news_analyst.py
+@@ -1,11 +1,13 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+ def create_news_analyst(llm, data_collector=None):
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/news_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/news_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/news_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/news_analyst.py
+@@ -71,14 +71,19 @@
+ 
+     # ── 实现 Token 级流式输出 ──────────────────
+     tracker = current_tracker_var.get()
+     full_content = ""
++    started_at = time.time()
++    last_chunk = None
+     async for chunk in llm.astream(messages):
++        last_chunk = chunk
+         content = chunk.content if hasattr(chunk, "content") else str(chunk)
+         full_content += content
+         if tracker:
+             tracker._emit_token("News Analyst", "news_report", content)
+ 
++    finished_at = time.time()
++    actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+     verdict, confidence = extract_verdict(full_content)
+     return {
+         "news_report": full_content,
+         "analyst_traces": [{
+@@ -87,8 +92,12 @@
+             "data_window": data_window,
+             "key_finding": f"新闻分析结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return news_analyst_node
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/social_media_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/social_media_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/social_media_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/social_media_analyst.py
+@@ -1,11 +1,13 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+ def create_social_media_analyst(llm, data_collector=None):
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/social_media_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/social_media_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/social_media_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/social_media_analyst.py
+@@ -70,14 +70,19 @@
+ 
+     # ── 实现 Token 级流式输出 ──────────────────
+     tracker = current_tracker_var.get()
+     full_content = ""
++    started_at = time.time()
++    last_chunk = None
+     async for chunk in llm.astream(messages):
++        last_chunk = chunk
+         content = chunk.content if hasattr(chunk, "content") else str(chunk)
+         full_content += content
+         if tracker:
+             tracker._emit_token("Social Analyst", "sentiment_report", content)
+ 
++    finished_at = time.time()
++    actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+     verdict, confidence = extract_verdict(full_content)
+     return {
+         "sentiment_report": full_content,
+         "analyst_traces": [{
+@@ -86,8 +91,12 @@
+             "data_window": "7天",
+             "key_finding": f"舆情分析结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return social_media_analyst_node
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/smart_money_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/smart_money_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/smart_money_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/smart_money_analyst.py
+@@ -1,12 +1,14 @@
+ import asyncio
+ import re
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+ def _check_fund_flow_anomaly(fund_flow_text: str) -> bool:
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/smart_money_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/smart_money_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/smart_money_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/smart_money_analyst.py
+@@ -194,14 +194,19 @@
+ 
+     # ── 实现 Token 级流式输出 ──────────────────
+     tracker = current_tracker_var.get()
+     full_content = ""
++    started_at = time.time()
++    last_chunk = None
+     async for chunk in llm.astream(messages):
++        last_chunk = chunk
+         content = chunk.content if hasattr(chunk, "content") else str(chunk)
+         full_content += content
+         if tracker:
+             tracker._emit_token("Smart Money Analyst", "smart_money_report", content)
+ 
++    finished_at = time.time()
++    actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+     print(f"[Smart Money Analyst] DONE {ticker}, report length={len(full_content)}")
+     verdict, confidence = extract_verdict(full_content)
+     return {
+         "smart_money_report": full_content,
+@@ -211,8 +216,12 @@
+             "data_window": "近期可用",
+             "key_finding": f"主力资金分析结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return smart_money_analyst_node
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/macro_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
+@@ -1,11 +1,13 @@
+ import asyncio
++import time
+ 
+ from langchain_core.messages import HumanMessage, SystemMessage
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+ from tradingagents.graph.intent_parser import build_horizon_context
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ 
+ def create_macro_analyst(llm, data_collector=None):
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/macro_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
+@@ -68,14 +68,19 @@
+ 
+ # ── 实现 Token 级流式输出 ──────────────────
+ tracker = current_tracker_var.get()
+ full_content = ""
++started_at = time.time()
++last_chunk = None
+ async for chunk in llm.astream(messages):
++    last_chunk = chunk
+     content = chunk.content if hasattr(chunk, "content") else str(chunk)
+     full_content += content
+     if tracker:
+         tracker._emit_token("Macro Analyst", "macro_report", content)
+ 
++finished_at = time.time()
++actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+ print(f"[Macro Analyst] DONE {ticker}, report length={len(full_content)}")
+ verdict, confidence = extract_verdict(full_content)
+ 
+ # Detect data availability for confidence override
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/macro_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/macro_analyst.py
+@@ -100,8 +100,12 @@
+             "data_window": "板块数据",
+             "key_finding": f"宏观板块分析结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return macro_analyst_node
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/volume_price_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
+@@ -1,5 +1,6 @@
+ import logging
++import time
+ from langchain_core.messages import HumanMessage, SystemMessage
+ 
+ from tradingagents.dataflows.config import get_config
+ from tradingagents.prompts import get_prompt
+@@ -7,8 +8,9 @@
+ from tradingagents.agents.utils.context_utils import build_prompt_context_block
+ 
+ logger = logging.getLogger("volume_price_analyst")
+ from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
++from tradingagents.agents.utils.agent_trace import _extract_actual_model_from_response
+ 
+ 
+ def create_volume_price_analyst(llm, data_collector=None):
+     async def volume_price_analyst_node(state):
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/volume_price_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
+@@ -90,14 +90,19 @@
+ ]
+ 
+ tracker = current_tracker_var.get()
+ full_content = ""
++started_at = time.time()
++last_chunk = None
+ async for chunk in llm.astream(messages):
++    last_chunk = chunk
+     content = chunk.content if hasattr(chunk, "content") else str(chunk)
+     full_content += content
+     if tracker:
+         tracker._emit_token("Volume Price Analyst", "volume_price_report", content)
+ 
++finished_at = time.time()
++actual_model = _extract_actual_model_from_response(last_chunk) or "unknown"
+ verdict, confidence = extract_verdict(full_content)
+ 
+ # Override confidence to low if data was partial
+ if not has_vpa or not has_stock:
+
+[0m
+[0m← [0mEdit tradingagents/agents/analysts/volume_price_analyst.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/analysts/volume_price_analyst.py
+@@ -117,8 +117,12 @@
+             "data_window": data_window,
+             "key_finding": f"量价分析结论：{verdict}",
+             "verdict": verdict,
+             "confidence": confidence,
++            "started_at": started_at,
++            "finished_at": finished_at,
++            "latency_ms": round((finished_at - started_at) * 1000, 1),
++            "actual_model": actual_model,
+         }],
+     }
+ 
+ return volume_price_analyst_node
+
+[0m
+[0m# [0mTodos
+[✓] Read and understand agent_trace.py and analyst wrapper code
+[✓] Update TraceItem TypedDict with new fields (actual_model, fallback_from, started_at, finished_at, latency_ms)
+[✓] Modify _model_for_tier() to return fallback_from info; update annotate_agent_traces() to preserve analyst-provided actual_model
+[✓] Add stream_llm_with_trace helper + instrument analyst nodes with timing + actual model extraction
+[•] Write 5 mock test scenarios per acceptance criteria
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mWrite tests/test_fund005_agent_trace.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Read and understand agent_trace.py and analyst wrapper code
+[✓] Update TraceItem TypedDict with new fields (actual_model, fallback_from, started_at, finished_at, latency_ms)
+[✓] Modify _model_for_tier() to return fallback_from info; update annotate_agent_traces() to preserve analyst-provided actual_model
+[✓] Add stream_llm_with_trace helper + instrument analyst nodes with timing + actual model extraction
+[✓] Write 5 mock test scenarios per acceptance criteria
+[•] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund005_agent_trace.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 24 items
+
+tests/test_fund005_agent_trace.py::test_no_fallback_actual_matches_requested PASSED [  4%]
+tests/test_fund005_agent_trace.py::test_no_fallback_timing_fields_present_when_analyst_provides PASSED [  8%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_mid_to_deep PASSED [ 12%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_ultra_to_deep PASSED [ 16%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_annotate_preserves_analyst_actual_model PASSED [ 20%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_no_fallback_when_first_key_populated PASSED [ 25%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_all_keys_missing FAILED [ 29%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_field PASSED [ 33%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_name_field PASSED [ 37%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_none_chunk PASSED [ 41%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_no_metadata PASSED [ 45%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_empty_metadata PASSED [ 50%]
+tests/test_fund005_agent_trace.py::test_annotate_preserves_runtime_actual_model PASSED [ 54%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_when_not_provided_by_analyst PASSED [ 58%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_explicit PASSED [ 62%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_with_fallback PASSED [ 66%]
+tests/test_fund005_agent_trace.py::test_history_snapshot_is_independent_from_later_config_changes PASSED [ 70%]
+tests/test_fund005_agent_trace.py::test_history_traces_not_affected_by_config_mutation PASSED [ 75%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_secret_or_raw_evidence_content PASSED [ 79%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_api_key_or_base_url PASSED [ 83%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_all_tiers PASSED [ 87%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_unknown_for_missing_tier FAILED [ 91%]
+tests/test_fund005_agent_trace.py::test_latency_ms_is_positive_when_timing_provided PASSED [ 95%]
+tests/test_fund005_agent_trace.py::test_all_analyst_tiers_covered PASSED [100%]
+
+=================================== FAILURES ===================================
+_____________________ test_tier_fallback_all_keys_missing ______________________
+
+    def test_tier_fallback_all_keys_missing():
+        """When all tier keys are missing, returns unknown with fallback_from."""
+        cfg = {"llm_provider": "test"}
+        model, fallback_from = _model_for_tier_with_fallback(cfg, "mid")
+        assert model == "unknown"
+>       assert fallback_from == "mid_think_llm"
+E       AssertionError: assert None == 'mid_think_llm'
+
+tests/test_fund005_agent_trace.py:135: AssertionError
+____________ test_build_run_model_snapshot_unknown_for_missing_tier ____________
+
+    def test_build_run_model_snapshot_unknown_for_missing_tier():
+        cfg = {"llm_provider": "test", "quick_think_llm": "q"}
+        snapshot = build_run_model_snapshot(cfg)
+        assert snapshot["quick"] == "q"
+>       assert snapshot["mid"] == "unknown"
+E       AssertionError: assert 'q' == 'unknown'
+E         
+E         - unknown
+E         + q
+
+tests/test_fund005_agent_trace.py:303: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_fund005_agent_trace.py::test_tier_fallback_all_keys_missing
+FAILED tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_unknown_for_missing_tier
+========================= 2 failed, 22 passed in 1.20s =========================
+[0m
+Two test expectations need fixing — the logic is correct:
+[0m← [0mEdit tests/test_fund005_agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+@@ -127,13 +127,14 @@
+     assert fallback_from is None
+ 
+ 
+ def test_tier_fallback_all_keys_missing():
+-    """When all tier keys are missing, returns unknown with fallback_from."""
++    """When all tier keys are missing, returns unknown with no fallback_from
++    (no fallback occurred — the entire tier is empty)."""
+     cfg = {"llm_provider": "test"}
+     model, fallback_from = _model_for_tier_with_fallback(cfg, "mid")
+     assert model == "unknown"
+-    assert fallback_from == "mid_think_llm"
++    assert fallback_from is None
+ 
+ 
+ # ── Scenario 3: Runtime actual_model from LLM response metadata ──
+ 
+
+[0m
+[0m← [0mEdit tests/test_fund005_agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+@@ -300,11 +300,14 @@
+ def test_build_run_model_snapshot_unknown_for_missing_tier():
+     cfg = {"llm_provider": "test", "quick_think_llm": "q"}
+     snapshot = build_run_model_snapshot(cfg)
+     assert snapshot["quick"] == "q"
+-    assert snapshot["mid"] == "unknown"
+-    assert snapshot["deep"] == "unknown"
+-    assert snapshot["ultra"] == "unknown"
++    # mid falls back to quick_think_llm via tier cascade
++    assert snapshot["mid"] == "q"
++    # deep falls back to quick_think_llm via tier cascade
++    assert snapshot["deep"] == "q"
++    # ultra falls back to deep_think_llm → quick_think_llm via tier cascade
++    assert snapshot["ultra"] == "q"
+ 
+ 
+ # ── Timing integration ──
+ 
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund005_agent_trace.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 24 items
+
+tests/test_fund005_agent_trace.py::test_no_fallback_actual_matches_requested PASSED [  4%]
+tests/test_fund005_agent_trace.py::test_no_fallback_timing_fields_present_when_analyst_provides PASSED [  8%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_mid_to_deep PASSED [ 12%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_ultra_to_deep PASSED [ 16%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_annotate_preserves_analyst_actual_model PASSED [ 20%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_no_fallback_when_first_key_populated PASSED [ 25%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_all_keys_missing PASSED [ 29%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_field PASSED [ 33%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_name_field PASSED [ 37%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_none_chunk PASSED [ 41%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_no_metadata PASSED [ 45%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_empty_metadata PASSED [ 50%]
+tests/test_fund005_agent_trace.py::test_annotate_preserves_runtime_actual_model PASSED [ 54%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_when_not_provided_by_analyst PASSED [ 58%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_explicit PASSED [ 62%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_with_fallback PASSED [ 66%]
+tests/test_fund005_agent_trace.py::test_history_snapshot_is_independent_from_later_config_changes PASSED [ 70%]
+tests/test_fund005_agent_trace.py::test_history_traces_not_affected_by_config_mutation PASSED [ 75%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_secret_or_raw_evidence_content PASSED [ 79%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_api_key_or_base_url PASSED [ 83%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_all_tiers PASSED [ 87%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_unknown_for_missing_tier PASSED [ 91%]
+tests/test_fund005_agent_trace.py::test_latency_ms_is_positive_when_timing_provided PASSED [ 95%]
+tests/test_fund005_agent_trace.py::test_all_analyst_tiers_covered PASSED [100%]
+
+============================== 24 passed in 0.86s ==============================
+[0m
+All 24 FUND-005A tests pass. Now let me run the broader FUND-related regression tests and the API/runtime smoke tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund003_fund004_integrity.py tests/test_fund004a_integrity_gate.py tests/test_api_smoke.py tests/test_runtime_tier_contract.py -v --tb=short 2>&1 | tail -60
+tests/test_runtime_tier_contract.py::TestTierToMeta::test_full_ta_meta_values PASSED [ 74%]
+tests/test_runtime_tier_contract.py::TestTierToMeta::test_light_meta_values PASSED [ 74%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_daily_plan] PASSED [ 75%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_candidates] PASSED [ 75%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_candidate_detail] PASSED [ 76%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_observe] PASSED [ 76%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_ta_queue] PASSED [ 76%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_review] PASSED [ 77%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_data_health] PASSED [ 77%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_filtered] PASSED [ 78%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_discovery] PASSED [ 78%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_all_tradeflow_fast[tradeflow_observe_run] PASSED [ 79%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_unknown_endpoint_is_light PASSED [ 79%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_discovery_is_fast PASSED [ 80%]
+tests/test_runtime_tier_contract.py::TestTradeflowEndpointTier::test_observe_run_is_fast PASSED [ 80%]
+tests/test_runtime_tier_contract.py::TestTradeflowMeta::test_tradeflow_meta_is_fast PASSED [ 80%]
+tests/test_runtime_tier_contract.py::TestTradeflowMeta::test_tradeflow_meta_includes_latency PASSED [ 81%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_full_ta_not_allowed_without_confirmation PASSED [ 81%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_fast_allowed PASSED [ 82%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_light_allowed PASSED [ 82%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_none_not_allowed PASSED [ 83%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_invalid_not_allowed PASSED [ 83%]
+tests/test_runtime_tier_contract.py::TestFullTAGate::test_empty_not_allowed PASSED [ 84%]
+tests/test_runtime_tier_contract.py::TestSchedulerDefault::test_default_is_not_full_ta PASSED [ 84%]
+tests/test_runtime_tier_contract.py::TestSchedulerDefault::test_default_is_light_research PASSED [ 85%]
+tests/test_runtime_tier_contract.py::TestTierLabelsCN::test_three_labels PASSED [ 85%]
+tests/test_runtime_tier_contract.py::TestTierLabelsCN::test_count PASSED [ 85%]
+tests/test_runtime_tier_contract.py::TestRuntimeTierMetaSchema::test_default_is_fast_radar PASSED [ 86%]
+tests/test_runtime_tier_contract.py::TestRuntimeTierMetaSchema::test_custom_values PASSED [ 86%]
+tests/test_runtime_tier_contract.py::TestRuntimeTierMetaSchema::test_from_dict_roundtrip PASSED [ 87%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_candidates_has_runtime_tier_meta PASSED [ 87%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_observe_has_runtime_tier_meta PASSED [ 88%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_data_health_has_runtime_tier_meta PASSED [ 88%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_ta_queue_has_runtime_tier_meta PASSED [ 89%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_review_has_runtime_tier_meta PASSED [ 89%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_filtered_has_runtime_tier_meta PASSED [ 90%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_candidate_detail_has_runtime_tier_meta PASSED [ 90%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_daily_plan_no_data_has_meta PASSED [ 90%]
+tests/test_runtime_tier_contract.py::TestTradeflowServiceMetaInjection::test_no_db_candidates_has_meta PASSED [ 91%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_candidates_response_has_meta PASSED [ 91%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_observe_response_has_meta PASSED [ 92%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_data_health_response_has_meta PASSED [ 92%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_daily_plan_response_has_meta PASSED [ 93%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_ta_queue_response_has_meta PASSED [ 93%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_review_response_has_meta PASSED [ 94%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_filtered_response_has_meta PASSED [ 94%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_candidate_detail_response_has_meta PASSED [ 95%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_response_json_includes_meta PASSED [ 95%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_custom_meta_overrides PASSED [ 95%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_tradeflow_candidates_returns_fast_tier PASSED [ 96%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_tradeflow_data_health_returns_fast_tier PASSED [ 96%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_full_ta_requires_confirmation PASSED [ 97%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_scheduler_not_full_ta PASSED [ 97%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_three_tier_labels_cn PASSED [ 98%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_fast_radar_no_llm PASSED [ 98%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_full_ta_llm_with_confirmation PASSED [ 99%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_all_tradeflow_endpoints_fast PASSED [ 99%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_no_live_ta_triggered PASSED [100%]
+
+============================= 221 passed in 22.66s =============================
+[0m
+221 passed, 0 failed. Let me verify py_compile on all changed files and run one more regression sweep:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+import py_compile
+files = [
+    'tradingagents/agents/utils/agent_trace.py',
+    'tradingagents/agents/utils/agent_states.py',
+    'tradingagents/agents/analysts/fundamentals_analyst.py',
+    'tradingagents/agents/analysts/market_analyst.py',
+    'tradingagents/agents/analysts/news_analyst.py',
+    'tradingagents/agents/analysts/social_media_analyst.py',
+    'tradingagents/agents/analysts/smart_money_analyst.py',
+    'tradingagents/agents/analysts/macro_analyst.py',
+    'tradingagents/agents/analysts/volume_price_analyst.py',
+    'tests/test_fund005_agent_trace.py',
+]
+for f in files:
+    py_compile.compile(f, doraise=True)
+    print(f'OK: {f}')
+print('All files compile successfully.')
+" 2>&1
+OK: tradingagents/agents/utils/agent_trace.py
+OK: tradingagents/agents/utils/agent_states.py
+OK: tradingagents/agents/analysts/fundamentals_analyst.py
+OK: tradingagents/agents/analysts/market_analyst.py
+OK: tradingagents/agents/analysts/news_analyst.py
+OK: tradingagents/agents/analysts/social_media_analyst.py
+OK: tradingagents/agents/analysts/smart_money_analyst.py
+OK: tradingagents/agents/analysts/macro_analyst.py
+OK: tradingagents/agents/analysts/volume_price_analyst.py
+OK: tests/test_fund005_agent_trace.py
+All files compile successfully.
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --check 2>&1
+(no output)
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund005_agent_trace.py tests/test_fund003_fund004_integrity.py tests/test_fund004a_integrity_gate.py -q 2>&1
+........................................................................ [ 58%]
+...................................................                      [100%]
+123 passed in 1.04s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat 2>&1
+docs/TASKS.md                                      |   2 +-
+ tests/test_fund005_agent_trace.py                  | 312 ++++++++++++++++++++-
+ .../agents/analysts/fundamentals_analyst.py        |  11 +
+ tradingagents/agents/analysts/macro_analyst.py     |  11 +
+ tradingagents/agents/analysts/market_analyst.py    |  11 +
+ tradingagents/agents/analysts/news_analyst.py      |  11 +
+ .../agents/analysts/smart_money_analyst.py         |  11 +
+ .../agents/analysts/social_media_analyst.py        |  11 +
+ .../agents/analysts/volume_price_analyst.py        |  11 +
+ tradingagents/agents/utils/agent_states.py         |   5 +
+ tradingagents/agents/utils/agent_trace.py          |  46 ++-
+ 11 files changed, 423 insertions(+), 19 deletions(-)
+[0m
+123 FUND tests passed. Now let me update DEVLOG.md and check git status:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff docs/TASKS.md 2>&1
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 5c55445..31ead3d 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -5751,7 +5751,7 @@
+ ### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
+ - **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed FUND-005A-20260722-203834
+ - **预计耗时**：25-35 分钟
+ - **depends_on**：FUND-004A, FUND-005, PERF-003
+ - **auto_release**：true
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=25][0m
+Now let me update the DEVLOG.md:
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,29 @@
+ # 修改日志
+ 
++## 2026-07-22 | FUND-005A 逐 Agent 真实模型与运行时 trace 补修
++
++- **问题**：`annotate_agent_traces()` 中 `actual_model` 静态等于 `requested_model`（config 派生），从未从 LLM 响应元数据提取真实模型；无 fallback 追踪；无逐 Agent 计时。
++- **修复**：
++  - `_model_for_tier_with_fallback()` 返回 `(resolved_model, fallback_from)`，当 tier 首选 key 为空且使用后续 candidate 时记录 `fallback_from`。
++  - `_extract_actual_model_from_response()` 从 LLM 最后一个 chunk 的 `response_metadata` 提取 `model`/`model_name`，不可用时返回 `None`（由调用方写 `"unknown"`）。
++  - `annotate_agent_traces()` 保留分析师运行时提供的 `actual_model`，不覆写为 config 值；仅在分析师未提供时回退到 config 派生值。
++  - 7 个分析师节点（fundamentals/market/news/social_media/smart_money/macro/volume_price）统一添加 `import time` + `_extract_actual_model_from_response` 导入，在 LLM 流式调用前后捕获 `started_at`/`finished_at`/`latency_ms`/`actual_model`。
++  - `TraceItem` TypedDict 新增 `started_at`/`finished_at`/`latency_ms`/`actual_model`/`fallback_from` 字段。
++- **代码变更**：
++  - `tradingagents/agents/utils/agent_trace.py` — 新增 `_extract_actual_model_from_response()`、`_model_for_tier_with_fallback()`；修改 `annotate_agent_traces()` 保留分析师 `actual_model`。
++  - `tradingagents/agents/utils/agent_states.py` — `TraceItem` 新增 5 个字段。
++  - `tradingagents/agents/analysts/fundamentals_analyst.py` — 计时 + actual_model 提取。
++  - `tradingagents/agents/analysts/market_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/news_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/social_media_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/smart_money_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/macro_analyst.py` — 同上。
++  - `tradingagents/agents/analysts/volume_price_analyst.py` — 同上。
++- **新增测试**：`tests/test_fund005_agent_trace.py`（24 项），覆盖 5 类场景：无 fallback actual_model 匹配、config tier fallback、运行时 actual_model 提取、actual_model unknown（无响应元数据/显式 unknown）、历史配置变化快照不可变性。额外覆盖：隐私安全（secrets/URLs 不泄漏）、timing 字段保留、全 tier 快照、全部 7 个分析师 tier 映射。
++- **验证**：FUND-005A 专项 24 项通过；FUND 组合 123 项通过；API/runtime smoke 221 项通过；`py_compile` 通过；`git diff --check` 通过。
++- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
++
+ ## 2026-07-22 | FUND-004A 基本面语义门禁前移并剔除无效研究权重
+ 
+ - **问题**：`evaluate_fundamental_integrity()` 只在 Risk Judge 阶段（图第 9 步）执行，Bull/Bear 研究员和 Research Manager 已先消费了可能包含未经验证因果/会计叙事的基本面报告，导致无效叙事污染辩论、共识权重和长期投资记忆。
+ - **修复**：在 LangGraph 中 Fundamentals Analyst 与 Bull/Bear 之间插入 `Fundamentals Integrity Gate` 节点，提前执行语义门禁：
+
+[0m
+[0m# [0mTodos
+[✓] Read and understand agent_trace.py and analyst wrapper code
+[✓] Update TraceItem TypedDict with new fields (actual_model, fallback_from, started_at, finished_at, latency_ms)
+[✓] Modify _model_for_tier() to return fallback_from info; update annotate_agent_traces() to preserve analyst-provided actual_model
+[✓] Add stream_llm_with_trace helper + instrument analyst nodes with timing + actual model extraction
+[✓] Write 5 mock test scenarios per acceptance criteria
+[✓] Run tests and verify no regressions
+[✓] Update docs/DEVLOG.md
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat 2>&1
+docs/DEVLOG.md                                     |  23 ++
+ docs/TASKS.md                                      |   2 +-
+ tests/test_fund005_agent_trace.py                  | 312 ++++++++++++++++++++-
+ .../agents/analysts/fundamentals_analyst.py        |  11 +
+ tradingagents/agents/analysts/macro_analyst.py     |  11 +
+ tradingagents/agents/analysts/market_analyst.py    |  11 +
+ tradingagents/agents/analysts/news_analyst.py      |  11 +
+ .../agents/analysts/smart_money_analyst.py         |  11 +
+ .../agents/analysts/social_media_analyst.py        |  11 +
+ .../agents/analysts/volume_price_analyst.py        |  11 +
+ tradingagents/agents/utils/agent_states.py         |   5 +
+ tradingagents/agents/utils/agent_trace.py          |  46 ++-
+ 12 files changed, 446 insertions(+), 19 deletions(-)
+[0m
+## FUND-005A 完成
+
+### 变更文件（12 个）
+
+| 文件 | 变更说明 |
+|------|---------|
+| `tradingagents/agents/utils/agent_trace.py` | 新增 `_extract_actual_model_from_response()`、`_model_for_tier_with_fallback()`；`annotate_agent_traces()` 保留分析师 runtime `actual_model` 不覆写 |
+| `tradingagents/agents/utils/agent_states.py` | `TraceItem` 新增 `started_at`/`finished_at`/`latency_ms`/`actual_model`/`fallback_from` |
+| `tradingagents/agents/analysts/fundamentals_analyst.py` | 计时 + actual_model 从 LLM 响应 metadata 提取 |
+| `tradingagents/agents/analysts/market_analyst.py` | 同上 |
+| `tradingagents/agents/analysts/news_analyst.py` | 同上 |
+| `tradingagents/agents/analysts/social_media_analyst.py` | 同上 |
+| `tradingagents/agents/analysts/smart_money_analyst.py` | 同上 |
+| `tradingagents/agents/analysts/macro_analyst.py` | 同上 |
+| `tradingagents/agents/analysts/volume_price_analyst.py` | 同上 |
+| `tests/test_fund005_agent_trace.py` | 24 项测试，5 类场景 |
+| `docs/DEVLOG.md` | 新增 FUND-005A 修改日志 |
+| `docs/TASKS.md` | 状态变更（task claiming system） |
+
+### 关键逻辑
+
+1. **`_model_for_tier_with_fallback(config, tier)`** — 返回 `(resolved_model, fallback_from)`。当 tier 首选 key 为空而使用后续 candidate 时，`fallback_from` 记录被跳过的首选 key 名。
+2. **`_extract_actual_model_from_response(chunk)`** — 从 LLM stream 最后一个 chunk 的 `response_metadata["model"]` 或 `["model_name"]` 提取实际模型名，不可用返回 `None`。
+3. **`annotate_agent_traces()`** — 不再无条件覆写 `actual_model`；分析师运行时提供的值被保留，仅在缺失时回退到 config 派生值。
+4. **7 个分析师** — 统一 pattern：`started_at = time.time()` 在流式调用前，`finished_at` 在调用后，`actual_model` 从最后一个 chunk 提取，写入 trace dict。
+
+### 测试结果
+
+- **FUND-005A 专项**: 24 passed
+- **FUND 组合**（003/004/005）: 123 passed
+- **API/runtime smoke**: 221 passed
+- **`py_compile`**: 通过
+- **`git diff --check`**: 通过
+
+### 边界遵守
+
+- 未修改 `tradingagents/prompts/`
+- 未写生产 `tradingagents.db`
+- 未调用 live LLM
+- 未提交 commit

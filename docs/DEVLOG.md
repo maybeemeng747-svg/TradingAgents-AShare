@@ -1,5 +1,28 @@
 # 修改日志
 
+## 2026-07-22 | FUND-005A 逐 Agent 真实模型与运行时 trace 补修
+
+- **问题**：`annotate_agent_traces()` 中 `actual_model` 静态等于 `requested_model`（config 派生），从未从 LLM 响应元数据提取真实模型；无 fallback 追踪；无逐 Agent 计时。
+- **修复**：
+  - `_model_for_tier_with_fallback()` 返回 `(resolved_model, fallback_from)`，当 tier 首选 key 为空且使用后续 candidate 时记录 `fallback_from`。
+  - `_extract_actual_model_from_response()` 从 LLM 最后一个 chunk 的 `response_metadata` 提取 `model`/`model_name`，不可用时返回 `None`（由调用方写 `"unknown"`）。
+  - `annotate_agent_traces()` 保留分析师运行时提供的 `actual_model`，不覆写为 config 值；仅在分析师未提供时回退到 config 派生值。
+  - 7 个分析师节点（fundamentals/market/news/social_media/smart_money/macro/volume_price）统一添加 `import time` + `_extract_actual_model_from_response` 导入，在 LLM 流式调用前后捕获 `started_at`/`finished_at`/`latency_ms`/`actual_model`。
+  - `TraceItem` TypedDict 新增 `started_at`/`finished_at`/`latency_ms`/`actual_model`/`fallback_from` 字段。
+- **代码变更**：
+  - `tradingagents/agents/utils/agent_trace.py` — 新增 `_extract_actual_model_from_response()`、`_model_for_tier_with_fallback()`；修改 `annotate_agent_traces()` 保留分析师 `actual_model`。
+  - `tradingagents/agents/utils/agent_states.py` — `TraceItem` 新增 5 个字段。
+  - `tradingagents/agents/analysts/fundamentals_analyst.py` — 计时 + actual_model 提取。
+  - `tradingagents/agents/analysts/market_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/news_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/social_media_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/smart_money_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/macro_analyst.py` — 同上。
+  - `tradingagents/agents/analysts/volume_price_analyst.py` — 同上。
+- **新增测试**：`tests/test_fund005_agent_trace.py`（24 项），覆盖 5 类场景：无 fallback actual_model 匹配、config tier fallback、运行时 actual_model 提取、actual_model unknown（无响应元数据/显式 unknown）、历史配置变化快照不可变性。额外覆盖：隐私安全（secrets/URLs 不泄漏）、timing 字段保留、全 tier 快照、全部 7 个分析师 tier 映射。
+- **验证**：FUND-005A 专项 24 项通过；FUND 组合 123 项通过；API/runtime smoke 221 项通过；`py_compile` 通过；`git diff --check` 通过。
+- **边界**：未修改 prompts、未调用 live LLM、未写生产数据库、未提交 commit。
+
 ## 2026-07-22 | FUND-004A 基本面语义门禁前移并剔除无效研究权重
 
 - **问题**：`evaluate_fundamental_integrity()` 只在 Risk Judge 阶段（图第 9 步）执行，Bull/Bear 研究员和 Research Manager 已先消费了可能包含未经验证因果/会计叙事的基本面报告，导致无效叙事污染辩论、共识权重和长期投资记忆。
@@ -13690,3 +13713,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/FUND-004A-20260722-round1.txt
 - **Run archive**: docs/task_runs/FUND-004A-20260722-202004/
+
+## 2026-07-22 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-005A - 逐 Agent 真实模型与运行时 trace 补修（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/FUND-005A-20260722-round1.txt
+- **Run archive**: docs/task_runs/FUND-005A-20260722-203834/
