@@ -5735,7 +5735,7 @@
 ### FUND-004A: 基本面语义门禁前移并剔除无效研究权重（P0）
 - **描述**：把语义门禁从最终 Risk Judge 前移到基本面 Agent 输出后；无效基本面不得继续污染 Bull/Bear、Research Manager、Trader 和记忆。
 - **优先级**：P0
-- **状态**：done — 460 项回归通过
+- **状态**：done -- commit d250dd8
 - **预计耗时**：40-50 分钟
 - **depends_on**：FUND-001A, FUND-003A-B, FUND-004B, FUND-004
 - **auto_release**：true
@@ -5751,7 +5751,7 @@
 ### FUND-005A: 逐 Agent 真实模型与运行时 trace 补修（P1）
 - **描述**：修复 `actual_model=requested_model` 的静态回填，补齐真实运行模型、fallback 和运行时间证据。
 - **优先级**：P1
-- **状态**：blocked-auto — 等待 FUND-004A
+- **状态**：ready
 - **预计耗时**：25-35 分钟
 - **depends_on**：FUND-004A, FUND-005, PERF-003
 - **auto_release**：true
