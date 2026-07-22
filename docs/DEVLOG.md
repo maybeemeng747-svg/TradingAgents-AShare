@@ -1,5 +1,39 @@
 # 修改日志
 
+## 2026-07-23 | M-009 TradeFlow 前端观察池面板
+
+- **任务**：M-009 — 在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA（P2）
+- **状态**：✅ 实现完成；前端 92 tests passed，后端 TradeFlow 回归 137 tests passed，`npm run build` 通过
+- **代码标注**：`// [M-009] tradeflow_watch_pool_panel`
+
+### 改动
+
+- **`frontend/src/pages/TradeFlow.tsx`**（修改）
+  - 新增 `WatchPoolTab` 组件：观察池面板，统一展示候选观察状态、策略标签、触发价/失效价、过滤原因、TA 需求
+  - 三视图切换：观察中（watching）、需深度TA（need-ta）、被过滤（filtered）
+  - 观察中视图：策略标签筛选、候选类型/策略标签/触发价/失效价/观察状态/需TA/综合分完整表格、轻量TA操作按钮
+  - 需深度TA视图：按 TA 优先级排序、深度TA原因展示、发起TA操作按钮
+  - 被过滤视图：复用 filtered API 数据、过滤原因分类着色
+  - 5 张汇总卡片：观察中/已触发/需深度TA/被过滤/策略标签数
+  - 新增 `watch-pool` TabKey 与 TABS 条目（Crosshair 图标）
+  - `fetchData` 路由：观察池加载 candidates + filtered 双源数据
+  - 空状态：引导用户前往候选池生成
+
+### 设计要点
+
+- 复用已有 candidates 和 filtered API，无新增后端端点
+- 观察中视图自动排除 INVALIDATED/EXPIRED 状态的候选
+- 策略标签从 candidates 动态提取，支持多标签展示（最多3个 + 展开计数）
+- A股红涨绿跌视觉语义：触发价红色、失效价绿色
+- 无强买卖词，操作按钮为「轻量TA」「发起TA」
+- `npm run build` 通过，前端 bundle 无新增 chunk 警告
+
+### 下游释放
+
+- M-009 ✓ 后可释放 M-010（飞书/通知链路人工确认版）
+
+---
+
 ## 2026-07-23 | HY-009 半年报增量刷新、缓存失效与事实冲突审计
 
 - **任务**：HY-009 — 让 HY-003 半年报事实索引能识别新披露、修订稿和知识库页面更新，安全刷新缓存并标记跨版本事实冲突（P2）
@@ -14461,3 +14495,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/HY-009-20260723-round1.txt
 - **Run archive**: docs/task_runs/HY-009-20260723-054123/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-009 - TradeFlow 前端观察池面板（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/M-009-20260723-round1.txt
+- **Run archive**: docs/task_runs/M-009-20260723-055136/

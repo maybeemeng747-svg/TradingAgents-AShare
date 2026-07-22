@@ -9,7 +9,7 @@
 // [UI-012] tradeflow_focus_workspace
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon, Flame } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon, Flame, Crosshair } from 'lucide-react'
 import { api } from '@/services/api'
 import {
     RUNTIME_TIER_LABELS,
@@ -27,6 +27,7 @@ import type {
     TradeFlowTAQueueResponse,
     TradeFlowReviewResponse,
     TradeFlowFilteredResponse,
+    TradeFlowFilteredItem,
     TradeFlowTieredCandidatesResponse,
     PaperLedgerResponse,
     SourceFreshnessResponse,
@@ -55,7 +56,7 @@ import {
     OBSERVE_LEGEND,
 } from '@/utils/observeVisuals'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
+type TabKey = 'candidates' | 'watch-pool' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -571,6 +572,7 @@ function TAQueueTable({ items, meta }: { items: TradeFlowTAQueueItem[]; meta: Tr
 
 const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'candidates', label: '候选池', icon: Target },
+    { key: 'watch-pool', label: '观察池', icon: Crosshair },
     { key: 'compare', label: '候选对比', icon: GitCompare },
     { key: 'observe', label: '盘中观察', icon: Eye },
     { key: 'ta-queue', label: 'TA 队列', icon: ListOrdered },
@@ -2257,6 +2259,307 @@ function CompareTab({ candidates, sortBy, onSortChange, onRowClick }: {
     )
 }
 
+// [M-009] tradeflow_watch_pool_panel — consolidated watch pool showing candidates with
+// strategy tags, trigger/invalid prices, filter reasons, and TA requirements.
+type WatchPoolView = 'watching' | 'need-ta' | 'filtered'
+
+function WatchPoolTab({
+    candidates,
+    filteredItems,
+    onRowClick,
+    onNavigateToAnalysis,
+}: {
+    candidates: TradeFlowCandidateItem[]
+    filteredItems: TradeFlowFilteredItem[]
+    onRowClick: (c: TradeFlowCandidateItem) => void
+    onNavigateToAnalysis: (url: string) => void
+}) {
+    const [view, setView] = useState<WatchPoolView>('watching')
+    const [strategyFilter, setStrategyFilter] = useState('')
+
+    const strategies = useMemo(() => {
+        const set = new Set<string>()
+        for (const c of candidates) {
+            for (const t of c.strategy_tags ?? []) {
+                if (t) set.add(t)
+            }
+        }
+        return Array.from(set).sort()
+    }, [candidates])
+
+    const watching = useMemo(() => {
+        let items = candidates.filter(c => c.observe_state !== 'INVALIDATED' && c.observe_state !== 'EXPIRED')
+        if (strategyFilter) {
+            items = items.filter(c => (c.strategy_tags ?? []).includes(strategyFilter))
+        }
+        return items.sort((a, b) => (b.composite_score || b.score || 0) - (a.composite_score || a.score || 0))
+    }, [candidates, strategyFilter])
+
+    const needTa = useMemo(() =>
+        candidates.filter(c => c.need_deep_ta).sort((a, b) => (b.ta_budget_priority || 0) - (a.ta_budget_priority || 0)),
+        [candidates],
+    )
+
+    const isEmpty = candidates.length === 0 && filteredItems.length === 0
+
+    if (isEmpty) {
+        return (
+            <div className="py-16 text-center text-sm text-slate-400">
+                <Crosshair className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                尚无观察池数据
+                <div className="mt-2 text-xs text-slate-400">请先在「候选池」生成今日候选</div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="space-y-4 p-4">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                <div className="card p-3">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">观察中</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums text-blue-600 dark:text-blue-400">{watching.length}</div>
+                </div>
+                <div className="card p-3">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">已触发</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums text-red-600 dark:text-red-400">
+                        {candidates.filter(c => c.observe_state === 'TRIGGERED').length}
+                    </div>
+                </div>
+                <div className="card p-3">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">需深度TA</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums text-purple-600 dark:text-purple-400">{needTa.length}</div>
+                </div>
+                <div className="card p-3">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">被过滤</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums text-amber-600 dark:text-amber-400">{filteredItems.length}</div>
+                </div>
+                <div className="card p-3">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">策略标签数</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums text-slate-700 dark:text-slate-200">{strategies.length}</div>
+                </div>
+            </div>
+
+            {/* View Toggle + Filters */}
+            <div className="flex flex-wrap items-center gap-3">
+                <div className="flex gap-1">
+                    {([
+                        { key: 'watching' as WatchPoolView, label: '观察中', count: watching.length },
+                        { key: 'need-ta' as WatchPoolView, label: '需深度TA', count: needTa.length },
+                        { key: 'filtered' as WatchPoolView, label: '被过滤', count: filteredItems.length },
+                    ]).map(tab => (
+                        <button
+                            key={tab.key}
+                            onClick={() => setView(tab.key)}
+                            className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+                                view === tab.key
+                                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'
+                            }`}
+                        >
+                            {tab.label} ({tab.count})
+                        </button>
+                    ))}
+                </div>
+                {view === 'watching' && strategies.length > 0 && (
+                    <>
+                        <span className="text-slate-300 dark:text-slate-600">|</span>
+                        <select
+                            value={strategyFilter}
+                            onChange={e => setStrategyFilter(e.target.value)}
+                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                        >
+                            <option value="">全部策略</option>
+                            {strategies.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    </>
+                )}
+            </div>
+
+            {/* Watching Table */}
+            {view === 'watching' && (
+                <div className="card">
+                    {watching.length === 0 ? (
+                        <div className="py-12 text-center text-sm text-slate-400">无观察中候选</div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                        <th className="px-4 py-2.5 font-medium">代码/名称</th>
+                                        <th className="px-4 py-2.5 font-medium">候选类型</th>
+                                        <th className="px-4 py-2.5 font-medium">策略标签</th>
+                                        <th className="px-4 py-2.5 font-medium">触发价</th>
+                                        <th className="px-4 py-2.5 font-medium">失效价</th>
+                                        <th className="px-4 py-2.5 font-medium">观察状态</th>
+                                        <th className="px-4 py-2.5 font-medium">需TA</th>
+                                        <th className="px-4 py-2.5 font-medium">综合分</th>
+                                        <th className="px-4 py-2.5 font-medium">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {watching.map(c => {
+                                        const ct = candidateTypeLabel(c.candidate_type)
+                                        const obs = observeStateLabel(c.observe_state)
+                                        const tags = c.strategy_tags ?? []
+                                        return (
+                                            <tr
+                                                key={c.symbol}
+                                                className="cursor-pointer border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                                onClick={() => onRowClick(c)}
+                                            >
+                                                <td className="px-4 py-2.5">
+                                                    <div className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</div>
+                                                    <div className="max-w-[100px] truncate text-xs text-slate-500 dark:text-slate-400">{c.name || '--'}</div>
+                                                </td>
+                                                <td className="px-4 py-2.5">
+                                                    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ct.cls}`}>{ct.text}</span>
+                                                </td>
+                                                <td className="px-4 py-2.5">
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {tags.length > 0 ? tags.slice(0, 3).map(t => (
+                                                            <span key={t} className="inline-block rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">{t}</span>
+                                                        )) : <span className="text-xs text-slate-400">-</span>}
+                                                        {tags.length > 3 && <span className="text-[10px] text-slate-400">+{tags.length - 3}</span>}
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-2.5 font-mono text-xs text-red-600 dark:text-red-400">{fmtPrice(c.trigger_price)}</td>
+                                                <td className="px-4 py-2.5 font-mono text-xs text-emerald-600 dark:text-emerald-400">{fmtPrice(c.invalid_price)}</td>
+                                                <td className="px-4 py-2.5">
+                                                    <span className={`text-xs font-medium ${obs.cls}`}>{obs.text}</span>
+                                                </td>
+                                                <td className="px-4 py-2.5">
+                                                    {c.need_deep_ta ? (
+                                                        <span className="inline-block rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">需要</span>
+                                                    ) : (
+                                                        <span className="text-xs text-slate-400">-</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-2.5 font-mono text-xs text-slate-700 dark:text-slate-300">
+                                                    {(c.composite_score || c.score || 0).toFixed(1)}
+                                                </td>
+                                                <td className="px-4 py-2.5">
+                                                    <button
+                                                        onClick={e => { e.stopPropagation(); onNavigateToAnalysis(`/analysis?symbol=${c.symbol}&horizon=medium&intent=entry`) }}
+                                                        className="rounded bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/50"
+                                                    >
+                                                        轻量TA
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Need Deep TA Table */}
+            {view === 'need-ta' && (
+                <div className="card">
+                    {needTa.length === 0 ? (
+                        <div className="py-12 text-center text-sm text-slate-400">暂无需要深度TA的候选</div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                        <th className="px-4 py-2.5 font-medium">代码/名称</th>
+                                        <th className="px-4 py-2.5 font-medium">候选类型</th>
+                                        <th className="px-4 py-2.5 font-medium">触发价</th>
+                                        <th className="px-4 py-2.5 font-medium">失效价</th>
+                                        <th className="px-4 py-2.5 font-medium">优先级</th>
+                                        <th className="px-4 py-2.5 font-medium">深度TA原因</th>
+                                        <th className="px-4 py-2.5 font-medium">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {needTa.map(c => {
+                                        const ct = candidateTypeLabel(c.candidate_type)
+                                        return (
+                                            <tr
+                                                key={c.symbol}
+                                                className="cursor-pointer border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                                onClick={() => onRowClick(c)}
+                                            >
+                                                <td className="px-4 py-2.5">
+                                                    <div className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</div>
+                                                    <div className="max-w-[100px] truncate text-xs text-slate-500 dark:text-slate-400">{c.name || '--'}</div>
+                                                </td>
+                                                <td className="px-4 py-2.5">
+                                                    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ct.cls}`}>{ct.text}</span>
+                                                </td>
+                                                <td className="px-4 py-2.5 font-mono text-xs text-red-600 dark:text-red-400">{fmtPrice(c.trigger_price)}</td>
+                                                <td className="px-4 py-2.5 font-mono text-xs text-emerald-600 dark:text-emerald-400">{fmtPrice(c.invalid_price)}</td>
+                                                <td className="px-4 py-2.5 font-mono text-xs text-slate-700 dark:text-slate-300">{c.ta_budget_priority || 0}</td>
+                                                <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400">{c.why_deep_ta || '-'}</td>
+                                                <td className="px-4 py-2.5">
+                                                    <button
+                                                        onClick={e => { e.stopPropagation(); onNavigateToAnalysis(`/analysis?symbol=${c.symbol}&horizon=medium&intent=entry`) }}
+                                                        className="rounded bg-purple-50 px-2 py-1 text-[10px] font-medium text-purple-600 hover:bg-purple-100 dark:bg-purple-900/30 dark:text-purple-400"
+                                                    >
+                                                        发起TA
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Filtered Table */}
+            {view === 'filtered' && (
+                <div className="card">
+                    {filteredItems.length === 0 ? (
+                        <div className="py-12 text-center text-sm text-slate-400">暂无被过滤股票</div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                        <th className="px-4 py-2.5 font-medium">代码</th>
+                                        <th className="px-4 py-2.5 font-medium">名称</th>
+                                        <th className="px-4 py-2.5 font-medium">来源</th>
+                                        <th className="px-4 py-2.5 font-medium">过滤原因</th>
+                                        <th className="px-4 py-2.5 font-medium">扫描时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredItems.map(item => {
+                                        const reason = item.reason
+                                        let reasonCls = 'text-slate-600 dark:text-slate-400'
+                                        if (reason.includes('流动性')) reasonCls = 'text-amber-600 dark:text-amber-400'
+                                        else if (reason.includes('数据')) reasonCls = 'text-red-500 dark:text-red-400'
+                                        else if (reason.includes('无策略')) reasonCls = 'text-slate-500 dark:text-slate-400'
+                                        return (
+                                            <tr
+                                                key={`${item.symbol}-${item.reason}`}
+                                                className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                            >
+                                                <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
+                                                <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
+                                                <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.source || '-'}</td>
+                                                <td className={`px-4 py-2.5 text-xs font-medium ${reasonCls}`}>{reason}</td>
+                                                <td className="px-4 py-2.5 text-xs text-slate-400">{item.created_at ? new Date(item.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+}
+
 export default function TradeFlow() {
     const navigate = useNavigate()  // [TA-UI-001] analysis_console_horizon_intent
     const [activeTab, setActiveTab] = useState<TabKey>('candidates')
@@ -2585,6 +2888,10 @@ export default function TradeFlow() {
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
+        } else if (activeTab === 'watch-pool') {
+            // [M-009] tradeflow_watch_pool_panel — load both candidates and filtered data
+            await fetchCandidates(date)
+            await fetchFiltered(date)
         } else if (activeTab === 'compare') {
             await fetchCompare(date)
         } else if (activeTab === 'observe') {
@@ -3332,6 +3639,18 @@ export default function TradeFlow() {
                         </tbody>
                     </table>
                 </div>
+            )
+        }
+
+        // [M-009] tradeflow_watch_pool_panel
+        if (activeTab === 'watch-pool') {
+            return (
+                <WatchPoolTab
+                    candidates={candidates}
+                    filteredItems={filteredData?.filtered ?? []}
+                    onRowClick={handleRowClick}
+                    onNavigateToAnalysis={(url) => navigate(url)}
+                />
             )
         }
 
