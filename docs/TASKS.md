@@ -83,7 +83,7 @@
 ### F-001: TA研报执行层修复（P0-P2共10项）
 - **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
 - **优先级**：P0
-- **状态**：done — 70 项专项通过，279 项回归通过
+- **状态**：done -- commit 4e4088b
 - **预计耗时**：60-90 分钟
 - **depends_on**：无
 - **auto_release**：true
