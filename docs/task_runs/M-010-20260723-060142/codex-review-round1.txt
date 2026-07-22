@@ -1,0 +1,3794 @@
+Task: M-010 - 飞书/通知链路人工确认版（P2）
+Date: 2026-07-23_06:15:45
+Codex exit code: 0
+Round: 1
+---
+2026-07-22T22:12:39.186085Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8be3-569f-7f41-b82b-0ca24835e24b
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/database.py
+ M api/main.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M scheduler/main.py
+?? api/services/feishu_webhook_service.py
+?? api/services/notification_confirmation_service.py
+?? docs/task_runs/M-010-20260723-060142/
+?? tests/test_m010_feishu_webhook.py
+?? tests/test_m010_notification_confirmation.py
+/Users/maybee/TradingAgents-AShare
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/database.py api/main.py scheduler/main.py && git diff -- docs/TASKS.md docs/DEVLOG.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/database.py   |  25 ++++++++++++
+ api/main.py       | 111 +++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ docs/DEVLOG.md    |  86 ++++++++++++++++++++++++++++++++++++++++++
+ docs/TASKS.md     |   2 +-
+ scheduler/main.py |  31 +++++++++++++++
+ 5 files changed, 253 insertions(+), 2 deletions(-)
+diff --git a/api/database.py b/api/database.py
+index 612b70b..dde5aa5 100644
+--- a/api/database.py
++++ b/api/database.py
+@@ -627,3 +627,28 @@ class ImportedPortfolioPositionDB(Base):
+     __table_args__ = (
+         UniqueConstraint('user_id', 'source', 'symbol', name='uq_imported_portfolio_user_source_symbol'),
+     )
++
++
++class NotificationLogDB(Base):
++    # [M-010] feishu_notification_confirmation
++    """Notification event log and confirmation queue."""
++    __tablename__ = "notification_logs"
++
++    id = Column(String(36), primary_key=True)
++    user_id = Column(String(64), index=True, nullable=False)
++    channel = Column(String(20), nullable=False)  # feishu / bark / wecom / email
++    event_type = Column(String(80), nullable=False)
++    priority = Column(String(4), nullable=False)  # P0 / P1 / P2 / P3
++    symbol = Column(String(20), nullable=True)
++    name = Column(String(80), nullable=True)
++    title = Column(String(200), nullable=False)
++    reason = Column(Text, nullable=True)
++    status = Column(String(24), default="pending_confirmation", index=True)
++    # pending_confirmation / confirmed / sending / sent / failed / dismissed
++    payload = Column(JSON, nullable=True)
++    webhook_url_masked = Column(String(200), nullable=True)
++    error = Column(Text, nullable=True)
++    confirmed_at = Column(DateTime, nullable=True)
++    sent_at = Column(DateTime, nullable=True)
++    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
++    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+diff --git a/api/main.py b/api/main.py
+index 5c0db22..d8455b1 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -39,11 +39,13 @@ from pydantic import BaseModel, Field, field_serializer
+ from sqlalchemy.orm import Session
+ import pandas as pd
+ 
+-from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
++from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, NotificationLogDB, init_db, get_db, get_db_ctx
+ from api.job_store import get_job_store as _new_job_store
+ from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
+ from api.services import feishu_export_service  # [B-003] feishu_doc_export
+ from api.services import holdings_sync_service  # [B-004] holdings_sync
++from api.services import feishu_webhook_service  # [M-010] feishu_webhook_notification
++from api.services import notification_confirmation_service  # [M-010] feishu_notification_confirmation
+ 
+ def _get_real_ip(request: Request) -> Optional[str]:
+     """Extract real client IP, preferring Cloudflare/proxy headers."""
+@@ -5148,6 +5150,113 @@ def post_briefing_payload_dry_run(
+     )
+ 
+ 
++# [M-010] feishu_notification_confirmation
++class NotificationGenerateRequest(BaseModel):
++    channel: str = "feishu"
++    force_refresh: bool = False
++
++
++@app.post("/v1/notifications/generate")
++def post_notification_generate(
++    body: NotificationGenerateRequest,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """生成通知草稿并存入待确认队列（M-010 人工确认版）.
++
++    从 notification_draft 引擎生成草稿，存入 notification_logs 表，
++    状态为 pending_confirmation。用户后续通过 confirm 接口确认发送。
++    runtime_tier=FAST_RADAR（不触发 LLM）。
++    """
++    return notification_confirmation_service.generate_pending(
++        db, current_user.id,
++        channel=body.channel,
++        force_refresh=body.force_refresh,
++    )
++
++
++@app.get("/v1/notifications/pending")
++def get_notifications_pending(
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """获取待确认通知队列（M-010）."""
++    return notification_confirmation_service.list_pending(db, current_user.id)
++
++
++@app.get("/v1/notifications/log")
++def get_notifications_log(
++    status: str | None = Query(None, description="按状态筛选"),
++    limit: int = Query(100, ge=1, le=500),
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """获取通知历史日志（M-010）."""
++    return notification_confirmation_service.list_log(
++        db, current_user.id, status=status, limit=limit,
++    )
++
++
++class NotificationActionRequest(BaseModel):
++    pass
++
++
++@app.post("/v1/notifications/{notification_id}/confirm")
++def post_notification_confirm(
++    notification_id: str,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """确认单条通知并通过飞书 webhook 发送（M-010）."""
++    return notification_confirmation_service.confirm_and_send(
++        db, notification_id, current_user.id,
++    )
++
++
++@app.post("/v1/notifications/{notification_id}/dismiss")
++def post_notification_dismiss(
++    notification_id: str,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """拒绝单条通知，不再发送（M-010）."""
++    return notification_confirmation_service.dismiss(
++        db, notification_id, current_user.id,
++    )
++
++
++@app.post("/v1/notifications/confirm-all")
++def post_notification_confirm_all(
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """批量确认所有待发送通知（M-010）."""
++    return notification_confirmation_service.confirm_all_pending(
++        db, current_user.id,
++    )
++
++
++@app.post("/v1/config/feishu/warmup")
++def post_feishu_webhook_warmup(
++    current_user: UserDB = Depends(_require_web_user),
++    db: Session = Depends(get_db),
++):
++    """测试飞书 Webhook 连通性（M-010）."""
++    webhook_url = feishu_webhook_service.get_feishu_webhook_url()
++    if not webhook_url:
++        return {"success": False, "error": "飞书 Webhook 未配置 (FEISHU_WEBHOOK_URL)"}
++    import asyncio as _asyncio
++    try:
++        ok = _asyncio.get_event_loop().run_until_complete(
++            feishu_webhook_service.send_warmup(webhook_url)
++        )
++    except RuntimeError:
++        ok = _asyncio.run(feishu_webhook_service.send_warmup(webhook_url))
++    if ok:
++        return {"success": True, "message": "飞书 Webhook 连通测试成功"}
++    return {"success": False, "error": "飞书 Webhook 发送失败，请检查 URL 配置"}
++
++
+ # [KB-020] research_evidence_api
+ # Fixed routes under /v1/knowledge/research/evidence must be declared BEFORE
+ # the dynamic {symbol} route so FastAPI matches them first. Regression covered
+diff --git a/scheduler/main.py b/scheduler/main.py
+index ba070fc..77cd6fb 100644
+--- a/scheduler/main.py
++++ b/scheduler/main.py
+@@ -250,6 +250,34 @@ async def _send_openclaw_callback(
+         logger.warning(f"[Scheduler] OpenClaw callback failed for {symbol}: {e}")
+ 
+ 
++# [M-010] feishu_notification_confirmation
++async def _send_feishu_notification_draft(
++    user_id: str, report_id: str, symbol: str
++) -> None:
++    """Auto-generate pending feishu notification drafts after scheduled analysis.
++
++    Unlike email/WeCom which send immediately, feishu notifications are stored
++    as 'pending_confirmation' for human review before sending.
++    """
++    try:
++        from api.services.feishu_webhook_service import is_feishu_webhook_enabled
++        from api.services.notification_confirmation_service import generate_pending
++
++        if not is_feishu_webhook_enabled():
++            return
++
++        def _generate():
++            with get_db_ctx() as db:
++                return generate_pending(db, user_id, channel="feishu")
++
++        result = await asyncio.to_thread(_generate)
++        generated = result.get("generated_count", 0)
++        if generated > 0:
++            _log(f"[Scheduler] Generated {generated} feishu notification draft(s) for {symbol}")
++    except Exception as e:
++        logger.warning(f"[Scheduler] Feishu notification draft failed for {symbol}: {e}")
++
++
+ # ── Single scheduled analysis execution ──────────────────────────────────────
+ 
+ async def _run_scheduled_analysis_once(
+@@ -322,6 +350,9 @@ async def _run_scheduled_analysis_once(
+             user_id, job_id, symbol, actual_trade_date, horizon,
+             "scheduled" if mark_schedule_run else "scheduled_manual",
+         )
++
++        # [M-010] Feishu webhook: auto-generate pending notification drafts
++        await _send_feishu_notification_draft(user_id, job_id, symbol)
+     except Exception as e:
+         logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
+         try:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 0c9ca45..4d06460 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,91 @@
+ # 修改日志
+ 
++## 2026-07-23 | M-010 飞书/通知链路人工确认版
++
++- **任务**：M-010 — 把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发（P2）
++- **状态**：✅ 实现完成；69 项专项测试 passed，通知相关回归 155 passed，API 导入正常
++- **代码标注**：`# [M-010] feishu_webhook_notification` / `# [M-010] feishu_notification_confirmation`
++
++### 改动
++
++- **`api/services/feishu_webhook_service.py`**（新增）
++  - 飞书 Incoming Webhook 机器人消息推送 service
++  - `normalize_webhook_url()`：支持完整 URL 和 token-only 两种输入格式，自动 http→https 升级
++  - `mask_webhook_url()`：安全日志输出（隐藏 token）
++  - `build_card_message()` / `build_text_message()`：飞书消息卡片 / 纯文本构建
++  - `build_report_card()`：从 ReportDB 字段构建分析报告卡片（含动作、方向、价位、风险提示）
++  - `build_draft_card()`：从通知草稿列表构建确认队列卡片
++  - `send_message()` / `send_with_retry()`：同步发送 + 异步重试（最多 2 次，间隔 15s）
++  - `send_report_notification()` / `send_draft_notification()` / `send_warmup()`：高层便捷入口
++  - 环境变量：`FEISHU_WEBHOOK_URL`（必填）、`FEISHU_WEBHOOK_ENABLED`（默认 true）
++  - 设计契约：不读取/打印 webhook secret，不写 DB，不调 LLM，不改 prompts
++
++- **`api/services/notification_confirmation_service.py`**（新增）
++  - 通知确认队列管理 service — 人工确认后才真正发送飞书
++  - `generate_pending()`：从 notification_draft 引擎生成草稿，存入 notification_logs 表（状态 pending_confirmation），同 (user, symbol, event_type) 去重
++  - `list_pending()`：按优先级排序返回待确认队列
++  - `list_log()`：通知历史日志（支持 status 筛选）
++  - `confirm_and_send()`：确认单条 → 调用 feishu_webhook_service 发送 → 更新状态为 sent/failed
++  - `dismiss()`：拒绝单条，不再发送
++  - `confirm_all_pending()`：批量确认并发送，返回 sent/failed 统计
++  - `_do_send()`：内部发送逻辑，使用 build_draft_card 构建消息卡片
++  - 状态机：pending_confirmation → confirmed → sending → sent/failed；failed 可重试
++  - 设计契约：webhook URL 只存 masked 版本，不暴露明文
++
++- **`api/database.py`**（修改）
++  - 新增 `NotificationLogDB` 模型：通知事件日志与确认队列表
++  - 字段：id / user_id / channel / event_type / priority / symbol / name / title / reason / status / payload / webhook_url_masked / error / confirmed_at / sent_at / created_at / updated_at
++  - 自动建表：`init_db()` → `Base.metadata.create_all()` 已包含
++
++- **`api/main.py`**（修改）
++  - 新增 7 个 API 端点：
++    - `POST /v1/notifications/generate`：生成通知草稿并存入待确认队列
++    - `GET /v1/notifications/pending`：获取待确认通知队列
++    - `GET /v1/notifications/log`：获取通知历史日志（支持 status/limit 查询参数）
++    - `POST /v1/notifications/{id}/confirm`：确认单条通知并通过飞书 webhook 发送
++    - `POST /v1/notifications/{id}/dismiss`：拒绝单条通知
++    - `POST /v1/notifications/confirm-all`：批量确认所有待发送通知
++    - `POST /v1/config/feishu/warmup`：测试飞书 Webhook 连通性
++  - 新增导入：`NotificationLogDB`、`feishu_webhook_service`、`notification_confirmation_service`
++
++- **`scheduler/main.py`**（修改）
++  - 新增 `_send_feishu_notification_draft()`：定时分析完成后自动生成待确认飞书通知草稿
++  - 在 `_run_scheduled_analysis_once()` 中集成：email/WeCom → OpenClaw → 飞书草稿（fire-and-forget）
++  - 仅当 `FEISHU_WEBHOOK_ENABLED=true` 且 `FEISHU_WEBHOOK_URL` 已配置时触发
++
++### 设计要点
++
++- **人工确认优先**：所有飞书通知先存为 pending_confirmation，用户通过 API 确认后才真正发送
++- **卡片消息**：使用飞书 interactive card 格式（含 header/elements），支持红涨绿跌颜色语义
++- **去噪复用**：generate_pending 复用 notification_draft_service 的 30 分钟去噪器
++- **失败可重试**：failed 状态的通知可以重新 confirm（状态机允许 failed → confirmed）
++- **批量操作**：confirm-all 一键确认所有待发送，逐条发送并报告成功/失败统计
++- **安全**：webhook URL 只存 masked 版本到 DB，不暴露明文；不读取/打印 API secret
++
++### 测试
++
++- `tests/test_m010_feishu_webhook.py`（新增）— **41 tests passed**
++  - 覆盖 10 个测试类：URL 规范化（9）、URL 掩码（5）、卡片消息构建（14）、环境变量（5）、HTTP 发送（4）、异步重试（2）、常量导出（1）
++- `tests/test_m010_notification_confirmation.py`（新增）— **28 tests passed**
++  - 覆盖 10 个测试类：生成草稿（5）、待确认列表（4）、历史日志（2）、确认发送（4）、拒绝（3）、批量确认（3）、内部发送（4）、日志序列化（1）、状态常量（1）、导出（1）
++
++### 回归
++
++- `pytest tests/test_b002_openclaw_callback.py tests/test_b003_feishu_export.py tests/test_notify002_mandate_data_blockers.py tests/test_notify003_noise_replay.py -q`：**155 passed**
++- `py_compile` 全部修改文件通过
++- `from api.main import app` 导入正常，7 个 M-010 路由已注册
++
++### 环境变量
++
++- `FEISHU_WEBHOOK_URL`：飞书群机器人 webhook 地址（必填）
++- `FEISHU_WEBHOOK_ENABLED`：是否启用（默认 true）
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-23 | M-009 TradeFlow 前端观察池面板
+ 
+ - **任务**：M-009 — 在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA（P2）
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index d8c3763..4a43ac3 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -217,7 +217,7 @@
+ ### M-010: 飞书/通知链路人工确认版（P2）
+ - **描述**：把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发。
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：done — M-010-20260723-060142
+ - **预计耗时**：35-45 分钟
+ - **depends_on**：无
+ - **auto_release**：true
+
+exec
+/bin/zsh -lc "sed -n '1,260p' api/services/feishu_webhook_service.py && printf '\\n--- notification service ---\\n' && sed -n '1,360p' api/services/notification_confirmation_service.py && printf '\\n--- tests webhook ---\\n' && sed -n '1,260p' tests/test_m010_feishu_webhook.py && printf '\\n--- tests confirmation ---\\n' && sed -n '1,360p' tests/test_m010_notification_confirmation.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [M-010] feishu_webhook_notification
+"""飞书 Incoming Webhook 机器人消息推送 service.
+
+通过飞书群机器人 webhook 发送通知卡片。与 ``feishu_export_service``
+（云文档导出）不同，本模块用于即时消息推送。
+
+环境变量::
+
+    FEISHU_WEBHOOK_URL     — 飞书群机器人 webhook 地址（必填）
+    FEISHU_WEBHOOK_ENABLED — 是否启用（默认 true）
+
+设计契约：
+
+- 不读取 / 打印 webhook secret（URL 中的 sign 参数只做格式校验）。
+- 不写数据库，不调 LLM，不改 prompts。
+- 失败返回结构化 ``{"success": False, "error": ...}``，不抛异常。
+- 卡片消息优先（富文本），纯文本兜底。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import base64
+import json
+import logging
+import os
+import time
+from urllib.parse import urlparse
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+_FEISHU_WEBHOOK_HOST = "open.feishu.cn"
+_FEISHU_WEBHOOK_PATH = "/open-apis/bot/v2/hook/"
+
+
+# ── Env helpers ──────────────────────────────────────────────────────────────
+
+def is_feishu_webhook_enabled() -> bool:
+    """Check if feishu webhook is configured and enabled."""
+    url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+    if not url:
+        return False
+    enabled = os.getenv("FEISHU_WEBHOOK_ENABLED", "true").strip().lower()
+    return enabled in ("1", "true", "yes", "on")
+
+
+def get_feishu_webhook_url() -> str | None:
+    """Return configured webhook URL (plaintext, never logged)."""
+    url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+    return url or None
+
+
+# ── URL validation ───────────────────────────────────────────────────────────
+
+def normalize_webhook_url(webhook_url: str) -> str:
+    """Validate and normalize a Feishu webhook URL.
+
+    Accepts:
+    - Full URL: ``https://open.feishu.cn/open-apis/bot/v2/hook/{token}``
+    - Token only: ``{token}`` → expanded to full URL
+
+    Raises ``ValueError`` on invalid input.
+    """
+    normalized = str(webhook_url or "").strip()
+    if not normalized:
+        raise ValueError("飞书 Webhook 不能为空")
+
+    # Token-only input
+    if not normalized.startswith(("http://", "https://")):
+        if not all(c.isalnum() or c in "-_" for c in normalized):
+            raise ValueError("飞书 Webhook token 格式不正确")
+        return f"https://{_FEISHU_WEBHOOK_HOST}{_FEISHU_WEBHOOK_PATH}{normalized}"
+
+    parsed = urlparse(normalized)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("飞书 Webhook 必须使用 HTTPS")
+    if parsed.scheme == "http":
+        # Upgrade to https
+        normalized = "https" + normalized[4:]
+        parsed = urlparse(normalized)
+    if parsed.netloc != _FEISHU_WEBHOOK_HOST:
+        raise ValueError("仅支持飞书官方 Webhook 地址 (open.feishu.cn)")
+    if not parsed.path.startswith(_FEISHU_WEBHOOK_PATH):
+        raise ValueError("飞书 Webhook 路径格式不正确")
+    token = parsed.path[len(_FEISHU_WEBHOOK_PATH):].strip("/")
+    if not token or not all(c.isalnum() or c in "-_" for c in token):
+        raise ValueError("飞书 Webhook token 格式不正确")
+    return normalized
+
+
+def mask_webhook_url(webhook_url: str | None) -> str | None:
+    """Mask webhook URL for safe logging (hides the token)."""
+    normalized = str(webhook_url or "").strip()
+    if not normalized:
+        return None
+    if not normalized.startswith(("http://", "https://")):
+        token = normalized
+        if len(token) > 8:
+            return f"{token[:4]}{'*' * max(4, len(token) - 8)}{token[-4:]}"
+        return "******"
+    parsed = urlparse(normalized)
+    path = parsed.path
+    token_start = path.rfind("/")
+    if token_start > 0:
+        token = path[token_start + 1:]
+        if len(token) > 8:
+            masked = f"{token[:4]}{'*' * max(4, len(token) - 8)}{token[-4:]}"
+        else:
+            masked = "******"
+        return f"{parsed.scheme}://{parsed.netloc}{path[:token_start]}/{masked}"
+    return f"{parsed.scheme}://{parsed.netloc}/******"
+
+
+# ── Sign support ─────────────────────────────────────────────────────────────
+
+def _compute_sign(secret: str, timestamp: int) -> str:
+    """Compute Feishu webhook signature (when sign secret is configured)."""
+    string_to_sign = f"{timestamp}\n{secret}"
+    hmac_code = hmac.new(
+        string_to_sign.encode("utf-8"), digestmod=hashlib.sha256
+    ).digest()
+    return base64.b64encode(hmac_code).decode("utf-8")
+
+
+# ── Message builders ─────────────────────────────────────────────────────────
+
+def build_card_message(
+    title: str,
+    content_lines: list[str],
+    *,
+    color: str = "blue",
+) -> dict:
+    """Build a Feishu interactive card message.
+
+    Colors: blue (default), green, red, orange, grey.
+    """
+    elements = []
+    content = "\n".join(content_lines)
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": content},
+    })
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title[:128]},
+                "template": color,
+            },
+            "elements": elements,
+        },
+    }
+
+
+def build_text_message(content: str) -> dict:
+    """Build a plain text message (fallback)."""
+    return {
+        "msg_type": "text",
+        "content": {"text": content[:4000]},
+    }
+
+
+def build_report_card(
+    symbol: str,
+    trade_date: str,
+    action_label: str | None = None,
+    direction: str | None = None,
+    execution_action: str | None = None,
+    confidence: int | None = None,
+    summary: str | None = None,
+    risk_items: list[dict] | None = None,
+    target_price: float | None = None,
+    stop_loss_price: float | None = None,
+) -> dict:
+    """Build a report notification card from ReportDB fields."""
+    title = f"TradingAgents 分析完成 | {symbol}"
+    lines = [f"**交易日**：{trade_date}"]
+
+    if action_label:
+        lines.append(f"**动作**：{action_label}")
+    if direction:
+        lines.append(f"**方向**：{direction}")
+    if execution_action:
+        lines.append(f"**动作码**：{execution_action}")
+    if confidence is not None:
+        lines.append(f"**置信度**：{confidence}%")
+
+    if target_price or stop_loss_price:
+        price_parts = []
+        if target_price:
+            price_parts.append(f"目标 {target_price:.2f}")
+        if stop_loss_price:
+            price_parts.append(f"止损 {stop_loss_price:.2f}")
+        lines.append(f"**价位**：{' / '.join(price_parts)}")
+
+    if summary:
+        clipped = summary[:500]
+        lines.append("")
+        lines.append(f"**摘要**：{clipped}")
+
+    if risk_items:
+        lines.append("")
+        lines.append("**风险提示**：")
+        for item in risk_items[:3]:
+            level = item.get("level", "medium")
+            name = item.get("name", "")
+            desc = item.get("description", "")
+            icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(level, "⚪")
+            lines.append(f"- {icon} {name}：{desc}" if desc else f"- {icon} {name}")
+
+    color = "red" if direction and "看空" in direction else "blue"
+    if direction and "看多" in direction:
+        color = "green"
+
+    return build_card_message(title, lines, color=color)
+
+
+def build_draft_card(
+    title: str,
+    drafts: list[dict],
+    *,
+    channel_label: str = "通知",
+) -> dict:
+    """Build a card from notification draft items (M-010 confirmation flow)."""
+    lines = []
+    for i, draft in enumerate(drafts[:10], 1):
+        symbol = draft.get("symbol", "")
+        name = draft.get("name", "")
+        event_type = draft.get("event_type", "")
+        reason = draft.get("reason", "")
+        priority = draft.get("priority", "P2")
+        as_of = draft.get("as_of", "")
+
+        label = f"{symbol} {name}".strip() or event_type
+        lines.append(f"**{i}. [{priority}] {label}**")
+        if reason:
+            lines.append(f"   {reason[:200]}")
+        if as_of:
+            lines.append(f"   _{as_of}_")
+        lines.append("")
+
+    if len(drafts) > 10:
+        lines.append(f"... 共 {len(drafts)} 条")
+
+    color = "orange" if channel_label == "盘中提醒" else "blue"
+    return build_card_message(f"{title} | {channel_label}", lines, color=color)
+
+
+def build_test_message() -> dict:
+    """Build a test/warmup message."""
+    return build_text_message(
+        "TradingAgents Webhook Warmup\n这是一条飞书机器人测试消息。"
+    )
+
+
+# ── Send ─────────────────────────────────────────────────────────────────────
+
+--- notification service ---
+# [M-010] feishu_notification_confirmation
+"""通知确认队列 service — 人工确认后才真正发送飞书。
+
+第一阶段工作流::
+
+    1. ``generate_pending`` — 从 notification_draft 引擎生成草稿，
+       存入 ``notification_logs`` 表，状态为 ``pending_confirmation``。
+    2. ``list_pending`` — 用户查看待确认队列。
+    3. ``confirm_and_send`` — 用户确认单条，通过飞书 webhook 发送。
+    4. ``dismiss`` — 用户拒绝单条，不再发送。
+
+设计契约：
+
+- 不读取 / 打印 webhook URL / token（只存 masked 版本）。
+- 不调 LLM，不改 prompts，不写生产 DB（``notification_logs`` 不含交易数据）。
+- 失败返回结构化 dict，不抛异常。
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy import desc
+from sqlalchemy.orm import Session
+
+from api.database import NotificationLogDB
+from api.services.notification_draft_service import build_notification_dry_run
+
+logger = logging.getLogger(__name__)
+
+# Status constants
+STATUS_PENDING = "pending_confirmation"
+STATUS_CONFIRMED = "confirmed"
+STATUS_SENDING = "sending"
+STATUS_SENT = "sent"
+STATUS_FAILED = "failed"
+STATUS_DISMISSED = "dismissed"
+
+VALID_TRANSITIONS = {
+    STATUS_PENDING: {STATUS_CONFIRMED, STATUS_DISMISSED},
+    STATUS_CONFIRMED: {STATUS_SENDING, STATUS_DISMISSED},
+    STATUS_SENDING: {STATUS_SENT, STATUS_FAILED},
+    STATUS_FAILED: {STATUS_CONFIRMED},  # Allow retry
+}
+
+CHANNEL_FEISHU = "feishu"
+
+
+def generate_pending(
+    db: Session,
+    user_id: str,
+    *,
+    channel: str = CHANNEL_FEISHU,
+    force_refresh: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Generate notification drafts and save as pending confirmation.
+
+    Returns:
+        dict with ``generated_count``, ``skipped_count``, ``pending_items``.
+    """
+    now = now or datetime.now()
+    dry_run = build_notification_dry_run(
+        db, user_id, force_refresh=force_refresh, now=now,
+    )
+
+    generated = 0
+    skipped = 0
+
+    for channel_key in ("intraday_push", "daily_digest"):
+        drafts = dry_run.get(channel_key) or []
+        for draft in drafts:
+            symbol = draft.get("symbol", "")
+            event_type = draft.get("event_type", "")
+            # Skip if already pending for same (user, symbol, event_type)
+            existing = (
+                db.query(NotificationLogDB)
+                .filter(
+                    NotificationLogDB.user_id == user_id,
+                    NotificationLogDB.symbol == symbol,
+                    NotificationLogDB.event_type == event_type,
+                    NotificationLogDB.status == STATUS_PENDING,
+                )
+                .first()
+            )
+            if existing:
+                skipped += 1
+                continue
+
+            log_entry = NotificationLogDB(
+                id=uuid4().hex,
+                user_id=user_id,
+                channel=channel,
+                event_type=event_type,
+                priority=draft.get("priority", "P2"),
+                symbol=symbol,
+                name=draft.get("name", ""),
+                title=draft.get("title", "")[:200],
+                reason=draft.get("reason", ""),
+                status=STATUS_PENDING,
+                payload=draft,
+            )
+            db.add(log_entry)
+            generated += 1
+
+    db.commit()
+
+    pending_items = list_pending(db, user_id)
+    return {
+        "generated_count": generated,
+        "skipped_count": skipped,
+        "pending_items": pending_items,
+        "dry_run_preview": dry_run.get("markdown_preview", ""),
+    }
+
+
+def list_pending(
+    db: Session,
+    user_id: str,
+    *,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List pending confirmation notifications for a user."""
+    rows = (
+        db.query(NotificationLogDB)
+        .filter(
+            NotificationLogDB.user_id == user_id,
+            NotificationLogDB.status == STATUS_PENDING,
+        )
+        .order_by(
+            NotificationLogDB.priority.asc(),
+            NotificationLogDB.created_at.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+    return [_log_to_dict(row) for row in rows]
+
+
+def list_log(
+    db: Session,
+    user_id: str,
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List notification history (all statuses)."""
+    query = db.query(NotificationLogDB).filter(
+        NotificationLogDB.user_id == user_id,
+    )
+    if status:
+        query = query.filter(NotificationLogDB.status == status)
+    rows = (
+        query.order_by(desc(NotificationLogDB.created_at))
+        .limit(limit)
+        .all()
+    )
+    return [_log_to_dict(row) for row in rows]
+
+
+def confirm_and_send(
+    db: Session,
+    notification_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Confirm a pending notification and send via feishu webhook.
+
+    Returns:
+        dict with ``success``, ``notification``, optional ``error``.
+    """
+    row = (
+        db.query(NotificationLogDB)
+        .filter(
+            NotificationLogDB.id == notification_id,
+            NotificationLogDB.user_id == user_id,
+        )
+        .first()
+    )
+    if not row:
+        return {"success": False, "error": "通知记录不存在"}
+    if row.status != STATUS_PENDING and row.status != STATUS_FAILED:
+        return {"success": False, "error": f"当前状态 {row.status} 不允许确认"}
+
+    row.status = STATUS_CONFIRMED
+    row.confirmed_at = datetime.now(timezone.utc)
+    db.commit()
+
+    # Fire send
+    return _do_send(db, row)
+
+
+def dismiss(
+    db: Session,
+    notification_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Dismiss a pending notification (won't be sent)."""
+    row = (
+        db.query(NotificationLogDB)
+        .filter(
+            NotificationLogDB.id == notification_id,
+            NotificationLogDB.user_id == user_id,
+        )
+        .first()
+    )
+    if not row:
+        return {"success": False, "error": "通知记录不存在"}
+    if row.status not in (STATUS_PENDING, STATUS_FAILED):
+        return {"success": False, "error": f"当前状态 {row.status} 不允许拒绝"}
+
+    row.status = STATUS_DISMISSED
+    db.commit()
+    return {"success": True, "notification": _log_to_dict(row)}
+
+
+def confirm_all_pending(
+    db: Session,
+    user_id: str,
+) -> dict[str, Any]:
+    """Confirm and send all pending notifications for a user."""
+    rows = (
+        db.query(NotificationLogDB)
+        .filter(
+            NotificationLogDB.user_id == user_id,
+            NotificationLogDB.status == STATUS_PENDING,
+        )
+        .order_by(NotificationLogDB.priority.asc())
+        .all()
+    )
+    results = {"total": len(rows), "sent": 0, "failed": 0, "errors": []}
+    for row in rows:
+        row.status = STATUS_CONFIRMED
+        row.confirmed_at = datetime.now(timezone.utc)
+        db.commit()
+
+        send_result = _do_send(db, row)
+        if send_result.get("success"):
+            results["sent"] += 1
+        else:
+            results["failed"] += 1
+            results["errors"].append({
+                "id": row.id,
+                "symbol": row.symbol,
+                "error": send_result.get("error", "unknown"),
+            })
+    return results
+
+
+# ── Internal send ────────────────────────────────────────────────────────────
+
+def _do_send(db: Session, row: NotificationLogDB) -> dict[str, Any]:
+    """Send a confirmed notification via feishu webhook (sync)."""
+    import json as _json
+
+    from api.services.feishu_webhook_service import (
+        get_feishu_webhook_url,
+        is_feishu_webhook_enabled,
+        mask_webhook_url,
+        send_message,
+        build_draft_card,
+    )
+
+    if not is_feishu_webhook_enabled():
+        row.status = STATUS_FAILED
+        row.error = "飞书 Webhook 未配置或已禁用"
+        db.commit()
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+
+    webhook_url = get_feishu_webhook_url()
+    if not webhook_url:
+        row.status = STATUS_FAILED
+        row.error = "飞书 Webhook URL 为空"
+        db.commit()
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+
+    row.status = STATUS_SENDING
+    row.webhook_url_masked = mask_webhook_url(webhook_url)
+    db.commit()
+
+    # Build message payload from stored draft
+    payload = row.payload or {}
+    channel_label = {"P0": "盘中提醒", "P1": "盘中提醒"}.get(row.priority, "日报摘要")
+    card_payload = build_draft_card(
+        title=f"TradingAgents | {row.symbol or ''}",
+        drafts=[payload],
+        channel_label=channel_label,
+    )
+
+    try:
+        ok = send_message(card_payload, webhook_url)
+        if ok:
+            row.status = STATUS_SENT
+            row.sent_at = datetime.now(timezone.utc)
+            row.error = None
+            db.commit()
+            logger.info("[m-010] sent notification %s for %s", row.id, row.symbol)
+            return {"success": True, "notification": _log_to_dict(row)}
+        else:
+            row.status = STATUS_FAILED
+            row.error = "飞书 API 返回失败"
+            db.commit()
+            return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+    except Exception as exc:
+        row.status = STATUS_FAILED
+        row.error = str(exc)[:500]
+        db.commit()
+        logger.warning("[m-010] send failed for %s: %s", row.id, exc)
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+
+
+def _log_to_dict(row: NotificationLogDB) -> dict[str, Any]:
+    """Convert a NotificationLogDB row to a safe dict (no webhook URL)."""
+    return {
+        "id": row.id,
+        "channel": row.channel,
+        "event_type": row.event_type,
+        "priority": row.priority,
+        "symbol": row.symbol,
+        "name": row.name,
+        "title": row.title,
+        "reason": row.reason,
+        "status": row.status,
+        "webhook_url_masked": row.webhook_url_masked,
+        "error": row.error,
+        "confirmed_at": row.confirmed_at.isoformat() if row.confirmed_at else None,
+        "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+__all__ = [
+    "STATUS_PENDING",
+    "STATUS_CONFIRMED",
+    "STATUS_SENDING",
+    "STATUS_SENT",
+    "STATUS_FAILED",
+    "STATUS_DISMISSED",
+    "CHANNEL_FEISHU",
+    "generate_pending",
+    "list_pending",
+    "list_log",
+    "confirm_and_send",
+    "dismiss",
+    "confirm_all_pending",
+]
+
+--- tests webhook ---
+"""Tests for api.services.feishu_webhook_service (M-010).
+
+Covers:
+- URL normalization (full URL, token-only, http upgrade, invalid)
+- URL masking (safe logging)
+- Card message building (report card, draft card, text, test)
+- Env var handling (FEISHU_WEBHOOK_URL, FEISHU_WEBHOOK_ENABLED)
+- HTTP send (success, failure, retry, timeout)
+- Disabled state graceful no-op
+"""
+from __future__ import annotations
+
+import json
+import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# URL normalization tests
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeWebhookUrl:
+    def test_full_url_passes_through(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        url = "https://open.feishu.cn/open-apis/bot/v2/hook/abc-def-123"
+        assert normalize_webhook_url(url) == url
+
+    def test_token_only_expanded(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        result = normalize_webhook_url("abc-def-123")
+        assert result == "https://open.feishu.cn/open-apis/bot/v2/hook/abc-def-123"
+
+    def test_http_upgraded_to_https(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        url = "http://open.feishu.cn/open-apis/bot/v2/hook/abc-def"
+        result = normalize_webhook_url(url)
+        assert result.startswith("https://")
+
+    def test_empty_raises(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        with pytest.raises(ValueError, match="不能为空"):
+            normalize_webhook_url("")
+
+    def test_none_raises(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        with pytest.raises(ValueError, match="不能为空"):
+            normalize_webhook_url(None)
+
+    def test_wrong_host_raises(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        with pytest.raises(ValueError, match="仅支持飞书官方"):
+            normalize_webhook_url("https://evil.com/open-apis/bot/v2/hook/abc")
+
+    def test_wrong_path_raises(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        with pytest.raises(ValueError, match="路径格式不正确"):
+            normalize_webhook_url("https://open.feishu.cn/wrong/path/abc")
+
+    def test_invalid_token_chars_raises(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        with pytest.raises(ValueError, match="token 格式不正确"):
+            normalize_webhook_url("abc def!")
+
+    def test_whitespace_trimmed(self):
+        from api.services.feishu_webhook_service import normalize_webhook_url
+
+        result = normalize_webhook_url("  abc-def-123  ")
+        assert result == "https://open.feishu.cn/open-apis/bot/v2/hook/abc-def-123"
+
+
+# ---------------------------------------------------------------------------
+# URL masking tests
+# ---------------------------------------------------------------------------
+
+
+class TestMaskWebhookUrl:
+    def test_full_url_masks_token(self):
+        from api.services.feishu_webhook_service import mask_webhook_url
+
+        url = "https://open.feishu.cn/open-apis/bot/v2/hook/abcdefgh1234"
+        masked = mask_webhook_url(url)
+        assert "open.feishu.cn" in masked
+        assert "abcdefgh1234" not in masked
+
+    def test_token_only_masks(self):
+        from api.services.feishu_webhook_service import mask_webhook_url
+
+        masked = mask_webhook_url("abcdefgh1234")
+        assert masked is not None
+        assert "abcdefgh1234" not in masked
+
+    def test_short_token_fully_masked(self):
+        from api.services.feishu_webhook_service import mask_webhook_url
+
+        masked = mask_webhook_url("abc")
+        assert masked == "******"
+
+    def test_none_returns_none(self):
+        from api.services.feishu_webhook_service import mask_webhook_url
+
+        assert mask_webhook_url(None) is None
+
+    def test_empty_returns_none(self):
+        from api.services.feishu_webhook_service import mask_webhook_url
+
+        assert mask_webhook_url("") is None
+
+
+# ---------------------------------------------------------------------------
+# Message building tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCardMessage:
+    def test_basic_structure(self):
+        from api.services.feishu_webhook_service import build_card_message
+
+        card = build_card_message("Test Title", ["line 1", "line 2"])
+        assert card["msg_type"] == "interactive"
+        assert card["card"]["header"]["title"]["content"] == "Test Title"
+        assert card["card"]["header"]["template"] == "blue"
+        elements = card["card"]["elements"]
+        assert len(elements) == 1
+        assert "line 1" in elements[0]["text"]["content"]
+
+    def test_color_parameter(self):
+        from api.services.feishu_webhook_service import build_card_message
+
+        card = build_card_message("Title", ["content"], color="red")
+        assert card["card"]["header"]["template"] == "red"
+
+    def test_title_truncated(self):
+        from api.services.feishu_webhook_service import build_card_message
+
+        long_title = "x" * 200
+        card = build_card_message(long_title, ["content"])
+        assert len(card["card"]["header"]["title"]["content"]) == 128
+
+
+class TestBuildTextMessage:
+    def test_basic_structure(self):
+        from api.services.feishu_webhook_service import build_text_message
+
+        msg = build_text_message("hello")
+        assert msg["msg_type"] == "text"
+        assert msg["content"]["text"] == "hello"
+
+    def test_content_truncated(self):
+        from api.services.feishu_webhook_service import build_text_message
+
+        long_text = "x" * 5000
+        msg = build_text_message(long_text)
+        assert len(msg["content"]["text"]) == 4000
+
+
+class TestBuildReportCard:
+    def test_basic_fields(self):
+        from api.services.feishu_webhook_service import build_report_card
+
+        card = build_report_card(
+            symbol="600519.SH",
+            trade_date="2026-07-23",
+            action_label="条件入场",
+            direction="看多",
+            confidence=78,
+        )
+        assert "600519.SH" in card["card"]["header"]["title"]["content"]
+        content = card["card"]["elements"][0]["text"]["content"]
+        assert "条件入场" in content
+        assert "看多" in content
+        assert "78%" in content
+
+    def test_price_fields(self):
+        from api.services.feishu_webhook_service import build_report_card
+
+        card = build_report_card(
+            symbol="600519.SH",
+            trade_date="2026-07-23",
+            target_price=1880.0,
+            stop_loss_price=1750.0,
+        )
+        content = card["card"]["elements"][0]["text"]["content"]
+        assert "1880" in content
+        assert "1750" in content
+
+    def test_risk_items(self):
+        from api.services.feishu_webhook_service import build_report_card
+
+        card = build_report_card(
+            symbol="600519.SH",
+            trade_date="2026-07-23",
+            risk_items=[
+                {"name": "估值偏高", "level": "medium", "description": "PE 处于历史高位"},
+                {"name": "业绩风险", "level": "high", "description": "营收增速放缓"},
+            ],
+        )
+        content = card["card"]["elements"][0]["text"]["content"]
+        assert "估值偏高" in content
+        assert "业绩风险" in content
+
+    def test_summary_clipped(self):
+        from api.services.feishu_webhook_service import build_report_card
+
+        long_summary = "x" * 1000
+        card = build_report_card(
+            symbol="600519.SH",
+            trade_date="2026-07-23",
+            summary=long_summary,
+        )
+        content = card["card"]["elements"][0]["text"]["content"]
+        assert len(content) < 1200  # summary clipped to 500
+
+    def test_color_bearish(self):
+        from api.services.feishu_webhook_service import build_report_card
+
+        card = build_report_card(
+            symbol="600519.SH", trade_date="2026-07-23", direction="看空",
+        )
+        assert card["card"]["header"]["template"] == "red"
+
+    def test_color_bullish(self):
+        from api.services.feishu_webhook_service import build_report_card
+
+        card = build_report_card(
+            symbol="600519.SH", trade_date="2026-07-23", direction="看多",
+        )
+        assert card["card"]["header"]["template"] == "green"
+
+
+class TestBuildDraftCard:
+    def test_single_draft(self):
+        from api.services.feishu_webhook_service import build_draft_card
+
+        drafts = [{
+            "symbol": "600519.SH",
+            "name": "贵州茅台",
+            "event_type": "holdings_risk",
+            "reason": "跌破关键支撑位",
+            "priority": "P0",
+            "as_of": "2026-07-23 10:00:00",
+        }]
+        card = build_draft_card("TradingAgents", drafts, channel_label="盘中提醒")
+        assert card["msg_type"] == "interactive"
+        content = card["card"]["elements"][0]["text"]["content"]
+        assert "600519.SH" in content
+        assert "贵州茅台" in content
+        assert "P0" in content
+
+    def test_multiple_drafts(self):
+
+--- tests confirmation ---
+"""Tests for api.services.notification_confirmation_service (M-010).
+
+Covers:
+- generate_pending: drafts saved to DB, dedup by (user, symbol, event_type)
+- list_pending: ordered by priority, filtered by status
+- list_log: history with optional status filter
+- confirm_and_send: state transitions, webhook send, error handling
+- dismiss: state transition
+- confirm_all_pending: batch confirm and send
+- Edge cases: invalid id, wrong status, duplicate generate
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from api.database import Base, NotificationLogDB
+
+
+# ---------------------------------------------------------------------------
+# In-memory DB fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def db_session():
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    yield session
+    session.close()
+
+
+# ---------------------------------------------------------------------------
+# Mock draft data
+# ---------------------------------------------------------------------------
+
+_MOCK_DRY_RUN = {
+    "schema_version": "1.0",
+    "as_of": "2026-07-23 10:00:00",
+    "dry_run": True,
+    "intraday_push": [
+        {
+            "event_type": "holdings_risk_large_drop",
+            "priority": "P0",
+            "symbol": "600519.SH",
+            "name": "贵州茅台",
+            "title": "贵州茅台 大幅下跌",
+            "reason": "当日跌幅超过5%",
+            "source": "holdings_snapshot",
+            "as_of": "2026-07-23 10:00:00",
+            "record_only": False,
+        },
+        {
+            "event_type": "observation_in_entry_zone",
+            "priority": "P1",
+            "symbol": "000001.SZ",
+            "name": "平安银行",
+            "title": "平安银行 进入买入区间",
+            "reason": "价格回落至12.5-13.0入场区间",
+            "source": "observation_warehouse",
+            "as_of": "2026-07-23 10:00:00",
+            "record_only": False,
+        },
+    ],
+    "daily_digest": [
+        {
+            "event_type": "mandate_daily_digest",
+            "priority": "P2",
+            "symbol": "",
+            "name": "",
+            "title": "昊天日报摘要",
+            "reason": "今日3个主题升温",
+            "source": "mandate_daily_report",
+            "as_of": "2026-07-23 10:00:00",
+            "record_only": False,
+        },
+    ],
+    "recorded_only": [],
+    "deduplicated": [],
+    "summary_counts": {
+        "total_drafts": 3,
+        "intraday_push": 2,
+        "daily_digest": 1,
+        "recorded_only": 0,
+        "deduplicated": 0,
+    },
+    "markdown_preview": "# preview",
+    "json_preview": [],
+    "runtime_tier_meta": {},
+    "context_data_status": {},
+    "mandate_daily_digest": {},
+    "data_blocker_digest": {},
+}
+
+
+# ---------------------------------------------------------------------------
+# generate_pending tests
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratePending:
+    def test_generates_drafts_to_db(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending
+
+            result = generate_pending(db_session, "user-1", channel="feishu")
+
+            assert result["generated_count"] == 3
+            assert result["skipped_count"] == 0
+            assert len(result["pending_items"]) == 3
+
+            # Verify DB rows
+            rows = db_session.query(NotificationLogDB).all()
+            assert len(rows) == 3
+            assert all(r.status == "pending_confirmation" for r in rows)
+            assert all(r.user_id == "user-1" for r in rows)
+            assert all(r.channel == "feishu" for r in rows)
+
+    def test_dedup_by_symbol_event_type(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending
+
+            # First call: 3 generated
+            result1 = generate_pending(db_session, "user-1")
+            assert result1["generated_count"] == 3
+
+            # Second call: all 3 skipped (same user, symbol, event_type)
+            result2 = generate_pending(db_session, "user-1")
+            assert result2["generated_count"] == 0
+            assert result2["skipped_count"] == 3
+
+    def test_different_users_not_deduped(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending
+
+            result1 = generate_pending(db_session, "user-1")
+            assert result1["generated_count"] == 3
+
+            result2 = generate_pending(db_session, "user-2")
+            assert result2["generated_count"] == 3
+
+            rows = db_session.query(NotificationLogDB).all()
+            assert len(rows) == 6
+
+    def test_force_refresh_cleared_dedup(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending
+
+            result1 = generate_pending(db_session, "user-1")
+            assert result1["generated_count"] == 3
+
+            # After confirming one, generate again with force_refresh
+            from api.services.notification_confirmation_service import confirm_and_send
+            items = result1["pending_items"]
+            # Confirm one to move it out of pending
+            with patch(
+                "api.services.notification_confirmation_service._do_send",
+                return_value={"success": True, "notification": {}},
+            ):
+                confirm_and_send(db_session, items[0]["id"], "user-1")
+
+            # Now generate again — should create 1 new (the confirmed one)
+            result2 = generate_pending(db_session, "user-1")
+            assert result2["generated_count"] == 1  # re-generated the confirmed one
+
+    def test_empty_drafts(self, db_session):
+        empty_run = {**_MOCK_DRY_RUN, "intraday_push": [], "daily_digest": []}
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=empty_run,
+        ):
+            from api.services.notification_confirmation_service import generate_pending
+
+            result = generate_pending(db_session, "user-1")
+            assert result["generated_count"] == 0
+            assert result["skipped_count"] == 0
+            assert len(result["pending_items"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# list_pending tests
+# ---------------------------------------------------------------------------
+
+
+class TestListPending:
+    def test_returns_pending_only(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending, list_pending
+
+            generate_pending(db_session, "user-1")
+            pending = list_pending(db_session, "user-1")
+            assert len(pending) == 3
+            assert all(p["status"] == "pending_confirmation" for p in pending)
+
+    def test_ordered_by_priority(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending, list_pending
+
+            generate_pending(db_session, "user-1")
+            pending = list_pending(db_session, "user-1")
+            # P0 < P1 < P2 in string sort
+            priorities = [p["priority"] for p in pending]
+            assert priorities == sorted(priorities)
+
+    def test_empty_when_no_pending(self, db_session):
+        from api.services.notification_confirmation_service import list_pending
+
+        pending = list_pending(db_session, "user-1")
+        assert pending == []
+
+    def test_respects_limit(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import generate_pending, list_pending
+
+            generate_pending(db_session, "user-1")
+            pending = list_pending(db_session, "user-1", limit=2)
+            assert len(pending) == 2
+
+
+# ---------------------------------------------------------------------------
+# list_log tests
+# ---------------------------------------------------------------------------
+
+
+class TestListLog:
+    def test_returns_all_statuses(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import (
+                generate_pending,
+                list_log,
+                dismiss,
+            )
+
+            generate_pending(db_session, "user-1")
+            items = list_log(db_session, "user-1")
+            assert len(items) == 3
+
+            # Dismiss one
+            dismiss(db_session, items[0]["id"], "user-1")
+
+            all_items = list_log(db_session, "user-1")
+            assert len(all_items) == 3
+
+    def test_filter_by_status(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import (
+                generate_pending,
+                list_log,
+                dismiss,
+            )
+
+            generate_pending(db_session, "user-1")
+            items = list_log(db_session, "user-1")
+            dismiss(db_session, items[0]["id"], "user-1")
+
+            dismissed = list_log(db_session, "user-1", status="dismissed")
+            assert len(dismissed) == 1
+
+            pending = list_log(db_session, "user-1", status="pending_confirmation")
+            assert len(pending) == 2
+
+
+# ---------------------------------------------------------------------------
+# confirm_and_send tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfirmAndSend:
+    def test_confirm_sends_via_webhook(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import (
+                generate_pending,
+                confirm_and_send,
+            )
+
+            generate_pending(db_session, "user-1")
+            items = db_session.query(NotificationLogDB).filter(
+                NotificationLogDB.status == "pending_confirmation"
+            ).all()
+
+            with patch(
+                "api.services.notification_confirmation_service._do_send",
+                return_value={"success": True, "notification": {"id": items[0].id, "status": "sent"}},
+            ):
+                result = confirm_and_send(db_session, items[0].id, "user-1")
+                assert result["success"] is True
+
+    def test_confirm_invalid_id(self, db_session):
+        from api.services.notification_confirmation_service import confirm_and_send
+
+        result = confirm_and_send(db_session, "nonexistent-id", "user-1")
+        assert result["success"] is False
+        assert "不存在" in result["error"]
+
+    def test_confirm_wrong_status(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import (
+                generate_pending,
+                confirm_and_send,
+                dismiss,
+            )
+
+            generate_pending(db_session, "user-1")
+            items = db_session.query(NotificationLogDB).all()
+            # Dismiss first
+            dismiss(db_session, items[0].id, "user-1")
+
+            # Try to confirm dismissed
+            result = confirm_and_send(db_session, items[0].id, "user-1")
+            assert result["success"] is False
+            assert "dismissed" in result["error"]
+
+    def test_send_failure_marked(self, db_session):
+        with patch(
+            "api.services.notification_confirmation_service.build_notification_dry_run",
+            return_value=_MOCK_DRY_RUN,
+        ):
+            from api.services.notification_confirmation_service import (
+                generate_pending,
+
+exec
+/bin/zsh -lc "sed -n '220,520p' api/services/feishu_webhook_service.py && sed -n '250,520p' api/services/notification_confirmation_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+
+def build_draft_card(
+    title: str,
+    drafts: list[dict],
+    *,
+    channel_label: str = "通知",
+) -> dict:
+    """Build a card from notification draft items (M-010 confirmation flow)."""
+    lines = []
+    for i, draft in enumerate(drafts[:10], 1):
+        symbol = draft.get("symbol", "")
+        name = draft.get("name", "")
+        event_type = draft.get("event_type", "")
+        reason = draft.get("reason", "")
+        priority = draft.get("priority", "P2")
+        as_of = draft.get("as_of", "")
+
+        label = f"{symbol} {name}".strip() or event_type
+        lines.append(f"**{i}. [{priority}] {label}**")
+        if reason:
+            lines.append(f"   {reason[:200]}")
+        if as_of:
+            lines.append(f"   _{as_of}_")
+        lines.append("")
+
+    if len(drafts) > 10:
+        lines.append(f"... 共 {len(drafts)} 条")
+
+    color = "orange" if channel_label == "盘中提醒" else "blue"
+    return build_card_message(f"{title} | {channel_label}", lines, color=color)
+
+
+def build_test_message() -> dict:
+    """Build a test/warmup message."""
+    return build_text_message(
+        "TradingAgents Webhook Warmup\n这是一条飞书机器人测试消息。"
+    )
+
+
+# ── Send ─────────────────────────────────────────────────────────────────────
+
+def send_message(payload: dict, webhook_url: str) -> bool:
+    """Send a message via Feishu webhook. Returns True on success."""
+    url = normalize_webhook_url(webhook_url)
+    response = requests.post(
+        url,
+        data=json.dumps(payload),
+        headers={"Content-Type": "application/json;charset=utf-8"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    try:
+        body = response.json()
+    except Exception:
+        logger.warning(
+            "[feishu-wh] non-JSON response body=%s",
+            str(getattr(response, "text", ""))[:240],
+        )
+        return False
+    code = body.get("code", -1)
+    msg = body.get("msg", "")
+    if int(code) == 0:
+        return True
+    logger.warning("[feishu-wh] API error code=%s msg=%s", code, msg)
+    return False
+
+
+async def send_with_retry(payload: dict, webhook_url: str, max_retries: int = 2) -> bool:
+    """Send message with retry (async-friendly). Follows bark/wecom pattern."""
+    for attempt in range(max_retries + 1):
+        try:
+            ok = await asyncio.to_thread(send_message, payload, webhook_url)
+            if ok:
+                return True
+        except Exception as exc:
+            logger.warning("[feishu-wh] attempt %d failed: %s", attempt + 1, exc)
+        if attempt < max_retries:
+            await asyncio.sleep(15)
+    return False
+
+
+async def send_report_notification(
+    symbol: str,
+    trade_date: str,
+    webhook_url: str,
+    *,
+    action_label: str | None = None,
+    direction: str | None = None,
+    execution_action: str | None = None,
+    confidence: int | None = None,
+    summary: str | None = None,
+    risk_items: list[dict] | None = None,
+    target_price: float | None = None,
+    stop_loss_price: float | None = None,
+) -> bool:
+    """High-level: build card and send report notification with retry."""
+    payload = build_report_card(
+        symbol=symbol,
+        trade_date=trade_date,
+        action_label=action_label,
+        direction=direction,
+        execution_action=execution_action,
+        confidence=confidence,
+        summary=summary,
+        risk_items=risk_items,
+        target_price=target_price,
+        stop_loss_price=stop_loss_price,
+    )
+    return await send_with_retry(payload, webhook_url)
+
+
+async def send_draft_notification(
+    title: str,
+    drafts: list[dict],
+    webhook_url: str,
+    *,
+    channel_label: str = "通知",
+) -> bool:
+    """High-level: build card from drafts and send with retry."""
+    payload = build_draft_card(title, drafts, channel_label=channel_label)
+    return await send_with_retry(payload, webhook_url)
+
+
+async def send_warmup(webhook_url: str) -> bool:
+    """Send a test message to verify webhook connectivity."""
+    payload = build_test_message()
+    return await send_with_retry(payload, webhook_url, max_retries=0)
+
+
+__all__ = [
+    "is_feishu_webhook_enabled",
+    "get_feishu_webhook_url",
+    "normalize_webhook_url",
+    "mask_webhook_url",
+    "build_card_message",
+    "build_text_message",
+    "build_report_card",
+    "build_draft_card",
+    "build_test_message",
+    "send_message",
+    "send_with_retry",
+    "send_report_notification",
+    "send_draft_notification",
+    "send_warmup",
+]
+
+
+# ── Internal send ────────────────────────────────────────────────────────────
+
+def _do_send(db: Session, row: NotificationLogDB) -> dict[str, Any]:
+    """Send a confirmed notification via feishu webhook (sync)."""
+    import json as _json
+
+    from api.services.feishu_webhook_service import (
+        get_feishu_webhook_url,
+        is_feishu_webhook_enabled,
+        mask_webhook_url,
+        send_message,
+        build_draft_card,
+    )
+
+    if not is_feishu_webhook_enabled():
+        row.status = STATUS_FAILED
+        row.error = "飞书 Webhook 未配置或已禁用"
+        db.commit()
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+
+    webhook_url = get_feishu_webhook_url()
+    if not webhook_url:
+        row.status = STATUS_FAILED
+        row.error = "飞书 Webhook URL 为空"
+        db.commit()
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+
+    row.status = STATUS_SENDING
+    row.webhook_url_masked = mask_webhook_url(webhook_url)
+    db.commit()
+
+    # Build message payload from stored draft
+    payload = row.payload or {}
+    channel_label = {"P0": "盘中提醒", "P1": "盘中提醒"}.get(row.priority, "日报摘要")
+    card_payload = build_draft_card(
+        title=f"TradingAgents | {row.symbol or ''}",
+        drafts=[payload],
+        channel_label=channel_label,
+    )
+
+    try:
+        ok = send_message(card_payload, webhook_url)
+        if ok:
+            row.status = STATUS_SENT
+            row.sent_at = datetime.now(timezone.utc)
+            row.error = None
+            db.commit()
+            logger.info("[m-010] sent notification %s for %s", row.id, row.symbol)
+            return {"success": True, "notification": _log_to_dict(row)}
+        else:
+            row.status = STATUS_FAILED
+            row.error = "飞书 API 返回失败"
+            db.commit()
+            return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+    except Exception as exc:
+        row.status = STATUS_FAILED
+        row.error = str(exc)[:500]
+        db.commit()
+        logger.warning("[m-010] send failed for %s: %s", row.id, exc)
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+
+
+def _log_to_dict(row: NotificationLogDB) -> dict[str, Any]:
+    """Convert a NotificationLogDB row to a safe dict (no webhook URL)."""
+    return {
+        "id": row.id,
+        "channel": row.channel,
+        "event_type": row.event_type,
+        "priority": row.priority,
+        "symbol": row.symbol,
+        "name": row.name,
+        "title": row.title,
+        "reason": row.reason,
+        "status": row.status,
+        "webhook_url_masked": row.webhook_url_masked,
+        "error": row.error,
+        "confirmed_at": row.confirmed_at.isoformat() if row.confirmed_at else None,
+        "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+__all__ = [
+    "STATUS_PENDING",
+    "STATUS_CONFIRMED",
+    "STATUS_SENDING",
+    "STATUS_SENT",
+    "STATUS_FAILED",
+    "STATUS_DISMISSED",
+    "CHANNEL_FEISHU",
+    "generate_pending",
+    "list_pending",
+    "list_log",
+    "confirm_and_send",
+    "dismiss",
+    "confirm_all_pending",
+]
+
+exec
+/bin/zsh -lc "sed -n '1,120p' api/database.py && nl -ba api/services/notification_confirmation_service.py | sed -n '1,340p' && nl -ba api/main.py | sed -n '5140,5265p' && nl -ba scheduler/main.py | sed -n '240,365p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Database configuration and session management."""
+
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Generator
+
+from sqlalchemy import Boolean, create_engine, Column, String, DateTime, Text, Integer, Float, JSON, UniqueConstraint, event, text
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+# Database URL - default to SQLite for simplicity
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./tradingagents.db")
+
+# Create engine
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=60,
+        pool_recycle=3600,
+    )
+
+    def _can_use_wal() -> bool:
+        """Check if WAL mode is safe: db's parent dir must be writable for -shm/-wal files."""
+        import pathlib
+        db_path = DATABASE_URL.replace("sqlite:///", "").replace("sqlite://", "")
+        parent = pathlib.Path(db_path).resolve().parent
+        return os.access(parent, os.W_OK)
+
+    _use_wal = _can_use_wal()
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        if _use_wal:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+else:
+    # For PostgreSQL/MySQL, use a larger pool to handle concurrency
+    engine = create_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_size=20,
+        max_overflow=10,
+        pool_timeout=30,
+        pool_recycle=3600,
+    )
+
+# Session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Base class for models
+Base = declarative_base()
+logger = logging.getLogger(__name__)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """Get database session (for FastAPI Depends)."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+class get_db_ctx:
+    """Context manager for manual DB session usage.
+
+    Usage:
+        with get_db_ctx() as db:
+            db.query(...)
+    """
+
+    def __init__(self) -> None:
+        self.db: Session | None = None
+
+    def __enter__(self) -> Session:
+        self.db = SessionLocal()
+        return self.db
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self.db is not None:
+            if exc_type is not None:
+                self.db.rollback()
+            self.db.close()
+
+
+def init_db() -> None:
+    """Initialize database tables."""
+    Base.metadata.create_all(bind=engine)
+    _ensure_report_schema()
+    _ensure_user_schema()
+    _ensure_scheduled_schema()
+    _ensure_watchlist_schema()
+
+
+def _ensure_watchlist_schema() -> None:
+    """Add notes and structured note columns to watchlist_items for existing SQLite deployments."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    try:
+        with engine.begin() as conn:
+            tables = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+            if "watchlist_items" not in tables:
+                return
+            columns = {row[1] for row in conn.execute(text("PRAGMA table_info(watchlist_items)"))}
+            if "notes" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_items ADD COLUMN notes TEXT"))
+                logger.info("[migration] Added notes column to watchlist_items")
+            # [DATA-009] watchlist_notes_persistence — structured note columns
+            _add_col_if_missing(conn, columns, "watchlist_items", "topic", "TEXT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "benefit_score", "FLOAT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "consensus_score", "INTEGER")
+            _add_col_if_missing(conn, columns, "watchlist_items", "expected_window", "TEXT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "evidence_gap", "TEXT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "watchlist_note_suggested", "TEXT")
+    except Exception as e:
+     1	# [M-010] feishu_notification_confirmation
+     2	"""通知确认队列 service — 人工确认后才真正发送飞书。
+     3	
+     4	第一阶段工作流::
+     5	
+     6	    1. ``generate_pending`` — 从 notification_draft 引擎生成草稿，
+     7	       存入 ``notification_logs`` 表，状态为 ``pending_confirmation``。
+     8	    2. ``list_pending`` — 用户查看待确认队列。
+     9	    3. ``confirm_and_send`` — 用户确认单条，通过飞书 webhook 发送。
+    10	    4. ``dismiss`` — 用户拒绝单条，不再发送。
+    11	
+    12	设计契约：
+    13	
+    14	- 不读取 / 打印 webhook URL / token（只存 masked 版本）。
+    15	- 不调 LLM，不改 prompts，不写生产 DB（``notification_logs`` 不含交易数据）。
+    16	- 失败返回结构化 dict，不抛异常。
+    17	"""
+    18	
+    19	from __future__ import annotations
+    20	
+    21	import logging
+    22	from datetime import datetime, timezone
+    23	from typing import Any
+    24	from uuid import uuid4
+    25	
+    26	from sqlalchemy import desc
+    27	from sqlalchemy.orm import Session
+    28	
+    29	from api.database import NotificationLogDB
+    30	from api.services.notification_draft_service import build_notification_dry_run
+    31	
+    32	logger = logging.getLogger(__name__)
+    33	
+    34	# Status constants
+    35	STATUS_PENDING = "pending_confirmation"
+    36	STATUS_CONFIRMED = "confirmed"
+    37	STATUS_SENDING = "sending"
+    38	STATUS_SENT = "sent"
+    39	STATUS_FAILED = "failed"
+    40	STATUS_DISMISSED = "dismissed"
+    41	
+    42	VALID_TRANSITIONS = {
+    43	    STATUS_PENDING: {STATUS_CONFIRMED, STATUS_DISMISSED},
+    44	    STATUS_CONFIRMED: {STATUS_SENDING, STATUS_DISMISSED},
+    45	    STATUS_SENDING: {STATUS_SENT, STATUS_FAILED},
+    46	    STATUS_FAILED: {STATUS_CONFIRMED},  # Allow retry
+    47	}
+    48	
+    49	CHANNEL_FEISHU = "feishu"
+    50	
+    51	
+    52	def generate_pending(
+    53	    db: Session,
+    54	    user_id: str,
+    55	    *,
+    56	    channel: str = CHANNEL_FEISHU,
+    57	    force_refresh: bool = False,
+    58	    now: datetime | None = None,
+    59	) -> dict[str, Any]:
+    60	    """Generate notification drafts and save as pending confirmation.
+    61	
+    62	    Returns:
+    63	        dict with ``generated_count``, ``skipped_count``, ``pending_items``.
+    64	    """
+    65	    now = now or datetime.now()
+    66	    dry_run = build_notification_dry_run(
+    67	        db, user_id, force_refresh=force_refresh, now=now,
+    68	    )
+    69	
+    70	    generated = 0
+    71	    skipped = 0
+    72	
+    73	    for channel_key in ("intraday_push", "daily_digest"):
+    74	        drafts = dry_run.get(channel_key) or []
+    75	        for draft in drafts:
+    76	            symbol = draft.get("symbol", "")
+    77	            event_type = draft.get("event_type", "")
+    78	            # Skip if already pending for same (user, symbol, event_type)
+    79	            existing = (
+    80	                db.query(NotificationLogDB)
+    81	                .filter(
+    82	                    NotificationLogDB.user_id == user_id,
+    83	                    NotificationLogDB.symbol == symbol,
+    84	                    NotificationLogDB.event_type == event_type,
+    85	                    NotificationLogDB.status == STATUS_PENDING,
+    86	                )
+    87	                .first()
+    88	            )
+    89	            if existing:
+    90	                skipped += 1
+    91	                continue
+    92	
+    93	            log_entry = NotificationLogDB(
+    94	                id=uuid4().hex,
+    95	                user_id=user_id,
+    96	                channel=channel,
+    97	                event_type=event_type,
+    98	                priority=draft.get("priority", "P2"),
+    99	                symbol=symbol,
+   100	                name=draft.get("name", ""),
+   101	                title=draft.get("title", "")[:200],
+   102	                reason=draft.get("reason", ""),
+   103	                status=STATUS_PENDING,
+   104	                payload=draft,
+   105	            )
+   106	            db.add(log_entry)
+   107	            generated += 1
+   108	
+   109	    db.commit()
+   110	
+   111	    pending_items = list_pending(db, user_id)
+   112	    return {
+   113	        "generated_count": generated,
+   114	        "skipped_count": skipped,
+   115	        "pending_items": pending_items,
+   116	        "dry_run_preview": dry_run.get("markdown_preview", ""),
+   117	    }
+   118	
+   119	
+   120	def list_pending(
+   121	    db: Session,
+   122	    user_id: str,
+   123	    *,
+   124	    limit: int = 50,
+   125	) -> list[dict[str, Any]]:
+   126	    """List pending confirmation notifications for a user."""
+   127	    rows = (
+   128	        db.query(NotificationLogDB)
+   129	        .filter(
+   130	            NotificationLogDB.user_id == user_id,
+   131	            NotificationLogDB.status == STATUS_PENDING,
+   132	        )
+   133	        .order_by(
+   134	            NotificationLogDB.priority.asc(),
+   135	            NotificationLogDB.created_at.desc(),
+   136	        )
+   137	        .limit(limit)
+   138	        .all()
+   139	    )
+   140	    return [_log_to_dict(row) for row in rows]
+   141	
+   142	
+   143	def list_log(
+   144	    db: Session,
+   145	    user_id: str,
+   146	    *,
+   147	    status: str | None = None,
+   148	    limit: int = 100,
+   149	) -> list[dict[str, Any]]:
+   150	    """List notification history (all statuses)."""
+   151	    query = db.query(NotificationLogDB).filter(
+   152	        NotificationLogDB.user_id == user_id,
+   153	    )
+   154	    if status:
+   155	        query = query.filter(NotificationLogDB.status == status)
+   156	    rows = (
+   157	        query.order_by(desc(NotificationLogDB.created_at))
+   158	        .limit(limit)
+   159	        .all()
+   160	    )
+   161	    return [_log_to_dict(row) for row in rows]
+   162	
+   163	
+   164	def confirm_and_send(
+   165	    db: Session,
+   166	    notification_id: str,
+   167	    user_id: str,
+   168	) -> dict[str, Any]:
+   169	    """Confirm a pending notification and send via feishu webhook.
+   170	
+   171	    Returns:
+   172	        dict with ``success``, ``notification``, optional ``error``.
+   173	    """
+   174	    row = (
+   175	        db.query(NotificationLogDB)
+   176	        .filter(
+   177	            NotificationLogDB.id == notification_id,
+   178	            NotificationLogDB.user_id == user_id,
+   179	        )
+   180	        .first()
+   181	    )
+   182	    if not row:
+   183	        return {"success": False, "error": "通知记录不存在"}
+   184	    if row.status != STATUS_PENDING and row.status != STATUS_FAILED:
+   185	        return {"success": False, "error": f"当前状态 {row.status} 不允许确认"}
+   186	
+   187	    row.status = STATUS_CONFIRMED
+   188	    row.confirmed_at = datetime.now(timezone.utc)
+   189	    db.commit()
+   190	
+   191	    # Fire send
+   192	    return _do_send(db, row)
+   193	
+   194	
+   195	def dismiss(
+   196	    db: Session,
+   197	    notification_id: str,
+   198	    user_id: str,
+   199	) -> dict[str, Any]:
+   200	    """Dismiss a pending notification (won't be sent)."""
+   201	    row = (
+   202	        db.query(NotificationLogDB)
+   203	        .filter(
+   204	            NotificationLogDB.id == notification_id,
+   205	            NotificationLogDB.user_id == user_id,
+   206	        )
+   207	        .first()
+   208	    )
+   209	    if not row:
+   210	        return {"success": False, "error": "通知记录不存在"}
+   211	    if row.status not in (STATUS_PENDING, STATUS_FAILED):
+   212	        return {"success": False, "error": f"当前状态 {row.status} 不允许拒绝"}
+   213	
+   214	    row.status = STATUS_DISMISSED
+   215	    db.commit()
+   216	    return {"success": True, "notification": _log_to_dict(row)}
+   217	
+   218	
+   219	def confirm_all_pending(
+   220	    db: Session,
+   221	    user_id: str,
+   222	) -> dict[str, Any]:
+   223	    """Confirm and send all pending notifications for a user."""
+   224	    rows = (
+   225	        db.query(NotificationLogDB)
+   226	        .filter(
+   227	            NotificationLogDB.user_id == user_id,
+   228	            NotificationLogDB.status == STATUS_PENDING,
+   229	        )
+   230	        .order_by(NotificationLogDB.priority.asc())
+   231	        .all()
+   232	    )
+   233	    results = {"total": len(rows), "sent": 0, "failed": 0, "errors": []}
+   234	    for row in rows:
+   235	        row.status = STATUS_CONFIRMED
+   236	        row.confirmed_at = datetime.now(timezone.utc)
+   237	        db.commit()
+   238	
+   239	        send_result = _do_send(db, row)
+   240	        if send_result.get("success"):
+   241	            results["sent"] += 1
+   242	        else:
+   243	            results["failed"] += 1
+   244	            results["errors"].append({
+   245	                "id": row.id,
+   246	                "symbol": row.symbol,
+   247	                "error": send_result.get("error", "unknown"),
+   248	            })
+   249	    return results
+   250	
+   251	
+   252	# ── Internal send ────────────────────────────────────────────────────────────
+   253	
+   254	def _do_send(db: Session, row: NotificationLogDB) -> dict[str, Any]:
+   255	    """Send a confirmed notification via feishu webhook (sync)."""
+   256	    import json as _json
+   257	
+   258	    from api.services.feishu_webhook_service import (
+   259	        get_feishu_webhook_url,
+   260	        is_feishu_webhook_enabled,
+   261	        mask_webhook_url,
+   262	        send_message,
+   263	        build_draft_card,
+   264	    )
+   265	
+   266	    if not is_feishu_webhook_enabled():
+   267	        row.status = STATUS_FAILED
+   268	        row.error = "飞书 Webhook 未配置或已禁用"
+   269	        db.commit()
+   270	        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+   271	
+   272	    webhook_url = get_feishu_webhook_url()
+   273	    if not webhook_url:
+   274	        row.status = STATUS_FAILED
+   275	        row.error = "飞书 Webhook URL 为空"
+   276	        db.commit()
+   277	        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+   278	
+   279	    row.status = STATUS_SENDING
+   280	    row.webhook_url_masked = mask_webhook_url(webhook_url)
+   281	    db.commit()
+   282	
+   283	    # Build message payload from stored draft
+   284	    payload = row.payload or {}
+   285	    channel_label = {"P0": "盘中提醒", "P1": "盘中提醒"}.get(row.priority, "日报摘要")
+   286	    card_payload = build_draft_card(
+   287	        title=f"TradingAgents | {row.symbol or ''}",
+   288	        drafts=[payload],
+   289	        channel_label=channel_label,
+   290	    )
+   291	
+   292	    try:
+   293	        ok = send_message(card_payload, webhook_url)
+   294	        if ok:
+   295	            row.status = STATUS_SENT
+   296	            row.sent_at = datetime.now(timezone.utc)
+   297	            row.error = None
+   298	            db.commit()
+   299	            logger.info("[m-010] sent notification %s for %s", row.id, row.symbol)
+   300	            return {"success": True, "notification": _log_to_dict(row)}
+   301	        else:
+   302	            row.status = STATUS_FAILED
+   303	            row.error = "飞书 API 返回失败"
+   304	            db.commit()
+   305	            return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+   306	    except Exception as exc:
+   307	        row.status = STATUS_FAILED
+   308	        row.error = str(exc)[:500]
+   309	        db.commit()
+   310	        logger.warning("[m-010] send failed for %s: %s", row.id, exc)
+   311	        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+   312	
+   313	
+   314	def _log_to_dict(row: NotificationLogDB) -> dict[str, Any]:
+   315	    """Convert a NotificationLogDB row to a safe dict (no webhook URL)."""
+   316	    return {
+   317	        "id": row.id,
+   318	        "channel": row.channel,
+   319	        "event_type": row.event_type,
+   320	        "priority": row.priority,
+   321	        "symbol": row.symbol,
+   322	        "name": row.name,
+   323	        "title": row.title,
+   324	        "reason": row.reason,
+   325	        "status": row.status,
+   326	        "webhook_url_masked": row.webhook_url_masked,
+   327	        "error": row.error,
+   328	        "confirmed_at": row.confirmed_at.isoformat() if row.confirmed_at else None,
+   329	        "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+   330	        "created_at": row.created_at.isoformat() if row.created_at else None,
+   331	        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+   332	    }
+   333	
+   334	
+   335	__all__ = [
+   336	    "STATUS_PENDING",
+   337	    "STATUS_CONFIRMED",
+   338	    "STATUS_SENDING",
+   339	    "STATUS_SENT",
+   340	    "STATUS_FAILED",
+  5140	    三场景统一 payload：盘前（TA 调度 + 昊天主题）/ 盘中（观察 + 风险告警，不调度
+  5141	    新 TA）/ 盘后（今日表现 + 数据缺口 + 次日 TA 候选）。每条 ta_request /
+  5142	    watch_item / data_warning 带 notify_level（P0/P1 → intraday_push，P2/P3 →
+  5143	    daily_digest）。只做调度与摘要，不下最终交易结论。dry-run：不调用 LLM、
+  5144	    不发送飞书、不写数据库。runtime_tier=FAST_RADAR。
+  5145	    """
+  5146	    return controller_briefing_payload_service.build_briefing_payload_dry_run(
+  5147	        db, current_user.id,
+  5148	        scene=body.scene,
+  5149	        tf_db_path=body.tf_db_path,
+  5150	    )
+  5151	
+  5152	
+  5153	# [M-010] feishu_notification_confirmation
+  5154	class NotificationGenerateRequest(BaseModel):
+  5155	    channel: str = "feishu"
+  5156	    force_refresh: bool = False
+  5157	
+  5158	
+  5159	@app.post("/v1/notifications/generate")
+  5160	def post_notification_generate(
+  5161	    body: NotificationGenerateRequest,
+  5162	    current_user: UserDB = Depends(_require_api_user),
+  5163	    db: Session = Depends(get_db),
+  5164	):
+  5165	    """生成通知草稿并存入待确认队列（M-010 人工确认版）.
+  5166	
+  5167	    从 notification_draft 引擎生成草稿，存入 notification_logs 表，
+  5168	    状态为 pending_confirmation。用户后续通过 confirm 接口确认发送。
+  5169	    runtime_tier=FAST_RADAR（不触发 LLM）。
+  5170	    """
+  5171	    return notification_confirmation_service.generate_pending(
+  5172	        db, current_user.id,
+  5173	        channel=body.channel,
+  5174	        force_refresh=body.force_refresh,
+  5175	    )
+  5176	
+  5177	
+  5178	@app.get("/v1/notifications/pending")
+  5179	def get_notifications_pending(
+  5180	    current_user: UserDB = Depends(_require_api_user),
+  5181	    db: Session = Depends(get_db),
+  5182	):
+  5183	    """获取待确认通知队列（M-010）."""
+  5184	    return notification_confirmation_service.list_pending(db, current_user.id)
+  5185	
+  5186	
+  5187	@app.get("/v1/notifications/log")
+  5188	def get_notifications_log(
+  5189	    status: str | None = Query(None, description="按状态筛选"),
+  5190	    limit: int = Query(100, ge=1, le=500),
+  5191	    current_user: UserDB = Depends(_require_api_user),
+  5192	    db: Session = Depends(get_db),
+  5193	):
+  5194	    """获取通知历史日志（M-010）."""
+  5195	    return notification_confirmation_service.list_log(
+  5196	        db, current_user.id, status=status, limit=limit,
+  5197	    )
+  5198	
+  5199	
+  5200	class NotificationActionRequest(BaseModel):
+  5201	    pass
+  5202	
+  5203	
+  5204	@app.post("/v1/notifications/{notification_id}/confirm")
+  5205	def post_notification_confirm(
+  5206	    notification_id: str,
+  5207	    current_user: UserDB = Depends(_require_api_user),
+  5208	    db: Session = Depends(get_db),
+  5209	):
+  5210	    """确认单条通知并通过飞书 webhook 发送（M-010）."""
+  5211	    return notification_confirmation_service.confirm_and_send(
+  5212	        db, notification_id, current_user.id,
+  5213	    )
+  5214	
+  5215	
+  5216	@app.post("/v1/notifications/{notification_id}/dismiss")
+  5217	def post_notification_dismiss(
+  5218	    notification_id: str,
+  5219	    current_user: UserDB = Depends(_require_api_user),
+  5220	    db: Session = Depends(get_db),
+  5221	):
+  5222	    """拒绝单条通知，不再发送（M-010）."""
+  5223	    return notification_confirmation_service.dismiss(
+  5224	        db, notification_id, current_user.id,
+  5225	    )
+  5226	
+  5227	
+  5228	@app.post("/v1/notifications/confirm-all")
+  5229	def post_notification_confirm_all(
+  5230	    current_user: UserDB = Depends(_require_api_user),
+  5231	    db: Session = Depends(get_db),
+  5232	):
+  5233	    """批量确认所有待发送通知（M-010）."""
+  5234	    return notification_confirmation_service.confirm_all_pending(
+  5235	        db, current_user.id,
+  5236	    )
+  5237	
+  5238	
+  5239	@app.post("/v1/config/feishu/warmup")
+  5240	def post_feishu_webhook_warmup(
+  5241	    current_user: UserDB = Depends(_require_web_user),
+  5242	    db: Session = Depends(get_db),
+  5243	):
+  5244	    """测试飞书 Webhook 连通性（M-010）."""
+  5245	    webhook_url = feishu_webhook_service.get_feishu_webhook_url()
+  5246	    if not webhook_url:
+  5247	        return {"success": False, "error": "飞书 Webhook 未配置 (FEISHU_WEBHOOK_URL)"}
+  5248	    import asyncio as _asyncio
+  5249	    try:
+  5250	        ok = _asyncio.get_event_loop().run_until_complete(
+  5251	            feishu_webhook_service.send_warmup(webhook_url)
+  5252	        )
+  5253	    except RuntimeError:
+  5254	        ok = _asyncio.run(feishu_webhook_service.send_warmup(webhook_url))
+  5255	    if ok:
+  5256	        return {"success": True, "message": "飞书 Webhook 连通测试成功"}
+  5257	    return {"success": False, "error": "飞书 Webhook 发送失败，请检查 URL 配置"}
+  5258	
+  5259	
+  5260	# [KB-020] research_evidence_api
+  5261	# Fixed routes under /v1/knowledge/research/evidence must be declared BEFORE
+  5262	# the dynamic {symbol} route so FastAPI matches them first. Regression covered
+  5263	# by tests/test_kb020_research_evidence_api.py::TestRouteOrderingRegression.
+  5264	@app.get("/v1/knowledge/research/evidence/_meta")
+  5265	def research_evidence_meta(
+   240	            report_id=report_id,
+   241	            symbol=symbol,
+   242	            trade_date=trade_date,
+   243	            user_id=user_id,
+   244	            horizon=horizon,
+   245	            source=source,
+   246	            result_data=result_data,
+   247	        )
+   248	        _log(f"[Scheduler] OpenClaw callback queued for {symbol}")
+   249	    except Exception as e:
+   250	        logger.warning(f"[Scheduler] OpenClaw callback failed for {symbol}: {e}")
+   251	
+   252	
+   253	# [M-010] feishu_notification_confirmation
+   254	async def _send_feishu_notification_draft(
+   255	    user_id: str, report_id: str, symbol: str
+   256	) -> None:
+   257	    """Auto-generate pending feishu notification drafts after scheduled analysis.
+   258	
+   259	    Unlike email/WeCom which send immediately, feishu notifications are stored
+   260	    as 'pending_confirmation' for human review before sending.
+   261	    """
+   262	    try:
+   263	        from api.services.feishu_webhook_service import is_feishu_webhook_enabled
+   264	        from api.services.notification_confirmation_service import generate_pending
+   265	
+   266	        if not is_feishu_webhook_enabled():
+   267	            return
+   268	
+   269	        def _generate():
+   270	            with get_db_ctx() as db:
+   271	                return generate_pending(db, user_id, channel="feishu")
+   272	
+   273	        result = await asyncio.to_thread(_generate)
+   274	        generated = result.get("generated_count", 0)
+   275	        if generated > 0:
+   276	            _log(f"[Scheduler] Generated {generated} feishu notification draft(s) for {symbol}")
+   277	    except Exception as e:
+   278	        logger.warning(f"[Scheduler] Feishu notification draft failed for {symbol}: {e}")
+   279	
+   280	
+   281	# ── Single scheduled analysis execution ──────────────────────────────────────
+   282	
+   283	async def _run_scheduled_analysis_once(
+   284	    task: dict,
+   285	    requested_trade_date: str,
+   286	    job_id: str,
+   287	    *,
+   288	    mark_schedule_run: bool,
+   289	) -> None:
+   290	    """Execute one scheduled analysis, optionally recording it as the daily run."""
+   291	    task_id = task["id"]
+   292	    user_id = task["user_id"]
+   293	    symbol = task["symbol"]
+   294	    horizon = task.get("horizon") or "short"
+   295	
+   296	    actual_trade_date = _resolve_scheduled_trade_date(requested_trade_date)
+   297	    _log(f"[Scheduler] {symbol} trade_date={actual_trade_date} (requested={requested_trade_date})")
+   298	
+   299	    scheduled_context_token = set_scheduled_task_context(True)
+   300	
+   301	    def _build_request_sync():
+   302	        with get_db_ctx() as db:
+   303	            scheduled_user_context = task.get("manual_user_context") or _build_imported_user_context(
+   304	                db, user_id, symbol
+   305	            )
+   306	            return _build_scheduled_analyze_request(
+   307	                db=db,
+   308	                user_id=user_id,
+   309	                symbol=symbol,
+   310	                horizon=horizon,
+   311	                trade_date=actual_trade_date,
+   312	                scheduled_user_context=scheduled_user_context,
+   313	            )
+   314	
+   315	    def _record_success_sync():
+   316	        with get_db_ctx() as db:
+   317	            if mark_schedule_run:
+   318	                scheduled_service.mark_run_success(db, task_id, requested_trade_date, job_id)
+   319	            else:
+   320	                scheduled_service.record_manual_test_result(db, task_id, "success", report_id=job_id)
+   321	
+   322	    def _record_failure_sync():
+   323	        with get_db_ctx() as db:
+   324	            if mark_schedule_run:
+   325	                scheduled_service.mark_run_failed(db, task_id, requested_trade_date)
+   326	            else:
+   327	                scheduled_service.record_manual_test_result(db, task_id, "failed")
+   328	    try:
+   329	        async with _concurrency_slot(job_id, symbol):
+   330	            req = await asyncio.to_thread(_build_request_sync)
+   331	
+   332	            await _run_job(
+   333	                job_id,
+   334	                req,
+   335	                False,
+   336	                True,
+   337	                user_id,
+   338	                "scheduled" if mark_schedule_run else "scheduled_manual",
+   339	            )
+   340	        job_state = _get_job(job_id)
+   341	        if job_state.get("status") == "failed":
+   342	            raise RuntimeError(job_state.get("error") or f"scheduled analysis job {job_id} failed")
+   343	        await asyncio.to_thread(_record_success_sync)
+   344	        _log(f"[Scheduler] Completed {symbol}")
+   345	
+   346	        await _send_scheduled_report_notifications(user_id, job_id, symbol)
+   347	
+   348	        # [B-002] OpenClaw callback: notify 主控 AI so it can decide whether to push to 飞书
+   349	        await _send_openclaw_callback(
+   350	            user_id, job_id, symbol, actual_trade_date, horizon,
+   351	            "scheduled" if mark_schedule_run else "scheduled_manual",
+   352	        )
+   353	
+   354	        # [M-010] Feishu webhook: auto-generate pending notification drafts
+   355	        await _send_feishu_notification_draft(user_id, job_id, symbol)
+   356	    except Exception as e:
+   357	        logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
+   358	        try:
+   359	            await asyncio.to_thread(_record_failure_sync)
+   360	        except Exception as db_exc:
+   361	            logger.error(f"[Scheduler] Could not record failure: {db_exc}")
+   362	    finally:
+   363	        reset_scheduled_task_context(scheduled_context_token)
+   364	
+   365	
+
+exec
+/bin/zsh -lc "sed -n '1,260p' api/services/notification_draft_service.py && sed -n '260,620p' api/services/notification_draft_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TRACK-NOTIFY-001] notification_payload_dry_run
+# [NOTIFY-002] notification_mandate_data_blockers
+"""通知草稿 dry-run service（TA 侧 -> investment-controller / 飞书）.
+
+在 IC-TA-001 只读上下文包之上，合成通知草稿 payload 并套上去噪器，产出
+本地 markdown / json 预览。**第一阶段只做 dry-run**：
+
+- 不读取 / 打印任何 webhook URL / token（``webhook_configured`` 恒为 ``None``，
+  代表"本服务不读取该配置"，调用方/investment-controller 自行判断是否发送）。
+- 不真实发送飞书 / 企业微信。
+- P2 / P3 与数据不足的草稿只进 ``daily_digest``，不进入 ``intraday_push``。
+
+NOTIFY-002：在 IC-TA-002 新增的 ``mandate_daily_report`` /
+``recent_report_data_blockers`` bucket 之上，额外产出两个结构化顶层摘要
+（``mandate_daily_digest`` / ``data_blocker_digest``），供 investment-controller
+一次读取即可获得昊天主题重心与报告数据风险；两个摘要各生成一条 P2 日报草稿
+进入 ``daily_digest`` 通道，并在 markdown 预览中渲染独立摘要区块。
+
+去噪器（``NotificationDeduplicator``）以模块级单例持有，跨调用复用 30 分钟
+窗口；提供 ``reset_dedup_state`` 供测试与人工强制重发使用。
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from api.runtime_tier import tradeflow_meta as _tradeflow_meta  # [PERF-001]
+from api.services.investment_controller_context import get_investment_controller_context
+from tradingagents.tradeflow.notification_draft import (
+    CHANNEL_DAILY_DIGEST,
+    CHANNEL_INTRADAY_PUSH,
+    NOTIFY_SCHEMA_VERSION,
+    NOTIFY_SOURCE,
+    NotificationDeduplicator,
+    apply_dedup,
+    build_data_blocker_digest,  # [NOTIFY-002]
+    build_mandate_daily_digest,  # [NOTIFY-002]
+    build_notification_drafts_from_context,
+    classify_delivery_channel,
+    render_drafts_json,
+    render_drafts_markdown,
+    split_by_channel,
+)
+
+logger = logging.getLogger(__name__)
+
+# 模块级去噪器：30 分钟窗口内同 (symbol, event_type) 不重复。
+# dry-run 场景 + GIL 下足够；如需多进程共享可后续替换为带 TTL 的共享存储。
+_DEDUPLICATOR = NotificationDeduplicator()
+
+
+def reset_dedup_state() -> None:
+    """清除去噪器状态（测试 / 人工强制重发使用）."""
+    _DEDUPLICATOR.reset()
+
+
+def build_notification_dry_run(
+    db: Session,
+    user_id: str,
+    *,
+    tf_db_path: str = "",
+    force_refresh: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """生成飞书 / 总控官通知草稿 dry-run payload.
+
+    Args:
+        db: SQLAlchemy session（只读，用于 IC-TA-001 上下文）.
+        user_id: 用户 id.
+        tf_db_path: 可选 tradeflow SQLite 路径覆盖（测试用）.
+        force_refresh: True 时先清空去噪器，强制重新生成全部草稿.
+        now: 注入时间（测试用）.
+
+    Returns:
+        dry-run payload dict，包含::
+
+            schema_version / as_of / dry_run / webhook_configured
+            intraday_push   # P0/P1 非记录草稿（盘中主动提醒队列）
+            daily_digest    # P2/P3 草稿
+            recorded_only   # 数据不足只记录的草稿
+            deduplicated    # 被去噪抑制的草稿（含 dedup_reason）
+            summary_counts
+            markdown_preview
+            json_preview
+            runtime_tier_meta
+
+    永不因 webhook 未配置或数据缺失而抛异常（验收：未配置 webhook 不报错）。
+    """
+    now = now or datetime.now()
+    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
+    if force_refresh:
+        reset_dedup_state()
+
+    # 1. 取 IC-TA-001 只读上下文（永不抛异常：返回稳定空结构）
+    try:
+        context = get_investment_controller_context(db, user_id, tf_db_path=tf_db_path)
+    except Exception as exc:
+        logger.warning("[track-notify-001] IC context build failed: %s", exc)
+        context = {"as_of": as_of, "is_trading_day": True}
+
+    # 2. 合成草稿（纯函数，已做强动作词自检）
+    drafts = build_notification_drafts_from_context(context, as_of=as_of, now=now)
+
+    # [NOTIFY-002] 构建两个顶层摘要（mandate_daily_digest / data_blocker_digest）
+    # 直接从 IC-TA-002 的 bucket 压缩，供 investment-controller 一次读取。
+    mandate_bucket = context.get("mandate_daily_report") or {}
+    blockers_bucket = context.get("recent_report_data_blockers") or {}
+    mandate_digest = build_mandate_daily_digest(mandate_bucket)
+    data_blocker_digest = build_data_blocker_digest(blockers_bucket)
+
+    # 3. 去噪
+    dedup_result = apply_dedup(drafts, _DEDUPLICATOR, now=now)
+    emitted = dedup_result["emitted"]
+    deduplicated = dedup_result["deduplicated"]
+
+    # 4. 分通道
+    channels = split_by_channel(emitted)
+    intraday_push = channels[CHANNEL_INTRADAY_PUSH]
+    daily_all = channels[CHANNEL_DAILY_DIGEST]
+    # daily_digest 里再拆出 record_only（数据不足只记录）单独展示
+    recorded_only = [d for d in daily_all if d.get("record_only")]
+    daily_digest = [d for d in daily_all if not d.get("record_only")]
+
+    # 5. 预览渲染（NOTIFY-002: 传入两个摘要，渲染独立摘要区块）
+    markdown_preview = render_drafts_markdown(
+        intraday_push=intraday_push,
+        daily_digest=daily_digest,
+        recorded_only=recorded_only,
+        deduplicated=deduplicated,
+        as_of=as_of,
+        mandate_digest=mandate_digest,
+        data_blocker_digest=data_blocker_digest,
+    )
+    json_preview = render_drafts_json(
+        intraday_push=intraday_push,
+        daily_digest=daily_digest,
+        recorded_only=recorded_only,
+        deduplicated=deduplicated,
+    )
+
+    return {
+        "schema_version": NOTIFY_SCHEMA_VERSION,
+        "as_of": as_of,
+        "generated_by": NOTIFY_SOURCE,
+        "dry_run": True,  # 第一阶段恒为 True
+        "webhook_configured": None,  # 本服务不读取 webhook 配置
+        "intraday_push": intraday_push,
+        "daily_digest": daily_digest,
+        "recorded_only": recorded_only,
+        "deduplicated": deduplicated,
+        # [NOTIFY-002] 顶层结构化摘要：investment-controller 直接读取主题重心与数据风险
+        "mandate_daily_digest": mandate_digest,
+        "data_blocker_digest": data_blocker_digest,
+        "summary_counts": {
+            "total_drafts": len(drafts),
+            "intraday_push": len(intraday_push),
+            "daily_digest": len(daily_digest),
+            "recorded_only": len(recorded_only),
+            "deduplicated": len(deduplicated),
+        },
+        "markdown_preview": markdown_preview,
+        "json_preview": json_preview,
+        "runtime_tier_meta": _tradeflow_meta("notification_draft_dry_run"),
+        # 透传 IC context 的 data_status 摘要，便于 investment-controller 判断
+        "context_data_status": {
+            "holdings": (context.get("holdings") or {}).get("data_status"),
+            "observation_warehouse": (context.get("observation_warehouse") or {}).get("data_status"),
+            "tradeflow_candidates": (context.get("tradeflow_candidates") or {}).get("data_status"),
+            "data_health": (context.get("data_health") or {}).get("data_status"),
+            # [NOTIFY-002] 额外透传 mandate / blockers 的 data_status
+            "mandate_daily_report": mandate_bucket.get("data_status"),
+            "recent_report_data_blockers": blockers_bucket.get("data_status"),
+        },
+    }
+
+
+__all__ = [
+    "build_notification_dry_run",
+    "reset_dedup_state",
+]
+
+exec
+/bin/zsh -lc "grep -n \"class UserDB\" -A60 api/database.py && grep -R \"_require_api_user\" -n api/main.py | head -20 && sed -n '300,380p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+448:class UserDB(Base):
+449-    __tablename__ = "users"
+450-
+451-    id = Column(String(36), primary_key=True, index=True)
+452-    email = Column(String(255), unique=True, index=True, nullable=False)
+453-    is_active = Column(Boolean, default=True, nullable=False)
+454-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+455-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+456-    last_login_at = Column(DateTime, nullable=True)
+457-    last_login_ip = Column(String(45), nullable=True)
+458-    email_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+459-    wecom_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+460-    bark_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+461-
+462-
+463-class EmailVerificationCodeDB(Base):
+464-    __tablename__ = "email_verification_codes"
+465-
+466-    id = Column(String(36), primary_key=True, index=True)
+467-    email = Column(String(255), index=True, nullable=False)
+468-    code_hash = Column(String(255), nullable=False)
+469-    purpose = Column(String(50), default="login", nullable=False)
+470-    expires_at = Column(DateTime, nullable=False)
+471-    consumed_at = Column(DateTime, nullable=True)
+472-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+473-
+474-
+475-class UserLLMConfigDB(Base):
+476-    __tablename__ = "user_llm_configs"
+477-
+478-    user_id = Column(String(36), primary_key=True, index=True)
+479-    llm_provider = Column(String(50), nullable=True)
+480-    backend_url = Column(String(500), nullable=True)
+481-    quick_think_llm = Column(String(255), nullable=True)
+482-    deep_think_llm = Column(String(255), nullable=True)
+483-    max_debate_rounds = Column(Integer, nullable=True)
+484-    max_risk_discuss_rounds = Column(Integer, nullable=True)
+485-    api_key_encrypted = Column(Text, nullable=True)
+486-    wecom_webhook_encrypted = Column(Text, nullable=True)
+487-    bark_url_encrypted = Column(Text, nullable=True)
+488-    default_analysts = Column(Text, nullable=True)  # JSON list, e.g. '["market","social",...]'
+489-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+490-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+491-
+492-
+493-class UserLLMProviderKeyDB(Base):
+494-    __tablename__ = "user_llm_provider_keys"
+495-    __table_args__ = (UniqueConstraint("user_id", "key_scope", name="uq_user_llm_provider_key_scope"),)
+496-
+497-    id = Column(String(36), primary_key=True, index=True)
+498-    user_id = Column(String(36), index=True, nullable=False)
+499-    key_scope = Column(String(600), index=True, nullable=False)
+500-    api_key_encrypted = Column(Text, nullable=False)
+501-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+502-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+503-
+504-
+505-class UserTokenDB(Base):
+506-    __tablename__ = "user_tokens"
+507-
+508-    id = Column(String(36), primary_key=True, index=True)
+api/main.py:1399:_require_api_user = RequireUser(allow_api_token=True)    # 允许 API Token
+api/main.py:3156:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:3175:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:3311:def get_job_status(job_id: str, current_user: UserDB = Depends(_require_api_user)) -> JobStatusResponse:
+api/main.py:3329:def get_job_result(job_id: str, current_user: UserDB = Depends(_require_api_user)) -> Dict[str, Any]:
+api/main.py:3343:def stream_job_events(job_id: str, current_user: UserDB = Depends(_require_api_user)):
+api/main.py:3572:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:3958:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:3993:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4015:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4029:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4048:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4061:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4073:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4143:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4768:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4882:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4891:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4909:    current_user: UserDB = Depends(_require_api_user),
+api/main.py:4918:    current_user: UserDB = Depends(_require_api_user),
+    _background_tasks.clear()
+
+    # Security: warn loudly if using default secret key
+    if not os.getenv("TA_APP_SECRET_KEY"):
+        _log("=" * 70)
+        _log("WARNING: TA_APP_SECRET_KEY is not set!")
+        _log("Using hardcoded default key. ALL encryption and JWT signing")
+        _log("is INSECURE. Set TA_APP_SECRET_KEY env var before production use.")
+        _log("=" * 70)
+
+    _report_version_stats()
+    # Pre-load trade calendar (uses mini_racer/V8 which is not thread-safe)
+    from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
+    _load_cn_trade_dates()
+    _log("Trade calendar pre-loaded.")
+    # Pre-load stock + ETF name map
+    await asyncio.to_thread(_load_cn_stock_map)
+    _log("Stock map pre-loaded on startup.")
+    yield
+    _log("Shutting down: Cleaning up resources...")
+    _executor.shutdown(wait=True)
+    if new_default_executor is not None:
+        new_default_executor.shutdown(wait=False)
+    _log("Executor shutdown complete.")
+
+
+_is_prod = os.getenv("ENV", "").lower() == "prod"
+
+_BACKEND_START_TIME: str = ""
+_GIT_COMMIT_SHORT: str = "unknown"
+
+
+def _init_version_info() -> None:
+    """Read git commit hash once at startup; record process start time."""
+    global _BACKEND_START_TIME, _GIT_COMMIT_SHORT
+    _BACKEND_START_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        import subprocess as _sp
+        _GIT_COMMIT_SHORT = _sp.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=_sp.DEVNULL,
+            cwd=str(Path(__file__).resolve().parent),
+        ).decode().strip()
+    except Exception:
+        _GIT_COMMIT_SHORT = "unknown"
+
+
+_init_version_info()
+
+
+def _get_version() -> str:
+    """Get app version: APP_VERSION env > package metadata > 'dev'."""
+    v = os.getenv("APP_VERSION")
+    if v:
+        return v
+    try:
+        from importlib.metadata import version as pkg_version
+        return pkg_version("tradingagents")
+    except Exception:
+        return "dev"
+
+
+APP_VERSION = _get_version()
+
+app = FastAPI(
+    title="TradingAgents-AShare API",
+    version=APP_VERSION,
+    lifespan=lifespan,
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_allow_origins(),
+    allow_origin_regex=_cors_allow_origin_regex(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+exec
+/bin/zsh -lc 'pytest tests/test_m010_feishu_webhook.py tests/test_m010_notification_confirmation.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc "find docs/task_runs/M-010-20260723-060142 -maxdepth 2 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/M-010-20260723-060142/tests-round1.txt
+## pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 18.72s
+
+Exit code: 0
+docs/task_runs/M-010-20260723-060142/codegraph-status.json
+{
+  "task_id": "M-010",
+  "generated_at": "2026-07-23T06:01:43.177497",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 1,
+  "post_generated_at": "2026-07-23T06:12:38.016546",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "api/database.py",
+    "api/main.py",
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "scheduler/main.py"
+  ]
+}docs/task_runs/M-010-20260723-060142/prompt-round1.md
+# Task: M-010: 飞书/通知链路人工确认版（P2）
+
+Read task "M-010" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/M-010-20260723-060142/codegraph-context.txt
+# CodeGraph Context for M-010
+# Task: 飞书/通知链路人工确认版（P2）
+# Generated: 2026-07-23T06:01:43.334965
+# Keywords: 飞书/通知链路人工确认版（p2）
+
+## Code Context
+
+**Query:** 飞书/通知链路人工确认版（p2）
+
+docs/task_runs/M-010-20260723-060142/opencode-round1.txt
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m# [0mTodos
+[•] Read M-010 task from docs/TASKS.md
+[ ] Read project context (AGENTS.md, project-overview.md, DEVLOG.md)
+[ ] Understand existing notification/scheduler code
+[ ] Implement feishu webhook notification sender
+[ ] Integrate notification into scheduler analysis flow
+[ ] Add notification log to DB
+[ ] Add API endpoints for notification management
+[ ] Write tests
+[ ] Run tests and lint
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/DECISIONS.md
+[0m• [0mExplore notification infrastructure[90m Explore Agent[0m
+Now let me explore the existing notification-related code and scheduler structure.
+[0m✓ [0mExplore notification infrastructure[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Read M-010 task from docs/TASKS.md
+[✓] Read project context (AGENTS.md, project-overview.md, DEVLOG.md)
+[✓] Understand existing notification/scheduler code
+[ ] Implement feishu webhook notification sender
+[ ] Add notification confirmation queue and DB log
+[ ] Integrate into scheduler and API routes
+[ ] Write tests
+[ ] Run tests and lint
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead api/services/notification_draft_service.py
+[0m→ [0mRead api/services/wecom_notification_service.py
+[0m→ [0mRead api/services/bark_notification_service.py
+Let me read the key existing files to understand the implementation patterns.
+[0m→ [0mRead api/database.py
+[0m→ [0mRead scheduler/main.py
+[0m→ [0mRead api/main.py[90m [offset=5090, limit=60][0m
+[0m✱ [0mGlob "tests/test_b00*.py"[90m 3 matches[0m
+[0m✱ [0mGlob "tests/test_notify*.py"[90m 2 matches[0m
+Now let me look at the existing test patterns and the API routes file structure.
+[0m→ [0mRead tests/test_b002_openclaw_callback.py[90m [limit=80][0m
+[0m→ [0mRead api/main.py[90m [limit=100, offset=1][0m
+[0m
+[0m# [0mTodos
+[✓] Read M-010 task from docs/TASKS.md
+[✓] Read project context (AGENTS.md, project-overview.md, DEVLOG.md)
+[✓] Understand existing notification/scheduler code
+[•] Implement feishu webhook notification sender
+[ ] Add notification confirmation queue and DB log
+[ ] Integrate into scheduler and API routes
+[ ] Write tests
+[ ] Run tests and lint
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a complete understanding. Let me implement M-010.
+[0m← [0mWrite api/services/feishu_webhook_service.py
+Wrote file successfully.
+[0m
+[0m→ [0mRead api/database.py[90m [offset=620][0m
+Now let me add the `NotificationLogDB` model to the database:
+[0m
+[0m← [0mEdit api/database.py
+Index: /Users/maybee/TradingAgents-AShare/api/database.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/database.py
++++ /Users/maybee/TradingAgents-AShare/api/database.py
+@@ -626,4 +626,29 @@
+ 
+     __table_args__ = (
+         UniqueConstraint('user_id', 'source', 'symbol', name='uq_imported_portfolio_user_source_symbol'),
+     )
++
++
++class NotificationLogDB(Base):
++    # [M-010] feishu_notification_confirmation
++    """Notification event log and confirmation queue."""
++    __tablename__ = "notification_logs"
++
++    id = Column(String(36), primary_key=True)
++    user_id = Column(String(64), index=True, nullable=False)
++    channel = Column(String(20), nullable=False)  # feishu / bark / wecom / email
++    event_type = Column(String(80), nullable=False)
++    priority = Column(String(4), nullable=False)  # P0 / P1 / P2 / P3
++    symbol = Column(String(20), nullable=True)
++    name = Column(String(80), nullable=True)
++    title = Column(String(200), nullable=False)
++    reason = Column(Text, nullable=True)
++    status = Column(String(24), default="pending_confirmation", index=True)
++    # pending_confirmation / confirmed / sending / sent / failed / dismissed
++    payload = Column(JSON, nullable=True)
++    webhook_url_masked = Column(String(200), nullable=True)
++    error = Column(Text, nullable=True)
++    confirmed_at = Column(DateTime, nullable=True)
++    sent_at = Column(DateTime, nullable=True)
++    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
++    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+[0m
+[0m← [0mWrite api/services/notification_confirmation_service.py
+Wrote file successfully.
+[0m
+Now let me write the notification confirmation service:
+[0m→ [0mRead api/main.py[90m [offset=42, limit=10][0m
+Now let me add the API routes. First, I need to add the imports:
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -38,9 +38,9 @@
+ from pydantic import BaseModel, Field, field_serializer
+ from sqlalchemy.orm import Session
+ import pandas as pd
+ 
+-from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
++from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, NotificationLogDB, init_db, get_db, get_db_ctx
+ from api.job_store import get_job_store as _new_job_store
+ from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
+ from api.services import feishu_export_service  # [B-003] feishu_doc_export
+ from api.services import holdings_sync_service  # [B-004] holdings_sync
+
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -43,8 +43,10 @@
+ from api.job_store import get_job_store as _new_job_store
+ from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
+ from api.services import feishu_export_service  # [B-003] feishu_doc_export
+ from api.services import holdings_sync_service  # [B-004] holdings_sync
++from api.services import feishu_webhook_service  # [M-010] feishu_webhook_notification
++from api.services import notification_confirmation_service  # [M-010] feishu_notification_confirmation
+ 
+ def _get_real_ip(request: Request) -> Optional[str]:
+     """Extract real client IP, preferring Cloudflare/proxy headers."""
+     if request is None:
+
+[0m
+[0m→ [0mRead api/main.py[90m [limit=30, offset=5145][0m
+Now let me add the API endpoints. I'll add them after the existing notification dry-run endpoint:
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5149,8 +5149,115 @@
+         tf_db_path=body.tf_db_path,
+     )
+ 
+ 
++# [M-010] feishu_notification_confirmation
++class NotificationGenerateRequest(BaseModel):
++    channel: str = "feishu"
++    force_refresh: bool = False
++
++
++@app.post("/v1/notifications/generate")
++def post_notification_generate(
++    body: NotificationGenerateRequest,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """生成通知草稿并存入待确认队列（M-010 人工确认版）.
++
++    从 notification_draft 引擎生成草稿，存入 notification_logs 表，
++    状态为 pending_confirmation。用户后续通过 confirm 接口确认发送。
++    runtime_tier=FAST_RADAR（不触发 LLM）。
++    """
++    return notification_confirmation_service.generate_pending(
++        db, current_user.id,
++        channel=body.channel,
++        force_refresh=body.force_refresh,
++    )
++
++
++@app.get("/v1/notifications/pending")
++def get_notifications_pending(
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """获取待确认通知队列（M-010）."""
++    return notification_confirmation_service.list_pending(db, current_user.id)
++
++
++@app.get("/v1/notifications/log")
++def get_notifications_log(
++    status: str | None = Query(None, description="按状态筛选"),
++    limit: int = Query(100, ge=1, le=500),
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """获取通知历史日志（M-010）."""
++    return notification_confirmation_service.list_log(
++        db, current_user.id, status=status, limit=limit,
++    )
++
++
++class NotificationActionRequest(BaseModel):
++    pass
++
++
++@app.post("/v1/notifications/{notification_id}/confirm")
++def post_notification_confirm(
++    notification_id: str,
++    current_user: UserDB = Depends(_require_api_user),
++    db: Session = Depends(get_db),
++):
++    """确认单条通知并通过飞书 webhook 发送（M-010）."""
++    return notification_confirmation_service.confirm_and_send(
++        db, notification_id, current_user.id,
++    )
++
+docs/task_runs/M-010-20260723-060142/task.md
+# Auto Dev Task Run
+
+- Task: M-010 - 飞书/通知链路人工确认版（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-07-23_06:01:42
+- Git HEAD: 10f3b0f
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Codex review timeout seconds: 1200
+- OpenCode binary: /opt/homebrew/bin/opencode
+- OpenCode version: 1.15.12
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/M-010-20260723-060142/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-07-23T06:12:38.016570
+# Changed files: 5
+
+## Source: api/database.py
+[1m
+Impact of changing "api/database.py" — 1 affected symbols:
+[0m
+[36mapi/database.py[0m
+  [2mfile        [0mdatabase.py[2m:1[0m
+
+
+
+## Source: api/main.py
+[1m
+Impact of changing "api/main.py" — 1 affected symbols:
+[0m
+[36mapi/main.py[0m
+  [2mroute       [0mGET /healthz[2m:2740[0m
+
+
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: scheduler/main.py
+[1m
+Impact of changing "scheduler/main.py" — 1 affected symbols:
+[0m
+[36mscheduler/main.py[0m
+  [2mfile        [0mmain.py[2m:1[0m
+
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc 'grep -R "notification" -n tests api/main.py api/services | head -100' in /Users/maybee/TradingAgents-AShare
+ succeeded in 315ms:
+exec
+/bin/zsh -lc "grep -n \"@app\\.\" -n api/main.py | tail -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+4111:@app.delete("/v1/tokens/{token_id}")
+4139:@app.post("/v1/backtest")
+4159:@app.get("/v1/backtest")
+4166:@app.get("/v1/backtest/{job_id}")
+4175:@app.delete("/v1/backtest/{job_id}")
+4486:@app.post("/v1/auth/request-code")
+4501:@app.post("/v1/auth/verify-code", response_model=AuthVerifyCodeResponse)
+4510:@app.get("/v1/auth/me", response_model=UserResponse)
+4515:@app.get("/v1/config", response_model=UserRuntimeConfigResponse)
+4524:@app.get("/v1/config/model-catalog", response_model=ModelApiCatalogResponse)
+4534:@app.get(
+4552:@app.patch("/v1/config")
+4682:@app.post("/v1/config/warmup", response_model=UserRuntimeWarmupResponse)
+4697:@app.post("/v1/config/wecom/warmup", response_model=WecomWebhookWarmupResponse)
+4730:@app.post("/v1/config/bark/warmup", response_model=BarkWarmupResponse)
+4765:@app.get("/v1/market/stock-search")
+4880:@app.get("/v1/portfolio/imports")
+4888:@app.post("/v1/portfolio/imports")
+4907:@app.delete("/v1/portfolio/imports", status_code=204)
+4916:@app.get("/v1/portfolio/imports/contract")
+4924:@app.post("/v1/portfolio/imports/dry-run")
+4956:@app.post("/v1/portfolio/imports/import-text")
+4975:@app.post("/v1/portfolio/parse-image")
+5019:@app.post("/v1/portfolio/holdings-sync")
+5041:@app.get("/v1/portfolio/holdings-sync/status")
+5055:@app.get("/v1/portfolio/holdings-sync/external")
+5065:@app.get("/v1/dashboard/tracking-board")
+5074:@app.get("/v1/dashboard/tracking-board/v2")
+5083:@app.get("/v1/dashboard/investment-controller/context")
+5106:@app.post("/v1/dashboard/investment-controller/notify/dry-run")
+5132:@app.post("/v1/dashboard/investment-controller/briefing/dry-run")
+5159:@app.post("/v1/notifications/generate")
+5178:@app.get("/v1/notifications/pending")
+5187:@app.get("/v1/notifications/log")
+5204:@app.post("/v1/notifications/{notification_id}/confirm")
+5216:@app.post("/v1/notifications/{notification_id}/dismiss")
+5228:@app.post("/v1/notifications/confirm-all")
+5239:@app.post("/v1/config/feishu/warmup")
+5264:@app.get("/v1/knowledge/research/evidence/_meta")
+5289:@app.get("/v1/knowledge/research/evidence/{symbol}")
+5330:@app.get("/v1/knowledge/local/search")
+5367:@app.get("/v1/watchlist")
+5377:@app.post("/v1/watchlist")
+5461:@app.post("/v1/watchlist/batch-notes")
+5524:@app.delete("/v1/watchlist/{item_id}", status_code=204)
+5544:@app.put("/v1/watchlist/reorder")
+5557:@app.patch("/v1/watchlist/{item_id}")
+5572:@app.get("/v1/scheduled")
+5582:@app.get("/v1/portfolio/overview", response_model=PortfolioOverviewResponse)
+5614:@app.post("/v1/scheduled", status_code=201)
+5648:@app.patch("/v1/scheduled/batch")
+5672:@app.post("/v1/scheduled/batch/delete")
+5684:@app.post("/v1/scheduled/batch/trigger", response_model=BatchScheduledTriggerResponse)
+5777:@app.post("/v1/scheduled/{item_id}/trigger", response_model=AnalyzeResponse)
+5821:@app.patch("/v1/scheduled/{item_id}")
+5841:@app.delete("/v1/scheduled/{item_id}", status_code=204)
+5884:@app.get("/v1/sponsors", response_model=SponsorsResponse)
+5940:@app.post("/v1/feedbacks", response_model=FeedbackItem, status_code=201)
+5950:@app.get("/v1/feedbacks", response_model=FeedbackListResponse)
+5961:@app.get("/v1/feedbacks/unread-count", response_model=FeedbackUnreadResponse)
+5970:@app.get("/v1/feedbacks/{feedback_id}", response_model=FeedbackItem)
+5986:@app.post("/v1/feedbacks/{feedback_id}/read")
+6100:@app.get("/v1/tradeflow/daily-plan", response_model=TradeFlowDailyPlanResponse)
+6105:@app.get("/v1/tradeflow/candidates", response_model=TradeFlowCandidatesResponse)
+6117:@app.get("/v1/tradeflow/candidates/tiered", response_model=TradeFlowTieredCandidatesResponse)
+6123:@app.get("/v1/tradeflow/candidates/{symbol}/overview", response_model=CompanyOverviewResponse)
+6132:@app.get("/v1/tradeflow/candidates/compare", response_model=TradeFlowCompareResponse)
+6142:@app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)
+6150:@app.get("/v1/tradeflow/observe", response_model=TradeFlowObserveResponse)
+6155:@app.get("/v1/tradeflow/ta-queue", response_model=TradeFlowTAQueueResponse)
+6160:@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+6165:@app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
+6171:@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
+6177:@app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+6182:@app.post("/v1/tradeflow/discovery")
+6197:@app.post("/v1/tradeflow/observe/run")
+6203:@app.get("/v1/tradeflow/observe/scheduler-status")
+6209:@app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
+6215:@app.post("/v1/tradeflow/research-plan", response_model=TradeFlowResearchPlanResponse)
+6224:@app.get("/v1/tradeflow/paper-ledger", response_model=PaperLedgerResponse)
+6229:@app.post("/v1/tradeflow/paper-ledger/add", response_model=PaperActionResponse)
+6245:@app.post("/v1/tradeflow/paper-ledger/remove", response_model=PaperActionResponse)
+6250:@app.post("/v1/tradeflow/paper-ledger/confirm", response_model=PaperActionResponse)
+6260:@app.get("/v1/tradeflow/paper-ledger/review", response_model=PaperReviewResponse)
+6266:@app.get("/v1/tradeflow/topic-registry", response_model=TopicRegistryResponse)
+6272:@app.get("/v1/tradeflow/topic-watchlist", response_model=TopicWatchlistResponse)
+6281:@app.get("/v1/tradeflow/topic-heatmap", response_model=TopicHeatmapResponse)
+6290:@app.get("/v1/tradeflow/mandate-daily-report/latest", response_model=MandateDailyReportResponse)
+6304:@app.get("/v1/data-sources/freshness", response_model=SourceFreshnessResponse)
+6310:@app.get("/v1/data-sources/live-sampling", response_model=LiveSamplingResponse)
+6316:@app.get("/v1/tradeflow/observation-items", response_model=ObservationItemListResponse)
+6324:@app.post("/v1/tradeflow/observation-items", response_model=ObservationActionResponse)
+6348:@app.patch("/v1/tradeflow/observation-items/{item_id}", response_model=ObservationActionResponse)
+6376:@app.post("/v1/tradeflow/observation-items/{item_id}/mark", response_model=ObservationActionResponse)
+6384:@app.post("/v1/tradeflow/observation-items/bulk-upsert", response_model=ObservationBulkUpsertResponse)
+6394:@app.post("/v1/tradeflow/observation-items/import", response_model=ObservationImportResponse)
+6406:@app.get("/v1/tradeflow/observation-items/export", response_model=ObservationExportResponse)
+6414:@app.post(
+6448:@app.post(
+6503:    @app.get("/{full_path:path}")
+
+exec
+/bin/zsh -lc 'grep -R "init_db()" -n . | head -30' in /Users/maybee/TradingAgents-AShare
+ succeeded in 5850ms:
+./tests/test_kb020_research_evidence_api.py:601:    init_db()
+./tests/test_api_smoke.py:74:    init_db()
+./tests/test_h016_mandate_daily_cli.py:311:    still call ``candidate_engine.init_db()`` (CREATE/ALTER TABLE) on
+./tests/test_h016_mandate_daily_cli.py:315:    tables — i.e. ``init_db()`` was never called.
+./tests/test_h016_mandate_daily_cli.py:362:        # none of the newer mandate columns. init_db() would ALTER these in.
+./tests/test_track010_review_encoding_regression.py:419:        init_db()
+Binary file ./tests/__pycache__/test_tf_persist_001_split_score_persistence.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_h016_mandate_daily_cli.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_kb006_local_knowledge_context_api.py:1035:    init_db()
+./tests/test_track009_holdings_import.py:53:    init_db()
+./tests/test_portfolio_import.py:29:    init_db()
+./tests/test_tf_persist_001_split_score_persistence.py:72:        """[TF-PERSIST-001] init_db() must add the 8 split-score columns."""
+./tests/test_tf_persist_001_split_score_persistence.py:86:        the 8 columns added on the next init_db() call (no manual migration).
+./tests/test_dashboard_tracking.py:11:    init_db()
+./scheduler/main.py:567:    init_db()
+./docs/trade_playbook_lifecycle.md:290:> 观察仓写入已接通：旧 SQLite 会在 `init_db()` 时自动补列；请求中的阶段和契约会先归一化、校验安全词，再写入 JSON。报告契约暂存于 `result_data`，详情/创建响应会从中镜像；历史列表保持轻量摘要契约，不读取大段 `result_data`。
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:426:    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2840:+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3313:docs/task_runs/S-001-20260529-124731/opencode-round1.txt:540:+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3325:docs/DEVLOG.md:27:    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+./docs/task_runs/S-001-20260529-124731/opencode-round1.txt:540:+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+./docs/task_runs/TF-PAPER-001-20260614-004155/codex-review-round1.txt:415:    - `init_db()` 的 `executescript()` 追加两张新表
+./docs/task_runs/TF-PAPER-001-20260614-004155/opencode-round1.txt:102:Now update the `init_db()` function to include the new tables:
+./docs/task_runs/TF-PAPER-001-20260614-004155/opencode-round1.txt:1620:+    - `init_db()` 的 `executescript()` 追加两张新表
+./docs/task_runs/TF-PAPER-001-20260614-004155/opencode-round1.txt:1720:- `tradingagents/tradeflow/candidate_engine.py` — Added `tradeflow_paper_ledger` and `tradeflow_paper_trades` tables to `init_db()`
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:461:    - `init_db()` 新增 7 列迁移：game_balance, bull_case, bear_case, policy_case, fund_flow_case, resonance_count, game_balance_refs_json
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:498:    - `init_db()` 新增 `risk_penalty`、`risk_evidence_refs_json`、`risk_reasons_json` 列迁移
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:538:    - `init_db()` 新增 `narrative_score`、`narrative_reasons_json`、`narrative_evidence_refs_json` 列迁移
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:588:    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+./docs/task_runs/S-006-20260529-170504/codex-review-round1.txt:502:    - `init_db()` 新增 8 列迁移：composite_score、signal_category_hits_json、positive_category_count、data_completeness、missing_evidence_json、why_deep_ta、why_not_deep_ta、priority_rank
+
+exec
+/bin/zsh -lc "sed -n '240,310p' api/main.py && sed -n '540,590p' scheduler/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+        await _run_job(job_id, req, False, True, user_id, "scheduled_manual")
+        job_state = _get_job(job_id)
+        if job_state.get("status") == "failed":
+            raise RuntimeError(job_state.get("error") or f"manual trigger job {job_id} failed")
+        with get_db_ctx() as db:
+            scheduled_service.record_manual_test_result(db, task_id, "success", report_id=job_id)
+        _log(f"[Manual Trigger] Completed {symbol}")
+    except Exception as e:
+        logger.error(f"[Manual Trigger] Failed {symbol}: {e}\n{traceback.format_exc()}")
+        with get_db_ctx() as db:
+            scheduled_service.record_manual_test_result(db, task_id, "failed")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize resources on startup and cleanup on shutdown."""
+    # Raise the AnyIO thread limiter ceiling so frequent sync endpoints
+    # (tracking-board polling, /v1/jobs/{id} polling, akshare-backed
+    # market endpoints) cannot starve each other when the event loop is
+    # also running long-lived `_run_job` tasks.
+    try:
+        from anyio import to_thread as _anyio_to_thread
+
+        limiter = _anyio_to_thread.current_default_thread_limiter()
+        desired = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
+        if limiter.total_tokens < desired:
+            limiter.total_tokens = desired
+            _log(f"AnyIO thread limiter raised to {desired}.")
+    except Exception as exc:
+        _log(f"Could not raise AnyIO thread limiter: {exc}")
+
+    # Default asyncio executor is used by `asyncio.to_thread`. The CPython
+    # default is `min(32, cpu_count + 4)`, which is too small when many
+    # `_run_job_inner` coroutines fan out concurrent `to_thread` calls for
+    # DB writes, LLM extraction, and akshare data collection.
+    new_default_executor: Optional[ThreadPoolExecutor] = None
+    try:
+        loop = asyncio.get_running_loop()
+        executor_workers = int(os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", "64"))
+        new_default_executor = ThreadPoolExecutor(
+            max_workers=executor_workers,
+            thread_name_prefix="ta-asyncio",
+        )
+        loop.set_default_executor(new_default_executor)
+        _log(f"Default asyncio executor set to {executor_workers} workers.")
+    except Exception as exc:
+        _log(f"Could not configure default asyncio executor: {exc}")
+
+    init_db()
+    _log("Database initialized.")
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
+        _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
+        _log("TradeFlow DB schema migrated.")
+    except Exception as _tf_exc:
+        _log(f"TradeFlow DB init skipped: {_tf_exc}")
+    store = get_job_store()
+    store.clear()
+    _background_tasks.clear()
+
+    # Security: warn loudly if using default secret key
+    if not os.getenv("TA_APP_SECRET_KEY"):
+        _log("=" * 70)
+        _log("WARNING: TA_APP_SECRET_KEY is not set!")
+        _log("Using hardcoded default key. ALL encryption and JWT signing")
+        _log("is INSECURE. Set TA_APP_SECRET_KEY env var before production use.")
+        _log("=" * 70)
+
+    _report_version_stats()
+
+
+# ── Startup / main ───────────────────────────────────────────────────────────
+
+async def _startup():
+    """Initialize DB, pre-load caches, recover stale tasks, then run the loop."""
+    global _semaphore, _executor
+
+    # Each scheduled `_run_job` fans out many `asyncio.to_thread` calls (DB
+    # writes, akshare data collection, LLM extraction). The CPython default
+    # of `min(32, cpu_count + 4)` is too small to absorb concurrent jobs +
+    # the per-tick DB transaction the scheduler loop now runs in to_thread.
+    try:
+        loop = asyncio.get_running_loop()
+        executor_workers = int(
+            os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", str(max(64, SCHEDULER_CONCURRENCY * 16)))
+        )
+        loop.set_default_executor(
+            ThreadPoolExecutor(
+                max_workers=executor_workers,
+                thread_name_prefix="ta-sched-asyncio",
+            )
+        )
+        _log(f"[Scheduler] Default asyncio executor set to {executor_workers} workers.")
+    except Exception as exc:
+        _log(f"[Scheduler] Could not configure default asyncio executor: {exc}")
+
+    init_db()
+    _log("Database initialized.")
+
+    _semaphore = asyncio.Semaphore(SCHEDULER_CONCURRENCY)
+    _log(
+        "[Scheduler] Config enabled=%s dry_run=%s concurrency=%s max_per_tick=%s "
+        "run_intraday=%s allowed_times=%s"
+        % (
+            SCHEDULER_ENABLED,
+            SCHEDULER_DRY_RUN,
+            SCHEDULER_CONCURRENCY,
+            SCHEDULER_MAX_TASKS_PER_TICK,
+            SCHEDULER_RUN_INTRADAY,
+            sorted(SCHEDULER_ALLOWED_TRIGGER_TIMES) or "all",
+        )
+    )
+
+    _executor = ThreadPoolExecutor(max_workers=SCHEDULER_CONCURRENCY + 2)
+
+    # Recover stale tasks from previous run
+    _recover_stale_tasks()
+
+    # [DATA-026] db_hygiene_check — emit one consolidated warning block so
+    # operators know whether the prod DB has accumulated test-account rows
+
+exec
+/bin/zsh -lc "nl -ba api/services/feishu_webhook_service.py | sed -n '260,315p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   260	# ── Send ─────────────────────────────────────────────────────────────────────
+   261	
+   262	def send_message(payload: dict, webhook_url: str) -> bool:
+   263	    """Send a message via Feishu webhook. Returns True on success."""
+   264	    url = normalize_webhook_url(webhook_url)
+   265	    response = requests.post(
+   266	        url,
+   267	        data=json.dumps(payload),
+   268	        headers={"Content-Type": "application/json;charset=utf-8"},
+   269	        timeout=10,
+   270	    )
+   271	    response.raise_for_status()
+   272	    try:
+   273	        body = response.json()
+   274	    except Exception:
+   275	        logger.warning(
+   276	            "[feishu-wh] non-JSON response body=%s",
+   277	            str(getattr(response, "text", ""))[:240],
+   278	        )
+   279	        return False
+   280	    code = body.get("code", -1)
+   281	    msg = body.get("msg", "")
+   282	    if int(code) == 0:
+   283	        return True
+   284	    logger.warning("[feishu-wh] API error code=%s msg=%s", code, msg)
+   285	    return False
+   286	
+   287	
+   288	async def send_with_retry(payload: dict, webhook_url: str, max_retries: int = 2) -> bool:
+   289	    """Send message with retry (async-friendly). Follows bark/wecom pattern."""
+   290	    for attempt in range(max_retries + 1):
+   291	        try:
+   292	            ok = await asyncio.to_thread(send_message, payload, webhook_url)
+   293	            if ok:
+   294	                return True
+   295	        except Exception as exc:
+   296	            logger.warning("[feishu-wh] attempt %d failed: %s", attempt + 1, exc)
+   297	        if attempt < max_retries:
+   298	            await asyncio.sleep(15)
+   299	    return False
+   300	
+   301	
+   302	async def send_report_notification(
+   303	    symbol: str,
+   304	    trade_date: str,
+   305	    webhook_url: str,
+   306	    *,
+   307	    action_label: str | None = None,
+   308	    direction: str | None = None,
+   309	    execution_action: str | None = None,
+   310	    confidence: int | None = None,
+   311	    summary: str | None = None,
+   312	    risk_items: list[dict] | None = None,
+   313	    target_price: float | None = None,
+   314	    stop_loss_price: float | None = None,
+   315	) -> bool:
+
+exec
+/bin/zsh -lc "sed -n '80,135p' api/services/wecom_notification_service.py && sed -n '180,220p' api/services/bark_notification_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    normalized = str(webhook_url or "").strip()
+    if not normalized:
+        raise ValueError("企业微信 Webhook 不能为空")
+
+    if not normalized.startswith("http"):
+        if not all(char.isalnum() or char == "-" for char in normalized):
+            raise ValueError("企业微信 Webhook key 格式不正确")
+        return f"https://{_WECOM_WEBHOOK_HOST}{_WECOM_WEBHOOK_PATH}?key={normalized}"
+
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https":
+        raise ValueError("企业微信 Webhook 必须使用 HTTPS")
+    if parsed.netloc != _WECOM_WEBHOOK_HOST or parsed.path != _WECOM_WEBHOOK_PATH:
+        raise ValueError("仅支持企业微信机器人的官方 Webhook 地址")
+    if parsed.params or parsed.fragment:
+        raise ValueError("企业微信 Webhook 地址格式不正确")
+
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    if set(query.keys()) != {"key"}:
+        raise ValueError("企业微信 Webhook 地址必须仅包含 key 参数")
+    keys = query.get("key") or []
+    if len(keys) != 1:
+        raise ValueError("企业微信 Webhook 地址格式不正确")
+    key = keys[0].strip()
+    if not key or not all(char.isalnum() or char == "-" for char in key):
+        raise ValueError("企业微信 Webhook key 格式不正确")
+
+    return f"https://{_WECOM_WEBHOOK_HOST}{_WECOM_WEBHOOK_PATH}?{urlencode({'key': key})}"
+
+
+def send_message(content: str, webhook_url: str) -> bool:
+    if not webhook_url:
+        return False
+    payload = {
+        "msgtype": "text",
+        "text": {"content": content},
+    }
+    url = normalize_webhook_url(webhook_url)
+    response = requests.post(
+        url,
+        data=json.dumps(payload),
+        headers={"Content-Type": "application/json;charset=utf-8"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    try:
+        body = response.json()
+    except Exception:
+        logger.warning(
+            "[wecom] non-JSON response body=%s",
+            _clip_text(getattr(response, "text", None), 240),
+        )
+        return False
+    return int(body.get("errcode", -1)) == 0
+
+
+    # Trigger/price: keep concise complete conditions such as "站稳年线".
+    trigger = _extract_trigger_phrase(text)
+    if trigger:
+        lines.append(f"触发：{trigger}")
+
+    # Event risk: only if it adds new info not already in other lines
+    event_risk = _extract_phrase(text, "事件风险") or _extract_phrase(text, "风险")
+    if event_risk and len(event_risk) >= 8:
+        # Deduplicate against existing lines
+        if not any(event_risk in line for line in lines):
+            lines.append(f"风险：{event_risk}")
+
+    return lines[:4]
+
+
+def normalize_bark_url(value: str) -> str:
+    """Normalize a Bark device key or endpoint URL to a HTTPS endpoint."""
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError("Bark 地址不能为空")
+
+    if not normalized.startswith(("http://", "https://")):
+        if not all(char.isalnum() or char in "-_" for char in normalized):
+            raise ValueError("Bark 设备 Key 格式不正确")
+        return f"https://{_BARK_OFFICIAL_HOST}/{normalized}"
+
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https":
+        raise ValueError("Bark 地址必须使用 HTTPS")
+    if not parsed.netloc:
+        raise ValueError("Bark 地址格式不正确")
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not path_parts:
+        raise ValueError("Bark 地址缺少设备 Key")
+    if parsed.params or parsed.fragment:
+        raise ValueError("Bark 地址格式不正确")
+    key = path_parts[0]
+    if not all(char.isalnum() or char in "-_" for char in key):
+        raise ValueError("Bark 设备 Key 格式不正确")
+    return f"https://{parsed.netloc}/{key}"
+
+
+exec
+/bin/zsh -lc 'grep -n "SCHEDULER_CONCURRENCY" -n scheduler/main.py && grep -n "NotificationLogDB" -n api/database.py | head' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+69:SCHEDULER_CONCURRENCY = _env_int("SCHEDULER_CONCURRENCY", 1)
+135:        _semaphore = asyncio.Semaphore(SCHEDULER_CONCURRENCY)
+137:    if SCHEDULER_CONCURRENCY <= 0:
+555:            os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", str(max(64, SCHEDULER_CONCURRENCY * 16)))
+570:    _semaphore = asyncio.Semaphore(SCHEDULER_CONCURRENCY)
+577:            SCHEDULER_CONCURRENCY,
+584:    _executor = ThreadPoolExecutor(max_workers=SCHEDULER_CONCURRENCY + 2)
+632:class NotificationLogDB(Base):
+
+exec
+/bin/zsh -lc "nl -ba api/services/notification_confirmation_service.py | sed -n '52,72p' && nl -ba api/services/notification_confirmation_service.py | sed -n '76,90p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    52	def generate_pending(
+    53	    db: Session,
+    54	    user_id: str,
+    55	    *,
+    56	    channel: str = CHANNEL_FEISHU,
+    57	    force_refresh: bool = False,
+    58	    now: datetime | None = None,
+    59	) -> dict[str, Any]:
+    60	    """Generate notification drafts and save as pending confirmation.
+    61	
+    62	    Returns:
+    63	        dict with ``generated_count``, ``skipped_count``, ``pending_items``.
+    64	    """
+    65	    now = now or datetime.now()
+    66	    dry_run = build_notification_dry_run(
+    67	        db, user_id, force_refresh=force_refresh, now=now,
+    68	    )
+    69	
+    70	    generated = 0
+    71	    skipped = 0
+    72	
+    76	            symbol = draft.get("symbol", "")
+    77	            event_type = draft.get("event_type", "")
+    78	            # Skip if already pending for same (user, symbol, event_type)
+    79	            existing = (
+    80	                db.query(NotificationLogDB)
+    81	                .filter(
+    82	                    NotificationLogDB.user_id == user_id,
+    83	                    NotificationLogDB.symbol == symbol,
+    84	                    NotificationLogDB.event_type == event_type,
+    85	                    NotificationLogDB.status == STATUS_PENDING,
+    86	                )
+    87	                .first()
+    88	            )
+    89	            if existing:
+    90	                skipped += 1
+
+2026-07-22T22:15:34.019018Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+codex
+The new Feishu send path can leak webhook tokens on common HTTP failure paths, and the exposed channel parameter can create records that are later sent through the wrong backend. These are functional/security issues that should be fixed before accepting the patch.
+
+Full review comments:
+
+- [P1] Avoid leaking webhook tokens on send failures — /Users/maybee/TradingAgents-AShare/api/services/feishu_webhook_service.py:271-271
+  When Feishu returns a non-2xx response, `raise_for_status()` raises a `requests` exception whose string includes the full webhook URL; the new retry/confirmation paths log or store that exception text, so a bad webhook or transient HTTP failure can put the bot token into logs or `notification_logs.error`. Handle request failures here with a sanitized/generic error or masked URL before callers persist/log it.
+
+- [P2] Reject unsupported notification channels — /Users/maybee/TradingAgents-AShare/api/services/notification_confirmation_service.py:56-56
+  Because the public generate endpoint accepts an arbitrary `channel`, a caller can create rows marked `bark`, `wecom`, etc., but confirmation still always reads `FEISHU_WEBHOOK_URL` and sends through the Feishu sender. In that scenario the row either fails due to Feishu being disabled or is delivered to the wrong channel, so this should be constrained to `feishu` until other channel senders are wired.
+The new Feishu send path can leak webhook tokens on common HTTP failure paths, and the exposed channel parameter can create records that are later sent through the wrong backend. These are functional/security issues that should be fixed before accepting the patch.
+
+Full review comments:
+
+- [P1] Avoid leaking webhook tokens on send failures — /Users/maybee/TradingAgents-AShare/api/services/feishu_webhook_service.py:271-271
+  When Feishu returns a non-2xx response, `raise_for_status()` raises a `requests` exception whose string includes the full webhook URL; the new retry/confirmation paths log or store that exception text, so a bad webhook or transient HTTP failure can put the bot token into logs or `notification_logs.error`. Handle request failures here with a sanitized/generic error or masked URL before callers persist/log it.
+
+- [P2] Reject unsupported notification channels — /Users/maybee/TradingAgents-AShare/api/services/notification_confirmation_service.py:56-56
+  Because the public generate endpoint accepts an arbitrary `channel`, a caller can create rows marked `bark`, `wecom`, etc., but confirmation still always reads `FEISHU_WEBHOOK_URL` and sends through the Feishu sender. In that scenario the row either fails due to Feishu being disabled or is delivered to the wrong channel, so this should be constrained to `feishu` until other channel senders are wired.

@@ -250,6 +250,34 @@ async def _send_openclaw_callback(
         logger.warning(f"[Scheduler] OpenClaw callback failed for {symbol}: {e}")
 
 
+# [M-010] feishu_notification_confirmation
+async def _send_feishu_notification_draft(
+    user_id: str, report_id: str, symbol: str
+) -> None:
+    """Auto-generate pending feishu notification drafts after scheduled analysis.
+
+    Unlike email/WeCom which send immediately, feishu notifications are stored
+    as 'pending_confirmation' for human review before sending.
+    """
+    try:
+        from api.services.feishu_webhook_service import is_feishu_webhook_enabled
+        from api.services.notification_confirmation_service import generate_pending
+
+        if not is_feishu_webhook_enabled():
+            return
+
+        def _generate():
+            with get_db_ctx() as db:
+                return generate_pending(db, user_id, channel="feishu")
+
+        result = await asyncio.to_thread(_generate)
+        generated = result.get("generated_count", 0)
+        if generated > 0:
+            _log(f"[Scheduler] Generated {generated} feishu notification draft(s) for {symbol}")
+    except Exception as e:
+        logger.warning(f"[Scheduler] Feishu notification draft failed for {symbol}: {e}")
+
+
 # ── Single scheduled analysis execution ──────────────────────────────────────
 
 async def _run_scheduled_analysis_once(
@@ -322,6 +350,9 @@ async def _run_scheduled_analysis_once(
             user_id, job_id, symbol, actual_trade_date, horizon,
             "scheduled" if mark_schedule_run else "scheduled_manual",
         )
+
+        # [M-010] Feishu webhook: auto-generate pending notification drafts
+        await _send_feishu_notification_draft(user_id, job_id, symbol)
     except Exception as e:
         logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
         try:

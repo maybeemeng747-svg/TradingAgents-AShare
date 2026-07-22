@@ -39,11 +39,13 @@ from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.orm import Session
 import pandas as pd
 
-from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
+from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, NotificationLogDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
 from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
 from api.services import feishu_export_service  # [B-003] feishu_doc_export
 from api.services import holdings_sync_service  # [B-004] holdings_sync
+from api.services import feishu_webhook_service  # [M-010] feishu_webhook_notification
+from api.services import notification_confirmation_service  # [M-010] feishu_notification_confirmation
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -5146,6 +5148,113 @@ def post_briefing_payload_dry_run(
         scene=body.scene,
         tf_db_path=body.tf_db_path,
     )
+
+
+# [M-010] feishu_notification_confirmation
+class NotificationGenerateRequest(BaseModel):
+    channel: str = "feishu"
+    force_refresh: bool = False
+
+
+@app.post("/v1/notifications/generate")
+def post_notification_generate(
+    body: NotificationGenerateRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """生成通知草稿并存入待确认队列（M-010 人工确认版）.
+
+    从 notification_draft 引擎生成草稿，存入 notification_logs 表，
+    状态为 pending_confirmation。用户后续通过 confirm 接口确认发送。
+    runtime_tier=FAST_RADAR（不触发 LLM）。
+    """
+    return notification_confirmation_service.generate_pending(
+        db, current_user.id,
+        channel=body.channel,
+        force_refresh=body.force_refresh,
+    )
+
+
+@app.get("/v1/notifications/pending")
+def get_notifications_pending(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """获取待确认通知队列（M-010）."""
+    return notification_confirmation_service.list_pending(db, current_user.id)
+
+
+@app.get("/v1/notifications/log")
+def get_notifications_log(
+    status: str | None = Query(None, description="按状态筛选"),
+    limit: int = Query(100, ge=1, le=500),
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """获取通知历史日志（M-010）."""
+    return notification_confirmation_service.list_log(
+        db, current_user.id, status=status, limit=limit,
+    )
+
+
+class NotificationActionRequest(BaseModel):
+    pass
+
+
+@app.post("/v1/notifications/{notification_id}/confirm")
+def post_notification_confirm(
+    notification_id: str,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """确认单条通知并通过飞书 webhook 发送（M-010）."""
+    return notification_confirmation_service.confirm_and_send(
+        db, notification_id, current_user.id,
+    )
+
+
+@app.post("/v1/notifications/{notification_id}/dismiss")
+def post_notification_dismiss(
+    notification_id: str,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """拒绝单条通知，不再发送（M-010）."""
+    return notification_confirmation_service.dismiss(
+        db, notification_id, current_user.id,
+    )
+
+
+@app.post("/v1/notifications/confirm-all")
+def post_notification_confirm_all(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """批量确认所有待发送通知（M-010）."""
+    return notification_confirmation_service.confirm_all_pending(
+        db, current_user.id,
+    )
+
+
+@app.post("/v1/config/feishu/warmup")
+def post_feishu_webhook_warmup(
+    current_user: UserDB = Depends(_require_web_user),
+    db: Session = Depends(get_db),
+):
+    """测试飞书 Webhook 连通性（M-010）."""
+    webhook_url = feishu_webhook_service.get_feishu_webhook_url()
+    if not webhook_url:
+        return {"success": False, "error": "飞书 Webhook 未配置 (FEISHU_WEBHOOK_URL)"}
+    import asyncio as _asyncio
+    try:
+        ok = _asyncio.get_event_loop().run_until_complete(
+            feishu_webhook_service.send_warmup(webhook_url)
+        )
+    except RuntimeError:
+        ok = _asyncio.run(feishu_webhook_service.send_warmup(webhook_url))
+    if ok:
+        return {"success": True, "message": "飞书 Webhook 连通测试成功"}
+    return {"success": False, "error": "飞书 Webhook 发送失败，请检查 URL 配置"}
 
 
 # [KB-020] research_evidence_api

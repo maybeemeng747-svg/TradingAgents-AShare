@@ -627,3 +627,28 @@ class ImportedPortfolioPositionDB(Base):
     __table_args__ = (
         UniqueConstraint('user_id', 'source', 'symbol', name='uq_imported_portfolio_user_source_symbol'),
     )
+
+
+class NotificationLogDB(Base):
+    # [M-010] feishu_notification_confirmation
+    """Notification event log and confirmation queue."""
+    __tablename__ = "notification_logs"
+
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(64), index=True, nullable=False)
+    channel = Column(String(20), nullable=False)  # feishu / bark / wecom / email
+    event_type = Column(String(80), nullable=False)
+    priority = Column(String(4), nullable=False)  # P0 / P1 / P2 / P3
+    symbol = Column(String(20), nullable=True)
+    name = Column(String(80), nullable=True)
+    title = Column(String(200), nullable=False)
+    reason = Column(Text, nullable=True)
+    status = Column(String(24), default="pending_confirmation", index=True)
+    # pending_confirmation / confirmed / sending / sent / failed / dismissed
+    payload = Column(JSON, nullable=True)
+    webhook_url_masked = Column(String(200), nullable=True)
+    error = Column(Text, nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

@@ -1,5 +1,91 @@
 # 修改日志
 
+## 2026-07-23 | M-010 飞书/通知链路人工确认版
+
+- **任务**：M-010 — 把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发（P2）
+- **状态**：✅ 实现完成；69 项专项测试 passed，通知相关回归 155 passed，API 导入正常
+- **代码标注**：`# [M-010] feishu_webhook_notification` / `# [M-010] feishu_notification_confirmation`
+
+### 改动
+
+- **`api/services/feishu_webhook_service.py`**（新增）
+  - 飞书 Incoming Webhook 机器人消息推送 service
+  - `normalize_webhook_url()`：支持完整 URL 和 token-only 两种输入格式，自动 http→https 升级
+  - `mask_webhook_url()`：安全日志输出（隐藏 token）
+  - `build_card_message()` / `build_text_message()`：飞书消息卡片 / 纯文本构建
+  - `build_report_card()`：从 ReportDB 字段构建分析报告卡片（含动作、方向、价位、风险提示）
+  - `build_draft_card()`：从通知草稿列表构建确认队列卡片
+  - `send_message()` / `send_with_retry()`：同步发送 + 异步重试（最多 2 次，间隔 15s）
+  - `send_report_notification()` / `send_draft_notification()` / `send_warmup()`：高层便捷入口
+  - 环境变量：`FEISHU_WEBHOOK_URL`（必填）、`FEISHU_WEBHOOK_ENABLED`（默认 true）
+  - 设计契约：不读取/打印 webhook secret，不写 DB，不调 LLM，不改 prompts
+
+- **`api/services/notification_confirmation_service.py`**（新增）
+  - 通知确认队列管理 service — 人工确认后才真正发送飞书
+  - `generate_pending()`：从 notification_draft 引擎生成草稿，存入 notification_logs 表（状态 pending_confirmation），同 (user, symbol, event_type) 去重
+  - `list_pending()`：按优先级排序返回待确认队列
+  - `list_log()`：通知历史日志（支持 status 筛选）
+  - `confirm_and_send()`：确认单条 → 调用 feishu_webhook_service 发送 → 更新状态为 sent/failed
+  - `dismiss()`：拒绝单条，不再发送
+  - `confirm_all_pending()`：批量确认并发送，返回 sent/failed 统计
+  - `_do_send()`：内部发送逻辑，使用 build_draft_card 构建消息卡片
+  - 状态机：pending_confirmation → confirmed → sending → sent/failed；failed 可重试
+  - 设计契约：webhook URL 只存 masked 版本，不暴露明文
+
+- **`api/database.py`**（修改）
+  - 新增 `NotificationLogDB` 模型：通知事件日志与确认队列表
+  - 字段：id / user_id / channel / event_type / priority / symbol / name / title / reason / status / payload / webhook_url_masked / error / confirmed_at / sent_at / created_at / updated_at
+  - 自动建表：`init_db()` → `Base.metadata.create_all()` 已包含
+
+- **`api/main.py`**（修改）
+  - 新增 7 个 API 端点：
+    - `POST /v1/notifications/generate`：生成通知草稿并存入待确认队列
+    - `GET /v1/notifications/pending`：获取待确认通知队列
+    - `GET /v1/notifications/log`：获取通知历史日志（支持 status/limit 查询参数）
+    - `POST /v1/notifications/{id}/confirm`：确认单条通知并通过飞书 webhook 发送
+    - `POST /v1/notifications/{id}/dismiss`：拒绝单条通知
+    - `POST /v1/notifications/confirm-all`：批量确认所有待发送通知
+    - `POST /v1/config/feishu/warmup`：测试飞书 Webhook 连通性
+  - 新增导入：`NotificationLogDB`、`feishu_webhook_service`、`notification_confirmation_service`
+
+- **`scheduler/main.py`**（修改）
+  - 新增 `_send_feishu_notification_draft()`：定时分析完成后自动生成待确认飞书通知草稿
+  - 在 `_run_scheduled_analysis_once()` 中集成：email/WeCom → OpenClaw → 飞书草稿（fire-and-forget）
+  - 仅当 `FEISHU_WEBHOOK_ENABLED=true` 且 `FEISHU_WEBHOOK_URL` 已配置时触发
+
+### 设计要点
+
+- **人工确认优先**：所有飞书通知先存为 pending_confirmation，用户通过 API 确认后才真正发送
+- **卡片消息**：使用飞书 interactive card 格式（含 header/elements），支持红涨绿跌颜色语义
+- **去噪复用**：generate_pending 复用 notification_draft_service 的 30 分钟去噪器
+- **失败可重试**：failed 状态的通知可以重新 confirm（状态机允许 failed → confirmed）
+- **批量操作**：confirm-all 一键确认所有待发送，逐条发送并报告成功/失败统计
+- **安全**：webhook URL 只存 masked 版本到 DB，不暴露明文；不读取/打印 API secret
+
+### 测试
+
+- `tests/test_m010_feishu_webhook.py`（新增）— **41 tests passed**
+  - 覆盖 10 个测试类：URL 规范化（9）、URL 掩码（5）、卡片消息构建（14）、环境变量（5）、HTTP 发送（4）、异步重试（2）、常量导出（1）
+- `tests/test_m010_notification_confirmation.py`（新增）— **28 tests passed**
+  - 覆盖 10 个测试类：生成草稿（5）、待确认列表（4）、历史日志（2）、确认发送（4）、拒绝（3）、批量确认（3）、内部发送（4）、日志序列化（1）、状态常量（1）、导出（1）
+
+### 回归
+
+- `pytest tests/test_b002_openclaw_callback.py tests/test_b003_feishu_export.py tests/test_notify002_mandate_data_blockers.py tests/test_notify003_noise_replay.py -q`：**155 passed**
+- `py_compile` 全部修改文件通过
+- `from api.main import app` 导入正常，7 个 M-010 路由已注册
+
+### 环境变量
+
+- `FEISHU_WEBHOOK_URL`：飞书群机器人 webhook 地址（必填）
+- `FEISHU_WEBHOOK_ENABLED`：是否启用（默认 true）
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-23 | M-009 TradeFlow 前端观察池面板
 
 - **任务**：M-009 — 在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA（P2）
@@ -14507,3 +14593,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/M-009-20260723-round1.txt
 - **Run archive**: docs/task_runs/M-009-20260723-055136/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-010 - 飞书/通知链路人工确认版（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/M-010-20260723-round1.txt
+- **Run archive**: docs/task_runs/M-010-20260723-060142/
