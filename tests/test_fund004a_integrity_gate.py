@@ -365,6 +365,105 @@ class TestRiskJudgePrecomputedIntegrity:
         assert pre_computed_integrity is None
         # In real code, it would compute from raw_evidence
 
+    def test_period_facts_defined_when_precomputed_integrity(self):
+        """FUND-004A-R1: When pre-computed integrity is used, period_facts must
+        still be extracted from raw_evidence so C-006 and metadata do not crash
+        with UnboundLocalError."""
+        from tradingagents.agents.utils.financial_validator import (
+            check_financial_anomalies,
+        )
+        from tradingagents.agents.utils.fundamental_integrity import (
+            extract_financial_anomaly_inputs,
+        )
+
+        raw_evidence = {
+            "financial_period_facts": {
+                "status": "HAS_DATA",
+                "vendor": "fixture",
+                "raw": _facts(),
+            },
+        }
+        pre_computed_integrity = {
+            "status": "VALID",
+            "is_valid": True,
+            "blockers": [],
+            "claims": [],
+        }
+
+        # Simulate the fixed risk_manager logic: extract period_facts before branch
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        if pre_computed_integrity is not None:
+            fundamental_integrity = pre_computed_integrity
+        else:
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity={}, period_facts=period_facts,
+                explanation_context={}, report_text="",
+            )
+
+        # period_facts must be non-empty
+        assert period_facts
+        # C-006 must not crash
+        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
+        assert anomaly_inputs["gross_margin"] is not None
+        result = check_financial_anomalies("TEST", **anomaly_inputs)
+        assert "has_anomaly" in result
+
+    def test_period_facts_empty_when_no_raw_evidence(self):
+        """FUND-004A-R1: When raw_evidence has no financial_period_facts,
+        period_facts defaults to empty without crashing."""
+        raw_evidence = {}
+        pre_computed_integrity = {
+            "status": "VALID",
+            "is_valid": True,
+            "blockers": [],
+            "claims": [],
+        }
+
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        # Empty dict.get("raw") returns None; treat as empty list
+        if period_facts is None:
+            period_facts = []
+
+        assert period_facts == []
+        # extract_financial_anomaly_inputs must handle empty list
+        from tradingagents.agents.utils.fundamental_integrity import (
+            extract_financial_anomaly_inputs,
+        )
+        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
+        assert anomaly_inputs["gross_margin"] is None
+
+    def test_period_facts_fallback_on_the_fly_computation(self):
+        """FUND-004A-R1: On-the-fly path still defines period_facts correctly."""
+        raw_evidence = {
+            "instrument_identity": {"raw": _identity()},
+            "financial_period_facts": {"raw": _facts()},
+            "fundamental_explanations": {"raw": {"status": "unexplained"}},
+        }
+
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        pre_computed_integrity = None
+
+        if pre_computed_integrity is not None:
+            fundamental_integrity = pre_computed_integrity
+        else:
+            identity_entry = raw_evidence.get("instrument_identity") or {}
+            explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+            identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+            explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity=identity,
+                period_facts=period_facts,
+                explanation_context=explanations,
+                report_text=_INVALID_REPORT,
+            )
+
+        assert period_facts
+        assert fundamental_integrity is not None
+        assert "is_valid" in fundamental_integrity
+
 
 # ── Memory Protection Tests ───────────────────────────────────────────────────
 

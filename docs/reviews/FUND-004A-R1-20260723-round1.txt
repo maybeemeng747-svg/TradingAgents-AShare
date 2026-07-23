@@ -1,0 +1,2757 @@
+Task: FUND-004A-R1 - 预计算 integrity 路径初始化 period_facts（P0）
+Date: 2026-07-23_18:55:58
+Codex exit code: 0
+Round: 1
+---
+2026-07-23T10:54:06.318627Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8e9c-8501-7740-bd85-2ec3e176e0aa
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M tests/test_fund004a_integrity_gate.py
+ M tradingagents/agents/managers/risk_manager.py
+?? docs/task_runs/FUND-004A-R1-20260723-185024/
+/Users/maybee/TradingAgents-AShare
+ docs/DEVLOG.md                                | 35 ++++++++++
+ tests/test_fund004a_integrity_gate.py         | 99 +++++++++++++++++++++++++++
+ tradingagents/agents/managers/risk_manager.py |  9 ++-
+ 3 files changed, 141 insertions(+), 2 deletions(-)
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/agents/managers/risk_manager.py tests/test_fund004a_integrity_gate.py docs/DEVLOG.md && find docs/task_runs/FUND-004A-R1-20260723-185024 -maxdepth 2 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 68df839..4a3cebf 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,40 @@
+ # 修改日志
+ 
++## 2026-07-23 | FUND-004A-R1 预计算 integrity 路径初始化 period_facts
++
++- **任务**：FUND-004A-R1 — 补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`（P0）
++- **状态**：✅ 实现完成；23 项 FUND-004A 测试 passed，FUND/C-006 回归 168 passed
++- **代码标注**：`# [FUND-004A-R1]`（已有 `# [FUND-004A]` 标注）
++
++### 改动
++
++- **`tradingagents/agents/managers/risk_manager.py`**（修改）
++  - 原代码中 `period_facts` 仅在 `else`（现场计算）分支定义，当 `pre_computed_integrity` 非 None 时直接赋值后跳过 `else`，导致后续 `extract_financial_anomaly_inputs(period_facts)` 和 metadata 写入触发 `UnboundLocalError`
++  - 修复：将 `period_entry` / `period_facts` 提取移到 `if/else` 分支之前，两条路径均可使用
++
++- **`tests/test_fund004a_integrity_gate.py`**（修改）
++  - 新增 3 项 FUND-004A-R1 对抗测试：
++    - `test_period_facts_defined_when_precomputed_integrity`：预计算路径下 period_facts 仍从 raw_evidence 提取，C-006 不崩溃
++    - `test_period_facts_empty_when_no_raw_evidence`：raw_evidence 为空时 period_facts 安全降级为空
++    - `test_period_facts_fallback_on_the_fly_computation`：现场计算路径 period_facts 正确定义
++
++### 设计要点
++
++- **最小改动**：仅移动两行提取语句，不改变任何逻辑分支或数据流
++- **两条路径一致**：无论 integrity 来自预计算还是现场计算，`period_facts` 始终从 `raw_evidence` 提取，保证 C-006 和 metadata 一致可用
++- **空数据安全**：`raw_evidence` 缺失或不含 `financial_period_facts` 时，`period_facts` 为 `[]` 或 `None`，`extract_financial_anomaly_inputs` 均可处理
++
++### 回归
++
++- `pytest tests/test_fund004a_integrity_gate.py -v`：**23 passed**
++- `pytest tests/test_fund003_fund004_integrity.py tests/test_fund006_integrity_replay.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -v`：**168 passed**
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-23 | 夜间自动开发批次续排
+ 
+ - FUND-004B-R1 已由人工复核闭环，今晚领取起点调整为 `FUND-004A-R1`。
+diff --git a/tests/test_fund004a_integrity_gate.py b/tests/test_fund004a_integrity_gate.py
+index 51b3b5c..7354331 100644
+--- a/tests/test_fund004a_integrity_gate.py
++++ b/tests/test_fund004a_integrity_gate.py
+@@ -365,6 +365,105 @@ class TestRiskJudgePrecomputedIntegrity:
+         assert pre_computed_integrity is None
+         # In real code, it would compute from raw_evidence
+ 
++    def test_period_facts_defined_when_precomputed_integrity(self):
++        """FUND-004A-R1: When pre-computed integrity is used, period_facts must
++        still be extracted from raw_evidence so C-006 and metadata do not crash
++        with UnboundLocalError."""
++        from tradingagents.agents.utils.financial_validator import (
++            check_financial_anomalies,
++        )
++        from tradingagents.agents.utils.fundamental_integrity import (
++            extract_financial_anomaly_inputs,
++        )
++
++        raw_evidence = {
++            "financial_period_facts": {
++                "status": "HAS_DATA",
++                "vendor": "fixture",
++                "raw": _facts(),
++            },
++        }
++        pre_computed_integrity = {
++            "status": "VALID",
++            "is_valid": True,
++            "blockers": [],
++            "claims": [],
++        }
++
++        # Simulate the fixed risk_manager logic: extract period_facts before branch
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++        if pre_computed_integrity is not None:
++            fundamental_integrity = pre_computed_integrity
++        else:
++            fundamental_integrity = evaluate_fundamental_integrity(
++                identity={}, period_facts=period_facts,
++                explanation_context={}, report_text="",
++            )
++
++        # period_facts must be non-empty
++        assert period_facts
++        # C-006 must not crash
++        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
++        assert anomaly_inputs["gross_margin"] is not None
++        result = check_financial_anomalies("TEST", **anomaly_inputs)
++        assert "has_anomaly" in result
++
++    def test_period_facts_empty_when_no_raw_evidence(self):
++        """FUND-004A-R1: When raw_evidence has no financial_period_facts,
++        period_facts defaults to empty without crashing."""
++        raw_evidence = {}
++        pre_computed_integrity = {
++            "status": "VALID",
++            "is_valid": True,
++            "blockers": [],
++            "claims": [],
++        }
++
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++        # Empty dict.get("raw") returns None; treat as empty list
++        if period_facts is None:
++            period_facts = []
++
++        assert period_facts == []
++        # extract_financial_anomaly_inputs must handle empty list
++        from tradingagents.agents.utils.fundamental_integrity import (
++            extract_financial_anomaly_inputs,
++        )
++        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
++        assert anomaly_inputs["gross_margin"] is None
++
++    def test_period_facts_fallback_on_the_fly_computation(self):
++        """FUND-004A-R1: On-the-fly path still defines period_facts correctly."""
++        raw_evidence = {
++            "instrument_identity": {"raw": _identity()},
++            "financial_period_facts": {"raw": _facts()},
++            "fundamental_explanations": {"raw": {"status": "unexplained"}},
++        }
++
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++        pre_computed_integrity = None
++
++        if pre_computed_integrity is not None:
++            fundamental_integrity = pre_computed_integrity
++        else:
++            identity_entry = raw_evidence.get("instrument_identity") or {}
++            explanation_entry = raw_evidence.get("fundamental_explanations") or {}
++            identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
++            explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
++            fundamental_integrity = evaluate_fundamental_integrity(
++                identity=identity,
++                period_facts=period_facts,
++                explanation_context=explanations,
++                report_text=_INVALID_REPORT,
++            )
++
++        assert period_facts
++        assert fundamental_integrity is not None
++        assert "is_valid" in fundamental_integrity
++
+ 
+ # ── Memory Protection Tests ───────────────────────────────────────────────────
+ 
+diff --git a/tradingagents/agents/managers/risk_manager.py b/tradingagents/agents/managers/risk_manager.py
+index 91615f8..118b7b1 100644
+--- a/tradingagents/agents/managers/risk_manager.py
++++ b/tradingagents/agents/managers/risk_manager.py
+@@ -163,14 +163,19 @@ def create_risk_manager(llm, memory):
+         # [FUND-004A] Use pre-computed integrity from gate node if available,
+         # otherwise compute here (fallback for runs without the gate node).
+         pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
++        # [FUND-004A-R1] Always extract period_facts so it is defined for C-006
++        # (line ~191) and metadata (line ~523), regardless of whether integrity
++        # was pre-computed or computed on-the-fly. Previously this lived inside
++        # the `else` branch below, so when pre_computed_integrity was present,
++        # period_facts was never bound and the C-006 call raised UnboundLocalError.
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+         if pre_computed_integrity is not None:
+             fundamental_integrity = pre_computed_integrity
+         else:
+             identity_entry = raw_evidence.get("instrument_identity") or {}
+-            period_entry = raw_evidence.get("financial_period_facts") or {}
+             explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+             identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+-            period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+             explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+             fundamental_integrity = evaluate_fundamental_integrity(
+                 identity=identity,
+docs/task_runs/FUND-004A-R1-20260723-185024/tests-round1.txt
+## pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 32.35s
+
+Exit code: 0
+docs/task_runs/FUND-004A-R1-20260723-185024/codegraph-status.json
+{
+  "task_id": "FUND-004A-R1",
+  "generated_at": "2026-07-23T18:50:25.312486",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-07-23T18:54:05.101866",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "tests/test_fund004a_integrity_gate.py",
+    "tradingagents/agents/managers/risk_manager.py"
+  ]
+}docs/task_runs/FUND-004A-R1-20260723-185024/prompt-round1.md
+# Task: FUND-004A-R1: 预计算 integrity 路径初始化 period_facts（P0）
+
+Read task "FUND-004A-R1" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Do not update task status or release downstream tasks in docs/TASKS.md;
+  the outer script owns all task state transitions after review
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/FUND-004A-R1-20260723-185024/codegraph-context.txt
+# CodeGraph Context for FUND-004A-R1
+# Task: 预计算 integrity 路径初始化 period_facts（P0）
+# Generated: 2026-07-23T18:50:25.539569
+# Keywords: fund, 004a, r1, 预计算, integrity, 路径初始化, period_facts（p0）
+
+## Code Context
+
+**Query:** fund 004a r1 预计算 integrity 路径初始化 period_facts（p0）
+
+### Entry Points
+
+- **FundFlowAnomalyResult** (class) - tradingagents/tradeflow/fund_flow_anomaly.py:67
+- **fundamentals_analyst_node** (function) - tradingagents/agents/analysts/fundamentals_analyst.py:19
+  `(state)`
+- **create_fundamentals_analyst** (function) - tradingagents/agents/analysts/fundamentals_analyst.py:12
+  `(llm, data_collector=None)`
+
+### Related Symbols
+
+- tradingagents/tradeflow/fund_flow_anomaly.py: detect_fund_flow_anomaly:358
+- tradingagents/dataflows/config.py: get_config:23
+- tradingagents/prompts/catalog.py: get_prompt:24
+- tradingagents/graph/intent_parser.py: build_horizon_context:185
+- tradingagents/agents/utils/context_utils.py: build_prompt_context_block:226
+- tradingagents/agents/analysts/fundamentals_analyst.py: _safe:13
+- tests/test_g008_valuation_sanity.py: astream:98
+- api/main.py: _emit_token:1553
+- tradingagents/agents/utils/data_consistency.py: append_financial_consistency_warnings:73
+- tradingagents/agents/utils/agent_states.py: extract_verdict:18
+
+docs/task_runs/FUND-004A-R1-20260723-185024/opencode-round1.txt
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m
+[0m# [0mTodos
+[•] Read risk_manager.py to find the UnboundLocalError on period_facts in pre-computation branch
+[ ] Fix period_facts initialization in pre-computation path
+[ ] Write/update tests covering pre-computation, on-the-fly, and missing-data paths
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m✱ [0mGlob "**/risk_manager*.py"[90m 1 match[0m
+[0m✱ [0mGrep "period_facts"[90m 84 matches[0m
+[0m→ [0mRead tradingagents/agents/managers/risk_manager.py
+[0m
+[0m# [0mTodos
+[✓] Read risk_manager.py to find the UnboundLocalError on period_facts in pre-computation branch
+[•] Fix period_facts initialization in pre-computation path
+[ ] Write/update tests covering pre-computation, on-the-fly, and missing-data paths
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tests/test_fund004a_integrity_gate.py
+[0m→ [0mRead tradingagents/graph/setup.py[90m [offset=30, limit=40][0m
+[0m✱ [0mGlob "tests/test_fund004*.py"[90m 1 match[0m
+Now let me check the existing test file for the risk manager and the graph setup to understand the full picture:
+[0m
+[0m← [0mEdit tradingagents/agents/managers/risk_manager.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/risk_manager.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/risk_manager.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/managers/risk_manager.py
+@@ -162,16 +162,18 @@
+ # deterministic sidecars, not a model's interpretation of them.
+ # [FUND-004A] Use pre-computed integrity from gate node if available,
+ # otherwise compute here (fallback for runs without the gate node).
+ pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
++# Always extract period_facts so it is defined for C-006 and metadata,
++# regardless of whether integrity was pre-computed or computed on-the-fly.
++period_entry = raw_evidence.get("financial_period_facts") or {}
++period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+ if pre_computed_integrity is not None:
+     fundamental_integrity = pre_computed_integrity
+ else:
+     identity_entry = raw_evidence.get("instrument_identity") or {}
+-    period_entry = raw_evidence.get("financial_period_facts") or {}
+     explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+     identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+-    period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+     explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+     fundamental_integrity = evaluate_fundamental_integrity(
+         identity=identity,
+         period_facts=period_facts,
+
+[0m
+Now I understand the bug. When `pre_computed_integrity` is not None (line 166-167), the code takes that path and `period_facts` is never defined. But it's used later on lines 189 and 521, causing `UnboundLocalError`.
+
+**Fix**: Extract `period_facts` from `raw_evidence` before the branch so it's always available.
+[0m→ [0mRead tradingagents/agents/managers/risk_manager.py[90m [offset=160, limit=40][0m
+Let me verify the edit:
+[0m
+[0m# [0mTodos
+[✓] Read risk_manager.py to find the UnboundLocalError on period_facts in pre-computation branch
+[✓] Fix period_facts initialization in pre-computation path
+[•] Write/update tests covering pre-computation, on-the-fly, and missing-data paths
+[ ] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit tests/test_fund004a_integrity_gate.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund004a_integrity_gate.py
+@@ -364,9 +364,105 @@
+         pre_computed_integrity = state_metadata.get("fundamental_integrity")
+         assert pre_computed_integrity is None
+         # In real code, it would compute from raw_evidence
+ 
++    def test_period_facts_defined_when_precomputed_integrity(self):
++        """FUND-004A-R1: When pre-computed integrity is used, period_facts must
++        still be extracted from raw_evidence so C-006 and metadata do not crash
++        with UnboundLocalError."""
++        from tradingagents.agents.utils.financial_validator import (
++            check_financial_anomalies,
++        )
++        from tradingagents.agents.utils.fundamental_integrity import (
++            extract_financial_anomaly_inputs,
++        )
+ 
++        raw_evidence = {
++            "financial_period_facts": {
++                "status": "HAS_DATA",
++                "vendor": "fixture",
++                "raw": _facts(),
++            },
++        }
++        pre_computed_integrity = {
++            "status": "VALID",
++            "is_valid": True,
++            "blockers": [],
++            "claims": [],
++        }
++
++        # Simulate the fixed risk_manager logic: extract period_facts before branch
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++        if pre_computed_integrity is not None:
++            fundamental_integrity = pre_computed_integrity
++        else:
++            fundamental_integrity = evaluate_fundamental_integrity(
++                identity={}, period_facts=period_facts,
++                explanation_context={}, report_text="",
++            )
++
++        # period_facts must be non-empty
++        assert period_facts
++        # C-006 must not crash
++        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
++        assert "revenue" in anomaly_inputs
++        result = check_financial_anomalies("TEST", **anomaly_inputs)
++        assert "has_anomaly" in result
++
++    def test_period_facts_empty_when_no_raw_evidence(self):
++        """FUND-004A-R1: When raw_evidence has no financial_period_facts,
++        period_facts defaults to [] without crashing."""
++        raw_evidence = {}
++        pre_computed_integrity = {
++            "status": "VALID",
++            "is_valid": True,
++            "blockers": [],
++            "claims": [],
++        }
++
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++
++        assert period_facts == []
++        # extract_financial_anomaly_inputs must handle empty list
++        from tradingagents.agents.utils.fundamental_integrity import (
++            extract_financial_anomaly_inputs,
++        )
++        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
++        assert anomaly_inputs["revenue"] is None
++
++    def test_period_facts_fallback_on_the_fly_computation(self):
++        """FUND-004A-R1: On-the-fly path still defines period_facts correctly."""
++        raw_evidence = {
++            "instrument_identity": {"raw": _identity()},
++            "financial_period_facts": {"raw": _facts()},
++            "fundamental_explanations": {"raw": {"status": "unexplained"}},
++        }
++
++        period_entry = raw_evidence.get("financial_period_facts") or {}
++        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
++        pre_computed_integrity = None
++
++        if pre_computed_integrity is not None:
++            fundamental_integrity = pre_computed_integrity
++        else:
++            identity_entry = raw_evidence.get("instrument_identity") or {}
++            explanation_entry = raw_evidence.get("fundamental_explanations") or {}
++            identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
++            explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
++            fundamental_integrity = evaluate_fundamental_integrity(
++                identity=identity,
++                period_facts=period_facts,
++                explanation_context=explanations,
++                report_text=_INVALID_REPORT,
++            )
++
++        assert period_facts
++        assert fundamental_integrity is not None
++        assert "is_valid" in fundamental_integrity
++
++
+ # ── Memory Protection Tests ───────────────────────────────────────────────────
+ 
+ class TestMemoryProtection:
+     """Test that invalid narratives don't flow into memory."""
+
+[0m
+Now let me add tests that cover the `period_facts` initialization across all three paths. I'll extend the existing `TestRiskJudgePrecomputedIntegrity` class:
+[0m# [0mTodos
+[✓] Read risk_manager.py to find the UnboundLocalError on period_facts in pre-computation branch
+[✓] Fix period_facts initialization in pre-computation path
+[✓] Write/update tests covering pre-computation, on-the-fly, and missing-data paths
+[•] Run tests and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_fund004a_integrity_gate.py -v 2>&1 | tail -40
+else:
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity={}, period_facts=period_facts,
+                explanation_context={}, report_text="",
+            )
+    
+        # period_facts must be non-empty
+        assert period_facts
+        # C-006 must not crash
+        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
+>       assert "revenue" in anomaly_inputs
+E       AssertionError: assert 'revenue' in {'accounts_receivable_growth': None, 'debt_ratio': 75.0, 'debt_ratio_prev': None, 'gross_margin': 40.0, ...}
+
+tests/test_fund004a_integrity_gate.py:408: AssertionError
+_ TestRiskJudgePrecomputedIntegrity.test_period_facts_empty_when_no_raw_evidence _
+
+self = <tests.test_fund004a_integrity_gate.TestRiskJudgePrecomputedIntegrity object at 0x10ee70c80>
+
+    def test_period_facts_empty_when_no_raw_evidence(self):
+        """FUND-004A-R1: When raw_evidence has no financial_period_facts,
+        period_facts defaults to [] without crashing."""
+        raw_evidence = {}
+        pre_computed_integrity = {
+            "status": "VALID",
+            "is_valid": True,
+            "blockers": [],
+            "claims": [],
+        }
+    
+docs/task_runs/FUND-004A-R1-20260723-185024/task.md
+# Auto Dev Task Run
+
+- Task: FUND-004A-R1 - 预计算 integrity 路径初始化 period_facts（P0）
+- Priority: P0
+- Status: CLAIMED
+- Started at: 2026-07-23_18:50:24
+- Git HEAD: 8044a94
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Codex review timeout seconds: 1200
+- OpenCode binary: /opt/homebrew/bin/opencode
+- OpenCode version: 1.15.12
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/FUND-004A-R1-20260723-185024/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-07-23T18:54:05.101891
+# Changed files: 3
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: tests/test_fund004a_integrity_gate.py
+[34mℹ[0m Symbol "tests/test_fund004a_integrity_gate.py" not found
+
+
+## Source: tradingagents/agents/managers/risk_manager.py
+[1m
+Impact of changing "tradingagents/agents/managers/risk_manager.py" — 1 affected symbols:
+[0m
+[36mtradingagents/agents/managers/risk_manager.py[0m
+  [2mfile        [0mrisk_manager.py[2m:1[0m
+
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '1,280p' tradingagents/agents/managers/risk_manager.py && sed -n '280,620p' tradingagents/agents/managers/risk_manager.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import time
+import json
+import logging
+from tradingagents.dataflows.config import get_config
+from tradingagents.prompts import get_prompt
+from tradingagents.agents.utils.agent_states import current_tracker_var
+from tradingagents.agents.utils.context_utils import build_agent_context_view
+from tradingagents.agents.utils.trade_setup import (
+    build_trade_quality_check,
+    format_trade_quality_check,
+)
+from tradingagents.agents.utils.debate_utils import (
+    extract_risk_judge_result,
+    format_claim_subset_for_prompt,
+    format_claims_for_prompt,
+    safe_int,
+)
+from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning, extract_event_risk_inputs
+from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
+from tradingagents.agents.utils.fundamental_integrity import (  # [FUND-004] fundamental_semantic_gate
+    evaluate_fundamental_integrity,
+    extract_financial_anomaly_inputs,
+    format_fundamental_integrity_block,
+)
+from tradingagents.agents.utils.readiness_score import (
+    calculate_data_completeness,
+    calculate_source_coverage,
+    calculate_evidence_coverage,
+    EvidenceStatus,
+    assess_confidence,
+    generate_readiness_score,
+    format_readiness_score,
+    get_position_status,
+    get_strong_action_gate,
+    calculate_risk_level,
+    calculate_buy_level,
+    calculate_opportunity_score,
+    format_execution_block,
+    sanitize_forbidden_strong_actions,
+    infer_evidence_statuses,
+    extract_execution_signals,
+    _split_llm_body_and_system_blocks,
+    ConfidenceLevel,
+    validate_stock_name,
+    check_valuation_mismatch,
+    _sanitize_short_selling_text,
+)
+
+_logger = logging.getLogger(__name__)
+
+_STRONG_BUY_KEYWORDS = [
+    '强买', '重仓买入', '立即买入', '立刻买入', '强烈买入', '满仓买入',
+    '重仓布局', '强力买入',
+    '建议加仓', '执行加仓', '加仓买入', '可以加仓', '应该加仓', '考虑加仓',
+    '建议追涨', '可以追涨', '追涨买入',
+]
+_STRONG_SELL_KEYWORDS = [
+    '立即清仓', '立刻清仓', '强制清仓', '清仓离场', '清仓出局', '全部卖出离场',
+]
+
+
+def create_risk_manager(llm, memory):
+    async def risk_manager_node(state) -> dict:
+        # [C-001] position_validation_gate
+        user_context = state.get('user_context', {})
+
+        company_name = state["company_of_interest"]
+
+        history = state["risk_debate_state"]["history"]
+        risk_debate_state = state["risk_debate_state"]
+        market_research_report = state["market_report"]
+        news_report = state["news_report"]
+        fundamentals_report = state["fundamentals_report"]
+        sentiment_report = state["sentiment_report"]
+        trader_plan = state["trader_investment_plan"]
+        investment_plan = state.get("investment_plan", "")  # research_manager output
+        risk_feedback_state = state.get("risk_feedback_state", {})
+
+        # [P1-2] Detect research_manager bearish direction
+        _research_bearish = _is_direction_bearish(investment_plan)
+
+        curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
+        past_memories = memory.get_memories(curr_situation, n_matches=2)
+
+        past_memory_str = ""
+        for i, rec in enumerate(past_memories, 1):
+            past_memory_str += rec["recommendation"] + "\n\n"
+
+        context_view = build_agent_context_view(state, "risk")
+        claims = risk_debate_state.get("claims", [])
+        unresolved_claim_ids = risk_debate_state.get("unresolved_claim_ids", [])
+        prompt = get_prompt("risk_manager_prompt", config=get_config()).format(
+            trader_plan=trader_plan,
+            past_memory_str=past_memory_str,
+            history=history,
+            market_context_summary=context_view["market_context_summary"],
+            user_context_summary=context_view["user_context_summary"],
+            claims_text=format_claims_for_prompt(claims, empty_message="当前没有已登记风控 claim。"),
+            unresolved_claims_text=format_claim_subset_for_prompt(claims, unresolved_claim_ids),
+            round_summary=risk_debate_state.get("round_summary", "暂无风险轮次摘要。"),
+        )
+
+        # ── 流式输出 ──
+        tracker = current_tracker_var.get()
+        full_content = ""
+        async for chunk in llm.astream(prompt):
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            full_content += content
+            if tracker:
+                tracker.emit_debate_token(
+                    debate="risk", agent="Portfolio Manager",
+                    round_num=-1, token=content,
+                )
+
+        judge_result = extract_risk_judge_result(full_content)
+        cleaned_response = judge_result["cleaned_response"]
+        verdict = judge_result["verdict"]
+        hard_constraints = judge_result["hard_constraints"]
+        soft_constraints = judge_result["soft_constraints"]
+        execution_preconditions = judge_result["execution_preconditions"]
+        de_risk_triggers = judge_result["de_risk_triggers"]
+        revision_reason = judge_result["revision_reason"]
+        trade_quality_check = build_trade_quality_check(
+            investment_plan=state.get("investment_plan", ""),
+            trader_plan=trader_plan,
+            final_decision=cleaned_response,
+            user_context=state.get("user_context", {}),
+        )
+        final_response = cleaned_response + "\n\n" + format_trade_quality_check(trade_quality_check)
+
+        # [C-001] position_validation_gate — 校验输出动作
+        from tradingagents.agents.utils.position_validation_gate import (
+            validate_position_actions,
+            format_position_validation_warning,
+        )
+        gate_result = validate_position_actions(final_response, user_context)
+        if not gate_result["passed"]:
+            final_response += format_position_validation_warning(gate_result)
+
+        # [C-005] delta_check — 检测结论是否翻转
+        stock_code = state.get("ticker", company_name)
+        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+        if delta_info is not None:
+            final_response += format_delta_warning(delta_info)
+            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+
+        # [C-007] event_risk_gate — 检查重大风险事件
+        # Extract raw_evidence early so event_risk_gate can use it
+        raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
+        event_risk_info = check_event_risk(
+            stock_code,
+            raw_evidence=raw_evidence,
+            news_text=news_report or "",
+        )
+        if event_risk_info["has_risk"]:
+            final_response += format_event_risk_warning(event_risk_info)
+            _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
+
+        # [FUND-004] fundamental_semantic_gate — the integrity check consumes
+        # deterministic sidecars, not a model's interpretation of them.
+        # [FUND-004A] Use pre-computed integrity from gate node if available,
+        # otherwise compute here (fallback for runs without the gate node).
+        pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
+        # [FUND-004A-R1] Always extract period_facts so it is defined for C-006
+        # (line ~191) and metadata (line ~523), regardless of whether integrity
+        # was pre-computed or computed on-the-fly. Previously this lived inside
+        # the `else` branch below, so when pre_computed_integrity was present,
+        # period_facts was never bound and the C-006 call raised UnboundLocalError.
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        if pre_computed_integrity is not None:
+            fundamental_integrity = pre_computed_integrity
+        else:
+            identity_entry = raw_evidence.get("instrument_identity") or {}
+            explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+            identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+            explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity=identity,
+                period_facts=period_facts,
+                explanation_context=explanations,
+                report_text=fundamentals_report,
+            )
+        integrity_block = format_fundamental_integrity_block(fundamental_integrity)
+        if integrity_block:
+            final_response += "\n\n" + integrity_block
+
+        # [C-006] financial_validator — pass real structured facts.  Missing
+        # fields remain None; no fabricated zero is supplied to the validator.
+        financial_anomaly_info = check_financial_anomalies(
+            stock_code,
+            **extract_financial_anomaly_inputs(period_facts),
+        )
+        if financial_anomaly_info["has_anomaly"]:
+            final_response += format_financial_anomaly_warning(financial_anomaly_info)
+            _logger.warning("[C-006] financial_validator: %s 检测到异常: %s", stock_code, financial_anomaly_info["anomalies"])
+
+        # [C-008] readiness_score — 生成报告质量评分
+        has_market = bool(market_research_report)
+        has_sentiment = bool(sentiment_report)
+        has_news = bool(news_report)
+        has_fundamentals = bool(fundamentals_report)
+        has_smart_money = bool(state.get("smart_money_report", ""))
+        has_volume_price = bool(state.get("volume_price_report", ""))
+        has_user_context = bool(state.get("user_context"))
+        has_position_data = user_context.get("current_position") is not None
+
+        data_completeness = calculate_data_completeness(
+            has_market_data=has_market,
+            has_sentiment_data=has_sentiment,
+            has_news_data=has_news,
+            has_fundamentals_data=has_fundamentals,
+            has_smart_money_data=has_smart_money,
+            has_volume_price_data=has_volume_price,
+            has_user_context=has_user_context,
+            has_position_data=has_position_data,
+        )
+
+        source_coverage = calculate_source_coverage(
+            has_market_data=has_market,
+            has_sentiment_data=has_sentiment,
+            has_news_data=has_news,
+            has_fundamentals_data=has_fundamentals,
+            has_smart_money_data=has_smart_money,
+            has_volume_price_data=has_volume_price,
+            has_user_context=has_user_context,
+            has_position_data=has_position_data,
+        )
+
+        reports_dict = {
+            "market_report": market_research_report or "",
+            "volume_price_report": state.get("volume_price_report", "") or "",
+            "smart_money_report": state.get("smart_money_report", "") or "",
+            "news_report": news_report or "",
+        }
+
+        evidence_statuses = infer_evidence_statuses(
+            reports_dict,
+            raw_evidence=state.get("metadata", {}).get("raw_evidence"),
+        )
+
+        evidence_coverage = calculate_evidence_coverage(
+            ohlcv_5d=evidence_statuses["ohlcv_5d"],
+            volume=evidence_statuses["volume"],
+            turnover_rate=evidence_statuses["turnover_rate"],
+            volume_ratio=evidence_statuses["volume_ratio"],
+            individual_fund_flow=evidence_statuses["individual_fund_flow"],
+            lhb_status=evidence_statuses["lhb_status"],
+            margin_trading=evidence_statuses["margin_trading"],
+            announcements=evidence_statuses["announcements"],
+            research_report=evidence_statuses.get("research_report", "not_queried"),
+        )
+
+        confidence = assess_confidence(
+            data_completeness,
+            event_risk_active=event_risk_info["has_risk"],
+            evidence_coverage=evidence_coverage,  # [DATA-P0-603629] astock_source_fallback
+        )
+        readiness = generate_readiness_score(data_completeness, confidence)
+        final_response += format_readiness_score(readiness)
+
+        data_sources = [
+            ("市场技术数据", has_market),
+            ("舆情数据", has_sentiment),
+            ("新闻数据", has_news),
+            ("基本面数据", has_fundamentals),
+            ("主力资金", has_smart_money),
+            ("量价分析", has_volume_price),
+            ("用户上下文", has_user_context),
+            ("持仓数据", has_position_data),
+        ]
+
+        # [DATA-P0-603629] astock_source_fallback: use raw_evidence status
+        # for data source availability display, not just report text existence.
+        # [DATA-004] raw_evidence_contract: enhanced with vendor/endpoint/fallback info
+        _raw_ev = state.get("metadata", {}).get("raw_evidence") or {}
+        _status_overrides = {}
+        _contract_overrides = {}
+        _contract_overrides = {}
+        for _ev_key, _label in [
+            ("fund_flow_individual", "主力资金"),
+        ]:
+            _ev_entry = _raw_ev.get(_ev_key)
+            if isinstance(_ev_entry, dict) and "status" in _ev_entry:
+                _status_overrides[_label] = _ev_entry["status"]
+                _contract_overrides[_label] = {
+                    "vendor": _ev_entry.get("vendor", ""),
+                    "endpoint": _ev_entry.get("endpoint", ""),
+                    "fallback_from": _ev_entry.get("fallback_from"),
+                    "unit": _ev_entry.get("unit"),
+                    "unit_verified": _ev_entry.get("unit_verified"),
+                }
+
+        checklist_lines = []
+        for name, available in data_sources:
+            ev_status = _status_overrides.get(name)
+            if ev_status is not None:
+                if ev_status in ("HAS_DATA",):
+                    status = "✅"
+                elif ev_status in ("FAILED", "NOT_QUERIED"):
+                    status = "❌"
+                else:
+                    status = "⚠️"
+                line = f"  {status} {name} (raw: {ev_status})"
+                contract_info = _contract_overrides.get(name)
+                if contract_info:
+                    if contract_info.get("fallback_from"):
+                        line += f" [fallback: {contract_info['fallback_from']}→{contract_info['vendor']}]"
+                    if contract_info.get("endpoint"):
+                        line += f" endpoint={contract_info['endpoint']}"
+                    if contract_info.get("unit") and contract_info.get("unit_verified") is False:
+                        line += " unit未校验"
+                checklist_lines.append(line)
+            else:
+                status = "✅" if available else "❌"
+                checklist_lines.append(f"  {status} {name}")
+        checklist = "\n".join(checklist_lines)
+        final_response += f"\n\n📊 数据源可用性：\n{checklist}"
+
+        # ── D-002 ~ D-004: 证据门禁 + 双等级 + 机会评分 ──
+        position_status = get_position_status(user_context)
+
+        signals = extract_execution_signals(state, final_response, reports_dict)
+
+        _llm_body, _ = _split_llm_body_and_system_blocks(final_response)
+        contains_strong = any(
+            kw in _llm_body for kw in _STRONG_BUY_KEYWORDS + _STRONG_SELL_KEYWORDS
+        )
+
+        # [E-002] name_mismatch check
+        name_check = validate_stock_name(stock_code, _llm_body)
+        is_name_mismatch = name_check["name_mismatch"]
+        if is_name_mismatch:
+            final_response += f"\n\n{name_check['note']}"
+            _logger.warning("[E-002] name_mismatch: %s", name_check["note"])
+
+        gate = get_strong_action_gate(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            position_status=position_status,
+            contains_strong_action=contains_strong,
+            no_execution_field_conflict=signals["no_execution_conflict"],
+            no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+            name_mismatch=is_name_mismatch,
+            no_execution_zone_conflict=not signals["execution_zone_conflict"],
+        )
+        if not fundamental_integrity["is_valid"]:
+            gate["passed"] = False
+            gate["failures"].append("fundamental_semantic_gate")
+
+        risk_result = calculate_risk_level(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            broke_support=signals["broke_support"],
+            main_capital_outflow_days=signals["main_capital_outflow_days"],
+            volume_breakdown=signals["volume_breakdown"],
+            has_major_positive_announcement=signals["has_major_positive_announcement"],
+            position_status=position_status,
+            name_mismatch=is_name_mismatch,
+        )
+        buy_result = calculate_buy_level(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            trend_confirmed=signals["trend_confirmed"],
+            main_capital_inflow_days=signals["main_capital_inflow_days"],
+            volume_healthy_expansion=signals["volume_healthy_expansion"],
+            has_major_negative_announcement=signals["has_major_negative_announcement"],
+            no_execution_conflict=signals["no_execution_conflict"],
+            no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+            position_status=position_status,
+            name_mismatch=is_name_mismatch,
+            research_bearish=_research_bearish,
+        )
+
+        opp_score = calculate_opportunity_score(
+            trend_confirmed=signals["trend_confirmed"],
+            capital_resonance=signals["capital_resonance"],
+            catalyst_strength=signals["catalyst_strength"],
+            risk_reward_ratio=signals["risk_reward_ratio"],
+            entry_quality=signals["entry_quality"],
+            event_risk_active=event_risk_info["has_risk"],
+            # [Fix-3] Cap parameters
+            gate_passed=gate["passed"],
+            final_direction_bearish=_is_direction_bearish(cleaned_response),
+            trader_disallows_buy=_trader_disallows_buy(cleaned_response),
+            data_completeness=data_completeness,
+            position_status=position_status,
+        )
+
+        # ── D-002 真降级：移除/替换强动作文本 ──
+        final_response, _sanitize_changes = sanitize_forbidden_strong_actions(
+            final_response, gate, position_status,
+            buy_result["level"], risk_result["level"],
+        )
+        if _sanitize_changes:
+            _logger.warning("[D-002] sanitize_forbidden_strong_actions: %s", _sanitize_changes)
+
+        # [Fix-2] Valuation sanity check
+        # Try to extract current price from market report or combined text
+        # [G-008] Enhanced: Extract current price from raw_evidence first
+        current_price_from_raw = None
+        raw_evidence = state.get("metadata", {}).get("raw_evidence") or state.get("raw_evidence")
+
+        # Extract current price from raw_evidence (new G-006 format support)
+        if raw_evidence:
+            raw_stock_data = raw_evidence.get("stock_data")
+            if isinstance(raw_stock_data, dict) and "raw" in raw_stock_data:
+                # New G-006 format: raw_evidence.stock_data.raw = CSV string
+                raw_csv = raw_stock_data["raw"]
+                lines_csv = raw_csv.strip().split('\n')
+                if len(lines_csv) >= 2:
+                    # Extract latest close price from CSV (last line)
+                    latest_line = lines_csv[-1]
+                    parts = latest_line.split(',')
+                    if len(parts) >= 5:
+                        try:
+                            current_price_from_raw = float(parts[4])
+                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+                        except (ValueError, IndexError):
+                            pass
+            elif isinstance(raw_stock_data, str):
+                # Legacy format: raw_evidence.stock_data = CSV string
+                raw_csv = raw_stock_data
+                lines_csv = raw_csv.strip().split('\n')
+                if len(lines_csv) >= 2:
+                    latest_line = lines_csv[-1]
+                    parts = latest_line.split(',')
+                    if len(parts) >= 5:
+                        try:
+                            current_price_from_raw = float(parts[4])
+                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+                        except (ValueError, IndexError):
+                            pass
+
+        # Use raw_evidence price if available, otherwise use original method
+        current_price = current_price_from_raw or _extract_current_price(
+            market_research_report or "",
+            state.get("volume_price_report", "") or "",
+        )
+
+        valuation_check = check_valuation_mismatch(
+            current_price=current_price,
+            report_text=cleaned_response,
+        )
+        if valuation_check["mismatch"]:
+            final_response += "\n\n" + valuation_check["note"]
+            _logger.warning("[G-008] valuation_mismatch: %s", valuation_check["note"])
+
+        # [Fix-9] Filter A-share short-selling language
+
+        # [Fix-9] Filter A-share short-selling language
+        final_response, ss_changes = _sanitize_short_selling_text(final_response)
+        if ss_changes:
+            _logger.warning("[Fix-9] short_selling_filter: %s", ss_changes)
+
+        final_response += "\n\n" + format_execution_block(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            confidence=confidence.value,
+            opportunity_score=opp_score,
+            risk_level=risk_result["level"],
+            buy_level=buy_result["level"],
+            risk_level_note=risk_result["note"],
+            buy_level_note=buy_result["note"],
+            strong_action_gate=gate,
+            position_status=position_status,
+            # [Fix-2]
+            valuation_mismatch=valuation_check["mismatch"],
+            # G-001: wire three-layer decision into production path
+            analysis_intent=state.get("analysis_intent", "watch"),
+            position_context=state.get("position_context", {}),
+            horizon=state.get("horizon", "short"),
+        )
+
+        # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
+        if tracker:
+            tracker.emit_debate_message(
+                debate="risk", agent="Portfolio Manager",
+                round_num=-1, content=final_response, is_verdict=True,
+            )
+
+        new_risk_debate_state = {
+            "judge_decision": cleaned_response,
+            "history": risk_debate_state["history"],
+            "aggressive_history": risk_debate_state["aggressive_history"],
+            "conservative_history": risk_debate_state["conservative_history"],
+            "neutral_history": risk_debate_state["neutral_history"],
+            "latest_speaker": "Judge",
+            "current_aggressive_response": risk_debate_state["current_aggressive_response"],
+            "current_conservative_response": risk_debate_state["current_conservative_response"],
+            "current_neutral_response": risk_debate_state["current_neutral_response"],
+            "count": risk_debate_state["count"],
+            "claims": claims,
+            "focus_claim_ids": risk_debate_state.get("focus_claim_ids", []),
+            "open_claim_ids": risk_debate_state.get("open_claim_ids", []),
+            "resolved_claim_ids": risk_debate_state.get("resolved_claim_ids", []),
+            "unresolved_claim_ids": unresolved_claim_ids,
+            "round_summary": risk_debate_state.get("round_summary", ""),
+            "round_goal": risk_debate_state.get("round_goal", ""),
+            "claim_counter": risk_debate_state.get("claim_counter", 0),
+        }
+        new_risk_feedback_state = {
+            "retry_count": safe_int(risk_feedback_state.get("retry_count", 0), 0) + (1 if verdict == "revise" else 0),
+            "max_retries": safe_int(risk_feedback_state.get("max_retries", 1), 1),
+            "revision_required": verdict == "revise",
+            "latest_risk_verdict": verdict,
+            "hard_constraints": hard_constraints,
+            "soft_constraints": soft_constraints,
+            "execution_preconditions": execution_preconditions,
+            "de_risk_triggers": de_risk_triggers,
+            "revision_reason": revision_reason or ("风控要求交易员按硬约束重写方案" if verdict == "revise" else ""),
+        }
+        metadata = {
+            **(state.get("metadata") or {}),
+            "trade_quality_check": trade_quality_check,
+            "source_coverage": source_coverage,
+            "evidence_coverage": evidence_coverage,
+            "buy_level": buy_result["level"],
+            "risk_level": risk_result["level"],
+            "opportunity_score": opp_score,
+            "strong_action_gate_passed": gate["passed"],
+            # [Fix-2]
+            "valuation_mismatch": valuation_check["mismatch"],
+            "fundamental_integrity": fundamental_integrity,
+            "financial_anomaly_inputs": extract_financial_anomaly_inputs(period_facts),
+        }
+
+        return {
+            "risk_debate_state": new_risk_debate_state,
+            "risk_feedback_state": new_risk_feedback_state,
+            "metadata": metadata,
+            "final_trade_decision": final_response,
+        }
+
+    return risk_manager_node
+
+
+# ── Helper functions for Fix-2, Fix-3, Fix-9 ──
+
+def _extract_current_price(*report_texts: str) -> float | None:
+    """[Fix-2] Extract current price from report texts.
+
+    Looks for patterns like '当前价：102.12', '收盘价 102.12', etc.
+    Returns the first valid price found.
+    """
+    import re as _re
+    patterns = [
+        r'(?:当前价|现价|最新价|收盘价|当前价格)[：:\s]*(?:[¥￥])?(\d+\.?\d*)',
+        r'(?:价格|股价)[为约：:\s]*(?:[¥￥])?(\d+\.?\d*)\s*元',
+    ]
+    for text in report_texts:
+        if not text:
+            continue
+        for p in patterns:
+            m = _re.search(p, text)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+    return None
+
+
+def _is_direction_bearish(text: str) -> bool:
+    """[Fix-3] Check if final direction is bearish/neutral."""
+    bearish_keywords = ['偏空', '看空', '观望', '中性', 'HOLD', 'WAIT', 'SELL',
+                        '禁止买入', '不建议', '回避', '减仓', '卖出']
+    return any(k in text for k in bearish_keywords)
+
+
+def _trader_disallows_buy(text: str) -> bool:
+    """[Fix-3] Check if trader explicitly disallows buying."""
+    disallow_keywords = ['禁止买入', '不建议买入', '不允许买入', '不建议入场',
+                         '禁止开仓', '禁止建仓', '不允许建仓', '暂不建仓']
+    return any(k in text for k in disallow_keywords)
+
+exec
+/bin/zsh -lc "grep -R \"def extract_financial_anomaly_inputs\" -n tradingagents tests && sed -n '1,260p' tradingagents/agents/utils/fundamental_integrity.py && sed -n '1,220p' tradingagents/agents/utils/financial_validator.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 340ms:
+tradingagents/agents/utils/fundamental_integrity.py:835:def extract_financial_anomaly_inputs(
+"""Deterministic integrity checks for fundamental-analysis evidence.
+
+FUND-003A-B: Per-term-occurrence evidence binding — direction, negation,
+and causal relation are extracted per keyword occurrence, not per entry.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Any, Iterable, Mapping
+
+
+IDENTITY_UNVERIFIED = "IDENTITY_UNVERIFIED"
+PERIOD_SCOPE_INVALID = "PERIOD_SCOPE_INVALID"
+DERIVATION_CONFLICT = "DERIVATION_CONFLICT"
+CAUSE_UNSUPPORTED = "CAUSE_UNSUPPORTED"
+ACCOUNTING_POLICY_UNKNOWN = "ACCOUNTING_POLICY_UNKNOWN"
+
+_CAUSE_KEYWORDS = (
+    "原材料采购成本下降", "原材料采购成本上涨",
+    "原材料价格下降", "原材料价格上涨",
+    "原材料成本下降", "采购成本下降", "原材料成本上涨", "采购成本上涨",
+    "原材料下降", "原材料上涨",
+    "产品涨价", "销量提升", "成本下降", "行业周期", "集中交付",
+    "原材料", "淡季", "旺季",
+)
+_ACCOUNTING_KEYWORDS = (
+    "净额法", "总额法", "主要责任人", "代理人", "合同负债",
+    "预收款", "预收货款", "预收客户货款", "设备经销", "预收款驱动",
+)
+
+_ACCOUNTING_CANONICAL: dict[str, str] = {
+    "预收货款": "预收款",
+    "预收客户货款": "预收款",
+    "预收客户款": "预收款",
+    "预收款驱动": "预收款",
+    "合同负债驱动": "预收款",
+}
+
+_SYNONYM_GROUPS: list[tuple[str, ...]] = [
+    ("预收款", "预收货款", "预收客户货款", "预收客户款", "合同负债驱动", "预收款驱动"),
+    (
+        "原材料下降", "原材料采购成本下降", "原材料价格下降",
+        "原材料成本下降", "采购成本下降",
+    ),
+    (
+        "原材料上涨", "原材料采购成本上涨", "原材料价格上涨",
+        "原材料成本上涨", "采购成本上涨",
+    ),
+]
+
+_CAUSE_SYNONYM_GROUPS: list[tuple[str, ...]] = [
+    (
+        "原材料下降", "原材料采购成本下降", "原材料价格下降",
+        "原材料成本下降", "采购成本下降",
+    ),
+    (
+        "原材料上涨", "原材料采购成本上涨", "原材料价格上涨",
+        "原材料成本上涨", "采购成本上涨",
+    ),
+]
+
+_SYNONYM_MAP: dict[str, str] = {}
+for _group in _SYNONYM_GROUPS:
+    _canonical = _group[0]
+    for _term in _group:
+        _SYNONYM_MAP[_term] = _canonical
+
+_CAUSE_SYNONYM_MAP: dict[str, str] = {}
+for _group in _CAUSE_SYNONYM_GROUPS:
+    _canonical = _group[0]
+    for _term in _group:
+        _CAUSE_SYNONYM_MAP[_term] = _canonical
+
+_UP_WORDS = {"上涨", "涨价", "上升", "增加", "增长", "提升", "走高", "攀升", "升高", "扩大", "增多"}
+_DOWN_WORDS = {"下降", "降低", "减少", "回落", "走低", "收缩", "缩小", "下滑", "下跌", "缩减"}
+_NEGATION_WORDS = {"未", "不", "没有", "并非", "未见", "尚未", "未曾"}
+
+_NEGATION_PATTERN = re.compile(
+    r"(未|不|没有|并非|未见|尚未|未曾)\s*(?:采用|使用|执行|确认|实行)?\s*(净额法|总额法|主要责任人|代理人)",
+)
+_DIRECTION_NEGATION_SUFFIX_PATTERN = re.compile(
+    r"(?:未|不|没有|并非|未见|尚未|未曾)"
+    r"(?:(?:\s|出现|发生|呈现|形成|明显|显著|大幅|持续|进一步|再度|重新|"
+    r"实质性|趋势性|快速|继续|能|有|见|再|过|地))*$"
+)
+_RELATION_KEYWORDS = (
+    "主要系", "由于", "因为", "因此", "所以", "导致", "推动", "驱动", "所致", "造成", "带来",
+    "受益于", "得益于", "来自",
+)
+_CAUSE_BEFORE_RESULT_CUES = {
+    "因此", "所以", "导致", "推动", "驱动", "造成", "带来", "所致",
+}
+_RESULT_BEFORE_CAUSE_CUES = {
+    "主要系", "由于", "因为", "受益于", "得益于", "来自",
+}
+
+# A cause is not enough by itself: "原材料下降是采购优化的结果" does
+# not prove the separate claim that it drove gross margin.  Keep the target
+# vocabulary deliberately small and financial-report oriented so an unknown
+# endpoint fails closed rather than being guessed from free text.
+_RELATION_TARGET_GROUPS: list[tuple[str, ...]] = [
+    ("经营现金流", "现金流"),
+    ("营业收入", "营收", "收入"),
+    ("归母净利润", "扣非净利润", "净利润", "利润"),
+    ("毛利率",),
+    ("净利率",),
+    ("合同负债",),
+    ("存货",),
+    ("应收账款",),
+    ("业绩",),
+]
+_RELATION_TARGET_MAP = {
+    term: group[0]
+    for group in _RELATION_TARGET_GROUPS
+    for term in group
+}
+
+
+def _claim_id_for(prefix: str, content: str) -> str:
+    normalized = content.strip()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}-{digest}"
+
+
+def _normalize_terms(terms: Iterable[str]) -> list[str]:
+    result: set[str] = set()
+    for t in terms:
+        canonical = _ACCOUNTING_CANONICAL.get(t, t)
+        synonym = _SYNONYM_MAP.get(canonical, canonical)
+        result.add(synonym)
+    return sorted(result)
+
+
+def _find_all_occurrences(text: str, keyword: str) -> list[int]:
+    positions: list[int] = []
+    start = 0
+    while True:
+        idx = text.find(keyword, start)
+        if idx < 0:
+            break
+        positions.append(idx)
+        start = idx + 1
+    return positions
+
+
+def _clause_bounds(text: str, pos: int, keyword_end: int) -> tuple[int, int]:
+    """Keep semantic cues in the same sentence as their keyword occurrence."""
+    delimiters = "。！？；\n"
+    start = max((text.rfind(mark, 0, pos) for mark in delimiters), default=-1) + 1
+    end_candidates = [text.find(mark, keyword_end) for mark in delimiters]
+    end = min((candidate for candidate in end_candidates if candidate >= 0), default=len(text))
+    return start, end
+
+
+def _extract_direction_at(text: str, keyword: str, pos: int) -> str | None:
+    keyword_end = pos + len(keyword)
+    intrinsic_up = any(word in keyword for word in _UP_WORDS)
+    intrinsic_down = any(word in keyword for word in _DOWN_WORDS)
+    if intrinsic_up != intrinsic_down:
+        return "up" if intrinsic_up else "down"
+
+    clause_start, clause_end = _clause_bounds(text, pos, keyword_end)
+
+    def crosses_phrase_boundary(word_pos: int, word_len: int) -> bool:
+        word_end = word_pos + word_len
+        if word_pos >= keyword_end:
+            between = text[keyword_end:word_pos]
+        elif word_end <= pos:
+            between = text[word_end:pos]
+        else:
+            between = ""
+        return "，" in between or "," in between
+
+    best_dir = None
+    best_dist = len(text)
+    for w in _UP_WORDS:
+        w_idx = text.find(w, clause_start, clause_end)
+        while w_idx >= 0 and w_idx < clause_end:
+            if crosses_phrase_boundary(w_idx, len(w)):
+                w_idx = text.find(w, w_idx + 1, clause_end)
+                continue
+            dist = min(abs(w_idx - pos), abs(w_idx - keyword_end))
+            if dist < best_dist:
+                best_dist = dist
+                best_dir = "up"
+            w_idx = text.find(w, w_idx + 1, clause_end)
+    for w in _DOWN_WORDS:
+        w_idx = text.find(w, clause_start, clause_end)
+        while w_idx >= 0 and w_idx < clause_end:
+            if crosses_phrase_boundary(w_idx, len(w)):
+                w_idx = text.find(w, w_idx + 1, clause_end)
+                continue
+            dist = min(abs(w_idx - pos), abs(w_idx - keyword_end))
+            if dist < best_dist:
+                best_dist = dist
+                best_dir = "down"
+            w_idx = text.find(w, w_idx + 1, clause_end)
+    if best_dist <= 15:
+        return best_dir
+    return None
+
+
+def _is_negated_at(text: str, keyword: str, pos: int) -> bool:
+    for m in _NEGATION_PATTERN.finditer(text):
+        if keyword in m.group(0) and abs(m.start() - pos) <= len(keyword) + 3:
+            return True
+    window_start = max(0, pos - 6)
+    window = text[window_start:pos]
+    for neg in _NEGATION_WORDS:
+        if neg in window:
+            return True
+    return False
+
+
+def _is_direction_negated_at(text: str, keyword: str, pos: int) -> bool:
+    """Detect negation attached to a nearby direction word, e.g. 未下降."""
+    keyword_end = pos + len(keyword)
+    _, clause_end = _clause_bounds(text, pos, keyword_end)
+    phrase_breaks = [
+        boundary
+        for separator in ("，", ",")
+        if (boundary := text.find(separator, keyword_end, clause_end)) >= 0
+    ]
+    phrase_end = min(phrase_breaks, default=clause_end)
+    for direction_word in _UP_WORDS | _DOWN_WORDS:
+        direction_pos = text.find(direction_word, keyword_end, phrase_end)
+        while direction_pos >= 0:
+            between = text[keyword_end:direction_pos]
+            if _DIRECTION_NEGATION_SUFFIX_PATTERN.search(between):
+                return True
+            direction_pos = text.find(direction_word, direction_pos + 1, phrase_end)
+    return False
+
+
+def _directions_conflict(ev_dir: str | None, claim_dir: str | None) -> bool:
+    if ev_dir is None or claim_dir is None:
+        return False
+    return ev_dir != claim_dir
+
+
+def _extract_context_around(text: str, keyword: str, margin: int = 200) -> str:
+    idx = text.find(keyword)
+    if idx < 0:
+        return text[:500]
+    start = max(0, idx - margin)
+    end = min(len(text), idx + len(keyword) + margin)
+    return text[start:end]
+
+
+def _extract_context_around_position(
+    text: str, position: int, keyword_len: int, margin: int = 200
+) -> str:
+    start = max(0, position - margin)
+    end = min(len(text), position + keyword_len + margin)
+    return text[start:end]
+
+
+def _cue_assigns_cause_role(
+# [C-006] financial_validator
+"""财报数据异常检测（一期 + 二期：规则检测）
+
+Phase 1: 毛利率跳变、现金流/利润背离、资产负债率异常、大额投资/筹资异动。
+Phase 2: ROE 异常、营收-成本剪刀差、现金流质量、应收账款/营收背离、存货/成本背离。
+"""
+
+import logging
+from typing import Optional
+
+_logger = logging.getLogger(__name__)
+
+
+def check_financial_anomalies(
+    stock_code: str,
+    # Phase 1 fields
+    gross_margin: Optional[float] = None,
+    gross_margin_prev: Optional[float] = None,
+    operating_cashflow: Optional[float] = None,
+    net_profit: Optional[float] = None,
+    debt_ratio: Optional[float] = None,
+    debt_ratio_prev: Optional[float] = None,
+    total_invest_cashflow: Optional[float] = None,
+    total_finance_cashflow: Optional[float] = None,
+    # Phase 2 fields
+    roe: Optional[float] = None,
+    roe_prev: Optional[float] = None,
+    revenue_growth: Optional[float] = None,
+    operating_cost_growth: Optional[float] = None,
+    accounts_receivable_growth: Optional[float] = None,
+    inventory_growth: Optional[float] = None,
+) -> dict:
+    """
+    检测财报数据异常。
+
+    返回:
+        {
+            "has_anomaly": bool,
+            "anomalies": list[str],
+            "anomaly_details": dict,
+            "needs_manual_review": bool,
+        }
+    """
+    anomalies = []
+    anomaly_details = {}
+
+    # ── Phase 1 ──────────────────────────────────────────────────────────────
+
+    # 1. 毛利率跳变 > 20%
+    if gross_margin is not None and gross_margin_prev is not None:
+        margin_change = abs(gross_margin - gross_margin_prev)
+        if margin_change > 20:
+            anomalies.append("gross_margin_jump")
+            anomaly_details["gross_margin_jump"] = (
+                f"毛利率从 {gross_margin_prev:.1f}% 跳变至 {gross_margin:.1f}%，"
+                f"变化 {margin_change:.1f} 个百分点"
+            )
+
+    # 2. 现金流与利润背离（利润增但经营现金流减）
+    if operating_cashflow is not None and net_profit is not None:
+        if net_profit > 0 and operating_cashflow < 0:
+            anomalies.append("cashflow_profit_divergence")
+            anomaly_details["cashflow_profit_divergence"] = (
+                f"净利润为正（{net_profit:.2f}亿），但经营现金流为负（{operating_cashflow:.2f}亿）"
+            )
+
+    # 3. 资产负债率异常
+    if debt_ratio is not None:
+        if debt_ratio > 70:
+            anomalies.append("high_debt_ratio")
+            anomaly_details["high_debt_ratio"] = f"资产负债率 {debt_ratio:.1f}% > 70%"
+        if debt_ratio_prev is not None:
+            debt_change = abs(debt_ratio - debt_ratio_prev)
+            if debt_change > 10:
+                anomalies.append("debt_ratio_jump")
+                anomaly_details["debt_ratio_jump"] = (
+                    f"资产负债率从 {debt_ratio_prev:.1f}% 变为 {debt_ratio:.1f}%，"
+                    f"变化 {debt_change:.1f} 个百分点"
+                )
+
+    # 4. 大额投资/筹资异动（简化判断：绝对值 > 50 亿）
+    if total_invest_cashflow is not None and abs(total_invest_cashflow) > 50:
+        anomalies.append("large_invest_cashflow")
+        anomaly_details["large_invest_cashflow"] = (
+            f"投资活动现金流异动：{total_invest_cashflow:.2f}亿"
+        )
+
+    if total_finance_cashflow is not None and abs(total_finance_cashflow) > 50:
+        anomalies.append("large_finance_cashflow")
+        anomaly_details["large_finance_cashflow"] = (
+            f"筹资活动现金流异动：{total_finance_cashflow:.2f}亿"
+        )
+
+    # ── Phase 2 ──────────────────────────────────────────────────────────────
+
+    # 5. ROE 异常：极端值或大幅跳变
+    if roe is not None:
+        if abs(roe) > 50:
+            anomalies.append("extreme_roe")
+            anomaly_details["extreme_roe"] = (
+                f"净资产收益率 {roe:.1f}% 极端（|ROE| > 50%）"
+            )
+        if roe_prev is not None:
+            roe_change = abs(roe - roe_prev)
+            if roe_change > 20:
+                anomalies.append("roe_jump")
+                anomaly_details["roe_jump"] = (
+                    f"ROE 从 {roe_prev:.1f}% 跳变至 {roe:.1f}%，"
+                    f"变化 {roe_change:.1f} 个百分点"
+                )
+
+    # 6. 营收-成本剪刀差：营收增长但毛利率下降（成本增速 > 营收增速）
+    if (
+        revenue_growth is not None
+        and operating_cost_growth is not None
+        and gross_margin is not None
+        and gross_margin_prev is not None
+    ):
+        if revenue_growth > 0 and operating_cost_growth > revenue_growth and gross_margin < gross_margin_prev:
+            cost_excess = operating_cost_growth - revenue_growth
+            margin_drop = gross_margin_prev - gross_margin
+            if cost_excess > 5 and margin_drop > 3:
+                anomalies.append("margin_squeeze")
+                anomaly_details["margin_squeeze"] = (
+                    f"营收增长 {revenue_growth:.1f}% 但成本增长 {operating_cost_growth:.1f}%，"
+                    f"毛利率下降 {margin_drop:.1f} 个百分点"
+                )
+
+    # 7. 现金流质量：经营现金流/净利润比值异常
+    if operating_cashflow is not None and net_profit is not None and net_profit != 0:
+        cf_ratio = operating_cashflow / net_profit
+        if cf_ratio < 0:
+            anomalies.append("negative_cashflow_quality")
+            anomaly_details["negative_cashflow_quality"] = (
+                f"经营现金流/净利润 = {cf_ratio:.2f}，"
+                f"利润未转化为实际现金流入"
+            )
+        elif cf_ratio > 5:
+            anomalies.append("excessive_cashflow_quality")
+            anomaly_details["excessive_cashflow_quality"] = (
+                f"经营现金流/净利润 = {cf_ratio:.2f}，"
+                f"现金流远超利润，可能存在非经常性因素"
+            )
+
+    # 8. 应收账款/营收背离：应收增速远超营收增速
+    if (
+        accounts_receivable_growth is not None
+        and revenue_growth is not None
+        and accounts_receivable_growth > 30
+        and revenue_growth < 10
+    ):
+        ar_excess = accounts_receivable_growth - revenue_growth
+        anomalies.append("ar_revenue_divergence")
+        anomaly_details["ar_revenue_divergence"] = (
+            f"应收账款增长 {accounts_receivable_growth:.1f}% 但营收仅增长 {revenue_growth:.1f}%，"
+            f"差异 {ar_excess:.1f} 个百分点"
+        )
+
+    # 9. 存货/成本背离：存货增速远超营业成本增速
+    if (
+        inventory_growth is not None
+        and operating_cost_growth is not None
+        and inventory_growth > 30
+        and operating_cost_growth < 10
+    ):
+        inv_excess = inventory_growth - operating_cost_growth
+        anomalies.append("inventory_cost_divergence")
+        anomaly_details["inventory_cost_divergence"] = (
+            f"存货增长 {inventory_growth:.1f}% 但营业成本仅增长 {operating_cost_growth:.1f}%，"
+            f"差异 {inv_excess:.1f} 个百分点"
+        )
+
+    has_anomaly = len(anomalies) > 0
+
+    if has_anomaly:
+        _logger.warning(
+            "[C-006] financial_validator: %s 检测到异常: %s",
+            stock_code,
+            ", ".join(anomalies)
+        )
+
+    return {
+        "has_anomaly": has_anomaly,
+        "anomalies": anomalies,
+        "anomaly_details": anomaly_details,
+        "needs_manual_review": has_anomaly,
+    }
+
+
+def format_financial_anomaly_warning(anomaly_info: dict) -> str:
+    """格式化财务异常警告"""
+    if not anomaly_info["has_anomaly"]:
+        return ""
+
+    warning = "\n\n📊 [C-006] 财务数据异常检测\n"
+
+    for anomaly_type in anomaly_info["anomalies"]:
+        detail = anomaly_info["anomaly_details"].get(anomaly_type, "")
+        warning += f"- {detail}\n"
+
+    if anomaly_info["needs_manual_review"]:
+        warning += "\n⚠️ 以上异常需人工复核，数据可信度降级。\n"
+
+    return warning
+
+exec
+/bin/zsh -lc "sed -n '800,940p' tradingagents/agents/utils/fundamental_integrity.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        })
+
+    text = report_text or ""
+    claims = bind_claims(text, explanation_context)
+
+    unsupported_causes = [
+        c for c in claims
+        if c["claim_id"].startswith("CAUSE") and c["status"] != "officially_explained"
+    ]
+    if unsupported_causes:
+        terms = [c["metric"] for c in unsupported_causes[:3]]
+        blockers.append({
+            "code": CAUSE_UNSUPPORTED,
+            "reason": f"报告包含未经官方来源确认的因果解释：{'、'.join(terms)}",
+        })
+
+    unsupported_accounting = [
+        c for c in claims
+        if c["claim_id"].startswith("ACCT") and c["status"] != "officially_explained"
+    ]
+    if unsupported_accounting:
+        terms = [c["metric"] for c in unsupported_accounting[:3]]
+        blockers.append({
+            "code": ACCOUNTING_POLICY_UNKNOWN,
+            "reason": f"报告讨论会计口径但无官方证据：{'、'.join(terms)}",
+        })
+
+    return {
+        "status": "NEEDS_REVIEW" if blockers else "VALID",
+        "blockers": blockers,
+        "is_valid": not blockers,
+        "claims": claims,
+    }
+
+
+def extract_financial_anomaly_inputs(
+    facts: Iterable[Mapping[str, Any]] | None,
+) -> dict[str, float | None]:
+    # [FUND-004B] Group facts by (report_date, period_scope, unit) so that
+    # gross_margin, debt_ratio and cashflow comparisons only use values from
+    # the same report date, same cumulative/single-quarter scope and same unit.
+    # Mixing across groups produced fabricated 88%/-500% gross margins.
+
+    _INCOME_METRICS = {"revenue", "operating_cost", "net_profit"}
+    _CASHFLOW_METRICS = {"operating_cashflow", "investing_cashflow", "financing_cashflow"}
+    _BALANCE_METRICS = {"total_assets", "total_liabilities"}
+
+    def _group_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(item.get("report_date") or ""),
+            str(item.get("period_scope") or ""),
+            str(item.get("unit") or "元"),
+        )
+
+    def _value(item: Mapping[str, Any] | None) -> float | None:
+        if not item:
+            return None
+        raw = item.get("value")
+        return float(raw) if isinstance(raw, (int, float)) else None
+
+    # Build groups keyed by (report_date, period_scope, unit).
+    # For each group, track the latest value per metric (last occurrence wins
+    # when the same metric appears multiple times with the same key).
+    groups: dict[tuple[str, str, str], dict[str, Mapping[str, Any]]] = {}
+    for item in facts or []:
+        if item.get("value") is None:
+            continue
+        metric = str(item.get("metric") or "")
+        if not metric:
+            continue
+        key = _group_key(item)
+        groups.setdefault(key, {})[metric] = item
+
+    # Sort groups by report_date descending (latest first).
+    sorted_keys = sorted(groups.keys(), key=lambda k: k[0], reverse=True)
+
+    def _find_best_group(
+        required_metrics: set[str],
+    ) -> dict[str, Mapping[str, Any]] | None:
+        """Return the latest group that contains ALL required metrics."""
+        for key in sorted_keys:
+            group = groups[key]
+            if all(m in group for m in required_metrics):
+                return group
+        return None
+
+    def _find_previous_group(
+        required_metrics: set[str],
+        current_date: str,
+    ) -> dict[str, Mapping[str, Any]] | None:
+        """Return the latest group before current_date with all required metrics."""
+        for key in sorted_keys:
+            if key[0] >= current_date:
+                continue
+            group = groups[key]
+            if all(m in group for m in required_metrics):
+                return group
+        return None
+
+    # --- Income group: gross_margin from same-date/same-scope revenue + cost ---
+    income_group = _find_best_group({"revenue", "operating_cost"})
+    if income_group:
+        revenue = _value(income_group["revenue"])
+        cost = _value(income_group["operating_cost"])
+        income_date = str(income_group["revenue"].get("report_date") or "")
+    else:
+        revenue, cost, income_date = None, None, ""
+
+    gross_margin = (
+        (revenue - cost) / revenue * 100
+        if revenue not in (None, 0) and cost is not None
+        else None
+    )
+
+    prev_income = _find_previous_group({"revenue", "operating_cost"}, income_date)
+    if prev_income:
+        prior_revenue = _value(prev_income["revenue"])
+        prior_cost = _value(prev_income["operating_cost"])
+    else:
+        prior_revenue, prior_cost = None, None
+
+    gross_margin_prev = (
+        (prior_revenue - prior_cost) / prior_revenue * 100
+        if prior_revenue not in (None, 0) and prior_cost is not None
+        else None
+    )
+
+    # --- Balance group: debt_ratio from same-date POINT_IN_TIME assets + liabilities ---
+    balance_group = _find_best_group({"total_assets", "total_liabilities"})
+    if balance_group:
+        assets = _value(balance_group["total_assets"])
+        liabilities = _value(balance_group["total_liabilities"])
+        balance_date = str(balance_group["total_assets"].get("report_date") or "")
+    else:
+        assets, liabilities, balance_date = None, None, ""
+
+    debt_ratio = (
+        liabilities / assets * 100
+        if assets not in (None, 0) and liabilities is not None
+        else None
+    )
+
+exec
+/bin/zsh -lc "sed -n '940,1100p' tradingagents/agents/utils/fundamental_integrity.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    )
+
+    prev_balance = _find_previous_group({"total_assets", "total_liabilities"}, balance_date)
+    if prev_balance:
+        prior_assets = _value(prev_balance["total_assets"])
+        prior_liabilities = _value(prev_balance["total_liabilities"])
+    else:
+        prior_assets, prior_liabilities = None, None
+
+    debt_ratio_prev = (
+        prior_liabilities / prior_assets * 100
+        if prior_assets not in (None, 0) and prior_liabilities is not None
+        else None
+    )
+
+    # --- Cashflow/profit: must come from same (report_date, period_scope, unit) group ---
+    # [FUND-004B-R1] profit and operating_cashflow must share group key.
+    profit_cashflow_group = _find_best_group({"net_profit", "operating_cashflow"})
+    profit_group = profit_cashflow_group
+    cashflow_group = profit_cashflow_group
+
+    # invest/finance cashflows: independent groups (no cross-metric ratio)
+    invest_group = _find_best_group({"investing_cashflow"})
+    finance_group = _find_best_group({"financing_cashflow"})
+
+    # --- Phase 2: ROE from net_profit (income) + total_equity (balance) ---
+    # These live in different period_scope groups, so we match by report_date.
+    equity_items: list[Mapping[str, Any]] = []
+    for item in facts or []:
+        if str(item.get("metric") or "") == "total_equity" and item.get("value") is not None:
+            equity_items.append(item)
+    equity_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+
+    equity_by_date: dict[str, float] = {}
+    for item in equity_items:
+        d = str(item.get("report_date") or "")
+        if d and d not in equity_by_date:
+            equity_by_date[d] = _value(item) or 0.0
+
+    profit_items: list[Mapping[str, Any]] = []
+    for item in facts or []:
+        if str(item.get("metric") or "") == "net_profit" and item.get("value") is not None:
+            profit_items.append(item)
+    profit_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+
+    def _find_roe_pair() -> tuple[float | None, str]:
+        """Find latest (net_profit, total_equity) sharing the same report_date."""
+        for pi in profit_items:
+            pd = str(pi.get("report_date") or "")
+            if pd and pd in equity_by_date:
+                np_val = _value(pi)
+                eq_val = equity_by_date[pd]
+                if np_val is not None and eq_val:
+                    return np_val / eq_val * 100, pd
+        return None, ""
+
+    roe, roe_date = _find_roe_pair()
+
+    def _find_prev_roe_pair(before_date: str) -> float | None:
+        """Find latest ROE pair strictly before before_date."""
+        for pi in profit_items:
+            pd = str(pi.get("report_date") or "")
+            if pd and pd < before_date and pd in equity_by_date:
+                np_val = _value(pi)
+                eq_val = equity_by_date[pd]
+                if np_val is not None and eq_val:
+                    return np_val / eq_val * 100
+        return None
+
+    roe_prev = _find_prev_roe_pair(roe_date) if roe_date else None
+
+    # --- Phase 2: Revenue / cost growth from current vs prior income group ---
+    def _growth_rate(current: float | None, prior: float | None) -> float | None:
+        if current is not None and prior is not None and prior != 0:
+            return (current - prior) / abs(prior) * 100
+        return None
+
+    revenue_growth = _growth_rate(revenue, prior_revenue)
+    operating_cost_growth = _growth_rate(cost, prior_cost)
+
+    # --- Phase 2: AR / inventory growth from current vs prior group ---
+    ar_group = _find_best_group({"accounts_receivable"})
+    if ar_group:
+        ar_current = _value(ar_group["accounts_receivable"])
+        ar_date = str(ar_group["accounts_receivable"].get("report_date") or "")
+    else:
+        ar_current, ar_date = None, ""
+
+    prev_ar_group = _find_previous_group({"accounts_receivable"}, ar_date)
+    ar_prev = _value(prev_ar_group["accounts_receivable"]) if prev_ar_group else None
+    accounts_receivable_growth = _growth_rate(ar_current, ar_prev)
+
+    inv_group = _find_best_group({"inventory"})
+    if inv_group:
+        inv_current = _value(inv_group["inventory"])
+        inv_date = str(inv_group["inventory"].get("report_date") or "")
+    else:
+        inv_current, inv_date = None, ""
+
+    prev_inv_group = _find_previous_group({"inventory"}, inv_date)
+    inv_prev = _value(prev_inv_group["inventory"]) if prev_inv_group else None
+    inventory_growth = _growth_rate(inv_current, inv_prev)
+
+    return {
+        "gross_margin": gross_margin,
+        "gross_margin_prev": gross_margin_prev,
+        "operating_cashflow": _to_yi(cashflow_group.get("operating_cashflow") if cashflow_group else None),
+        "net_profit": _to_yi(profit_group.get("net_profit") if profit_group else None),
+        "debt_ratio": debt_ratio,
+        "debt_ratio_prev": debt_ratio_prev,
+        "total_invest_cashflow": _to_yi(invest_group.get("investing_cashflow") if invest_group else None),
+        "total_finance_cashflow": _to_yi(finance_group.get("financing_cashflow") if finance_group else None),
+        # Phase 2
+        "roe": roe,
+        "roe_prev": roe_prev,
+        "revenue_growth": revenue_growth,
+        "operating_cost_growth": operating_cost_growth,
+        "accounts_receivable_growth": accounts_receivable_growth,
+        "inventory_growth": inventory_growth,
+    }
+
+
+def _to_yi(fact: Mapping[str, Any] | None) -> float | None:
+    if not fact or not isinstance(fact.get("value"), (int, float)):
+        return None
+    unit = str(fact.get("unit") or "元")
+    value = float(fact["value"])
+    if unit in {"亿", "亿元"}:
+        return value
+    if unit in {"万", "万元"}:
+        return value / 10000.0
+    return value / 100000000.0
+
+
+def format_fundamental_integrity_block(integrity: Mapping[str, Any]) -> str:
+    blockers = integrity.get("blockers") or []
+    if not blockers:
+        return ""
+    lines = ["【基本面语义门禁：NEEDS_REVIEW】"]
+    for blocker in blockers:
+        lines.append(f"- {blocker.get('code')}: {blocker.get('reason')}")
+    lines.append("基本面模块已降级为待人工复核，不得作为可执行交易结论的依据。")
+    return "\n".join(lines)
+
+
+# [FUND-004A] fundamental_semantic_gate_forward
+
+_GATED_HEADER = (
+    "【基本面语义门禁已触发 — 该模块不参与方向权重】\n\n"
+    "基本面报告存在以下完整性问题，已被门禁拦截：\n"
+)
+
+
+def _extract_verified_facts(pool: Mapping[str, Any] | None) -> str:
+    """Extract verified financial facts from data pool for the gated report."""
+    if not pool:
+        return ""
+    parts: list[str] = []
+    identity = pool.get("instrument_identity")
+    if isinstance(identity, Mapping) and identity.get("security_name"):
+        parts.append(f"公司名称：{identity.get('security_name')}")
+
+exec
+/bin/zsh -lc "sed -n '1,430p' tests/test_fund004a_integrity_gate.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""FUND-004A: Tests for fundamental semantic gate forward.
+
+Verifies that:
+1. Gate node replaces fundamentals_report with safe version when integrity fails
+2. Safe version contains blocker reasons and verified facts, no unsupported narrative
+3. Gate node passes through when integrity is valid
+4. Research Manager excludes gated fundamentals from consensus weight
+5. Risk Judge uses pre-computed integrity from gate metadata
+"""
+
+import asyncio
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from tradingagents.agents.utils.fundamental_integrity import (
+    ACCOUNTING_POLICY_UNKNOWN,
+    CAUSE_UNSUPPORTED,
+    IDENTITY_UNVERIFIED,
+    PERIOD_SCOPE_INVALID,
+    build_gated_fundamentals_report,
+    evaluate_fundamental_integrity,
+)
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+def _identity(allowed=True):
+    return {
+        "symbol": "603629.SH",
+        "security_name": "利通电子" if allowed else None,
+        "industry": "电子元器件" if allowed else None,
+        "commercial_analysis_allowed": allowed,
+    }
+
+
+def _facts():
+    return [
+        {"metric": "revenue", "report_date": "2025-12-31", "value": 100.0, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "value": 60.0, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "value": 10.0, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "value": -1.0, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "total_assets", "report_date": "2025-12-31", "value": 100.0, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "total_liabilities", "report_date": "2025-12-31", "value": 75.0, "unit": "亿元", "status": "HAS_DATA"},
+    ]
+
+
+def _pool(identity_allowed=True, explanation_status="unexplained"):
+    return {
+        "instrument_identity": _identity(identity_allowed),
+        "financial_period_facts": _facts(),
+        "fundamental_explanations": {"status": explanation_status, "entries": []},
+    }
+
+
+_INVALID_REPORT = (
+    "利通电子主营化工品生产与销售，原材料成本下降导致毛利率提升。"
+    "公司采用净额法确认设备经销收入。"
+)
+
+_VALID_REPORT = (
+    "利通电子营业收入100亿元，净利润10亿元。经营现金流为负。"
+)
+
+
+# ── Gate Node Tests ───────────────────────────────────────────────────────────
+
+class TestFundamentalsIntegrityGateNode:
+    """Test the gate node function directly."""
+
+    def _make_state(self, fundamentals_report=_INVALID_REPORT):
+        return {
+            "company_of_interest": "603629.SH",
+            "trade_date": "2025-12-31",
+            "fundamentals_report": fundamentals_report,
+            "metadata": {"raw_evidence": {}},
+        }
+
+    def test_gate_replaces_report_when_identity_unverified(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        pool = _pool(identity_allowed=False)
+        dc = MagicMock()
+        dc.get.return_value = pool
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state()
+        result = asyncio.run(gate(state))
+
+        assert "fundamentals_report" in result
+        gated = result["fundamentals_report"]
+        assert "不参与方向权重" in gated
+        assert IDENTITY_UNVERIFIED in gated
+        # Original narrative must NOT appear
+        assert "化工" not in gated
+        assert "原材料成本下降" not in gated
+
+    def test_gate_replaces_report_when_cause_unsupported(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        pool = _pool(explanation_status="unexplained")
+        dc = MagicMock()
+        dc.get.return_value = pool
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state()
+        result = asyncio.run(gate(state))
+
+        assert "fundamentals_report" in result
+        gated = result["fundamentals_report"]
+        assert CAUSE_UNSUPPORTED in gated or IDENTITY_UNVERIFIED in gated
+        # Unsupported causal claim must not appear
+        assert "原材料成本下降导致毛利率提升" not in gated
+
+    def test_gate_preserves_verified_facts(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        pool = _pool()
+        dc = MagicMock()
+        dc.get.return_value = pool
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state()
+        result = asyncio.run(gate(state))
+
+        gated = result["fundamentals_report"]
+        # Verified facts should be present
+        assert "营业收入" in gated
+        assert "100.0" in gated
+        assert "利通电子" in gated
+
+    def test_gate_stores_integrity_in_metadata(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        pool = _pool()
+        dc = MagicMock()
+        dc.get.return_value = pool
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state()
+        result = asyncio.run(gate(state))
+
+        assert "metadata" in result
+        integrity = result["metadata"].get("fundamental_integrity")
+        assert integrity is not None
+        assert integrity["status"] == "NEEDS_REVIEW"
+        assert not integrity["is_valid"]
+
+    def test_gate_passes_through_when_integrity_valid(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        # Valid pool with official explanation for the claims
+        pool = _pool(explanation_status="officially_explained")
+        # Add explanation entries that support the claims
+        pool["fundamental_explanations"] = {
+            "status": "officially_explained",
+            "entries": [{
+                "evidence_id": "E001",
+                "source": "announcement",
+                "text": "原材料采购成本下降导致毛利率提升",
+                "cause_terms": ["原材料采购成本下降"],
+                "accounting_terms": [],
+                "occurrences": [{
+                    "surface_term": "原材料采购成本下降",
+                    "canonical": "原材料下降",
+                    "direction": "down",
+                    "negation": False,
+                    "relation": "causal",
+                    "relation_cue": "导致",
+                    "relation_target": "毛利率",
+                    "relation_targets": ["毛利率"],
+                    "position": 0,
+                    "context": "原材料采购成本下降导致毛利率提升",
+                }],
+            }],
+        }
+        dc = MagicMock()
+        dc.get.return_value = pool
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state(fundamentals_report=_VALID_REPORT)
+        result = asyncio.run(gate(state))
+
+        # Report should NOT be replaced
+        assert "fundamentals_report" not in result or result.get("fundamentals_report") == _VALID_REPORT
+        # Integrity should still be in metadata
+        integrity = result["metadata"].get("fundamental_integrity")
+        assert integrity is not None
+        assert integrity["is_valid"]
+
+    def test_gate_skips_when_no_data_collector(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        gate = create_fundamentals_integrity_gate(None)
+        state = self._make_state()
+        result = asyncio.run(gate(state))
+        assert result == {}
+
+    def test_gate_skips_when_no_pool(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        dc = MagicMock()
+        dc.get.return_value = None
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state()
+        result = asyncio.run(gate(state))
+        assert result == {}
+
+    def test_gate_skips_when_empty_report(self):
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        dc = MagicMock()
+        gate = create_fundamentals_integrity_gate(dc)
+
+        state = self._make_state(fundamentals_report="")
+        result = asyncio.run(gate(state))
+        assert result == {}
+
+
+# ── Gated Report Content Tests ────────────────────────────────────────────────
+
+class TestGatedReportContent:
+    """Test build_gated_fundamentals_report output content."""
+
+    def test_gated_report_contains_blocker_reasons(self):
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(False), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=_INVALID_REPORT,
+        )
+        report = build_gated_fundamentals_report(
+            original_report=_INVALID_REPORT, integrity=integrity,
+            pool=_pool(False),
+        )
+        assert IDENTITY_UNVERIFIED in report
+        assert "不参与方向权重" in report
+
+    def test_gated_report_no_unsupported_narrative(self):
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=_INVALID_REPORT,
+        )
+        report = build_gated_fundamentals_report(
+            original_report=_INVALID_REPORT, integrity=integrity,
+            pool=_pool(),
+        )
+        # The unsupported causal claim must not appear as narrative
+        assert "原材料成本下降导致毛利率提升" not in report
+        # The unsupported accounting claim must not appear as narrative
+        assert "公司采用净额法" not in report
+        assert "确认设备经销收入" not in report
+        # Blocker reasons should mention the keywords diagnostically
+        assert ACCOUNTING_POLICY_UNKNOWN in report
+        assert CAUSE_UNSUPPORTED in report
+
+    def test_gated_report_preserves_financial_numbers(self):
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=_INVALID_REPORT,
+        )
+        report = build_gated_fundamentals_report(
+            original_report=_INVALID_REPORT, integrity=integrity,
+            pool=_pool(),
+        )
+        assert "100.0" in report
+        assert "营业收入" in report
+        assert "利通电子" in report
+
+
+# ── Research Manager Consensus Tests ──────────────────────────────────────────
+
+class TestResearchManagerConsensusExclusion:
+    """Test that Research Manager excludes gated fundamentals from consensus."""
+
+    def test_consensus_excludes_fundamentals_when_gated(self):
+        from tradingagents.agents.managers.research_manager import _build_consensus_block
+
+        state = {
+            "market_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "sentiment_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "news_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "fundamentals_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "smart_money_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "volume_price_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "metadata": {
+                "fundamental_integrity": {
+                    "status": "NEEDS_REVIEW",
+                    "is_valid": False,
+                    "blockers": [{"code": IDENTITY_UNVERIFIED, "reason": "test"}],
+                },
+            },
+        }
+        block = _build_consensus_block(state)
+        # Fundamentals should be excluded from consensus
+        if block is not None:
+            assert "fundamentals_analyst" not in block
+
+    def test_consensus_includes_fundamentals_when_valid(self):
+        from tradingagents.agents.managers.research_manager import _build_consensus_block
+
+        state = {
+            "market_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "sentiment_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "news_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "fundamentals_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "smart_money_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "volume_price_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "metadata": {
+                "fundamental_integrity": {
+                    "status": "VALID",
+                    "is_valid": True,
+                    "blockers": [],
+                },
+            },
+        }
+        block = _build_consensus_block(state)
+        # Fundamentals should still be included (as minority bearish)
+        if block is not None:
+            assert "fundamentals_analyst" in block
+
+    def test_consensus_works_without_integrity_metadata(self):
+        from tradingagents.agents.managers.research_manager import _build_consensus_block
+
+        state = {
+            "market_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "sentiment_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "news_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "fundamentals_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "smart_money_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "volume_price_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "metadata": {},
+        }
+        # Should not raise, should work as before
+        block = _build_consensus_block(state)
+        # Just verify no crash; block may or may not be None depending on counts
+
+
+# ── Risk Judge Pre-computed Integrity Tests ───────────────────────────────────
+
+class TestRiskJudgePrecomputedIntegrity:
+    """Test that Risk Judge uses pre-computed integrity from gate metadata."""
+
+    def test_risk_manager_uses_precomputed_integrity(self):
+        """Verify risk_manager_node reads pre-computed integrity when available."""
+        pre_computed = {
+            "status": "NEEDS_REVIEW",
+            "is_valid": False,
+            "blockers": [{"code": IDENTITY_UNVERIFIED, "reason": "test"}],
+            "claims": [],
+        }
+        # Simulate what risk_manager does
+        state_metadata = {"fundamental_integrity": pre_computed}
+        pre_computed_integrity = state_metadata.get("fundamental_integrity")
+        assert pre_computed_integrity is not None
+        assert not pre_computed_integrity["is_valid"]
+        assert pre_computed_integrity["blockers"][0]["code"] == IDENTITY_UNVERIFIED
+
+    def test_risk_manager_falls_back_without_precomputed(self):
+        """Verify risk_manager falls back to computing integrity."""
+        state_metadata = {}
+        pre_computed_integrity = state_metadata.get("fundamental_integrity")
+        assert pre_computed_integrity is None
+        # In real code, it would compute from raw_evidence
+
+    def test_period_facts_defined_when_precomputed_integrity(self):
+        """FUND-004A-R1: When pre-computed integrity is used, period_facts must
+        still be extracted from raw_evidence so C-006 and metadata do not crash
+        with UnboundLocalError."""
+        from tradingagents.agents.utils.financial_validator import (
+            check_financial_anomalies,
+        )
+        from tradingagents.agents.utils.fundamental_integrity import (
+            extract_financial_anomaly_inputs,
+        )
+
+        raw_evidence = {
+            "financial_period_facts": {
+                "status": "HAS_DATA",
+                "vendor": "fixture",
+                "raw": _facts(),
+            },
+        }
+        pre_computed_integrity = {
+            "status": "VALID",
+            "is_valid": True,
+            "blockers": [],
+            "claims": [],
+        }
+
+        # Simulate the fixed risk_manager logic: extract period_facts before branch
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        if pre_computed_integrity is not None:
+            fundamental_integrity = pre_computed_integrity
+        else:
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity={}, period_facts=period_facts,
+                explanation_context={}, report_text="",
+            )
+
+        # period_facts must be non-empty
+        assert period_facts
+        # C-006 must not crash
+        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
+        assert anomaly_inputs["gross_margin"] is not None
+        result = check_financial_anomalies("TEST", **anomaly_inputs)
+        assert "has_anomaly" in result
+
+    def test_period_facts_empty_when_no_raw_evidence(self):
+        """FUND-004A-R1: When raw_evidence has no financial_period_facts,
+        period_facts defaults to empty without crashing."""
+        raw_evidence = {}
+        pre_computed_integrity = {
+            "status": "VALID",
+            "is_valid": True,
+            "blockers": [],
+            "claims": [],
+        }
+
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        # Empty dict.get("raw") returns None; treat as empty list
+        if period_facts is None:
+            period_facts = []
+
+        assert period_facts == []
+        # extract_financial_anomaly_inputs must handle empty list
+
+exec
+/bin/zsh -lc "sed -n '430,760p' tests/test_fund004a_integrity_gate.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        # extract_financial_anomaly_inputs must handle empty list
+        from tradingagents.agents.utils.fundamental_integrity import (
+            extract_financial_anomaly_inputs,
+        )
+        anomaly_inputs = extract_financial_anomaly_inputs(period_facts)
+        assert anomaly_inputs["gross_margin"] is None
+
+    def test_period_facts_fallback_on_the_fly_computation(self):
+        """FUND-004A-R1: On-the-fly path still defines period_facts correctly."""
+        raw_evidence = {
+            "instrument_identity": {"raw": _identity()},
+            "financial_period_facts": {"raw": _facts()},
+            "fundamental_explanations": {"raw": {"status": "unexplained"}},
+        }
+
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
+        pre_computed_integrity = None
+
+        if pre_computed_integrity is not None:
+            fundamental_integrity = pre_computed_integrity
+        else:
+            identity_entry = raw_evidence.get("instrument_identity") or {}
+            explanation_entry = raw_evidence.get("fundamental_explanations") or {}
+            identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
+            explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
+            fundamental_integrity = evaluate_fundamental_integrity(
+                identity=identity,
+                period_facts=period_facts,
+                explanation_context=explanations,
+                report_text=_INVALID_REPORT,
+            )
+
+        assert period_facts
+        assert fundamental_integrity is not None
+        assert "is_valid" in fundamental_integrity
+
+
+# ── Memory Protection Tests ───────────────────────────────────────────────────
+
+class TestMemoryProtection:
+    """Test that invalid narratives don't flow into memory."""
+
+    def test_reflection_uses_gated_report_from_state(self):
+        """The reflector reads fundamentals_report from state.
+        Since the gate node already replaced it with the safe version,
+        memory automatically gets the safe version."""
+        from tradingagents.graph.reflection import Reflector
+
+        # Simulate gated state
+        gated_state = {
+            "market_report": "市场报告",
+            "sentiment_report": "舆情报告",
+            "news_report": "新闻报告",
+            "fundamentals_report": (
+                "【基本面语义门禁已触发 — 该模块不参与方向权重】\n\n"
+                "保留的可验证财务事实：\n营业收入：100.0 亿元\n"
+            ),
+        }
+
+        reflector = Reflector.__new__(Reflector)
+        situation = reflector._extract_current_situation(gated_state)
+
+        # The gated fundamentals should be in the situation
+        assert "不参与方向权重" in situation
+        # The invalid narrative should NOT be in the situation
+        assert "原材料成本下降" not in situation
+        assert "净额法" not in situation
+
+
+# ── End-to-End Gate Behavior Tests ────────────────────────────────────────────
+
+class TestEndToEndGateBehavior:
+    """Test the complete gate behavior from evaluation to downstream consumption."""
+
+    def test_603629_style_invalid_report_is_gated(self):
+        """Regression: 603629-style report with identity guess and unsupported
+        causal claims should be gated before reaching Bull/Bear."""
+        report = (
+            "利通电子（603629.SH）主营化工品生产与销售。"
+            "2025年Q1化工行业进入淡季，原材料采购成本下降导致毛利率提升至40%。"
+            "公司采用净额法确认设备经销收入。"
+            "经营现金流与净利润背离，现金流质量存疑。"
+        )
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(False), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=report,
+        )
+        assert not integrity["is_valid"]
+
+        gated = build_gated_fundamentals_report(
+            original_report=report, integrity=integrity,
+            pool=_pool(False),
+        )
+        # Gated report must not contain the unsupported narratives as claims
+        assert "主营化工品生产与销售" not in gated
+        assert "化工行业进入淡季" not in gated
+        assert "原材料采购成本下降导致毛利率提升至40%" not in gated
+        assert "公司采用净额法" not in gated
+        assert "经营现金流与净利润背离" not in gated
+        # But should contain verified facts and blocker diagnostics
+        assert "营业收入" in gated
+        assert "不参与方向权重" in gated
+        assert CAUSE_UNSUPPORTED in gated or IDENTITY_UNVERIFIED in gated
+
+    def test_valid_report_passes_through(self):
+        """A report with no unsupported claims should pass the gate."""
+        simple_report = "利通电子营业收入100亿元，净利润10亿元。"
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(), period_facts=_facts(),
+            explanation_context={"status": "unexplained"},
+            report_text=simple_report,
+        )
+        # No causal or accounting claims → should be valid
+        assert integrity["is_valid"]
+
+    def test_accounting_claim_without_evidence_is_gated(self):
+        """Accounting method claims without official evidence should be gated."""
+        report = "公司采用净额法确认收入。"
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(), period_facts=_facts(),
+            explanation_context={"status": "unexplained", "accounting_policy_terms": []},
+            report_text=report,
+        )
+        assert not integrity["is_valid"]
+        codes = {b["code"] for b in integrity["blockers"]}
+        assert ACCOUNTING_POLICY_UNKNOWN in codes
+
+exec
+/bin/zsh -lc 'grep -R "financial_period_facts" -n tradingagents api tests | head -80' in /Users/maybee/TradingAgents-AShare
+ succeeded in 210ms:
+tradingagents/graph/data_collector.py:591:    results["financial_period_facts"] = [fact.to_dict() for fact in normalized_facts]
+tradingagents/graph/data_collector.py:880:        facts = pool.get("financial_period_facts") or []
+tradingagents/graph/data_collector.py:881:        raw_evidence["financial_period_facts"] = {
+tradingagents/graph/data_collector.py:883:            "field": "financial_period_facts",
+Binary file tradingagents/graph/__pycache__/setup.cpython-312.pyc matches
+Binary file tradingagents/graph/__pycache__/data_collector.cpython-312.pyc matches
+tradingagents/graph/setup.py:45:        period_facts = pool.get("financial_period_facts") or []
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-312.pyc matches
+tradingagents/agents/managers/risk_manager.py:171:        period_entry = raw_evidence.get("financial_period_facts") or {}
+tradingagents/agents/utils/event_risk_gate.py:276:    # 杠杆率：从 financial_period_facts 提取
+tradingagents/agents/utils/event_risk_gate.py:278:        period_entry = raw_evidence.get("financial_period_facts")
+tradingagents/agents/utils/fundamental_integrity.py:1103:    period_facts = pool.get("financial_period_facts") or []
+Binary file tradingagents/agents/utils/__pycache__/event_risk_gate.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/fundamental_integrity.cpython-312.pyc matches
+Binary file tradingagents/agents/analysts/__pycache__/fundamentals_analyst.cpython-312.pyc matches
+tradingagents/agents/analysts/fundamentals_analyst.py:42:            period_context = render_financial_period_context(pool.get("financial_period_facts", []))
+tests/test_fund006a_provider_replay.py:472:            "financial_period_facts": [
+tests/test_fund006a_provider_replay.py:507:            "financial_period_facts": [
+tests/test_fund006a_provider_replay.py:605:            "financial_period_facts": {"status": "HAS_DATA", "vendor": "fixture"},
+tests/test_fund006a_provider_replay.py:721:            "financial_period_facts": [f.to_dict() for f in all_facts],
+tests/test_fund006a_provider_replay.py:740:        ctx = render_financial_period_context(pool["financial_period_facts"])
+tests/test_fund006a_provider_replay.py:842:            "financial_period_facts": {"status": "HAS_DATA", "vendor": "fixture"},
+Binary file tests/__pycache__/test_fund006a_provider_replay.cpython-312.pyc matches
+Binary file tests/__pycache__/test_fund004a_integrity_gate.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_c007_event_risk_gate.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_fund006a_provider_replay.cpython-312-pytest-9.0.2.pyc matches
+tests/test_fund004a_integrity_gate.py:51:        "financial_period_facts": _facts(),
+tests/test_fund004a_integrity_gate.py:380:            "financial_period_facts": {
+tests/test_fund004a_integrity_gate.py:394:        period_entry = raw_evidence.get("financial_period_facts") or {}
+tests/test_fund004a_integrity_gate.py:413:        """FUND-004A-R1: When raw_evidence has no financial_period_facts,
+tests/test_fund004a_integrity_gate.py:423:        period_entry = raw_evidence.get("financial_period_facts") or {}
+tests/test_fund004a_integrity_gate.py:441:            "financial_period_facts": {"raw": _facts()},
+tests/test_fund004a_integrity_gate.py:445:        period_entry = raw_evidence.get("financial_period_facts") or {}
+tests/test_c007_event_risk_gate.py:426:            "financial_period_facts": {
+
+exec
+/bin/zsh -lc "sed -n '850,900p' tradingagents/graph/data_collector.py && sed -n '1,80p' tradingagents/graph/setup.py && sed -n '260,310p' tradingagents/agents/utils/event_risk_gate.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                "error": entry["error"],
+                "fallback_from": entry["fallback_from"],  # [DATA-004]
+                "source_url": entry["source_url"],  # [DATA-004]
+                "is_realtime_patched": entry["is_realtime_patched"],
+                "source_type": entry.get("source_type"),
+                "unit_verified": entry.get("unit_verified", None),
+                "query_mode": entry.get("query_mode", None),
+                "adjustment": entry.get("adjustment", None),  # [DATA-P0-603629] astock_source_fallback
+                "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
+            }
+
+        # [FUND-001/FUND-002] These are deterministic sidecars, not provider
+        # substitutes.  Keeping them in raw_evidence makes the later risk gate
+        # independent from a particular LangGraph node's local cache.
+        identity = pool.get("instrument_identity") or {}
+        raw_evidence["instrument_identity"] = {
+            "raw": identity,
+            "field": "instrument_identity",
+            "status": str(identity.get("status") or "MISSING"),
+            "vendor": identity.get("source", "provider"),
+            "endpoint": "",
+            "as_of": identity.get("as_of") or trade_date,
+            "fetched_at": now_iso,
+            "record_count": 1 if identity else 0,
+            "unit": None,
+            "error": identity.get("conflict_reason"),
+            "fallback_from": None,
+            "source_url": None,
+            "is_realtime_patched": False,
+        }
+        facts = pool.get("financial_period_facts") or []
+        raw_evidence["financial_period_facts"] = {
+            "raw": facts,
+            "field": "financial_period_facts",
+            "status": "HAS_DATA" if facts else "NORMAL_NO_DATA",
+            "vendor": "deterministic_normalizer",
+            "endpoint": "",
+            "as_of": trade_date,
+            "fetched_at": now_iso,
+            "record_count": len(facts),
+            "unit": None,
+            "error": None,
+            "fallback_from": None,
+            "source_url": None,
+            "is_realtime_patched": False,
+        }
+
+        # [KB-003] local_knowledge_raw_evidence — wiki 不依赖 data collector pool，
+        # 单独注入；失败不阻塞主链路。
+        try:
+            from tradingagents.dataflows.local_knowledge_provider import (
+# TradingAgents/graph/setup.py
+
+from typing import Dict, Any, List, Optional
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph, START
+from langgraph.prebuilt import ToolNode
+
+from tradingagents.agents.utils.agent_states import AgentState
+
+from .conditional_logic import ConditionalLogic
+
+
+def create_fundamentals_integrity_gate(data_collector=None):
+    """[FUND-004A] Create a graph node that gates fundamentals report integrity.
+
+    Runs after Fundamentals Analyst, before Bull/Bear. When integrity fails,
+    replaces the fundamentals_report with a safe version containing only
+    verified facts and blocker reasons — no unsupported narrative.
+    """
+    import logging
+    from tradingagents.agents.utils.fundamental_integrity import (
+        evaluate_fundamental_integrity,
+        build_gated_fundamentals_report,
+    )
+
+    _logger = logging.getLogger(__name__)
+
+    async def fundamentals_integrity_gate_node(state):
+        ticker = state.get("company_of_interest", "")
+        trade_date = state.get("trade_date", "")
+        fundamentals_report = state.get("fundamentals_report", "")
+
+        if not fundamentals_report:
+            return {}
+
+        if data_collector is None:
+            return {}
+
+        pool = data_collector.get(ticker, trade_date)
+        if pool is None:
+            _logger.warning("[FUND-004A] No data pool for %s %s, skipping gate", ticker, trade_date)
+            return {}
+
+        identity = pool.get("instrument_identity") or {}
+        period_facts = pool.get("financial_period_facts") or []
+        explanations = pool.get("fundamental_explanations") or {}
+
+        integrity = evaluate_fundamental_integrity(
+            identity=identity,
+            period_facts=period_facts,
+            explanation_context=explanations,
+            report_text=fundamentals_report,
+        )
+
+        metadata = dict(state.get("metadata") or {})
+        metadata["fundamental_integrity"] = integrity
+
+        if not integrity["is_valid"]:
+            gated_report = build_gated_fundamentals_report(
+                original_report=fundamentals_report,
+                integrity=integrity,
+                pool=pool,
+            )
+            _logger.info(
+                "[FUND-004A] Gate triggered for %s: %d blockers, replacing fundamentals_report",
+                ticker, len(integrity.get("blockers", [])),
+            )
+            return {
+                "fundamentals_report": gated_report,
+                "metadata": metadata,
+            }
+
+        return {"metadata": metadata}
+
+    return fundamentals_integrity_gate_node
+
+
+def _load_agent_factories() -> dict[str, Any]:
+    """Load graph node factories lazily to avoid circular imports.
+
+                result["announcements_text"] = "\n".join(parts)
+        # 从 raw_evidence 提取新闻文本
+        news_entry = raw_evidence.get("news")
+        if isinstance(news_entry, dict):
+            raw_news = news_entry.get("raw")
+            if isinstance(raw_news, str):
+                result["news_text"] = raw_news
+
+    # 外部传入的文本作为 fallback
+    if not result["announcements_text"] and announcements_text:
+        result["announcements_text"] = announcements_text
+    if not result["news_text"] and news_text:
+        result["news_text"] = news_text
+
+    # 从 raw_evidence 提取结构化指标（如果可用）
+    # 解禁比例：从公告关键词推断（结构化解禁数据不在标准 raw_evidence 中）
+    # 杠杆率：从 financial_period_facts 提取
+    if raw_evidence:
+        period_entry = raw_evidence.get("financial_period_facts")
+        if isinstance(period_entry, dict):
+            period_facts = period_entry.get("raw", [])
+            if isinstance(period_facts, list):
+                result.update(_extract_leverage_from_facts(period_facts))
+
+        # 从 fundamental_explanations 提取业绩变化
+        expl_entry = raw_evidence.get("fundamental_explanations")
+        if isinstance(expl_entry, dict):
+            expl_raw = expl_entry.get("raw", {})
+            if isinstance(expl_raw, dict):
+                entries = expl_raw.get("entries", [])
+                if isinstance(entries, list):
+                    result["net_profit_change"] = _extract_profit_change_from_explanations(entries)
+
+    return result
+
+
+def _extract_leverage_from_facts(facts: list) -> dict:
+    """从财务期间事实中提取杠杆率。"""
+    result = {}
+    for fact in reversed(facts):  # 最新优先
+        if not isinstance(fact, dict):
+            continue
+        metric = fact.get("metric", "")
+        if metric == "total_assets":
+            assets = fact.get("value")
+            # 找同报告日的负债
+            report_date = fact.get("report_date")
+            for other in facts:
+                if (isinstance(other, dict)
+                        and other.get("metric") == "total_liabilities"
+                        and other.get("report_date") == report_date):
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_fund004a_integrity_gate.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1367ms:
+.......................                                                  [100%]
+23 passed in 0.87s
+
+exec
+/bin/zsh -lc "find docs/task_runs/FUND-004A-R1-20260723-185024 -maxdepth 1 -type f -printf '%f\\n' | sort && sed -n '1,200p' docs/task_runs/FUND-004A-R1-20260723-185024/summary.md 2>/dev/null || true && sed -n '1,200p' docs/task_runs/FUND-004A-R1-20260723-185024/codex-review-round1.txt 2>/dev/null || true" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+find: -printf: unknown primary or operator
+
+exec
+/bin/zsh -lc 'find docs/task_runs/FUND-004A-R1-20260723-185024 -maxdepth 1 -type f -print | sort; for f in summary.md codex-review-round1.txt; do echo ---$f; sed -n '"'1,220p' docs/task_runs/FUND-004A-R1-20260723-185024/"'$f 2>/dev/null || true; done' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/FUND-004A-R1-20260723-185024/codegraph-context.txt
+docs/task_runs/FUND-004A-R1-20260723-185024/codegraph-impact.txt
+docs/task_runs/FUND-004A-R1-20260723-185024/codegraph-status.json
+docs/task_runs/FUND-004A-R1-20260723-185024/opencode-round1.txt
+docs/task_runs/FUND-004A-R1-20260723-185024/prompt-round1.md
+docs/task_runs/FUND-004A-R1-20260723-185024/task.md
+docs/task_runs/FUND-004A-R1-20260723-185024/tests-round1.txt
+---summary.md
+---codex-review-round1.txt
+
+exec
+/bin/zsh -lc 'git diff --check' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+codex
+The risk_manager change initializes period_facts before both integrity branches, addressing the precomputed-integrity UnboundLocalError without changing fallback behavior. The focused FUND-004A tests pass locally.
+The risk_manager change initializes period_facts before both integrity branches, addressing the precomputed-integrity UnboundLocalError without changing fallback behavior. The focused FUND-004A tests pass locally.

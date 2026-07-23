@@ -163,14 +163,19 @@ def create_risk_manager(llm, memory):
         # [FUND-004A] Use pre-computed integrity from gate node if available,
         # otherwise compute here (fallback for runs without the gate node).
         pre_computed_integrity = (state.get("metadata") or {}).get("fundamental_integrity")
+        # [FUND-004A-R1] Always extract period_facts so it is defined for C-006
+        # (line ~191) and metadata (line ~523), regardless of whether integrity
+        # was pre-computed or computed on-the-fly. Previously this lived inside
+        # the `else` branch below, so when pre_computed_integrity was present,
+        # period_facts was never bound and the C-006 call raised UnboundLocalError.
+        period_entry = raw_evidence.get("financial_period_facts") or {}
+        period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
         if pre_computed_integrity is not None:
             fundamental_integrity = pre_computed_integrity
         else:
             identity_entry = raw_evidence.get("instrument_identity") or {}
-            period_entry = raw_evidence.get("financial_period_facts") or {}
             explanation_entry = raw_evidence.get("fundamental_explanations") or {}
             identity = identity_entry.get("raw") if isinstance(identity_entry, dict) else {}
-            period_facts = period_entry.get("raw") if isinstance(period_entry, dict) else []
             explanations = explanation_entry.get("raw") if isinstance(explanation_entry, dict) else {}
             fundamental_integrity = evaluate_fundamental_integrity(
                 identity=identity,

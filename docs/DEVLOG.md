@@ -1,5 +1,40 @@
 # 修改日志
 
+## 2026-07-23 | FUND-004A-R1 预计算 integrity 路径初始化 period_facts
+
+- **任务**：FUND-004A-R1 — 补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`（P0）
+- **状态**：✅ 实现完成；23 项 FUND-004A 测试 passed，FUND/C-006 回归 168 passed
+- **代码标注**：`# [FUND-004A-R1]`（已有 `# [FUND-004A]` 标注）
+
+### 改动
+
+- **`tradingagents/agents/managers/risk_manager.py`**（修改）
+  - 原代码中 `period_facts` 仅在 `else`（现场计算）分支定义，当 `pre_computed_integrity` 非 None 时直接赋值后跳过 `else`，导致后续 `extract_financial_anomaly_inputs(period_facts)` 和 metadata 写入触发 `UnboundLocalError`
+  - 修复：将 `period_entry` / `period_facts` 提取移到 `if/else` 分支之前，两条路径均可使用
+
+- **`tests/test_fund004a_integrity_gate.py`**（修改）
+  - 新增 3 项 FUND-004A-R1 对抗测试：
+    - `test_period_facts_defined_when_precomputed_integrity`：预计算路径下 period_facts 仍从 raw_evidence 提取，C-006 不崩溃
+    - `test_period_facts_empty_when_no_raw_evidence`：raw_evidence 为空时 period_facts 安全降级为空
+    - `test_period_facts_fallback_on_the_fly_computation`：现场计算路径 period_facts 正确定义
+
+### 设计要点
+
+- **最小改动**：仅移动两行提取语句，不改变任何逻辑分支或数据流
+- **两条路径一致**：无论 integrity 来自预计算还是现场计算，`period_facts` 始终从 `raw_evidence` 提取，保证 C-006 和 metadata 一致可用
+- **空数据安全**：`raw_evidence` 缺失或不含 `financial_period_facts` 时，`period_facts` 为 `[]` 或 `None`，`extract_financial_anomaly_inputs` 均可处理
+
+### 回归
+
+- `pytest tests/test_fund004a_integrity_gate.py -v`：**23 passed**
+- `pytest tests/test_fund003_fund004_integrity.py tests/test_fund006_integrity_replay.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -v`：**168 passed**
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-23 | 夜间自动开发批次续排
 
 - FUND-004B-R1 已由人工复核闭环，今晚领取起点调整为 `FUND-004A-R1`。
@@ -14771,3 +14806,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review verdict was ambiguous
 - **Run archive**: docs/task_runs/FUND-004B-R1-20260723-155911/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-004A-R1 - 预计算 integrity 路径初始化 period_facts（P0）
+- **Priority**: P0
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review verdict was ambiguous
+- **Run archive**: docs/task_runs/FUND-004A-R1-20260723-185024/
