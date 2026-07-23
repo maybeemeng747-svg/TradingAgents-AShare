@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-22
+> 最后更新：2026-07-23
 
 ---
 
@@ -22,52 +22,237 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-22）
+### 当前执行队列（2026-07-23）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
-> **执行前置**：FUND-001A、FUND-003A 与 FUND-003A-B 已完成确定性补修和 Codex 多轮对抗复审。工作区恢复干净后，从 FUND-004B 开始按依赖串行自动领取；自动循环继续遵守 dirty-tree 停止规则。
+> **验收纠偏**：2026-07-22 夜间至 2026-07-23 清晨共生成 25 个 `auto:` 实现提交。旧脚本在 `set -o pipefail` 下用 `echo | grep -q` 扫描整份 review，命中大文件时发生 SIGPIPE，反而把含 finding 的 review 判成 PASS；同时旧规则未阻断 P2。复核后仅 `C-004` 的最终 review 无 P0/P1/P2 correctness finding，其余 24 个实现提交均需补修。历史章节中的 `done` 只表示“代码已提交”，不再表示“验收通过”；以下 `*-R1` 状态才是当前验收真源。
 
-1. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
-2. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done；由 `2d98abc` 完成复审收口）。
-3. `FUND-003A-B`：因果证据按术语/出现位置绑定补修（P0，done，`2d98abc`）。
-4. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready；前置依赖已闭环）。
-5. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done；实现完成，460 项回归通过）。
-6. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto；等待 FUND-004A done → 可领取）。
-7. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
-8. `FUND-007A`：财报错误模式基准集与持续回归报告（P2，done，FUND-007A-20260722-213159）。
-9. `FUND-001~006`：第一版实现（blocked-review；329 项专项/回归测试通过，但存在 4 个 P1，等待上述补修链闭环后统一验收）。
-10. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader（P1，done，commit 87dcd44 + 24881f6，73 tests passed）。
-11. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
-12. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，done，SCORE-002-20260723-023857）。
-13. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto；等待 SCORE-001）。
-14. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto；等待 SCORE-002/SCORE-003）。
-15. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto；等待 SCORE-004）。
-16. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human；等待 SCORE-005 与 ZCode 正式快照人工确认）。
-17. `AUTO-007`：自动开发依赖感知领取与阻塞任务自动解锁（P1，done；最终补修 `623f45c`）。
-18. `KB-019`：ZCode 研报增量摄取清单与重复导入预检（P2，blocked — NEEDS_HUMAN；等待专项收口）。
-19. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，done，HY-009-20260723-054123）。
-20. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked；等待 HY-009）。
-21. `UI-014`：TA 研报证据中心与来源下钻（P2，done）。
-22. `V-015`：研报增量摄取→证据 API→前端→待更新清单端到端验收（P2，blocked；等待 UI-014/HY-010）。
-23. `PLAYBOOK-002`：计划仓位上限与三笔法规则引擎（P1，blocked，战略暂停）。
+1. `AUTO-008`：Codex final-answer 结构化解析与 fail-closed 门禁（done，`0901b91`）。
+2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（P0，ready）。
+3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，blocked-auto）。
+4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，blocked-auto）。
+5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（P0，blocked-auto）。
+6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（P1，blocked-auto）。
+7. `SCORE-003-R1`：`portfolio_fit` 响应契约、未知账户与部分风险预算（P0，blocked-auto）。
+8. `C-003-R1`：保留多头退出动作并封住流式未清洗输出（P0，blocked-auto）。
+9. `C-007-R1`：事件门禁必须覆盖可执行 BUY，修复“扭亏为盈”误判（P0，blocked-auto）。
+10. `M-010-R1`：飞书 webhook 脱敏、渠道校验与异步测试（P0，blocked-auto）。
+11. `B-004-R1`：持仓同步路径白名单、失败语义和输入校验（P0，blocked-auto）。
+12. 其余 review finding 进入第二批：`FUND-006A/007A-R1`、`F-001-R1`、`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
-> FUND 补修链优先级高于 SCORE 与 UI。只有 FUND-006A 离线生产图回放通过后，才能由用户人工确认发起一次 live 603629 验收；模型更换与 A/B 测试不得替代确定性门禁。任一补修任务出现 P0/P1 finding 时停止后续任务。
+> 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
-### 今晚 4 小时执行包（2026-07-22）
+### 今晚修复执行包（2026-07-23）
 
-> 目标预算约 200-265 分钟。按下列顺序串行执行，不并发修改共享基本面链路。每项必须完成“实现 → 定向测试 → 相关回归 → Codex review → 精确提交 → 状态回写”后才可解锁下一项。Codex review 出现 P0/P1/P2 correctness finding、测试失败、工作区意外变脏或任务超时，立即停止整批并进入人工处理；不得带病跳到下一项。
+> 预计 220-300 分钟。只允许 `FUND-004B-R1` 初始为 ready；每项 PASS 后由依赖解析器释放下一项。任何 P0/P1/P2 finding、测试失败、review UNKNOWN/超时或 dirty tree 都应立即停止，不得继续提交。
 
-| 顺序 | 任务 | 预计耗时 | 本轮放行条件 |
+| 顺序 | 任务 | 预计耗时 | 验收重点 |
 |---|---|---:|---|
-| 1 | `FUND-003A-B` | done | `2d98abc`；72 项专项、271 项聚焦回归通过，复审无 P0/P1/P2 |
-| 2 | `FUND-004B` | 30-40 分钟 | C-006 只使用同日期、同期间、同单位指标组；缺组时 fail closed |
-| 3 | `FUND-004A` | 40-50 分钟 | 基本面语义门禁在 Bull/Bear 前执行；无效叙事不参与研究权重或记忆 |
-| 4 | `FUND-005A` | 25-35 分钟 | trace 记录真实 actual model/fallback/耗时；未知时写 unknown，不伪装 requested model |
-| 5 | `FUND-006A` | 40-50 分钟 | 真实 provider fixture + 完整生产图离线回放通过；独立 review 无 P0/P1/P2 correctness finding |
-| 6 | `FUND-007A` | 30-40 分钟 | 形成可重复执行的财报错误模式基准集、机器结果和人读回归报告；不得把一次性样本写死为交易结论 |
+| 1 | `FUND-004B-R1` | 25-40 分钟 | 利润与现金流必须来自同 `(report_date, period_scope, unit)` 组 |
+| 2 | `FUND-004A-R1` | 25-40 分钟 | 复用 integrity 时 `period_facts` 始终定义，图级风险节点不崩溃 |
+| 3 | `FUND-005A-R1` | 20-30 分钟 | 未知 actual model 不得回填 requested model |
+| 4 | `SCORE-001B-R1` | 35-45 分钟 | 无未来数据泄漏；失败、空数据和动作词语义正确 |
+| 5 | `SCORE-002-R1` | 25-35 分钟 | API 真正返回评分卡，risk penalty 可持久化回读 |
+| 6 | `SCORE-003-R1` | 30-45 分钟 | 缺账户上下文不得给高适配分；部分预算参与评分 |
+| 7 | `C-003-R1` | 30-40 分钟 | SELL/EXIT 不被误删，流式输出只暴露清洗后文本 |
+| 8 | `C-007-R1` | 25-35 分钟 | 事件门禁实际降级动作，转盈不误判业绩暴雷 |
 
-> **夜间终点**：只完成离线确定性修复、基准沉淀和验收，不调用 live LLM、不写生产数据库、不自动重跑 603629。即使 4 小时内全部通过，真实 603629 验收仍保持 `blocked-human`，等待孟白天确认 provider、模型和预计调用次数。
+> 若 4 小时窗口未跑完，保持剩余任务为 blocked-auto，下一晚续跑。`M-010-R1` 与 `B-004-R1` 在上述链路完成后自动释放。
+
+### AUTO-008: Codex review 结构化判定与 fail-closed 门禁（P0）
+- **描述**：只解析 `codex review` 最后一个 `codex` 段落；P0/P1/P2 阻断并进入修复轮，P3 仅归档；UNKNOWN、超时、配置/额度失败一律不得提交。
+- **优先级**：P0
+- **状态**：done — commit `0901b91`
+- **验收方式**：140 项自动化/依赖/静态测试通过；独立 `codex review --uncommitted` 无 correctness finding；覆盖 2 MB review 的 SIGPIPE 回归、P2、P3、常见 clean wording 与缺 marker。
+
+### FUND-004B-R1: 利润与经营现金流同财务组绑定（P0）
+- **描述**：补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值。
+- **优先级**：P0
+- **状态**：ready
+- **预计耗时**：25-40 分钟
+- **depends_on**：AUTO-008
+- **auto_release**：true
+- **验收方式**：跨日期、跨 scope、跨单位、仅一侧缺失均 fail closed；同组数据可计算；相关 FUND/C-006 回归通过。
+
+### FUND-004A-R1: 预计算 integrity 路径初始化 period_facts（P0）
+- **描述**：补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：25-40 分钟
+- **depends_on**：FUND-004B-R1
+- **auto_release**：true
+- **验收方式**：预计算/现场计算/缺数据三条图路径都进入风控节点且不崩溃，决策输入仍剔除被拒叙事。
+
+### FUND-005A-R1: actual model 未知态修复（P1）
+- **描述**：补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **预计耗时**：20-30 分钟
+- **depends_on**：FUND-004A-R1
+- **auto_release**：true
+- **验收方式**：actual/fallback/unknown 三态 fixture 与 trace 回读通过。
+
+### SCORE-001B-R1: 快照时点、动作词与失败态补修（P0）
+- **描述**：补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：35-45 分钟
+- **depends_on**：FUND-005A-R1
+- **auto_release**：true
+- **验收方式**：历史回放无未来数据；FAILED/NORMAL_NO_DATA/NOT_QUERIED 可区分；聚合 API 与 candidate detail 不含知识库交易动作。
+
+### SCORE-002-R1: entry_timing API 与持久化补修（P1）
+- **描述**：补修 `594d742`，把已计算的评分卡暴露到真实响应模型，并把 risk penalty 接入候选持久化/回读。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **预计耗时**：25-35 分钟
+- **depends_on**：SCORE-001B-R1
+- **auto_release**：true
+- **验收方式**：API schema、service、DB 回读和旧记录兼容测试通过。
+
+### SCORE-003-R1: portfolio_fit 契约与未知上下文补修（P0）
+- **描述**：补修 `cd6bb36`：响应模型暴露评分卡；缺账户上下文不得归一为高适配；部分风险预算必须影响 fit 与原因。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：30-45 分钟
+- **depends_on**：SCORE-002-R1
+- **auto_release**：true
+- **验收方式**：无账户、零现金、超配、部分预算、权限不足和正常账户六类 fixture。
+
+### C-003-R1: 做空过滤边界与流式清洗（P0）
+- **描述**：补修 `7f74755`：SELL/EXIT/减仓等多头退出不得当成做空删除；流式事件不得先暴露未清洗 manager 文本；英文匹配不区分大小写。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：30-40 分钟
+- **depends_on**：SCORE-003-R1
+- **auto_release**：true
+- **验收方式**：多头退出、裸空、混合中英文、流式与最终响应一致性对抗测试通过。
+
+### C-007-R1: 事件风险门禁实际动作覆盖（P0）
+- **描述**：补修 `1616543`：门禁触发时必须覆盖可执行 BUY/ENTER，而非仅追加告警；“扭亏为盈”不得命中业绩暴雷。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：25-35 分钟
+- **depends_on**：C-003-R1
+- **auto_release**：true
+- **验收方式**：BUY 被确定性降级；正向业绩、负向业绩和文本否定边界通过。
+
+### M-010-R1: 飞书 webhook 安全与异步测试补修（P0）
+- **描述**：补修 `52cadc2`：异常不得泄漏 webhook/token；非飞书 channel 不得走飞书发送；修复依赖全局 event loop 的顺序敏感测试。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：30-40 分钟
+- **depends_on**：C-007-R1
+- **auto_release**：true
+- **验收方式**：HTTP 4xx/5xx/超时日志脱敏；非法 channel 拒绝；组合测试无 event-loop 失败。
+
+### B-004-R1: 持仓同步路径与失败语义补修（P0）
+- **描述**：补修 `fc864bb`：限制可写路径；外部文件不可读时不得覆盖；双向写失败不得报告成功；非法 direction 和 malformed rows 返回明确 4xx。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：35-50 分钟
+- **depends_on**：M-010-R1
+- **auto_release**：true
+- **验收方式**：路径逃逸、软链接、只读文件、部分写失败、非法方向和脏行六类对抗测试通过。
+
+### FUND-006A-R1: 离线回放测试有效性补修（P1）
+- **描述**：修正 `3655339` 中未实际断言生产行为、断言过宽或被 fixture 自证的七类测试。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：B-004-R1
+- **auto_release**：true
+
+### FUND-007A-R1: 错误模式基准因果短语补修（P2）
+- **描述**：补齐“所致”等因果短语并强化基准结果断言，避免错误样本漏检。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：FUND-006A-R1
+- **auto_release**：true
+
+### F-001-R1: 未持仓试错 Buy Level 上限补修（P2）
+- **描述**：未持仓条件试错的 Buy Level 上限固定为 2，不得进入 Level 3。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：FUND-007A-R1
+- **auto_release**：true
+
+### PLAYBOOK-002-R1: 三笔法组合约束补修（P1）
+- **描述**：把计算后的计划仓位传入加仓检查；第一次大跌/跌停未打开禁止进攻仓；试错仓补最大下行约束。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：F-001-R1
+- **auto_release**：true
+
+### SCORE-001-R1: 快照 loader 验收档案修正（P2）
+- **描述**：修正文档中不可达/过期 commit 引用和 run archive 的 CLAIMED 状态，不改生产 loader。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：PLAYBOOK-002-R1
+- **auto_release**：true
+
+### B-001-R1: MiMo provider 配置与凭据路由补修（P1）
+- **描述**：让存储的 MiMo key、base_url、默认模型在完整图路径一致生效，目录 key scope 与实际读取保持一致。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：SCORE-001-R1
+- **auto_release**：true
+
+### B-002-R1: 调度回调报告字段补修（P2）
+- **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：B-001-R1
+- **auto_release**：true
+
+### B-003-R1: 飞书文档链接与根节点写入补修（P2）
+- **描述**：生成正确 tenant-aware 文档链接；根节点写入不得依赖一次不必要的 read 成功。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：B-002-R1
+- **auto_release**：true
+
+### C-001-R1: 持仓推断与 HOLD 绕门禁补修（P2）
+- **描述**：门禁使用显式+推断后的统一持仓上下文；正文出现“等待”不得让错误 HOLD 绕过转换。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：B-003-R1
+- **auto_release**：true
+
+### C-005-R1: 止损文本方向识别补修（P2）
+- **描述**：止损条件属于风险控制，不得单独把研究方向判成偏空。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：C-001-R1
+- **auto_release**：true
+
+### C-006-R1: 财务质量指标生产接线补修（P2）
+- **描述**：Phase 2 指标由真实 normalizer 产出；负利润时现金流质量比不得产生误导性正向结论。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：C-005-R1
+- **auto_release**：true
+
+### HY-009-R1: 半年报增量缓存与冲突审计补修（P2）
+- **描述**：expiry-only 变化也使缓存失效；冲突检查不得受 max_pages 截断；现金流冲突进入不可用状态。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：C-006-R1
+- **auto_release**：true
+
+### M-009-R1: 观察池独立数据源补修（P2）
+- **描述**：观察池不得继承候选页隐藏筛选条件，必须读取完整观察状态集合。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：HY-009-R1
+- **auto_release**：true
+
+### UI-014-R1: 研报证据中心真实契约与请求状态补修（P2）
+- **描述**：按 KB-020 真实 summary schema 展示；symbol 变化清空旧数据；失败后稳定展示错误而非无限重试。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：M-009-R1
+- **auto_release**：true
 
 #### FUND-003A-B 补修验收口径
 

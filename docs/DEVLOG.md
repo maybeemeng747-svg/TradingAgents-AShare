@@ -1,5 +1,22 @@
 # 修改日志
 
+## 2026-07-23 | AUTO-008 夜间验收纠偏与 Codex review 门禁
+
+- **验收范围**：2026-07-22 20:20 至 2026-07-23 06:29 的 25 个 `auto:` 实现提交。
+- **结论**：仅 C-004 最终 review 无 P0/P1/P2 finding；其余 24 个实现提交存在 correctness finding，已转为 `*-R1` 补修链。
+- **根因**：旧 `echo "$REVIEW_CONTENT" | grep -q` 在 `pipefail` 下遇到大输出和命中时发生 SIGPIPE，反而得到非零管道状态；同时扫描整份日志且未阻断 P2。
+- **修复 commit**：`0901b91`。
+- **修复内容**：
+  - 新增 `scripts/parse_codex_review.py`，只解析最后一个 Codex final-answer 段。
+  - P0/P1/P2 阻断，P3 仅归档；UNKNOWN/超时/配置或额度失败均 fail closed。
+  - 修复 timeout 分支顶层 `local` 导致的异常退出。
+  - 新增 2 MB SIGPIPE、P2/P3、上下文噪声、常见 clean wording、缺 marker 和 CLI exit code 回归。
+- **验证**：140 passed；`bash -n` 与 `git diff --check` 通过；两轮独立 Codex review 补修后无 correctness finding。
+- **验收报告**：`docs/reviews/overnight-acceptance-2026-07-23.md`。
+- **后续**：仅 `FUND-004B-R1` 初始为 ready，按依赖串行释放；不调用 live LLM、不写生产 DB、不自动 push。
+
+---
+
 ## 2026-07-23 | UI-014 TA 研报证据中心与来源下钻
 
 - **任务**：UI-014 — 在报告查看体验中增加轻量"研报证据"入口，让用户看到同股研报共识、分歧、半年报事实、待验证项和来源路径（P2）
