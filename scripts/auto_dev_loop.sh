@@ -1105,15 +1105,40 @@ FIX_EOF
     cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
     log "Review saved: $REVIEW_SAVE_PATH"
 
+    # [AUTO-008] Parse only the final Codex answer.  Review logs include task
+    # context and diffs that may mention P0/P1/P2; scanning the whole file
+    # creates false positives.  The old `echo ... | grep -q` check also became
+    # a false negative under pipefail when large output made echo hit SIGPIPE.
+    REVIEW_DECISION="UNKNOWN"
+    REVIEW_PARSE_OUTPUT=""
+    REVIEW_PARSE_EXIT=20
+    REVIEW_PARSER="$SCRIPT_DIR/parse_codex_review.py"
+    if [ "$REVIEW_SKIPPED" = false ] && [ "$CODEX_EXIT" -eq 0 ]; then
+        if [ -f "$REVIEW_PARSER" ]; then
+            set +e
+            REVIEW_PARSE_OUTPUT=$(python3 "$REVIEW_PARSER" "$REVIEW_FILE" 2>&1)
+            REVIEW_PARSE_EXIT=$?
+            set -e
+            case "$REVIEW_PARSE_EXIT" in
+                0) REVIEW_DECISION="CLEAN" ;;
+                10) REVIEW_DECISION="FINDINGS" ;;
+                *) REVIEW_DECISION="UNKNOWN" ;;
+            esac
+        else
+            REVIEW_PARSE_OUTPUT="STATUS=UNKNOWN"$'\n'"ERROR=missing parser: $REVIEW_PARSER"
+        fi
+    fi
+    log "Codex review decision: $REVIEW_DECISION"
+
     # [AUTO-006] codex_review_watchdog — persist review meta for the nightly
-    # report regardless of outcome. Determine status here so the JSON stays a
-    # single source of truth even when later branches flip RESULT_STATUS.
+    # report regardless of outcome.  A zero Codex process exit is not enough:
+    # the final review must explicitly classify as clean.
     CODEX_META_STATUS="UNKNOWN"
     if [ "$REVIEW_SKIPPED" = true ]; then
         CODEX_META_STATUS="SKIPPED"
     elif [ "$CODEX_EXIT" -eq 124 ]; then
         CODEX_META_STATUS="TIMEOUT"
-    elif [ "$CODEX_EXIT" -eq 0 ]; then
+    elif [ "$CODEX_EXIT" -eq 0 ] && [ "$REVIEW_DECISION" = "CLEAN" ]; then
         CODEX_META_STATUS="PASS"
     else
         CODEX_META_STATUS="FAIL"
@@ -1146,7 +1171,7 @@ FIX_EOF
         # salvageable review text. We never treat a timeout as PASS; the
         # batch stops here and the dirty tree + review archive stay in place
         # for human/Codex follow-up.
-        local _partial_bytes=0
+        _partial_bytes=0
         if [ -f "$REVIEW_FILE" ]; then
             _partial_bytes=$(wc -c < "$REVIEW_FILE" 2>/dev/null | tr -d ' ' || echo 0)
         fi
@@ -1173,23 +1198,17 @@ FIX_EOF
         break
     fi
 
-    # Check for P0/P1 findings
-    HAS_CRITICAL=false
-    if echo "$REVIEW_CONTENT" | grep -qiE "(P0|P1|critical|must.fix|blocker)"; then
-        HAS_CRITICAL=true
-    fi
-
-    if [ "$HAS_CRITICAL" = true ]; then
-        LAST_FAILURE_REASON="Codex review reported P0/P1 findings"
-        warn "Codex review found P0/P1 issues, preparing fix..."
+    if [ "$REVIEW_DECISION" = "FINDINGS" ]; then
+        LAST_FAILURE_REASON="Codex review reported P0/P1/P2 correctness findings"
+        warn "Codex review found P0/P1/P2 issues, preparing fix..."
         cat > "$PROMPT_FILE" <<FIX_EOF
 # Fix task: $TASK_ID
 
-Codex review found critical issues, please fix per review:
+Codex review found correctness issues, please fix every finding:
 
-## Codex Review output
+## Final Codex Review
 \`\`\`
-$(echo "$REVIEW_CONTENT" | head -50)
+$(printf '%s\n' "$REVIEW_PARSE_OUTPUT")
 \`\`\`
 
 ## Constraints
@@ -1202,7 +1221,15 @@ FIX_EOF
         continue
     fi
 
-    log "Codex review passed (no P0/P1 findings)"
+    if [ "$REVIEW_DECISION" != "CLEAN" ]; then
+        LAST_FAILURE_REASON="Codex review verdict was ambiguous"
+        ISSUES_LOG+=("[Round $ROUND] Codex review verdict UNKNOWN; fail-closed, archive=$RUN_DIR/codex-review-round${ROUND}.txt")
+        err "Codex review did not contain an explicit clean verdict; stopping batch"
+        RESULT_STATUS="NEEDS_HUMAN"
+        break
+    fi
+
+    log "Codex review passed (no P0/P1/P2 correctness findings)"
     REVIEW_OUTPUT="$REVIEW_CONTENT"
     RESULT_STATUS="PASS"
     break
@@ -1212,7 +1239,7 @@ done
 COMMIT_HASH=""
 
 if [ "$RESULT_STATUS" = "PASS" ]; then
-    REVIEW_NOTE="no P0/P1 findings"
+    REVIEW_NOTE="no P0/P1/P2 correctness findings"
     cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
 # Auto Dev Summary
 
@@ -1269,7 +1296,7 @@ SUMMARY_EOF
 fi
 
 if [ "$RESULT_STATUS" = "PASS" ]; then
-    REVIEW_DEVLOG_NOTE="no P0/P1 findings"
+    REVIEW_DEVLOG_NOTE="no P0/P1/P2 correctness findings"
     REVIEW_COMMIT_NOTE=""
     # 4d. Write DEVLOG (before commit, will be included)
     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
