@@ -50,6 +50,28 @@ _CLEAN_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"\bno (?:introduced )?correctness issue\b", re.IGNORECASE),
+    # Positive description patterns — Codex describes the change favorably
+    # without using explicit "no issues found" phrasing.
+    re.compile(
+        r"\btests? (?:pass|passed) (?:locally|\d+|in )\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\baddressing (?:the )?\S+ (?:without|without changing|without introducing)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:no|zero) (?:new )?(?:issues?|problems?|findings?|concerns?) (?:found|identified|introduced|detected)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:LGTM|looks good|lgtm|no blockers?|no regressions?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bchanges? (?:are|is) (?:correct|safe|sound|valid|appropriate)\b",
+        re.IGNORECASE,
+    ),
 )
 
 
