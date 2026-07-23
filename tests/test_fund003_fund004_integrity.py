@@ -1,3 +1,5 @@
+import pytest
+
 from tradingagents.agents.utils.financial_validator import check_financial_anomalies
 from tradingagents.graph.data_collector import DataCollector
 from tradingagents.agents.utils.fundamental_integrity import (
@@ -1088,3 +1090,162 @@ def test_c006_previous_period_gross_margin_from_prior_date():
     # No cross-date mixing in either direction
     anomaly = check_financial_anomalies("603629.SH", **inputs)
     assert "gross_margin_jump" not in anomaly["anomalies"]
+
+
+# ── FUND-004B-R1: profit/cashflow same-group binding adversarial tests ─────
+
+
+def test_fund004b_profit_and_cashflow_same_group_passes():
+    """net_profit and operating_cashflow from same (date, scope, unit) group
+    must both be present and comparable."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["net_profit"] is not None
+    assert inputs["operating_cashflow"] is not None
+    anomaly = check_financial_anomalies("603629.SH", **inputs)
+    assert "cashflow_profit_divergence" in anomaly["anomalies"]
+    assert "negative_cashflow_quality" in anomaly["anomalies"]
+
+
+def test_fund004b_cross_date_profit_and_cashflow_fail_closed():
+    """net_profit from 12-31 and operating_cashflow from 09-30 must NOT be
+    compared — both must be None."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        # cashflow from Q3 — different date
+        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Cross-date: no group has both -> both None
+    assert inputs["net_profit"] is None
+    assert inputs["operating_cashflow"] is None
+    anomaly = check_financial_anomalies("603629.SH", **inputs)
+    assert "cashflow_profit_divergence" not in anomaly["anomalies"]
+    assert "negative_cashflow_quality" not in anomaly["anomalies"]
+
+
+def test_fund004b_cross_scope_profit_and_cashflow_fail_closed():
+    """net_profit from FY_YTD and operating_cashflow from SINGLE_QUARTER
+    on the same date must NOT be compared."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        # cashflow same date but SINGLE_QUARTER scope
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "SINGLE_QUARTER",
+         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Cross-scope: no group has both -> both None
+    assert inputs["net_profit"] is None
+    assert inputs["operating_cashflow"] is None
+
+
+def test_fund004b_cross_unit_profit_and_cashflow_fail_closed():
+    """net_profit in 万元 and operating_cashflow in 亿元 on same date/scope
+    must NOT be compared."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        # cashflow same date/scope but different unit
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 0.05, "unit": "亿元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Cross-unit: no group has both -> both None
+    assert inputs["net_profit"] is None
+    assert inputs["operating_cashflow"] is None
+
+
+def test_fund004b_only_profit_no_cashflow_fail_closed():
+    """When net_profit exists but operating_cashflow is absent from all groups,
+    both must be None (fail closed)."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        # no operating_cashflow at all
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["net_profit"] is None
+    assert inputs["operating_cashflow"] is None
+
+
+def test_fund004b_only_cashflow_no_profit_fail_closed():
+    """When operating_cashflow exists but net_profit is absent from all groups,
+    both must be None (fail closed)."""
+    facts = [
+        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
+        # no net_profit at all
+        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 500.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["net_profit"] is None
+    assert inputs["operating_cashflow"] is None
+
+
+def test_fund004b_profit_from_latest_group_with_both():
+    """When multiple groups have net_profit but only one also has
+    operating_cashflow, the group with both must be selected."""
+    facts = [
+        # Q3 group: has both profit and cashflow
+        {"metric": "net_profit", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": 1500.0, "unit": "万元", "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": 300.0, "unit": "万元", "status": "HAS_DATA"},
+        # FY group: has profit but no cashflow
+        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
+        # No FY operating_cashflow
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # Latest group with both is Q3: net_profit=1500, operating_cashflow=300
+    assert inputs["net_profit"] == pytest.approx(0.15)
+    assert inputs["operating_cashflow"] == pytest.approx(0.03)
+    # No anomaly since profit>0 and cashflow>0
+    anomaly = check_financial_anomalies("603629.SH", **inputs)
+    assert "cashflow_profit_divergence" not in anomaly["anomalies"]
+
+
+def test_fund004b_invest_finance_cashflow_still_independent():
+    """investing_cashflow and financing_cashflow are still found independently
+    (no cross-metric ratio needed)."""
+    facts = [
+        {"metric": "investing_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+         "value": -1000000.0, "unit": "元", "status": "HAS_DATA"},
+        {"metric": "financing_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+         "value": -500000.0, "unit": "元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    # invest and finance are independent — each found from their own group
+    assert inputs["total_invest_cashflow"] is not None
+    assert inputs["total_finance_cashflow"] is not None

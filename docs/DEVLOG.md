@@ -1,5 +1,55 @@
 # 修改日志
 
+## 2026-07-23 | FUND-004B-R1 利润与经营现金流同财务组绑定
+
+- **任务**：FUND-004B-R1 — 补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值（P0）
+- **状态**：✅ 实现完成；87 项 integrity 测试 passed，C-006 69 passed，FUND 系列 117 passed，C-series 179 passed，API smoke 122 passed
+- **代码标注**：`# [FUND-004B-R1]`
+- **人工收口**：自动 review 的最终结论实际为 clean，但 AUTO-008
+  解析器未识别 `did not find a correctness issue introduced by ...`，
+  因而 fail-closed 为 UNKNOWN。已补同义句回归，并统一任务详情与顶部队列状态。
+- **最终复核**：第二轮 `codex review --uncommitted` 无 P0/P1/P2；
+  `task_dependency_resolver.py claim` 已恢复输出 `FUND-004A-R1`。
+
+### 改动
+
+- **`tradingagents/agents/utils/fundamental_integrity.py`**（修改）
+  - `extract_financial_anomaly_inputs()` 中 `profit_group` 和 `cashflow_group` 原来独立查找，导致 `net_profit` 和 `operating_cashflow` 可能来自不同 `(report_date, period_scope, unit)` 组
+  - 修复：改为 `_find_best_group({"net_profit", "operating_cashflow"})` 同时查找包含两个指标的组，两者共享同一组引用
+  - `investing_cashflow` 和 `financing_cashflow` 保持独立查找（无跨指标比值需求）
+  - ROE 计算保持按 `report_date` 匹配（`net_profit` 是 income scope，`total_equity` 是 POINT_IN_TIME scope，天然不同 period_scope）
+
+- **`tests/test_fund003_fund004_integrity.py`**（修改）
+  - 新增 8 项 FUND-004B-R1 对抗测试：
+    - `test_fund004b_profit_and_cashflow_same_group_passes`：同组数据可计算，检测到 cashflow_profit_divergence
+    - `test_fund004b_cross_date_profit_and_cashflow_fail_closed`：跨日期 → 两者均 None
+    - `test_fund004b_cross_scope_profit_and_cashflow_fail_closed`：跨 scope（FY_YTD vs SINGLE_QUARTER）→ 两者均 None
+    - `test_fund004b_cross_unit_profit_and_cashflow_fail_closed`：跨单位（万元 vs 亿元）→ 两者均 None
+    - `test_fund004b_only_profit_no_cashflow_fail_closed`：仅利润无现金流 → 两者均 None
+    - `test_fund004b_only_cashflow_no_profit_fail_closed`：仅现金流无利润 → 两者均 None
+    - `test_fund004b_profit_from_latest_group_with_both`：多组有利润但仅一组同时有现金流 → 选有两者的组
+    - `test_fund004b_invest_finance_cashflow_still_independent`：投资/筹资现金流保持独立查找
+
+### 设计要点
+
+- **fail-closed**：跨日期、跨 scope、跨单位、仅一侧缺失 → `net_profit` 和 `operating_cashflow` 同时返回 None，`financial_validator` 的 cashflow/profit 比值检测自然跳过
+- **同组可计算**：当 `net_profit` 和 `operating_cashflow` 来自同一 `(report_date, period_scope, unit)` 组时，比值检测正常执行
+- **ROE 不受影响**：`net_profit`（income scope）和 `total_equity`（POINT_IN_TIME scope）天然不同 period_scope，按 report_date 匹配是正确设计
+
+### 回归
+
+- `pytest tests/test_fund003_fund004_integrity.py -v`：**87 passed**
+- `pytest tests/test_c006_financial_validator.py -v`：**69 passed**
+- `pytest tests/test_fund004a_integrity_gate.py tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -q`：**117 passed**
+- `pytest tests/test_c007_event_risk_gate.py tests/test_c001_position_validation_gate.py tests/test_c005_delta_check.py -q`：**179 passed**
+- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-23 | AUTO-008 夜间验收纠偏与 Codex review 门禁
 
 - **验收范围**：2026-07-22 20:20 至 2026-07-23 06:29 的 25 个 `auto:` 实现提交。
@@ -14701,3 +14751,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/UI-014-20260723-round1.txt
 - **Run archive**: docs/task_runs/UI-014-20260723-061546/
+
+## 2026-07-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-004B-R1 - 利润与经营现金流同财务组绑定（P0）
+- **Priority**: P0
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review verdict was ambiguous
+- **Run archive**: docs/task_runs/FUND-004B-R1-20260723-155911/

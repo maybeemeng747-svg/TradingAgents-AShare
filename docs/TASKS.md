@@ -29,8 +29,8 @@
 > **验收纠偏**：2026-07-22 夜间至 2026-07-23 清晨共生成 25 个 `auto:` 实现提交。旧脚本在 `set -o pipefail` 下用 `echo | grep -q` 扫描整份 review，命中大文件时发生 SIGPIPE，反而把含 finding 的 review 判成 PASS；同时旧规则未阻断 P2。复核后仅 `C-004` 的最终 review 无 P0/P1/P2 correctness finding，其余 24 个实现提交均需补修。历史章节中的 `done` 只表示“代码已提交”，不再表示“验收通过”；以下 `*-R1` 状态才是当前验收真源。
 
 1. `AUTO-008`：Codex final-answer 结构化解析与 fail-closed 门禁（done，`0901b91`）。
-2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（P0，ready）。
-3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，blocked-auto）。
+2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（done，2026-07-23 人工复核通过）。
+3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，ready）。
 4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，blocked-auto）。
 5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（P0，blocked-auto）。
 6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（P1，blocked-auto）。
@@ -69,7 +69,7 @@
 ### FUND-004B-R1: 利润与经营现金流同财务组绑定（P0）
 - **描述**：补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — 2026-07-23 人工复核通过
 - **预计耗时**：25-40 分钟
 - **depends_on**：AUTO-008
 - **auto_release**：true
@@ -78,7 +78,7 @@
 ### FUND-004A-R1: 预计算 integrity 路径初始化 period_facts（P0）
 - **描述**：补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：ready
 - **预计耗时**：25-40 分钟
 - **depends_on**：FUND-004B-R1
 - **auto_release**：true

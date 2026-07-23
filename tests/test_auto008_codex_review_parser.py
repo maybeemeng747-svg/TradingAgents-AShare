@@ -71,6 +71,10 @@ def test_common_clean_codex_verdicts_are_recognized() -> None:
             "I did not find any actionable correctness, security, performance, "
             "or maintainability issue introduced by these changes."
         ),
+        (
+            "The code change is correct. I did not find a correctness issue "
+            "introduced by the current changes."
+        ),
     )
     for verdict in verdicts:
         assert classify_review(f"codex\n{verdict}\n")[0] == "CLEAN"
@@ -110,3 +114,4 @@ def test_auto_loop_uses_fail_closed_parser() -> None:
     assert 'REVIEW_DECISION" != "CLEAN"' in text
     assert "echo \"$REVIEW_CONTENT\" | grep -qiE" not in text
     assert "local _partial_bytes" not in text
+    assert "Do not update task status or release downstream tasks" in text

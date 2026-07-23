@@ -952,9 +952,13 @@ def extract_financial_anomaly_inputs(
         else None
     )
 
-    # --- Cashflow/profit: latest group with net_profit for cashflow comparison ---
-    profit_group = _find_best_group({"net_profit"})
-    cashflow_group = _find_best_group({"operating_cashflow"})
+    # --- Cashflow/profit: must come from same (report_date, period_scope, unit) group ---
+    # [FUND-004B-R1] profit and operating_cashflow must share group key.
+    profit_cashflow_group = _find_best_group({"net_profit", "operating_cashflow"})
+    profit_group = profit_cashflow_group
+    cashflow_group = profit_cashflow_group
+
+    # invest/finance cashflows: independent groups (no cross-metric ratio)
     invest_group = _find_best_group({"investing_cashflow"})
     finance_group = _find_best_group({"financing_cashflow"})
 

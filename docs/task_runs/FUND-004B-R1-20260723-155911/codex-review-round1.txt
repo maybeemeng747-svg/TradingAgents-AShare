@@ -1,0 +1,2355 @@
+Task: FUND-004B-R1 - 利润与经营现金流同财务组绑定（P0）
+Date: 2026-07-23_16:07:09
+Codex exit code: 0
+Round: 1
+---
+2026-07-23T08:05:34.436282Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+OpenAI Codex v0.144.1
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019f8e02-2eae-7682-a92f-194a0d1ee595
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n--- TASKS ---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n--- DECISIONS ---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n--- DEVLOG ---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 当前产品事实（2026-07-10）
+
+项目已从单一报告生成器扩展为分层投研工作台，但产品主线应保持收敛：
+
+```text
+Tree Work 既有研报/半年报知识页（历史上游）
+  -> ZCode 知识库接入、研究评分与快照发布
+  -> 来源与事实审计
+  -> 昊天左侧候选
+  -> TradeFlow 少量候选池
+  -> 轻量 TA / 人工确认的完整 TA
+  -> 观察仓、盘中观察、盘后复盘
+```
+
+TradeFlow 的 `TECH_TRADE` 与 `POLICY_AMBUSH/POLICY_CONFIRM` 必须分池展示，不能把短线技术机会当作中长期昊天候选。Fast Radar、Light Research、Full TA 的运行层级也必须保持清晰：完整 TA 只能人工确认触发。
+
+现有 Tree Work 知识页只作为可追溯的历史上游与背景/观点证据；后续知识库接入、`research-scorer` 和正式快照发布统一由 ZCode 负责。公告、原始财报和行情数据仍是事实与动作门禁的优先来源。所有知识命中都必须带来源路径、报告期或更新时间、来源等级和新鲜度。
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-07-23
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前执行队列（2026-07-23）
+
+> 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
+
+> **验收纠偏**：2026-07-22 夜间至 2026-07-23 清晨共生成 25 个 `auto:` 实现提交。旧脚本在 `set -o pipefail` 下用 `echo | grep -q` 扫描整份 review，命中大文件时发生 SIGPIPE，反而把含 finding 的 review 判成 PASS；同时旧规则未阻断 P2。复核后仅 `C-004` 的最终 review 无 P0/P1/P2 correctness finding，其余 24 个实现提交均需补修。历史章节中的 `done` 只表示“代码已提交”，不再表示“验收通过”；以下 `*-R1` 状态才是当前验收真源。
+
+1. `AUTO-008`：Codex final-answer 结构化解析与 fail-closed 门禁（done，`0901b91`）。
+2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（done，FUND-004B-R1-20260723）。
+3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，ready）。
+4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，blocked-auto）。
+5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（P0，blocked-auto）。
+6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（P1，blocked-auto）。
+7. `SCORE-003-R1`：`portfolio_fit` 响应契约、未知账户与部分风险预算（P0，blocked-auto）。
+8. `C-003-R1`：保留多头退出动作并封住流式未清洗输出（P0，blocked-auto）。
+9. `C-007-R1`：事件门禁必须覆盖可执行 BUY，修复“扭亏为盈”误判（P0，blocked-auto）。
+10. `M-010-R1`：飞书 webhook 脱敏、渠道校验与异步测试（P0，blocked-auto）。
+11. `B-004-R1`：持仓同步路径白名单、失败语义和输入校验（P0，blocked-auto）。
+12. 其余 review finding 进入第二批：`FUND-006A/007A-R1`、`F-001-R1`、`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+
+> 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
+
+### 今晚修复执行包（2026-07-23）
+
+> 预计 220-300 分钟。只允许 `FUND-004B-R1` 初始为 ready；每项 PASS 后由依赖解析器释放下一项。任何 P0/P1/P2 finding、测试失败、review UNKNOWN/超时或 dirty tree 都应立即停止，不得继续提交。
+
+| 顺序 | 任务 | 预计耗时 | 验收重点 |
+|---|---|---:|---|
+| 1 | `FUND-004B-R1` | 25-40 分钟 | 利润与现金流必须来自同 `(report_date, period_scope, unit)` 组 |
+| 2 | `FUND-004A-R1` | 25-40 分钟 | 复用 integrity 时 `period_facts` 始终定义，图级风险节点不崩溃 |
+| 3 | `FUND-005A-R1` | 20-30 分钟 | 未知 actual model 不得回填 requested model |
+| 4 | `SCORE-001B-R1` | 35-45 分钟 | 无未来数据泄漏；失败、空数据和动作词语义正确 |
+| 5 | `SCORE-002-R1` | 25-35 分钟 | API 真正返回评分卡，risk penalty 可持久化回读 |
+| 6 | `SCORE-003-R1` | 30-45 分钟 | 缺账户上下文不得给高适配分；部分预算参与评分 |
+| 7 | `C-003-R1` | 30-40 分钟 | SELL/EXIT 不被误删，流式输出只暴露清洗后文本 |
+| 8 | `C-007-R1` | 25-35 分钟 | 事件门禁实际降级动作，转盈不误判业绩暴雷 |
+
+> 若 4 小时窗口未跑完，保持剩余任务为 blocked-auto，下一晚续跑。`M-010-R1` 与 `B-004-R1` 在上述链路完成后自动释放。
+
+### AUTO-008: Codex review 结构化判定与 fail-closed 门禁（P0）
+- **描述**：只解析 `codex review` 最后一个 `codex` 段落；P0/P1/P2 阻断并进入修复轮，P3 仅归档；UNKNOWN、超时、配置/额度失败一律不得提交。
+- **优先级**：P0
+- **状态**：done — commit `0901b91`
+- **验收方式**：140 项自动化/依赖/静态测试通过；独立 `codex review --uncommitted` 无 correctness finding；覆盖 2 MB review 的 SIGPIPE 回归、P2、P3、常见 clean wording 与缺 marker。
+
+### FUND-004B-R1: 利润与经营现金流同财务组绑定（P0）
+- **描述**：补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值。
+- **优先级**：P0
+- **状态**：done — FUND-004B-R1-20260723
+- **预计耗时**：25-40 分钟
+- **depends_on**：AUTO-008
+- **auto_release**：true
+- **验收方式**：跨日期、跨 scope、跨单位、仅一侧缺失均 fail closed；同组数据可计算；相关 FUND/C-006 回归通过。
+
+### FUND-004A-R1: 预计算 integrity 路径初始化 period_facts（P0）
+- **描述**：补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`。
+- **优先级**：P0
+- **状态**：ready
+- **预计耗时**：25-40 分钟
+- **depends_on**：FUND-004B-R1
+- **auto_release**：true
+- **验收方式**：预计算/现场计算/缺数据三条图路径都进入风控节点且不崩溃，决策输入仍剔除被拒叙事。
+
+### FUND-005A-R1: actual model 未知态修复（P1）
+- **描述**：补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **预计耗时**：20-30 分钟
+- **depends_on**：FUND-004A-R1
+- **auto_release**：true
+- **验收方式**：actual/fallback/unknown 三态 fixture 与 trace 回读通过。
+
+### SCORE-001B-R1: 快照时点、动作词与失败态补修（P0）
+- **描述**：补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：35-45 分钟
+- **depends_on**：FUND-005A-R1
+- **auto_release**：true
+- **验收方式**：历史回放无未来数据；FAILED/NORMAL_NO_DATA/NOT_QUERIED 可区分；聚合 API 与 candidate detail 不含知识库交易动作。
+
+### SCORE-002-R1: entry_timing API 与持久化补修（P1）
+- **描述**：补修 `594d742`，把已计算的评分卡暴露到真实响应模型，并把 risk penalty 接入候选持久化/回读。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **预计耗时**：25-35 分钟
+- **depends_on**：SCORE-001B-R1
+- **auto_release**：true
+- **验收方式**：API schema、service、DB 回读和旧记录兼容测试通过。
+
+### SCORE-003-R1: portfolio_fit 契约与未知上下文补修（P0）
+- **描述**：补修 `cd6bb36`：响应模型暴露评分卡；缺账户上下文不得归一为高适配；部分风险预算必须影响 fit 与原因。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：30-45 分钟
+- **depends_on**：SCORE-002-R1
+- **auto_release**：true
+- **验收方式**：无账户、零现金、超配、部分预算、权限不足和正常账户六类 fixture。
+
+### C-003-R1: 做空过滤边界与流式清洗（P0）
+- **描述**：补修 `7f74755`：SELL/EXIT/减仓等多头退出不得当成做空删除；流式事件不得先暴露未清洗 manager 文本；英文匹配不区分大小写。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：30-40 分钟
+- **depends_on**：SCORE-003-R1
+- **auto_release**：true
+- **验收方式**：多头退出、裸空、混合中英文、流式与最终响应一致性对抗测试通过。
+
+### C-007-R1: 事件风险门禁实际动作覆盖（P0）
+- **描述**：补修 `1616543`：门禁触发时必须覆盖可执行 BUY/ENTER，而非仅追加告警；“扭亏为盈”不得命中业绩暴雷。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：25-35 分钟
+- **depends_on**：C-003-R1
+- **auto_release**：true
+- **验收方式**：BUY 被确定性降级；正向业绩、负向业绩和文本否定边界通过。
+
+### M-010-R1: 飞书 webhook 安全与异步测试补修（P0）
+- **描述**：补修 `52cadc2`：异常不得泄漏 webhook/token；非飞书 channel 不得走飞书发送；修复依赖全局 event loop 的顺序敏感测试。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：30-40 分钟
+- **depends_on**：C-007-R1
+- **auto_release**：true
+- **验收方式**：HTTP 4xx/5xx/超时日志脱敏；非法 channel 拒绝；组合测试无 event-loop 失败。
+
+### B-004-R1: 持仓同步路径与失败语义补修（P0）
+- **描述**：补修 `fc864bb`：限制可写路径；外部文件不可读时不得覆盖；双向写失败不得报告成功；非法 direction 和 malformed rows 返回明确 4xx。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **预计耗时**：35-50 分钟
+- **depends_on**：M-010-R1
+- **auto_release**：true
+- **验收方式**：路径逃逸、软链接、只读文件、部分写失败、非法方向和脏行六类对抗测试通过。
+
+### FUND-006A-R1: 离线回放测试有效性补修（P1）
+- **描述**：修正 `3655339` 中未实际断言生产行为、断言过宽或被 fixture 自证的七类测试。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：B-004-R1
+- **auto_release**：true
+
+### FUND-007A-R1: 错误模式基准因果短语补修（P2）
+- **描述**：补齐“所致”等因果短语并强化基准结果断言，避免错误样本漏检。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：FUND-006A-R1
+- **auto_release**：true
+
+### F-001-R1: 未持仓试错 Buy Level 上限补修（P2）
+- **描述**：未持仓条件试错的 Buy Level 上限固定为 2，不得进入 Level 3。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：FUND-007A-R1
+- **auto_release**：true
+
+### PLAYBOOK-002-R1: 三笔法组合约束补修（P1）
+- **描述**：把计算后的计划仓位传入加仓检查；第一次大跌/跌停未打开禁止进攻仓；试错仓补最大下行约束。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：F-001-R1
+- **auto_release**：true
+
+### SCORE-001-R1: 快照 loader 验收档案修正（P2）
+- **描述**：修正文档中不可达/过期 commit 引用和 run archive 的 CLAIMED 状态，不改生产 loader。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：PLAYBOOK-002-R1
+- **auto_release**：true
+
+### B-001-R1: MiMo provider 配置与凭据路由补修（P1）
+- **描述**：让存储的 MiMo key、base_url、默认模型在完整图路径一致生效，目录 key scope 与实际读取保持一致。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：SCORE-001-R1
+- **auto_release**：true
+
+### B-002-R1: 调度回调报告字段补修（P2）
+- **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：B-001-R1
+- **auto_release**：true
+
+### B-003-R1: 飞书文档链接与根节点写入补修（P2）
+- **描述**：生成正确 tenant-aware 文档链接；根节点写入不得依赖一次不必要的 read 成功。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：B-002-R1
+- **auto_release**：true
+
+### C-001-R1: 持仓推断与 HOLD 绕门禁补修（P2）
+- **描述**：门禁使用显式+推断后的统一持仓上下文；正文出现“等待”不得让错误 HOLD 绕过转换。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：B-003-R1
+- **auto_release**：true
+
+--- DECISIONS ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+## ADR-006: 2026-07-10 将研报/半年报/昊天闭环设为唯一产品主线
+- **日期**：2026-07-10
+- **背景**：系统已有 TradeFlow、跟踪看板、知识库和自动开发等大量工程能力，但真实候选中仍以技术池为主，观察仓和盘后 Review 的生产记录不足，半年报事实 Provider 尚未完成。
+- **决策**：优先完成 HY-002/HY-003/KB-015 及其后续事实审计，再做昊天真实候选和交易日回放；PLAYBOOK-002~006 暂停，除非直接阻塞主线。
+- **原因**：用户核心目标是从政策、产业和研报中找到少量高质量中长期候选，而不是继续扩大功能数量。先验证选股和证据闭环，才能判断后续仓位规则是否值得实现。
+- **影响**：自动领取顺序以 `docs/TASKS.md` 的“当前执行队列”为准；fixture 验收和真实运行验收必须分开记录；新功能必须说明是否直接服务主线。
+
+## ADR-007: 研究评分采用四卡分层所有权，不生成混合总分
+- **日期**：2026-07-13
+- **背景**：现有 Tree Work 知识库、TA readiness、TradeFlow 候选分、账户风控和 PLAYBOOK 已分别存在评分或阶段字段。若各层都计算完整总分和动作，会产生重复计分、阈值冲突，以及“好公司被误判为现在可以买”的风险。
+- **决策**：`research-scorer` 的代码、规则版本和正式快照写入归 ZCode 知识库接入项目所有；ZCode 发布的知识快照只拥有慢变量 `research_evidence_confidence` 与 `thesis_quality`。现有 Tree Work 页面继续作为上游知识输入，不要求历史改名。TradingAgents-AShare 不复刻评分公式，只读取版本化快照；TradeFlow 复用现有动态因子生成 `entry_timing`，账户上下文生成 `portfolio_fit`，TA 在四卡之后统一执行硬性否决并映射 PLAYBOOK 七阶段。禁止合成单一股票总分，禁止知识快照携带或覆盖交易动作。
+- **原因**：证据可信度、公司逻辑、实时买点和账户资格回答的是四个不同问题；分层后才能做到来源可追溯、动态变化可解释，并让高研究分始终受行情、账户和风控约束。
+- **影响**：知识库侧任务单独记录在 `docs/zcode_research_scorer_handoff.md`；本仓库新增 SCORE-001~006 消费与裁决任务线。`execution_action` 与 Buy/Risk Level 继续作为底层安全契约，`playbook_stage` 只提供更细语义。SCORE-005 可以实现不含仓位数量的阶段判定，但不解锁 PLAYBOOK-002/003 的真实三笔法和仓位拆分规则。SCORE-006 必须等真实 ZCode 快照人工确认后释放，fixture 不得冒充跨项目验收。
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- DEVLOG ---
+# 修改日志
+
+## 2026-07-23 | FUND-004B-R1 利润与经营现金流同财务组绑定
+
+- **任务**：FUND-004B-R1 — 补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值（P0）
+- **状态**：✅ 实现完成；87 项 integrity 测试 passed，C-006 69 passed，FUND 系列 117 passed，C-series 179 passed，API smoke 122 passed
+- **代码标注**：`# [FUND-004B-R1]`
+
+### 改动
+
+- **`tradingagents/agents/utils/fundamental_integrity.py`**（修改）
+  - `extract_financial_anomaly_inputs()` 中 `profit_group` 和 `cashflow_group` 原来独立查找，导致 `net_profit` 和 `operating_cashflow` 可能来自不同 `(report_date, period_scope, unit)` 组
+  - 修复：改为 `_find_best_group({"net_profit", "operating_cashflow"})` 同时查找包含两个指标的组，两者共享同一组引用
+  - `investing_cashflow` 和 `financing_cashflow` 保持独立查找（无跨指标比值需求）
+  - ROE 计算保持按 `report_date` 匹配（`net_profit` 是 income scope，`total_equity` 是 POINT_IN_TIME scope，天然不同 period_scope）
+
+- **`tests/test_fund003_fund004_integrity.py`**（修改）
+  - 新增 8 项 FUND-004B-R1 对抗测试：
+    - `test_fund004b_profit_and_cashflow_same_group_passes`：同组数据可计算，检测到 cashflow_profit_divergence
+    - `test_fund004b_cross_date_profit_and_cashflow_fail_closed`：跨日期 → 两者均 None
+    - `test_fund004b_cross_scope_profit_and_cashflow_fail_closed`：跨 scope（FY_YTD vs SINGLE_QUARTER）→ 两者均 None
+    - `test_fund004b_cross_unit_profit_and_cashflow_fail_closed`：跨单位（万元 vs 亿元）→ 两者均 None
+    - `test_fund004b_only_profit_no_cashflow_fail_closed`：仅利润无现金流 → 两者均 None
+    - `test_fund004b_only_cashflow_no_profit_fail_closed`：仅现金流无利润 → 两者均 None
+    - `test_fund004b_profit_from_latest_group_with_both`：多组有利润但仅一组同时有现金流 → 选有两者的组
+    - `test_fund004b_invest_finance_cashflow_still_independent`：投资/筹资现金流保持独立查找
+
+### 设计要点
+
+- **fail-closed**：跨日期、跨 scope、跨单位、仅一侧缺失 → `net_profit` 和 `operating_cashflow` 同时返回 None，`financial_validator` 的 cashflow/profit 比值检测自然跳过
+- **同组可计算**：当 `net_profit` 和 `operating_cashflow` 来自同一 `(report_date, period_scope, unit)` 组时，比值检测正常执行
+- **ROE 不受影响**：`net_profit`（income scope）和 `total_equity`（POINT_IN_TIME scope）天然不同 period_scope，按 report_date 匹配是正确设计
+
+### 回归
+
+- `pytest tests/test_fund003_fund004_integrity.py -v`：**87 passed**
+- `pytest tests/test_c006_financial_validator.py -v`：**69 passed**
+- `pytest tests/test_fund004a_integrity_gate.py tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -q`：**117 passed**
+- `pytest tests/test_c007_event_risk_gate.py tests/test_c001_position_validation_gate.py tests/test_c005_delta_check.py -q`：**179 passed**
+- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
+## 2026-07-23 | AUTO-008 夜间验收纠偏与 Codex review 门禁
+
+- **验收范围**：2026-07-22 20:20 至 2026-07-23 06:29 的 25 个 `auto:` 实现提交。
+- **结论**：仅 C-004 最终 review 无 P0/P1/P2 finding；其余 24 个实现提交存在 correctness finding，已转为 `*-R1` 补修链。
+- **根因**：旧 `echo "$REVIEW_CONTENT" | grep -q` 在 `pipefail` 下遇到大输出和命中时发生 SIGPIPE，反而得到非零管道状态；同时扫描整份日志且未阻断 P2。
+- **修复 commit**：`0901b91`。
+- **修复内容**：
+  - 新增 `scripts/parse_codex_review.py`，只解析最后一个 Codex final-answer 段。
+  - P0/P1/P2 阻断，P3 仅归档；UNKNOWN/超时/配置或额度失败均 fail closed。
+  - 修复 timeout 分支顶层 `local` 导致的异常退出。
+  - 新增 2 MB SIGPIPE、P2/P3、上下文噪声、常见 clean wording、缺 marker 和 CLI exit code 回归。
+- **验证**：140 passed；`bash -n` 与 `git diff --check` 通过；两轮独立 Codex review 补修后无 correctness finding。
+- **验收报告**：`docs/reviews/overnight-acceptance-2026-07-23.md`。
+- **后续**：仅 `FUND-004B-R1` 初始为 ready，按依赖串行释放；不调用 live LLM、不写生产 DB、不自动 push。
+
+---
+
+## 2026-07-23 | UI-014 TA 研报证据中心与来源下钻
+
+- **任务**：UI-014 — 在报告查看体验中增加轻量"研报证据"入口，让用户看到同股研报共识、分歧、半年报事实、待验证项和来源路径（P2）
+- **状态**：✅ 实现完成；22 项专项测试 passed，前端 114 tests total passed，`npm run build` + `tsc --noEmit` 通过
+- **代码标注**：`// [UI-014] research_evidence_center`
+
+### 改动
+
+- **`frontend/src/types/index.ts`**（修改）
+  - 新增 KB-020 研报证据聚合 TypeScript 类型：
+    - `ResearchEvidenceDataStatus`（6 种状态含 conflict）
+    - `ResearchEvidenceBucketStatus`
+    - `ResearchEvidenceBucketFreshness`
+    - 5 个 bucket summary 类型：`ResearchEvidenceConsensusSummary`、`ResearchEvidenceCitationAuditSummary`、`ResearchEvidenceThesisTimelineSummary`、`ResearchEvidenceHalfYearFactsSummary`、`ResearchEvidenceScoreSnapshotSummary`
+    - `ResearchEvidenceBucket`（统一 bucket 结构）
+    - `ResearchEvidenceResponse`（完整聚合响应）
+
+- **`frontend/src/services/api.ts`**（修改）
+  - 新增 `getResearchEvidence(symbol, windowMonths?)` API 方法
+  - 调用 `GET /v1/knowledge/research/evidence/{symbol}`（KB-020 后端已有端点）
+
+- **`frontend/src/components/ResearchEvidenceCenter.tsx`**（新增）
+  - 研报证据中心主组件，5 个 bucket drill-down：
+    - **研报共识与分歧**（consensus）：有效研报数、机构去重、共识方向、分歧项、来源路径
+    - **观点 vs 事实审计**（citation_audit）：已证实/有矛盾/待验证声明
+    - **观点演化时间线**（thesis_timeline）：版本数、漂移方向、时间轴可视化
+    - **半年报事实**（half_year_facts）：报告期、风险项、冲突标记
+    - **研究评分快照**（research_score_snapshot）：评分、缺失证据
+  - 设计契约：
+    - 懒加载：首次展开才请求 KB-020 API，失败不阻塞报告正文
+    - 不显示研报原文，只显示摘要 + 来源路径
+    - 颜色语义：支持（绿）/矛盾（红）/待验证（琥珀）/冲突（红）
+    - 来源路径可复制，绝对路径自动过滤（sanitizeRelativePath）
+    - 只读展示层，不改变 decision/action_label
+
+- **`frontend/src/components/ReportViewer.tsx`**（修改）
+  - 在 KB-011 本地知识补充区块之后、免责声明之前，集成 `ResearchEvidenceCenter`
+  - 传入 `reportData.symbol`，组件自行懒加载
+
+- **`frontend/src/utils/researchEvidenceCenter.test.ts`**（新增）
+  - 22 项测试，覆盖 4 态：
+    - S1 完整：5 个 bucket 全有数据，gaps/errors 为空
+    - S2 空：data_status=missing，所有 bucket NO_DATA
+    - S3 部分失败：2 个 bucket failed，其余有数据，errors/gaps 记录失败原因
+    - S4 冲突：half_year_facts data_status=conflict，risks 包含冲突描述
+  - 覆盖：数据契约、data_status 标签、来源路径清洗、各 bucket 结构、JSON 序列化、read_only 契约
+
+### 设计要点
+
+- **懒加载**：组件展开时才调用 `api.getResearchEvidence(symbol)`，避免报告列表页不必要的 API 调用
+- **降级隔离**：单个 bucket 失败不影响其他 bucket 渲染（后端 per-bucket 降级 + 前端 per-section 独立展开）
+- **来源路径安全**：复用 `sanitizeRelativePath()` 过滤绝对路径和 `..` 逃逸
+- **无强动作词**：证据中心纯展示，不携带 decision/action_label/buy_level
+- **A股红涨绿跌**：矛盾/冲突用红色，已证实/支持用绿色，待验证用琥珀色
+
+### 回归
+
+- `npx vitest run`：**114 tests passed**（7 test files，含 UI-014 专项 22 项）
+- `npx tsc --noEmit`：通过
+- `npm run build`：通过
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
+## 2026-07-23 | M-010 飞书/通知链路人工确认版
+
+- **任务**：M-010 — 把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发（P2）
+- **状态**：✅ 实现完成；69 项专项测试 passed，通知相关回归 155 passed，API 导入正常
+- **代码标注**：`# [M-010] feishu_webhook_notification` / `# [M-010] feishu_notification_confirmation`
+
+### 改动
+
+- **`api/services/feishu_webhook_service.py`**（新增）
+  - 飞书 Incoming Webhook 机器人消息推送 service
+  - `normalize_webhook_url()`：支持完整 URL 和 token-only 两种输入格式，自动 http→https 升级
+  - `mask_webhook_url()`：安全日志输出（隐藏 token）
+  - `build_card_message()` / `build_text_message()`：飞书消息卡片 / 纯文本构建
+  - `build_report_card()`：从 ReportDB 字段构建分析报告卡片（含动作、方向、价位、风险提示）
+  - `build_draft_card()`：从通知草稿列表构建确认队列卡片
+  - `send_message()` / `send_with_retry()`：同步发送 + 异步重试（最多 2 次，间隔 15s）
+  - `send_report_notification()` / `send_draft_notification()` / `send_warmup()`：高层便捷入口
+  - 环境变量：`FEISHU_WEBHOOK_URL`（必填）、`FEISHU_WEBHOOK_ENABLED`（默认 true）
+  - 设计契约：不读取/打印 webhook secret，不写 DB，不调 LLM，不改 prompts
+
+- **`api/services/notification_confirmation_service.py`**（新增）
+  - 通知确认队列管理 service — 人工确认后才真正发送飞书
+  - `generate_pending()`：从 notification_draft 引擎生成草稿，存入 notification_logs 表（状态 pending_confirmation），同 (user, symbol, event_type) 去重
+  - `list_pending()`：按优先级排序返回待确认队列
+  - `list_log()`：通知历史日志（支持 status 筛选）
+  - `confirm_and_send()`：确认单条 → 调用 feishu_webhook_service 发送 → 更新状态为 sent/failed
+  - `dismiss()`：拒绝单条，不再发送
+  - `confirm_all_pending()`：批量确认并发送，返回 sent/failed 统计
+  - `_do_send()`：内部发送逻辑，使用 build_draft_card 构建消息卡片
+  - 状态机：pending_confirmation → confirmed → sending → sent/failed；failed 可重试
+  - 设计契约：webhook URL 只存 masked 版本，不暴露明文
+
+- **`api/database.py`**（修改）
+  - 新增 `NotificationLogDB` 模型：通知事件日志与确认队列表
+  - 字段：id / user_id / channel / event_type / priority / symbol / name / title / reason / status / payload / webhook_url_masked / error / confirmed_at / sent_at / created_at / updated_at
+  - 自动建表：`init_db()` → `Base.metadata.create_all()` 已包含
+
+- **`api/main.py`**（修改）
+  - 新增 7 个 API 端点：
+    - `POST /v1/notifications/generate`：生成通知草稿并存入待确认队列
+    - `GET /v1/notifications/pending`：获取待确认通知队列
+    - `GET /v1/notifications/log`：获取通知历史日志（支持 status/limit 查询参数）
+    - `POST /v1/notifications/{id}/confirm`：确认单条通知并通过飞书 webhook 发送
+    - `POST /v1/notifications/{id}/dismiss`：拒绝单条通知
+    - `POST /v1/notifications/confirm-all`：批量确认所有待发送通知
+    - `POST /v1/config/feishu/warmup`：测试飞书 Webhook 连通性
+  - 新增导入：`NotificationLogDB`、`feishu_webhook_service`、`notification_confirmation_service`
+
+- **`scheduler/main.py`**（修改）
+  - 新增 `_send_feishu_notification_draft()`：定时分析完成后自动生成待确认飞书通知草稿
+  - 在 `_run_scheduled_analysis_once()` 中集成：email/WeCom → OpenClaw → 飞书草稿（fire-and-forget）
+  - 仅当 `FEISHU_WEBHOOK_ENABLED=true` 且 `FEISHU_WEBHOOK_URL` 已配置时触发
+
+### 设计要点
+
+- **人工确认优先**：所有飞书通知先存为 pending_confirmation，用户通过 API 确认后才真正发送
+- **卡片消息**：使用飞书 interactive card 格式（含 header/elements），支持红涨绿跌颜色语义
+- **去噪复用**：generate_pending 复用 notification_draft_service 的 30 分钟去噪器
+- **失败可重试**：failed 状态的通知可以重新 confirm（状态机允许 failed → confirmed）
+- **批量操作**：confirm-all 一键确认所有待发送，逐条发送并报告成功/失败统计
+- **安全**：webhook URL 只存 masked 版本到 DB，不暴露明文；不读取/打印 API secret
+
+### 测试
+
+- `tests/test_m010_feishu_webhook.py`（新增）— **41 tests passed**
+  - 覆盖 10 个测试类：URL 规范化（9）、URL 掩码（5）、卡片消息构建（14）、环境变量（5）、HTTP 发送（4）、异步重试（2）、常量导出（1）
+- `tests/test_m010_notification_confirmation.py`（新增）— **28 tests passed**
+  - 覆盖 10 个测试类：生成草稿（5）、待确认列表（4）、历史日志（2）、确认发送（4）、拒绝（3）、批量确认（3）、内部发送（4）、日志序列化（1）、状态常量（1）、导出（1）
+
+### 回归
+
+- `pytest tests/test_b002_openclaw_callback.py tests/test_b003_feishu_export.py tests/test_notify002_mandate_data_blockers.py tests/test_notify003_noise_replay.py -q`：**155 passed**
+- `py_compile` 全部修改文件通过
+- `from api.main import app` 导入正常，7 个 M-010 路由已注册
+
+### 环境变量
+
+- `FEISHU_WEBHOOK_URL`：飞书群机器人 webhook 地址（必填）
+- `FEISHU_WEBHOOK_ENABLED`：是否启用（默认 true）
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
+## 2026-07-23 | M-009 TradeFlow 前端观察池面板
+
+- **任务**：M-009 — 在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA（P2）
+
+exec
+/bin/zsh -lc 'git status --short --branch && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 399]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_fund003_fund004_integrity.py
+ M tradingagents/agents/utils/fundamental_integrity.py
+?? docs/task_runs/FUND-004B-R1-20260723-155911/
+ docs/DEVLOG.md                                     |  45 ++++++
+ docs/TASKS.md                                      |   8 +-
+ tests/test_fund003_fund004_integrity.py            | 159 +++++++++++++++++++++
+ .../agents/utils/fundamental_integrity.py          |  10 +-
+ 4 files changed, 215 insertions(+), 7 deletions(-)
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/agents/utils/fundamental_integrity.py tests/test_fund003_fund004_integrity.py docs/TASKS.md docs/DEVLOG.md && find docs/task_runs/FUND-004B-R1-20260723-155911 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index af3cb23..4198208 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,50 @@
+ # 修改日志
+
++## 2026-07-23 | FUND-004B-R1 利润与经营现金流同财务组绑定
++
++- **任务**：FUND-004B-R1 — 补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值（P0）
++- **状态**：✅ 实现完成；87 项 integrity 测试 passed，C-006 69 passed，FUND 系列 117 passed，C-series 179 passed，API smoke 122 passed
++- **代码标注**：`# [FUND-004B-R1]`
++
++### 改动
++
++- **`tradingagents/agents/utils/fundamental_integrity.py`**（修改）
++  - `extract_financial_anomaly_inputs()` 中 `profit_group` 和 `cashflow_group` 原来独立查找，导致 `net_profit` 和 `operating_cashflow` 可能来自不同 `(report_date, period_scope, unit)` 组
++  - 修复：改为 `_find_best_group({"net_profit", "operating_cashflow"})` 同时查找包含两个指标的组，两者共享同一组引用
++  - `investing_cashflow` 和 `financing_cashflow` 保持独立查找（无跨指标比值需求）
++  - ROE 计算保持按 `report_date` 匹配（`net_profit` 是 income scope，`total_equity` 是 POINT_IN_TIME scope，天然不同 period_scope）
++
++- **`tests/test_fund003_fund004_integrity.py`**（修改）
++  - 新增 8 项 FUND-004B-R1 对抗测试：
++    - `test_fund004b_profit_and_cashflow_same_group_passes`：同组数据可计算，检测到 cashflow_profit_divergence
++    - `test_fund004b_cross_date_profit_and_cashflow_fail_closed`：跨日期 → 两者均 None
++    - `test_fund004b_cross_scope_profit_and_cashflow_fail_closed`：跨 scope（FY_YTD vs SINGLE_QUARTER）→ 两者均 None
++    - `test_fund004b_cross_unit_profit_and_cashflow_fail_closed`：跨单位（万元 vs 亿元）→ 两者均 None
++    - `test_fund004b_only_profit_no_cashflow_fail_closed`：仅利润无现金流 → 两者均 None
++    - `test_fund004b_only_cashflow_no_profit_fail_closed`：仅现金流无利润 → 两者均 None
++    - `test_fund004b_profit_from_latest_group_with_both`：多组有利润但仅一组同时有现金流 → 选有两者的组
++    - `test_fund004b_invest_finance_cashflow_still_independent`：投资/筹资现金流保持独立查找
++
++### 设计要点
++
++- **fail-closed**：跨日期、跨 scope、跨单位、仅一侧缺失 → `net_profit` 和 `operating_cashflow` 同时返回 None，`financial_validator` 的 cashflow/profit 比值检测自然跳过
++- **同组可计算**：当 `net_profit` 和 `operating_cashflow` 来自同一 `(report_date, period_scope, unit)` 组时，比值检测正常执行
++- **ROE 不受影响**：`net_profit`（income scope）和 `total_equity`（POINT_IN_TIME scope）天然不同 period_scope，按 report_date 匹配是正确设计
++
++### 回归
++
++- `pytest tests/test_fund003_fund004_integrity.py -v`：**87 passed**
++- `pytest tests/test_c006_financial_validator.py -v`：**69 passed**
++- `pytest tests/test_fund004a_integrity_gate.py tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -q`：**117 passed**
++- `pytest tests/test_c007_event_risk_gate.py tests/test_c001_position_validation_gate.py tests/test_c005_delta_check.py -q`：**179 passed**
++- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-23 | AUTO-008 夜间验收纠偏与 Codex review 门禁
+
+ - **验收范围**：2026-07-22 20:20 至 2026-07-23 06:29 的 25 个 `auto:` 实现提交。
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 328269a..7ae8b7c 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -29,8 +29,8 @@
+ > **验收纠偏**：2026-07-22 夜间至 2026-07-23 清晨共生成 25 个 `auto:` 实现提交。旧脚本在 `set -o pipefail` 下用 `echo | grep -q` 扫描整份 review，命中大文件时发生 SIGPIPE，反而把含 finding 的 review 判成 PASS；同时旧规则未阻断 P2。复核后仅 `C-004` 的最终 review 无 P0/P1/P2 correctness finding，其余 24 个实现提交均需补修。历史章节中的 `done` 只表示“代码已提交”，不再表示“验收通过”；以下 `*-R1` 状态才是当前验收真源。
+
+ 1. `AUTO-008`：Codex final-answer 结构化解析与 fail-closed 门禁（done，`0901b91`）。
+-2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（P0，ready）。
+-3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，blocked-auto）。
++2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（done，FUND-004B-R1-20260723）。
++3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，ready）。
+ 4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，blocked-auto）。
+ 5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（P0，blocked-auto）。
+ 6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（P1，blocked-auto）。
+@@ -69,7 +69,7 @@
+ ### FUND-004B-R1: 利润与经营现金流同财务组绑定（P0）
+ - **描述**：补修 `33fa819` 的 review finding，禁止利润和经营现金流分别从不同日期、期间或单位组取值。
+ - **优先级**：P0
+-- **状态**：ready
++- **状态**：done — FUND-004B-R1-20260723
+ - **预计耗时**：25-40 分钟
+ - **depends_on**：AUTO-008
+ - **auto_release**：true
+@@ -78,7 +78,7 @@
+ ### FUND-004A-R1: 预计算 integrity 路径初始化 period_facts（P0）
+ - **描述**：补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`。
+ - **优先级**：P0
+-- **状态**：blocked-auto
++- **状态**：ready
+ - **预计耗时**：25-40 分钟
+ - **depends_on**：FUND-004B-R1
+ - **auto_release**：true
+diff --git a/tests/test_fund003_fund004_integrity.py b/tests/test_fund003_fund004_integrity.py
+index 04934e2..6b6e4a7 100644
+--- a/tests/test_fund003_fund004_integrity.py
++++ b/tests/test_fund003_fund004_integrity.py
+@@ -1088,3 +1088,162 @@ def test_c006_previous_period_gross_margin_from_prior_date():
+     # No cross-date mixing in either direction
+     anomaly = check_financial_anomalies("603629.SH", **inputs)
+     assert "gross_margin_jump" not in anomaly["anomalies"]
++
++
++# ── FUND-004B-R1: profit/cashflow same-group binding adversarial tests ─────
++
++
++def test_fund004b_profit_and_cashflow_same_group_passes():
++    """net_profit and operating_cashflow from same (date, scope, unit) group
++    must both be present and comparable."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    assert inputs["net_profit"] is not None
++    assert inputs["operating_cashflow"] is not None
++    anomaly = check_financial_anomalies("603629.SH", **inputs)
++    assert "cashflow_profit_divergence" in anomaly["anomalies"]
++    assert "negative_cashflow_quality" in anomaly["anomalies"]
++
++
++def test_fund004b_cross_date_profit_and_cashflow_fail_closed():
++    """net_profit from 12-31 and operating_cashflow from 09-30 must NOT be
++    compared — both must be None."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # cashflow from Q3 — different date
++        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
++         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Cross-date: no group has both -> both None
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++    anomaly = check_financial_anomalies("603629.SH", **inputs)
++    assert "cashflow_profit_divergence" not in anomaly["anomalies"]
++    assert "negative_cashflow_quality" not in anomaly["anomalies"]
++
++
++def test_fund004b_cross_scope_profit_and_cashflow_fail_closed():
++    """net_profit from FY_YTD and operating_cashflow from SINGLE_QUARTER
++    on the same date must NOT be compared."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # cashflow same date but SINGLE_QUARTER scope
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "SINGLE_QUARTER",
++         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Cross-scope: no group has both -> both None
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_cross_unit_profit_and_cashflow_fail_closed():
++    """net_profit in 万元 and operating_cashflow in 亿元 on same date/scope
++    must NOT be compared."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # cashflow same date/scope but different unit
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 0.05, "unit": "亿元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Cross-unit: no group has both -> both None
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_only_profit_no_cashflow_fail_closed():
++    """When net_profit exists but operating_cashflow is absent from all groups,
++    both must be None (fail closed)."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # no operating_cashflow at all
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_only_cashflow_no_profit_fail_closed():
++    """When operating_cashflow exists but net_profit is absent from all groups,
++    both must be None (fail closed)."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        # no net_profit at all
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_profit_from_latest_group_with_both():
++    """When multiple groups have net_profit but only one also has
++    operating_cashflow, the group with both must be selected."""
++    facts = [
++        # Q3 group: has both profit and cashflow
++        {"metric": "net_profit", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
++         "value": 1500.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
++         "value": 300.0, "unit": "万元", "status": "HAS_DATA"},
++        # FY group: has profit but no cashflow
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # No FY operating_cashflow
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Latest group with both is Q3: net_profit=1500, operating_cashflow=300
++    assert inputs["net_profit"] is not None
++    assert inputs["operating_cashflow"] is not None
++    # No anomaly since profit>0 and cashflow>0
++    anomaly = check_financial_anomalies("603629.SH", **inputs)
++    assert "cashflow_profit_divergence" not in anomaly["anomalies"]
++
++
++def test_fund004b_invest_finance_cashflow_still_independent():
++    """investing_cashflow and financing_cashflow are still found independently
++    (no cross-metric ratio needed)."""
++    facts = [
++        {"metric": "investing_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": -1000000.0, "unit": "元", "status": "HAS_DATA"},
++        {"metric": "financing_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
++         "value": -500000.0, "unit": "元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # invest and finance are independent — each found from their own group
++    assert inputs["total_invest_cashflow"] is not None
++    assert inputs["total_finance_cashflow"] is not None
+diff --git a/tradingagents/agents/utils/fundamental_integrity.py b/tradingagents/agents/utils/fundamental_integrity.py
+index 8a5fdf5..899bf57 100644
+--- a/tradingagents/agents/utils/fundamental_integrity.py
++++ b/tradingagents/agents/utils/fundamental_integrity.py
+@@ -952,9 +952,13 @@ def extract_financial_anomaly_inputs(
+         else None
+     )
+
+-    # --- Cashflow/profit: latest group with net_profit for cashflow comparison ---
+-    profit_group = _find_best_group({"net_profit"})
+-    cashflow_group = _find_best_group({"operating_cashflow"})
++    # --- Cashflow/profit: must come from same (report_date, period_scope, unit) group ---
++    # [FUND-004B-R1] profit and operating_cashflow must share group key.
++    profit_cashflow_group = _find_best_group({"net_profit", "operating_cashflow"})
++    profit_group = profit_cashflow_group
++    cashflow_group = profit_cashflow_group
++
++    # invest/finance cashflows: independent groups (no cross-metric ratio)
+     invest_group = _find_best_group({"investing_cashflow"})
+     finance_group = _find_best_group({"financing_cashflow"})
+
+docs/task_runs/FUND-004B-R1-20260723-155911/tests-round1.txt
+## pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 52.18s
+
+Exit code: 0
+docs/task_runs/FUND-004B-R1-20260723-155911/codegraph-status.json
+{
+  "task_id": "FUND-004B-R1",
+  "generated_at": "2026-07-23T15:59:11.632062",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-07-23T16:05:33.333886",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "tests/test_fund003_fund004_integrity.py",
+    "tradingagents/agents/utils/fundamental_integrity.py"
+  ]
+}docs/task_runs/FUND-004B-R1-20260723-155911/prompt-round1.md
+# Task: FUND-004B-R1: 利润与经营现金流同财务组绑定（P0）
+
+Read task "FUND-004B-R1" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/FUND-004B-R1-20260723-155911/codegraph-context.txt
+# CodeGraph Context for FUND-004B-R1
+# Task: 利润与经营现金流同财务组绑定（P0）
+# Generated: 2026-07-23T15:59:11.843670
+# Keywords: fund, 004b, r1, 利润与经营现金流同财务组绑定（p0）
+
+## Code Context
+
+**Query:** fund 004b r1 利润与经营现金流同财务组绑定（p0）
+
+### Entry Points
+
+- **FundFlowAnomalyResult** (class) - tradingagents/tradeflow/fund_flow_anomaly.py:67
+- **fundamentals_analyst_node** (function) - tradingagents/agents/analysts/fundamentals_analyst.py:19
+  `(state)`
+- **create_fundamentals_analyst** (function) - tradingagents/agents/analysts/fundamentals_analyst.py:12
+  `(llm, data_collector=None)`
+
+### Related Symbols
+
+- tradingagents/tradeflow/fund_flow_anomaly.py: detect_fund_flow_anomaly:358
+- tradingagents/dataflows/config.py: get_config:23
+- tradingagents/prompts/catalog.py: get_prompt:24
+- tradingagents/graph/intent_parser.py: build_horizon_context:185
+- tradingagents/agents/utils/context_utils.py: build_prompt_context_block:226
+- tradingagents/agents/analysts/fundamentals_analyst.py: _safe:13
+- tests/test_g008_valuation_sanity.py: astream:98
+- api/main.py: _emit_token:1553
+- tradingagents/agents/utils/data_consistency.py: append_financial_consistency_warnings:73
+- tradingagents/agents/utils/agent_states.py: extract_verdict:18
+
+docs/task_runs/FUND-004B-R1-20260723-155911/opencode-round1.txt
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m$ [0mgit log --oneline | head -20
+b847a09 docs(tasks): requeue overnight review findings
+0901b91 fix(auto-dev): fail closed on Codex review findings
+1273118 docs: mark UI-014 done after auto run
+a959761 auto: UI-014 TA 研报证据中心与来源下钻（P2） [AUTO-002]
+679912d docs: mark M-010 done after auto run
+52cadc2 auto: M-010 飞书/通知链路人工确认版（P2） [AUTO-002]
+10f3b0f docs: mark M-009 done after auto run
+67e98e9 auto: M-009 TradeFlow 前端观察池面板（P2） [AUTO-002]
+9068ce7 docs: mark HY-009 done after auto run
+c23e891 auto: HY-009 半年报增量刷新、缓存失效与事实冲突审计（P2） [AUTO-002]
+91e3000 docs: mark B-004 done after auto run
+fc864bb auto: B-004 持仓快照与 investment-controller 同步 [AUTO-002]
+49ce239 docs: mark B-003 done after auto run
+3d0c2cb auto: B-003 研报导出为飞书文档 [AUTO-002]
+9bc21ff docs: mark B-002 done after auto run
+5ab6750 auto: B-002 定时任务与 OpenClaw 联动 [AUTO-002]
+b4c82c0 docs: C-008 NEEDS_HUMAN review notes, loop paused
+f86bea6 docs: mark C-007 done after auto run
+1616543 auto: C-007 event_risk_gate（P1） [AUTO-002]
+0048766 docs: mark C-006 done after auto run
+[0m
+[0m$ [0mgit show 33fa819 --stat 2>/dev/null || echo "commit not found"
+commit 33fa8196d39a8893cf02a800bbe01961c3024a9b
+Author: maybeemeng747-svg <maybeemeng747@gmail.com>
+Date:   Wed Jul 22 20:20:03 2026 +0800
+
+    auto: FUND-004B C-006 同日期/同期间口径计算补修（P0） [AUTO-002]
+
+ docs/DEVLOG.md                                     |   21 +
+ docs/TASKS.md                                      |    2 +-
+ docs/reviews/FUND-004B-20260722-round1.txt         | 3269 ++++++++++++++++++++
+ .../codegraph-context.txt                          |   30 +
+ .../FUND-004B-20260722-200203/codegraph-impact.txt |   22 +
+ .../codegraph-status.json                          |   35 +
+ .../codex-review-round1.txt                        | 3269 ++++++++++++++++++++
+ .../FUND-004B-20260722-200203/opencode-round1.txt  |  674 ++++
+ .../FUND-004B-20260722-200203/prompt-round1.md     |   16 +
+ .../review-meta-round1.json                        |   14 +
+ .../task_runs/FUND-004B-20260722-200203/summary.md |   14 +
+ docs/task_runs/FUND-004B-20260722-200203/task.md   |   23 +
+ .../FUND-004B-20260722-200203/tests-round1.txt     |    7 +
+ tests/test_fund003_fund004_integrity.py            |  161 +
+ .../agents/utils/fundamental_integrity.py          |  145 +-
+ 15 files changed, 7673 insertions(+), 29 deletions(-)
+[0m
+[0m✱ [0mGrep "operating_cash_flow|经营现金流|net_profit.*cashflow|cashflow.*profit"[90m in tradingagents · 37 matches[0m
+Let me understand the task and find the relevant code.
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py
+[0m→ [0mRead tests/test_fund003_fund004_integrity.py
+[0m→ [0mRead tradingagents/agents/utils/financial_validator.py
+Now let me read the `financial_validator.py` to understand how the values are used:
+[0m
+[0m# [0mTodos
+[•] Fix profit_group and cashflow_group to require same (report_date, period_scope, unit) group
+[ ] Fix ROE calculation to enforce period_scope + unit matching (not just report_date)
+[ ] Add adversarial tests: cross-date, cross-scope, cross-unit, one-side-missing for profit/cashflow
+[ ] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a clear picture of the bug. Let me create the todo list and implement the fix.
+[0m← [0mEdit tradingagents/agents/utils/fundamental_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+@@ -951,11 +951,15 @@
+     if prior_assets not in (None, 0) and prior_liabilities is not None
+     else None
+ )
+
+-# --- Cashflow/profit: latest group with net_profit for cashflow comparison ---
+-profit_group = _find_best_group({"net_profit"})
+-cashflow_group = _find_best_group({"operating_cashflow"})
++# --- Cashflow/profit: must come from same (report_date, period_scope, unit) group ---
++# [FUND-004B-R1] profit and operating_cashflow must share group key.
++profit_cashflow_group = _find_best_group({"net_profit", "operating_cashflow"})
++profit_group = profit_cashflow_group
++cashflow_group = profit_cashflow_group
++
++# invest/finance cashflows: independent groups (no cross-metric ratio)
+ invest_group = _find_best_group({"investing_cashflow"})
+ finance_group = _find_best_group({"financing_cashflow"})
+
+ # --- Phase 2: ROE from net_profit (income) + total_equity (balance) ---
+
+[0m
+Now I'll fix the core issue. The `profit_group` and `cashflow_group` are found independently, allowing cross-group comparison. Let me fix this:
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [offset=960, limit=50][0m
+Now let me also fix the ROE calculation to enforce period_scope + unit matching, not just report_date:
+[0m→ [0mRead tests/test_fund003_fund004_integrity.py[90m [offset=930][0m
+The ROE calculation matches `net_profit` (income) with `total_equity` (balance) — these inherently have different `period_scope` types, so matching by `report_date` only is correct by design. The task specifically targets profit and operating cashflow. My fix is complete for the core issue.
+
+Now let me add adversarial tests:
+[0m
+[0m← [0mEdit tests/test_fund003_fund004_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund003_fund004_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund003_fund004_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund003_fund004_integrity.py
+@@ -1087,4 +1087,163 @@
+     assert abs(inputs["gross_margin_prev"] - expected_prev) < 0.01
+     # No cross-date mixing in either direction
+     anomaly = check_financial_anomalies("603629.SH", **inputs)
+     assert "gross_margin_jump" not in anomaly["anomalies"]
++
++
++# ── FUND-004B-R1: profit/cashflow same-group binding adversarial tests ─────
++
++
++def test_fund004b_profit_and_cashflow_same_group_passes():
++    """net_profit and operating_cashflow from same (date, scope, unit) group
++    must both be present and comparable."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    assert inputs["net_profit"] is not None
++    assert inputs["operating_cashflow"] is not None
++    anomaly = check_financial_anomalies("603629.SH", **inputs)
++    assert "cashflow_profit_divergence" in anomaly["anomalies"]
++    assert "negative_cashflow_quality" in anomaly["anomalies"]
++
++
++def test_fund004b_cross_date_profit_and_cashflow_fail_closed():
++    """net_profit from 12-31 and operating_cashflow from 09-30 must NOT be
++    compared — both must be None."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # cashflow from Q3 — different date
++        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
++         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Cross-date: no group has both -> both None
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++    anomaly = check_financial_anomalies("603629.SH", **inputs)
++    assert "cashflow_profit_divergence" not in anomaly["anomalies"]
++    assert "negative_cashflow_quality" not in anomaly["anomalies"]
++
++
++def test_fund004b_cross_scope_profit_and_cashflow_fail_closed():
++    """net_profit from FY_YTD and operating_cashflow from SINGLE_QUARTER
++    on the same date must NOT be compared."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # cashflow same date but SINGLE_QUARTER scope
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "SINGLE_QUARTER",
++         "value": -500.0, "unit": "万元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Cross-scope: no group has both -> both None
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_cross_unit_profit_and_cashflow_fail_closed():
++    """net_profit in 万元 and operating_cashflow in 亿元 on same date/scope
++    must NOT be compared."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # cashflow same date/scope but different unit
++        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 0.05, "unit": "亿元", "status": "HAS_DATA"},
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    # Cross-unit: no group has both -> both None
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_only_profit_no_cashflow_fail_closed():
++    """When net_profit exists but operating_cashflow is absent from all groups,
++    both must be None (fail closed)."""
++    facts = [
++        {"metric": "revenue", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 33074.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "operating_cost", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 19844.0, "unit": "万元", "status": "HAS_DATA"},
++        {"metric": "net_profit", "report_date": "2025-12-31", "period_scope": "FY_YTD",
++         "value": 2000.0, "unit": "万元", "status": "HAS_DATA"},
++        # no operating_cashflow at all
++    ]
++    inputs = extract_financial_anomaly_inputs(facts)
++    assert inputs["net_profit"] is None
++    assert inputs["operating_cashflow"] is None
++
++
++def test_fund004b_only_cashflow_no_profit_fail_closed():
++    """When operating_cashflow exists but net_profit is absent from all groups,
++    both must be None (fail closed)."""
+docs/task_runs/FUND-004B-R1-20260723-155911/task.md
+# Auto Dev Task Run
+
+- Task: FUND-004B-R1 - 利润与经营现金流同财务组绑定（P0）
+- Priority: P0
+- Status: CLAIMED
+- Started at: 2026-07-23_15:59:11
+- Git HEAD: b847a09
+- Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
+- OpenCode timeout seconds: 1800
+- Test timeout seconds: 900
+- Codex review timeout seconds: 1200
+- OpenCode binary: /opt/homebrew/bin/opencode
+- OpenCode version: 1.15.12
+- Full tests enabled: 0
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/FUND-004B-R1-20260723-155911/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-07-23T16:05:33.333909
+# Changed files: 4
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: tests/test_fund003_fund004_integrity.py
+[34mℹ[0m Symbol "tests/test_fund003_fund004_integrity.py" not found
+
+
+## Source: tradingagents/agents/utils/fundamental_integrity.py
+[34mℹ[0m Symbol "tradingagents/agents/utils/fundamental_integrity.py" not found
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '760,1045p' tradingagents/agents/utils/fundamental_integrity.py && grep -R \"extract_financial_anomaly_inputs\" -n . | head -50" in /Users/maybee/TradingAgents-AShare
+2026-07-23T08:06:03.293599Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 6545ms:
+./tests/test_fund006a_provider_replay.py:28:    extract_financial_anomaly_inputs,
+./tests/test_fund006a_provider_replay.py:279:        """FUND-004B: extract_financial_anomaly_inputs groups by same-date/same-scope/same-unit."""
+./tests/test_fund006a_provider_replay.py:285:        inputs = extract_financial_anomaly_inputs(fact_dicts)
+./tests/test_fund006a_provider_replay.py:948:        inputs = extract_financial_anomaly_inputs(facts)
+Binary file ./tests/__pycache__/test_fund003_fund004_integrity.cpython-312.pyc matches
+Binary file ./tests/__pycache__/test_fund007a_error_benchmark.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_fund006a_provider_replay.cpython-312.pyc matches
+Binary file ./tests/__pycache__/test_fund003_fund004_integrity.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_fund007a_error_benchmark.cpython-312.pyc matches
+Binary file ./tests/__pycache__/test_c006_financial_validator.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_fund006a_provider_replay.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_c006_financial_validator.py:17:    extract_financial_anomaly_inputs,
+./tests/test_c006_financial_validator.py:365:# ── Phase 2: extract_financial_anomaly_inputs integration ────────────────────
+./tests/test_c006_financial_validator.py:369:    """Verify extract_financial_anomaly_inputs produces Phase 2 fields."""
+./tests/test_c006_financial_validator.py:380:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:386:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:400:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:414:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:428:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:434:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:448:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:462:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:468:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:473:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:479:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:502:    """Full pipeline: facts -> extract_financial_anomaly_inputs -> check_financial_anomalies."""
+./tests/test_c006_financial_validator.py:511:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:528:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:549:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:570:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:599:        inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:662:        r1 = extract_financial_anomaly_inputs(facts)
+./tests/test_c006_financial_validator.py:663:        r2 = extract_financial_anomaly_inputs(facts)
+./tests/test_fund007a_error_benchmark.py:30:    extract_financial_anomaly_inputs,
+./tests/test_fund003_fund004_integrity.py:11:    extract_financial_anomaly_inputs,
+./tests/test_fund003_fund004_integrity.py:87:    inputs = extract_financial_anomaly_inputs(_facts())
+./tests/test_fund003_fund004_integrity.py:98:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:957:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:980:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:998:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1015:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1035:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1051:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1060:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1083:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1109:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1131:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1154:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1174:    inputs = extract_financial_anomaly_inputs(facts)
+./tests/test_fund003_fund004_integrity.py:1192:    inputs = extract_financial_anomaly_inputs(facts)
+
+exec
+/bin/zsh -lc "sed -n '1045,1125p' tradingagents/agents/utils/fundamental_integrity.py && sed -n '340,540p' tests/test_c006_financial_validator.py && sed -n '260,310p' tests/test_fund006a_provider_replay.py && sed -n '930,980p' tests/test_fund006a_provider_replay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        "gross_margin_prev": gross_margin_prev,
+        "operating_cashflow": _to_yi(cashflow_group.get("operating_cashflow") if cashflow_group else None),
+        "net_profit": _to_yi(profit_group.get("net_profit") if profit_group else None),
+        "debt_ratio": debt_ratio,
+        "debt_ratio_prev": debt_ratio_prev,
+        "total_invest_cashflow": _to_yi(invest_group.get("investing_cashflow") if invest_group else None),
+        "total_finance_cashflow": _to_yi(finance_group.get("financing_cashflow") if finance_group else None),
+        # Phase 2
+        "roe": roe,
+        "roe_prev": roe_prev,
+        "revenue_growth": revenue_growth,
+        "operating_cost_growth": operating_cost_growth,
+        "accounts_receivable_growth": accounts_receivable_growth,
+        "inventory_growth": inventory_growth,
+    }
+
+
+def _to_yi(fact: Mapping[str, Any] | None) -> float | None:
+    if not fact or not isinstance(fact.get("value"), (int, float)):
+        return None
+    unit = str(fact.get("unit") or "元")
+    value = float(fact["value"])
+    if unit in {"亿", "亿元"}:
+        return value
+    if unit in {"万", "万元"}:
+        return value / 10000.0
+    return value / 100000000.0
+
+
+def format_fundamental_integrity_block(integrity: Mapping[str, Any]) -> str:
+    blockers = integrity.get("blockers") or []
+    if not blockers:
+        return ""
+    lines = ["【基本面语义门禁：NEEDS_REVIEW】"]
+    for blocker in blockers:
+        lines.append(f"- {blocker.get('code')}: {blocker.get('reason')}")
+    lines.append("基本面模块已降级为待人工复核，不得作为可执行交易结论的依据。")
+    return "\n".join(lines)
+
+
+# [FUND-004A] fundamental_semantic_gate_forward
+
+_GATED_HEADER = (
+    "【基本面语义门禁已触发 — 该模块不参与方向权重】\n\n"
+    "基本面报告存在以下完整性问题，已被门禁拦截：\n"
+)
+
+
+def _extract_verified_facts(pool: Mapping[str, Any] | None) -> str:
+    """Extract verified financial facts from data pool for the gated report."""
+    if not pool:
+        return ""
+    parts: list[str] = []
+    identity = pool.get("instrument_identity")
+    if isinstance(identity, Mapping) and identity.get("security_name"):
+        parts.append(f"公司名称：{identity.get('security_name')}")
+    if isinstance(identity, Mapping) and identity.get("industry"):
+        parts.append(f"行业：{identity.get('industry')}")
+    period_facts = pool.get("financial_period_facts") or []
+    if period_facts:
+        latest_by_metric: dict[str, Mapping[str, Any]] = {}
+        for fact in period_facts:
+            if not isinstance(fact, Mapping) or fact.get("value") is None:
+                continue
+            metric = str(fact.get("metric") or "")
+            if not metric:
+                continue
+            existing = latest_by_metric.get(metric)
+            if existing is None or str(fact.get("report_date", "")) > str(existing.get("report_date", "")):
+                latest_by_metric[metric] = fact
+        metric_labels = {
+            "revenue": "营业收入", "operating_cost": "营业成本",
+            "net_profit": "净利润", "operating_cashflow": "经营现金流",
+            "total_assets": "总资产", "total_liabilities": "总负债",
+            "gross_margin": "毛利率", "debt_ratio": "资产负债率",
+        }
+        for metric, label in metric_labels.items():
+            fact = latest_by_metric.get(metric)
+            if fact is not None:
+                value = fact.get("value")
+                unit = fact.get("unit", "")
+    def test_cost_growth_above_threshold(self):
+        r = check_financial_anomalies(
+            "X", inventory_growth=40.0, operating_cost_growth=15.0
+        )
+        assert "inventory_cost_divergence" not in r["anomalies"]
+
+    def test_inventory_none_skips(self):
+        r = check_financial_anomalies(
+            "X", inventory_growth=None, operating_cost_growth=5.0
+        )
+        assert "inventory_cost_divergence" not in r["anomalies"]
+
+    def test_cost_none_skips(self):
+        r = check_financial_anomalies(
+            "X", inventory_growth=40.0, operating_cost_growth=None
+        )
+        assert "inventory_cost_divergence" not in r["anomalies"]
+
+    def test_inventory_declining_no_divergence(self):
+        r = check_financial_anomalies(
+            "X", inventory_growth=-10.0, operating_cost_growth=5.0
+        )
+        assert "inventory_cost_divergence" not in r["anomalies"]
+
+
+# ── Phase 2: extract_financial_anomaly_inputs integration ────────────────────
+
+
+class TestPhase2Extraction:
+    """Verify extract_financial_anomaly_inputs produces Phase 2 fields."""
+
+    def _facts_with_equity(self, equity=4000.0, report_date="2025-12-31"):
+        return _base_facts(report_date=report_date) + [
+            {"metric": "total_equity", "report_date": report_date,
+             "period_scope": "POINT_IN_TIME", "value": equity,
+             "unit": "万元", "status": "HAS_DATA"},
+        ]
+
+    def test_roe_extracted(self):
+        facts = self._facts_with_equity(equity=4000.0)
+        inputs = extract_financial_anomaly_inputs(facts)
+        # net_profit=2000, equity=4000 -> ROE = 50%
+        assert inputs["roe"] == 50.0
+
+    def test_roe_none_when_no_equity(self):
+        facts = _base_facts()
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["roe"] is None
+
+    def test_roe_prev_from_prior_period(self):
+        facts = self._facts_with_equity(equity=4000.0)
+        # Add prior period
+        facts.extend([
+            {"metric": "net_profit", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 1000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "total_equity", "report_date": "2025-09-30",
+             "period_scope": "POINT_IN_TIME", "value": 5000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        ])
+        inputs = extract_financial_anomaly_inputs(facts)
+        # Prior: net_profit=1000, equity=5000 -> ROE = 20%
+        assert inputs["roe_prev"] == 20.0
+
+    def test_revenue_growth_extracted(self):
+        facts = _base_facts(revenue=33074.0)
+        facts.extend([
+            {"metric": "revenue", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 24000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "operating_cost", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 15000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        ])
+        inputs = extract_financial_anomaly_inputs(facts)
+        expected = (33074.0 - 24000.0) / 24000.0 * 100
+        assert abs(inputs["revenue_growth"] - expected) < 0.01
+
+    def test_operating_cost_growth_extracted(self):
+        facts = _base_facts(cost=19844.0)
+        facts.extend([
+            {"metric": "revenue", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 24000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "operating_cost", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 15000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        ])
+        inputs = extract_financial_anomaly_inputs(facts)
+        expected = (19844.0 - 15000.0) / 15000.0 * 100
+        assert abs(inputs["operating_cost_growth"] - expected) < 0.01
+
+    def test_growth_none_when_no_prior(self):
+        facts = _base_facts()
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["revenue_growth"] is None
+        assert inputs["operating_cost_growth"] is None
+
+    def test_accounts_receivable_growth_extracted(self):
+        facts = _base_facts()
+        facts.extend([
+            {"metric": "accounts_receivable", "report_date": "2025-12-31",
+             "period_scope": "POINT_IN_TIME", "value": 5000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "accounts_receivable", "report_date": "2025-09-30",
+             "period_scope": "POINT_IN_TIME", "value": 3000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        ])
+        inputs = extract_financial_anomaly_inputs(facts)
+        expected = (5000.0 - 3000.0) / 3000.0 * 100
+        assert abs(inputs["accounts_receivable_growth"] - expected) < 0.01
+
+    def test_inventory_growth_extracted(self):
+        facts = _base_facts()
+        facts.extend([
+            {"metric": "inventory", "report_date": "2025-12-31",
+             "period_scope": "POINT_IN_TIME", "value": 8000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "inventory", "report_date": "2025-09-30",
+             "period_scope": "POINT_IN_TIME", "value": 5000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        ])
+        inputs = extract_financial_anomaly_inputs(facts)
+        expected = (8000.0 - 5000.0) / 5000.0 * 100
+        assert abs(inputs["inventory_growth"] - expected) < 0.01
+
+    def test_ar_growth_none_when_no_data(self):
+        facts = _base_facts()
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["accounts_receivable_growth"] is None
+
+    def test_inventory_growth_none_when_no_data(self):
+        facts = _base_facts()
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["inventory_growth"] is None
+
+    def test_phase2_fields_backward_compat(self):
+        """Old Phase 1 callers still get all Phase 1 fields."""
+        facts = _base_facts()
+        inputs = extract_financial_anomaly_inputs(facts)
+        # Phase 1 fields exist
+        assert "gross_margin" in inputs
+        assert "gross_margin_prev" in inputs
+        assert "operating_cashflow" in inputs
+        assert "net_profit" in inputs
+        assert "debt_ratio" in inputs
+        assert "debt_ratio_prev" in inputs
+        assert "total_invest_cashflow" in inputs
+        assert "total_finance_cashflow" in inputs
+        # Phase 2 fields exist (even if None)
+        assert "roe" in inputs
+        assert "roe_prev" in inputs
+        assert "revenue_growth" in inputs
+        assert "operating_cost_growth" in inputs
+        assert "accounts_receivable_growth" in inputs
+        assert "inventory_growth" in inputs
+
+
+# ── Phase 2: End-to-end via extract + check ─────────────────────────────────
+
+
+class TestPhase2EndToEnd:
+    """Full pipeline: facts -> extract_financial_anomaly_inputs -> check_financial_anomalies."""
+
+    def test_roe_extreme_via_pipeline(self):
+        facts = _base_facts(net_profit=6000.0)
+        facts.append(
+            {"metric": "total_equity", "report_date": "2025-12-31",
+             "period_scope": "POINT_IN_TIME", "value": 10000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        )
+        inputs = extract_financial_anomaly_inputs(facts)
+        anomaly = check_financial_anomalies("TEST", **inputs)
+        assert "extreme_roe" in anomaly["anomalies"]
+
+    def test_margin_squeeze_via_pipeline(self):
+        facts = _base_facts(revenue=40000.0, cost=32000.0)
+        # Prior: revenue=30000, cost=20000 -> gross_margin 33.3%
+        # Current: revenue=40000, cost=32000 -> gross_margin 20%
+        # revenue_growth=33.3%, cost_growth=60%, margin_drop=13.3pp
+        facts.extend([
+            {"metric": "revenue", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 30000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "operating_cost", "report_date": "2025-09-30",
+             "period_scope": "Q3_YTD", "value": 20000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+        ])
+        inputs = extract_financial_anomaly_inputs(facts)
+        anomaly = check_financial_anomalies("TEST", **inputs)
+        assert "margin_squeeze" in anomaly["anomalies"]
+
+    def test_ar_revenue_divergence_via_pipeline(self):
+        facts = _base_facts(revenue=33074.0)
+        facts.extend([
+            {"metric": "accounts_receivable", "report_date": "2025-12-31",
+             "period_scope": "POINT_IN_TIME", "value": 8000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+            {"metric": "accounts_receivable", "report_date": "2025-09-30",
+             "period_scope": "POINT_IN_TIME", "value": 3000.0,
+             "unit": "万元", "status": "HAS_DATA"},
+    def test_period_scope_for_date(self):
+        """period_scope_for_date maps month-day to correct scope."""
+        assert period_scope_for_date("2025-03-31", "income_statement") == "Q1_YTD"
+        assert period_scope_for_date("2025-06-30", "income_statement") == "H1_YTD"
+        assert period_scope_for_date("2025-09-30", "income_statement") == "Q3_YTD"
+        assert period_scope_for_date("2025-12-31", "income_statement") == "FY_YTD"
+        assert period_scope_for_date("2025-12-31", "balance_sheet") == "POINT_IN_TIME"
+
+    def test_render_period_context_mentions_scopes(self):
+        """render_financial_period_context includes scope labels."""
+        facts = normalize_financial_markdown(
+            _INCOME_STATEMENT_RAW, statement_type="income_statement", source="fixture",
+        )
+        all_facts = [f.to_dict() for f in facts] + [f.to_dict() for f in derive_single_quarters(facts)]
+        ctx = render_financial_period_context(all_facts)
+        assert "Q1_YTD" in ctx or "Q1" in ctx
+        assert "SINGLE_QUARTER" in ctx or "单季" in ctx
+
+    def test_mixed_cumulative_and_single_quarter_grouping(self):
+        """FUND-004B: extract_financial_anomaly_inputs groups by same-date/same-scope/same-unit."""
+        facts = normalize_financial_markdown(
+            _INCOME_STATEMENT_RAW, statement_type="income_statement", source="fixture",
+        )
+        all_facts = facts + derive_single_quarters(facts)
+        fact_dicts = [f.to_dict() for f in all_facts]
+        inputs = extract_financial_anomaly_inputs(fact_dicts)
+
+        # Should not mix FY revenue with Q3 cost
+        # Check that the grouping is by (report_date, period_scope, unit)
+        for group_key, group_values in inputs.items():
+            if group_values is None:
+                continue
+            # All values in a group should come from same date/scope/unit
+            # (this is the core FUND-004B fix)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Axis 3: Claim-Evidence Binding
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Real announcement text (desensitized)
+_ANNOUNCEMENT_TEXT = """
+2025年度业绩快报：报告期内，公司实现营业收入33.074亿元，同比增长15.2%；
+实现归属于上市公司股东的净利润3.85亿元，同比增长12.8%。
+主要系原材料采购成本下降及算力云服务业务规模扩大所致。
+公司采用总额法确认收入。
+"""
+
+
+class TestAxis3_ClaimEvidenceBinding:
+    """Verify causal claim-evidence binding with real provider shapes."""
+
+    def test_duplicate_report_dates(self):
+        """Duplicate report dates in provider output are handled."""
+        raw = """| 报告日 | 营业总收入 |
+|---|---:|
+| 2025-03-31 | 7.0 |
+| 2025-03-31 | 7.0 |
+| 2025-06-30 | 15.0 |
+"""
+        facts = normalize_financial_markdown(raw, statement_type="income_statement", source="fixture")
+        # Should not crash; may dedupe or keep both
+
+    def test_unit_mismatch_warning(self):
+        """Different units across facts should be detectable."""
+        facts = [
+            {"metric": "revenue", "report_date": "2025-12-31", "value": 33.074, "unit": "亿元", "status": "HAS_DATA"},
+            {"metric": "operating_cost", "report_date": "2025-12-31", "value": 330740.0, "unit": "万元", "status": "HAS_DATA"},
+        ]
+        inputs = extract_financial_anomaly_inputs(facts)
+        # Different units should be grouped separately
+
+    def test_gate_no_crash_on_malformed_state(self):
+        """Gate handles malformed state gracefully."""
+        from tradingagents.graph.setup import create_fundamentals_integrity_gate
+
+        dc = MagicMock()
+        dc.get.return_value = None
+        gate = create_fundamentals_integrity_gate(dc)
+
+        # Empty state
+        result = asyncio.run(gate({}))
+        assert result == {}
+
+        # State with empty report
+        result = asyncio.run(gate({"fundamentals_report": "", "company_of_interest": "X"}))
+        assert result == {}
+
+2026-07-23T08:06:07.791981Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc 'source .venv/bin/activate 2>/dev/null || true; pytest tests/test_fund003_fund004_integrity.py -q' in /Users/maybee/TradingAgents-AShare
+2026-07-23T08:06:17.779900Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 1581ms:
+........................................................................ [ 82%]
+...............                                                          [100%]
+87 passed in 1.04s
+
+exec
+/bin/zsh -lc 'grep -n "def check_financial_anomalies" -A260 tradingagents/agents/utils/financial_validator.py tradingagents/agents/utils/fundamental_integrity.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/agents/utils/financial_validator.py:14:def check_financial_anomalies(
+tradingagents/agents/utils/financial_validator.py-15-    stock_code: str,
+tradingagents/agents/utils/financial_validator.py-16-    # Phase 1 fields
+tradingagents/agents/utils/financial_validator.py-17-    gross_margin: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-18-    gross_margin_prev: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-19-    operating_cashflow: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-20-    net_profit: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-21-    debt_ratio: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-22-    debt_ratio_prev: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-23-    total_invest_cashflow: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-24-    total_finance_cashflow: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-25-    # Phase 2 fields
+tradingagents/agents/utils/financial_validator.py-26-    roe: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-27-    roe_prev: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-28-    revenue_growth: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-29-    operating_cost_growth: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-30-    accounts_receivable_growth: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-31-    inventory_growth: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py-32-) -> dict:
+tradingagents/agents/utils/financial_validator.py-33-    """
+tradingagents/agents/utils/financial_validator.py-34-    检测财报数据异常。
+tradingagents/agents/utils/financial_validator.py-35-
+tradingagents/agents/utils/financial_validator.py-36-    返回:
+tradingagents/agents/utils/financial_validator.py-37-        {
+tradingagents/agents/utils/financial_validator.py-38-            "has_anomaly": bool,
+tradingagents/agents/utils/financial_validator.py-39-            "anomalies": list[str],
+tradingagents/agents/utils/financial_validator.py-40-            "anomaly_details": dict,
+tradingagents/agents/utils/financial_validator.py-41-            "needs_manual_review": bool,
+tradingagents/agents/utils/financial_validator.py-42-        }
+tradingagents/agents/utils/financial_validator.py-43-    """
+tradingagents/agents/utils/financial_validator.py-44-    anomalies = []
+tradingagents/agents/utils/financial_validator.py-45-    anomaly_details = {}
+tradingagents/agents/utils/financial_validator.py-46-
+tradingagents/agents/utils/financial_validator.py-47-    # ── Phase 1 ──────────────────────────────────────────────────────────────
+tradingagents/agents/utils/financial_validator.py-48-
+tradingagents/agents/utils/financial_validator.py-49-    # 1. 毛利率跳变 > 20%
+tradingagents/agents/utils/financial_validator.py-50-    if gross_margin is not None and gross_margin_prev is not None:
+tradingagents/agents/utils/financial_validator.py-51-        margin_change = abs(gross_margin - gross_margin_prev)
+tradingagents/agents/utils/financial_validator.py-52-        if margin_change > 20:
+tradingagents/agents/utils/financial_validator.py-53-            anomalies.append("gross_margin_jump")
+tradingagents/agents/utils/financial_validator.py-54-            anomaly_details["gross_margin_jump"] = (
+tradingagents/agents/utils/financial_validator.py-55-                f"毛利率从 {gross_margin_prev:.1f}% 跳变至 {gross_margin:.1f}%，"
+tradingagents/agents/utils/financial_validator.py-56-                f"变化 {margin_change:.1f} 个百分点"
+tradingagents/agents/utils/financial_validator.py-57-            )
+tradingagents/agents/utils/financial_validator.py-58-
+tradingagents/agents/utils/financial_validator.py-59-    # 2. 现金流与利润背离（利润增但经营现金流减）
+tradingagents/agents/utils/financial_validator.py-60-    if operating_cashflow is not None and net_profit is not None:
+tradingagents/agents/utils/financial_validator.py-61-        if net_profit > 0 and operating_cashflow < 0:
+tradingagents/agents/utils/financial_validator.py-62-            anomalies.append("cashflow_profit_divergence")
+tradingagents/agents/utils/financial_validator.py-63-            anomaly_details["cashflow_profit_divergence"] = (
+tradingagents/agents/utils/financial_validator.py-64-                f"净利润为正（{net_profit:.2f}亿），但经营现金流为负（{operating_cashflow:.2f}亿）"
+tradingagents/agents/utils/financial_validator.py-65-            )
+tradingagents/agents/utils/financial_validator.py-66-
+tradingagents/agents/utils/financial_validator.py-67-    # 3. 资产负债率异常
+tradingagents/agents/utils/financial_validator.py-68-    if debt_ratio is not None:
+tradingagents/agents/utils/financial_validator.py-69-        if debt_ratio > 70:
+tradingagents/agents/utils/financial_validator.py-70-            anomalies.append("high_debt_ratio")
+tradingagents/agents/utils/financial_validator.py-71-            anomaly_details["high_debt_ratio"] = f"资产负债率 {debt_ratio:.1f}% > 70%"
+tradingagents/agents/utils/financial_validator.py-72-        if debt_ratio_prev is not None:
+tradingagents/agents/utils/financial_validator.py-73-            debt_change = abs(debt_ratio - debt_ratio_prev)
+tradingagents/agents/utils/financial_validator.py-74-            if debt_change > 10:
+tradingagents/agents/utils/financial_validator.py-75-                anomalies.append("debt_ratio_jump")
+tradingagents/agents/utils/financial_validator.py-76-                anomaly_details["debt_ratio_jump"] = (
+tradingagents/agents/utils/financial_validator.py-77-                    f"资产负债率从 {debt_ratio_prev:.1f}% 变为 {debt_ratio:.1f}%，"
+tradingagents/agents/utils/financial_validator.py-78-                    f"变化 {debt_change:.1f} 个百分点"
+tradingagents/agents/utils/financial_validator.py-79-                )
+tradingagents/agents/utils/financial_validator.py-80-
+tradingagents/agents/utils/financial_validator.py-81-    # 4. 大额投资/筹资异动（简化判断：绝对值 > 50 亿）
+tradingagents/agents/utils/financial_validator.py-82-    if total_invest_cashflow is not None and abs(total_invest_cashflow) > 50:
+tradingagents/agents/utils/financial_validator.py-83-        anomalies.append("large_invest_cashflow")
+tradingagents/agents/utils/financial_validator.py-84-        anomaly_details["large_invest_cashflow"] = (
+tradingagents/agents/utils/financial_validator.py-85-            f"投资活动现金流异动：{total_invest_cashflow:.2f}亿"
+tradingagents/agents/utils/financial_validator.py-86-        )
+tradingagents/agents/utils/financial_validator.py-87-
+tradingagents/agents/utils/financial_validator.py-88-    if total_finance_cashflow is not None and abs(total_finance_cashflow) > 50:
+tradingagents/agents/utils/financial_validator.py-89-        anomalies.append("large_finance_cashflow")
+tradingagents/agents/utils/financial_validator.py-90-        anomaly_details["large_finance_cashflow"] = (
+tradingagents/agents/utils/financial_validator.py-91-            f"筹资活动现金流异动：{total_finance_cashflow:.2f}亿"
+tradingagents/agents/utils/financial_validator.py-92-        )
+tradingagents/agents/utils/financial_validator.py-93-
+tradingagents/agents/utils/financial_validator.py-94-    # ── Phase 2 ──────────────────────────────────────────────────────────────
+tradingagents/agents/utils/financial_validator.py-95-
+tradingagents/agents/utils/financial_validator.py-96-    # 5. ROE 异常：极端值或大幅跳变
+tradingagents/agents/utils/financial_validator.py-97-    if roe is not None:
+tradingagents/agents/utils/financial_validator.py-98-        if abs(roe) > 50:
+tradingagents/agents/utils/financial_validator.py-99-            anomalies.append("extreme_roe")
+tradingagents/agents/utils/financial_validator.py-100-            anomaly_details["extreme_roe"] = (
+tradingagents/agents/utils/financial_validator.py-101-                f"净资产收益率 {roe:.1f}% 极端（|ROE| > 50%）"
+tradingagents/agents/utils/financial_validator.py-102-            )
+tradingagents/agents/utils/financial_validator.py-103-        if roe_prev is not None:
+tradingagents/agents/utils/financial_validator.py-104-            roe_change = abs(roe - roe_prev)
+tradingagents/agents/utils/financial_validator.py-105-            if roe_change > 20:
+tradingagents/agents/utils/financial_validator.py-106-                anomalies.append("roe_jump")
+tradingagents/agents/utils/financial_validator.py-107-                anomaly_details["roe_jump"] = (
+tradingagents/agents/utils/financial_validator.py-108-                    f"ROE 从 {roe_prev:.1f}% 跳变至 {roe:.1f}%，"
+tradingagents/agents/utils/financial_validator.py-109-                    f"变化 {roe_change:.1f} 个百分点"
+tradingagents/agents/utils/financial_validator.py-110-                )
+tradingagents/agents/utils/financial_validator.py-111-
+tradingagents/agents/utils/financial_validator.py-112-    # 6. 营收-成本剪刀差：营收增长但毛利率下降（成本增速 > 营收增速）
+tradingagents/agents/utils/financial_validator.py-113-    if (
+tradingagents/agents/utils/financial_validator.py-114-        revenue_growth is not None
+tradingagents/agents/utils/financial_validator.py-115-        and operating_cost_growth is not None
+tradingagents/agents/utils/financial_validator.py-116-        and gross_margin is not None
+tradingagents/agents/utils/financial_validator.py-117-        and gross_margin_prev is not None
+tradingagents/agents/utils/financial_validator.py-118-    ):
+tradingagents/agents/utils/financial_validator.py-119-        if revenue_growth > 0 and operating_cost_growth > revenue_growth and gross_margin < gross_margin_prev:
+tradingagents/agents/utils/financial_validator.py-120-            cost_excess = operating_cost_growth - revenue_growth
+tradingagents/agents/utils/financial_validator.py-121-            margin_drop = gross_margin_prev - gross_margin
+tradingagents/agents/utils/financial_validator.py-122-            if cost_excess > 5 and margin_drop > 3:
+tradingagents/agents/utils/financial_validator.py-123-                anomalies.append("margin_squeeze")
+tradingagents/agents/utils/financial_validator.py-124-                anomaly_details["margin_squeeze"] = (
+tradingagents/agents/utils/financial_validator.py-125-                    f"营收增长 {revenue_growth:.1f}% 但成本增长 {operating_cost_growth:.1f}%，"
+tradingagents/agents/utils/financial_validator.py-126-                    f"毛利率下降 {margin_drop:.1f} 个百分点"
+tradingagents/agents/utils/financial_validator.py-127-                )
+tradingagents/agents/utils/financial_validator.py-128-
+tradingagents/agents/utils/financial_validator.py-129-    # 7. 现金流质量：经营现金流/净利润比值异常
+tradingagents/agents/utils/financial_validator.py-130-    if operating_cashflow is not None and net_profit is not None and net_profit != 0:
+tradingagents/agents/utils/financial_validator.py-131-        cf_ratio = operating_cashflow / net_profit
+tradingagents/agents/utils/financial_validator.py-132-        if cf_ratio < 0:
+tradingagents/agents/utils/financial_validator.py-133-            anomalies.append("negative_cashflow_quality")
+tradingagents/agents/utils/financial_validator.py-134-            anomaly_details["negative_cashflow_quality"] = (
+tradingagents/agents/utils/financial_validator.py-135-                f"经营现金流/净利润 = {cf_ratio:.2f}，"
+tradingagents/agents/utils/financial_validator.py-136-                f"利润未转化为实际现金流入"
+tradingagents/agents/utils/financial_validator.py-137-            )
+tradingagents/agents/utils/financial_validator.py-138-        elif cf_ratio > 5:
+tradingagents/agents/utils/financial_validator.py-139-            anomalies.append("excessive_cashflow_quality")
+tradingagents/agents/utils/financial_validator.py-140-            anomaly_details["excessive_cashflow_quality"] = (
+tradingagents/agents/utils/financial_validator.py-141-                f"经营现金流/净利润 = {cf_ratio:.2f}，"
+tradingagents/agents/utils/financial_validator.py-142-                f"现金流远超利润，可能存在非经常性因素"
+tradingagents/agents/utils/financial_validator.py-143-            )
+tradingagents/agents/utils/financial_validator.py-144-
+tradingagents/agents/utils/financial_validator.py-145-    # 8. 应收账款/营收背离：应收增速远超营收增速
+tradingagents/agents/utils/financial_validator.py-146-    if (
+tradingagents/agents/utils/financial_validator.py-147-        accounts_receivable_growth is not None
+tradingagents/agents/utils/financial_validator.py-148-        and revenue_growth is not None
+tradingagents/agents/utils/financial_validator.py-149-        and accounts_receivable_growth > 30
+tradingagents/agents/utils/financial_validator.py-150-        and revenue_growth < 10
+tradingagents/agents/utils/financial_validator.py-151-    ):
+tradingagents/agents/utils/financial_validator.py-152-        ar_excess = accounts_receivable_growth - revenue_growth
+tradingagents/agents/utils/financial_validator.py-153-        anomalies.append("ar_revenue_divergence")
+tradingagents/agents/utils/financial_validator.py-154-        anomaly_details["ar_revenue_divergence"] = (
+tradingagents/agents/utils/financial_validator.py-155-            f"应收账款增长 {accounts_receivable_growth:.1f}% 但营收仅增长 {revenue_growth:.1f}%，"
+tradingagents/agents/utils/financial_validator.py-156-            f"差异 {ar_excess:.1f} 个百分点"
+tradingagents/agents/utils/financial_validator.py-157-        )
+tradingagents/agents/utils/financial_validator.py-158-
+tradingagents/agents/utils/financial_validator.py-159-    # 9. 存货/成本背离：存货增速远超营业成本增速
+tradingagents/agents/utils/financial_validator.py-160-    if (
+tradingagents/agents/utils/financial_validator.py-161-        inventory_growth is not None
+tradingagents/agents/utils/financial_validator.py-162-        and operating_cost_growth is not None
+tradingagents/agents/utils/financial_validator.py-163-        and inventory_growth > 30
+tradingagents/agents/utils/financial_validator.py-164-        and operating_cost_growth < 10
+tradingagents/agents/utils/financial_validator.py-165-    ):
+tradingagents/agents/utils/financial_validator.py-166-        inv_excess = inventory_growth - operating_cost_growth
+tradingagents/agents/utils/financial_validator.py-167-        anomalies.append("inventory_cost_divergence")
+tradingagents/agents/utils/financial_validator.py-168-        anomaly_details["inventory_cost_divergence"] = (
+tradingagents/agents/utils/financial_validator.py-169-            f"存货增长 {inventory_growth:.1f}% 但营业成本仅增长 {operating_cost_growth:.1f}%，"
+tradingagents/agents/utils/financial_validator.py-170-            f"差异 {inv_excess:.1f} 个百分点"
+tradingagents/agents/utils/financial_validator.py-171-        )
+tradingagents/agents/utils/financial_validator.py-172-
+tradingagents/agents/utils/financial_validator.py-173-    has_anomaly = len(anomalies) > 0
+tradingagents/agents/utils/financial_validator.py-174-
+tradingagents/agents/utils/financial_validator.py-175-    if has_anomaly:
+tradingagents/agents/utils/financial_validator.py-176-        _logger.warning(
+tradingagents/agents/utils/financial_validator.py-177-            "[C-006] financial_validator: %s 检测到异常: %s",
+tradingagents/agents/utils/financial_validator.py-178-            stock_code,
+tradingagents/agents/utils/financial_validator.py-179-            ", ".join(anomalies)
+tradingagents/agents/utils/financial_validator.py-180-        )
+tradingagents/agents/utils/financial_validator.py-181-
+tradingagents/agents/utils/financial_validator.py-182-    return {
+tradingagents/agents/utils/financial_validator.py-183-        "has_anomaly": has_anomaly,
+tradingagents/agents/utils/financial_validator.py-184-        "anomalies": anomalies,
+tradingagents/agents/utils/financial_validator.py-185-        "anomaly_details": anomaly_details,
+tradingagents/agents/utils/financial_validator.py-186-        "needs_manual_review": has_anomaly,
+tradingagents/agents/utils/financial_validator.py-187-    }
+tradingagents/agents/utils/financial_validator.py-188-
+tradingagents/agents/utils/financial_validator.py-189-
+tradingagents/agents/utils/financial_validator.py-190-def format_financial_anomaly_warning(anomaly_info: dict) -> str:
+tradingagents/agents/utils/financial_validator.py-191-    """格式化财务异常警告"""
+tradingagents/agents/utils/financial_validator.py-192-    if not anomaly_info["has_anomaly"]:
+tradingagents/agents/utils/financial_validator.py-193-        return ""
+tradingagents/agents/utils/financial_validator.py-194-
+tradingagents/agents/utils/financial_validator.py-195-    warning = "\n\n📊 [C-006] 财务数据异常检测\n"
+tradingagents/agents/utils/financial_validator.py-196-
+tradingagents/agents/utils/financial_validator.py-197-    for anomaly_type in anomaly_info["anomalies"]:
+tradingagents/agents/utils/financial_validator.py-198-        detail = anomaly_info["anomaly_details"].get(anomaly_type, "")
+tradingagents/agents/utils/financial_validator.py-199-        warning += f"- {detail}\n"
+tradingagents/agents/utils/financial_validator.py-200-
+tradingagents/agents/utils/financial_validator.py-201-    if anomaly_info["needs_manual_review"]:
+tradingagents/agents/utils/financial_validator.py-202-        warning += "\n⚠️ 以上异常需人工复核，数据可信度降级。\n"
+tradingagents/agents/utils/financial_validator.py-203-
+tradingagents/agents/utils/financial_validator.py-204-    return warning
+
+2026-07-23T08:06:22.594916Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc "grep -R \"operating_cashflow\" -n tradingagents tests | head -80 && grep -R \"statement_type=\\\"cash\" -n tests tradingagents | head -50" in /Users/maybee/TradingAgents-AShare
+2026-07-23T08:06:34.366863Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 522ms:
+tradingagents/agents/utils/fundamental_integrity.py:844:    _CASHFLOW_METRICS = {"operating_cashflow", "investing_cashflow", "financing_cashflow"}
+tradingagents/agents/utils/fundamental_integrity.py:956:    # [FUND-004B-R1] profit and operating_cashflow must share group key.
+tradingagents/agents/utils/fundamental_integrity.py:957:    profit_cashflow_group = _find_best_group({"net_profit", "operating_cashflow"})
+tradingagents/agents/utils/fundamental_integrity.py:1046:        "operating_cashflow": _to_yi(cashflow_group.get("operating_cashflow") if cashflow_group else None),
+tradingagents/agents/utils/fundamental_integrity.py:1117:            "net_profit": "净利润", "operating_cashflow": "经营现金流",
+Binary file tradingagents/agents/utils/__pycache__/financial_validator.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/fundamental_integrity.cpython-314.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/fundamental_integrity.cpython-312.pyc matches
+tradingagents/agents/utils/financial_validator.py:19:    operating_cashflow: Optional[float] = None,
+tradingagents/agents/utils/financial_validator.py:60:    if operating_cashflow is not None and net_profit is not None:
+tradingagents/agents/utils/financial_validator.py:61:        if net_profit > 0 and operating_cashflow < 0:
+tradingagents/agents/utils/financial_validator.py:64:                f"净利润为正（{net_profit:.2f}亿），但经营现金流为负（{operating_cashflow:.2f}亿）"
+tradingagents/agents/utils/financial_validator.py:130:    if operating_cashflow is not None and net_profit is not None and net_profit != 0:
+tradingagents/agents/utils/financial_validator.py:131:        cf_ratio = operating_cashflow / net_profit
+Binary file tradingagents/dataflows/__pycache__/financial_periods.cpython-312.pyc matches
+tradingagents/dataflows/financial_periods.py:30:    "operating_cashflow": ("经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"),
+tests/test_fund006a_provider_replay.py:245:            if f.metric == "operating_cashflow"
+tests/test_fund002_financial_periods.py:62:    assert q2.metric == "operating_cashflow"
+Binary file tests/__pycache__/test_fund003_fund004_integrity.cpython-312.pyc matches
+Binary file tests/__pycache__/test_fund006a_provider_replay.cpython-312.pyc matches
+Binary file tests/__pycache__/test_fund003_fund004_integrity.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_fund004a_integrity_gate.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_fund002_financial_periods.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_c006_financial_validator.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_fund006a_provider_replay.cpython-312-pytest-9.0.2.pyc matches
+tests/test_fund004a_integrity_gate.py:42:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "value": -1.0, "unit": "亿元", "status": "HAS_DATA"},
+tests/test_c006_financial_validator.py:43:        {"metric": "operating_cashflow", "report_date": report_date, "period_scope": period_scope,
+tests/test_c006_financial_validator.py:63:        r = check_financial_anomalies("X", net_profit=10.0, operating_cashflow=-5.0)
+tests/test_c006_financial_validator.py:246:        r = check_financial_anomalies("X", net_profit=10.0, operating_cashflow=-5.0)
+tests/test_c006_financial_validator.py:250:        r = check_financial_anomalies("X", net_profit=2.0, operating_cashflow=15.0)
+tests/test_c006_financial_validator.py:254:        r = check_financial_anomalies("X", net_profit=10.0, operating_cashflow=12.0)
+tests/test_c006_financial_validator.py:260:        r = check_financial_anomalies("X", net_profit=2.0, operating_cashflow=10.0)
+tests/test_c006_financial_validator.py:264:        r = check_financial_anomalies("X", net_profit=2.0, operating_cashflow=10.01)
+tests/test_c006_financial_validator.py:269:        r = check_financial_anomalies("X", net_profit=0.0, operating_cashflow=10.0)
+tests/test_c006_financial_validator.py:273:        r = check_financial_anomalies("X", net_profit=None, operating_cashflow=None)
+tests/test_c006_financial_validator.py:277:        r = check_financial_anomalies("X", net_profit=10.0, operating_cashflow=10.0)
+tests/test_c006_financial_validator.py:483:        assert "operating_cashflow" in inputs
+tests/test_c006_financial_validator.py:615:            operating_cashflow=-5.0,
+tests/test_c006_financial_validator.py:643:            "X", roe=60.0, net_profit=10.0, operating_cashflow=-5.0
+tests/test_fund003_fund004_integrity.py:28:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "value": -1.0, "status": "HAS_DATA"},
+tests/test_fund003_fund004_integrity.py:954:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:977:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:995:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1012:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1032:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1080:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1097:    """net_profit and operating_cashflow from same (date, scope, unit) group
+tests/test_fund003_fund004_integrity.py:1106:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1111:    assert inputs["operating_cashflow"] is not None
+tests/test_fund003_fund004_integrity.py:1118:    """net_profit from 12-31 and operating_cashflow from 09-30 must NOT be
+tests/test_fund003_fund004_integrity.py:1128:        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+tests/test_fund003_fund004_integrity.py:1134:    assert inputs["operating_cashflow"] is None
+tests/test_fund003_fund004_integrity.py:1141:    """net_profit from FY_YTD and operating_cashflow from SINGLE_QUARTER
+tests/test_fund003_fund004_integrity.py:1151:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "SINGLE_QUARTER",
+tests/test_fund003_fund004_integrity.py:1157:    assert inputs["operating_cashflow"] is None
+tests/test_fund003_fund004_integrity.py:1161:    """net_profit in 万元 and operating_cashflow in 亿元 on same date/scope
+tests/test_fund003_fund004_integrity.py:1171:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1177:    assert inputs["operating_cashflow"] is None
+tests/test_fund003_fund004_integrity.py:1181:    """When net_profit exists but operating_cashflow is absent from all groups,
+tests/test_fund003_fund004_integrity.py:1190:        # no operating_cashflow at all
+tests/test_fund003_fund004_integrity.py:1194:    assert inputs["operating_cashflow"] is None
+tests/test_fund003_fund004_integrity.py:1198:    """When operating_cashflow exists but net_profit is absent from all groups,
+tests/test_fund003_fund004_integrity.py:1206:        {"metric": "operating_cashflow", "report_date": "2025-12-31", "period_scope": "FY_YTD",
+tests/test_fund003_fund004_integrity.py:1211:    assert inputs["operating_cashflow"] is None
+tests/test_fund003_fund004_integrity.py:1216:    operating_cashflow, the group with both must be selected."""
+tests/test_fund003_fund004_integrity.py:1221:        {"metric": "operating_cashflow", "report_date": "2025-09-30", "period_scope": "Q3_YTD",
+tests/test_fund003_fund004_integrity.py:1226:        # No FY operating_cashflow
+tests/test_fund003_fund004_integrity.py:1229:    # Latest group with both is Q3: net_profit=1500, operating_cashflow=300
+tests/test_fund003_fund004_integrity.py:1231:    assert inputs["operating_cashflow"] is not None
+tests/test_fund006a_provider_replay.py:240:            _CASHFLOW_RAW, statement_type="cashflow", source="fixture",
+tests/test_fund006a_provider_replay.py:701:            _CASHFLOW_RAW, statement_type="cashflow", source="raw:cashflow",
+tests/test_fund002_financial_periods.py:58:        statement_type="cashflow",
+tests/test_fund007a_error_benchmark.py:133:    cashflow = normalize_financial_markdown(_CASHFLOW_RAW, statement_type="cashflow", source="raw:cashflow")
+
+exec
+/bin/zsh -lc "sed -n '1,110p' tests/test_c006_financial_validator.py && sed -n '220,260p' tests/test_fund006a_provider_replay.py && sed -n '1,170p' tradingagents/dataflows/financial_periods.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [C-006] financial_validator — Phase 2 tests
+"""Tests for C-006 financial_data_validator Phase 2 anomaly detection rules.
+
+Phase 1 rules (gross_margin_jump, cashflow_profit_divergence, high_debt_ratio,
+debt_ratio_jump, large_invest_cashflow, large_finance_cashflow) are already
+covered in test_fund003_fund004_integrity.py.
+
+Phase 2 adds: extreme_roe, roe_jump, margin_squeeze, negative_cashflow_quality,
+excessive_cashflow_quality, ar_revenue_divergence, inventory_cost_divergence.
+"""
+
+from tradingagents.agents.utils.financial_validator import (
+    check_financial_anomalies,
+    format_financial_anomaly_warning,
+)
+from tradingagents.agents.utils.fundamental_integrity import (
+    extract_financial_anomaly_inputs,
+)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _base_facts(
+    revenue=33074.0,
+    cost=19844.0,
+    net_profit=2000.0,
+    operating_cf=-500.0,
+    assets=100000.0,
+    liabilities=75000.0,
+    report_date="2025-12-31",
+    period_scope="FY_YTD",
+    unit="万元",
+):
+    """Minimal fact set for Phase 1 + 2 tests."""
+    return [
+        {"metric": "revenue", "report_date": report_date, "period_scope": period_scope,
+         "value": revenue, "unit": unit, "status": "HAS_DATA"},
+        {"metric": "operating_cost", "report_date": report_date, "period_scope": period_scope,
+         "value": cost, "unit": unit, "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": report_date, "period_scope": period_scope,
+         "value": net_profit, "unit": unit, "status": "HAS_DATA"},
+        {"metric": "operating_cashflow", "report_date": report_date, "period_scope": period_scope,
+         "value": operating_cf, "unit": unit, "status": "HAS_DATA"},
+        {"metric": "total_assets", "report_date": report_date, "period_scope": "POINT_IN_TIME",
+         "value": assets, "unit": unit, "status": "HAS_DATA"},
+        {"metric": "total_liabilities", "report_date": report_date, "period_scope": "POINT_IN_TIME",
+         "value": liabilities, "unit": unit, "status": "HAS_DATA"},
+    ]
+
+
+# ── Phase 1 backward compatibility ──────────────────────────────────────────
+
+
+class TestPhase1BackwardCompatibility:
+    """Phase 1 rules still work with Phase 2 signature."""
+
+    def test_gross_margin_jump(self):
+        r = check_financial_anomalies("X", gross_margin=40.0, gross_margin_prev=15.0)
+        assert "gross_margin_jump" in r["anomalies"]
+
+    def test_cashflow_profit_divergence(self):
+        r = check_financial_anomalies("X", net_profit=10.0, operating_cashflow=-5.0)
+        assert "cashflow_profit_divergence" in r["anomalies"]
+
+    def test_high_debt_ratio(self):
+        r = check_financial_anomalies("X", debt_ratio=75.0)
+        assert "high_debt_ratio" in r["anomalies"]
+
+    def test_debt_ratio_jump(self):
+        r = check_financial_anomalies("X", debt_ratio=60.0, debt_ratio_prev=45.0)
+        assert "debt_ratio_jump" in r["anomalies"]
+
+    def test_large_invest_cashflow(self):
+        r = check_financial_anomalies("X", total_invest_cashflow=60.0)
+        assert "large_invest_cashflow" in r["anomalies"]
+
+    def test_large_finance_cashflow(self):
+        r = check_financial_anomalies("X", total_finance_cashflow=-55.0)
+        assert "large_finance_cashflow" in r["anomalies"]
+
+    def test_no_anomaly_clean_input(self):
+        r = check_financial_anomalies("X", gross_margin=35.0, gross_margin_prev=33.0)
+        assert r["has_anomaly"] is False
+        assert r["anomalies"] == []
+
+    def test_all_none_returns_no_anomaly(self):
+        r = check_financial_anomalies("X")
+        assert r["has_anomaly"] is False
+
+    def test_backward_compat_new_params_default_none(self):
+        """New Phase 2 params default to None — old callers unaffected."""
+        r = check_financial_anomalies(
+            "X", gross_margin=40.0, gross_margin_prev=15.0,
+            # Phase 2 params not passed
+        )
+        assert "gross_margin_jump" in r["anomalies"]
+        assert "extreme_roe" not in r["anomalies"]
+
+
+# ── Phase 2: ROE anomaly ────────────────────────────────────────────────────
+
+
+class TestROEAnomaly:
+    def test_extreme_roe_positive(self):
+        r = check_financial_anomalies("X", roe=55.0)
+        assert "extreme_roe" in r["anomalies"]
+        assert "55.0%" in r["anomaly_details"]["extreme_roe"]
+
+    def test_extreme_roe_negative(self):
+            _INCOME_STATEMENT_RAW, statement_type="income_statement", source="fixture",
+        )
+        derived = derive_single_quarters(facts)
+        by_date = {f.report_date: f for f in derived if f.metric == "revenue" and f.period_scope == "SINGLE_QUARTER"}
+
+        # Q2 = 15.16342 - 7.04342 = 8.12000
+        assert by_date["2025-06-30"].value == pytest.approx(8.12000, abs=0.001)
+        assert by_date["2025-06-30"].formula == "H1_YTD-Q1_YTD"
+
+        # Q3 = 24.62342 - 15.16342 = 9.46000
+        assert by_date["2025-09-30"].value == pytest.approx(9.46000, abs=0.001)
+        assert by_date["2025-09-30"].formula == "Q3_YTD-H1_YTD"
+
+        # Q4 = 33.07400 - 24.62342 = 8.45058
+        assert by_date["2025-12-31"].value == pytest.approx(8.45058, abs=0.001)
+        assert by_date["2025-12-31"].formula == "FY_YTD-Q3_YTD"
+
+    def test_cashflow_scopes(self):
+        """Cashflow statement also derives single quarters."""
+        facts = normalize_financial_markdown(
+            _CASHFLOW_RAW, statement_type="cashflow", source="fixture",
+        )
+        derived = derive_single_quarters(facts)
+        q4_ocf = next(
+            f for f in derived
+            if f.metric == "operating_cashflow"
+            and f.report_date == "2025-12-31"
+            and f.period_scope == "SINGLE_QUARTER"
+        )
+        # Q4 OCF = 1.5 - 1.5 = 0.0
+        assert q4_ocf.value == pytest.approx(0.0, abs=0.001)
+
+    def test_balance_sheet_point_in_time(self):
+        """Balance sheet dates are POINT_IN_TIME, not cumulative."""
+        facts = normalize_financial_markdown(
+            _BALANCE_SHEET_RAW, statement_type="balance_sheet", source="fixture",
+        )
+        for f in facts:
+            assert f.period_scope == "POINT_IN_TIME", f"{f.metric} {f.report_date}"
+
+    def test_period_scope_for_date(self):
+"""Deterministic financial-report period normalization.
+
+Chinese interim statements are cumulative.  This module labels the source
+scope and derives single-quarter income/cash-flow values only when both inputs
+are present.  It never substitutes FY cumulative values for Q4.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping
+
+
+Q1_YTD = "Q1_YTD"
+H1_YTD = "H1_YTD"
+Q3_YTD = "Q3_YTD"
+FY_YTD = "FY_YTD"
+SINGLE_QUARTER = "SINGLE_QUARTER"
+POINT_IN_TIME = "POINT_IN_TIME"
+FIELD_MISSING = "FIELD_MISSING"
+
+_DATE_RE = re.compile(r"(20\d{2})[-/]?(\d{2})[-/]?(\d{2})")
+_METRIC_ALIASES = {
+    "revenue": ("营业总收入", "营业收入", "营收"),
+    "operating_cost": ("营业成本",),
+    "net_profit": ("归属于母公司股东的净利润", "归母净利润", "净利润"),
+    "deducted_net_profit": ("扣除非经常性损益后的净利润", "扣非净利润"),
+    "operating_cashflow": ("经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"),
+    "investing_cashflow": ("投资活动产生的现金流量净额",),
+    "financing_cashflow": ("筹资活动产生的现金流量净额",),
+    "total_assets": ("资产总计", "总资产"),
+    "total_liabilities": ("负债合计", "总负债"),
+}
+
+
+@dataclass(frozen=True)
+class FinancialFact:
+    metric: str
+    report_date: str
+    period_scope: str
+    value: float | None
+    unit: str
+    source: str
+    is_derived: bool = False
+    formula: str | None = None
+    input_evidence_ids: tuple[str, ...] = ()
+    status: str = "HAS_DATA"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "metric": self.metric,
+            "report_date": self.report_date,
+            "period_scope": self.period_scope,
+            "value": self.value,
+            "unit": self.unit,
+            "source": self.source,
+            "is_derived": self.is_derived,
+            "formula": self.formula,
+            "input_evidence_ids": list(self.input_evidence_ids),
+            "status": self.status,
+        }
+
+
+def period_scope_for_date(report_date: str, statement_type: str) -> str | None:
+    match = _DATE_RE.search(str(report_date or ""))
+    if not match:
+        return None
+    month_day = f"{match.group(2)}{match.group(3)}"
+    if statement_type == "balance_sheet":
+        return POINT_IN_TIME
+    return {
+        "0331": Q1_YTD,
+        "0630": H1_YTD,
+        "0930": Q3_YTD,
+        "1231": FY_YTD,
+    }.get(month_day)
+
+
+def normalize_financial_records(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    statement_type: str,
+    source: str,
+    unit: str = "元",
+) -> list[FinancialFact]:
+    """Normalize provider records whose columns include a report-date field."""
+    facts: list[FinancialFact] = []
+    for index, record in enumerate(records):
+        report_date = _record_date(record)
+        scope = period_scope_for_date(report_date or "", statement_type)
+        if not report_date or not scope:
+            continue
+        for metric, aliases in _METRIC_ALIASES.items():
+            raw_value = _record_value(record, aliases)
+            if raw_value is _NO_VALUE:
+                continue
+            value = _to_number(raw_value)
+            facts.append(
+                FinancialFact(
+                    metric=metric,
+                    report_date=report_date,
+                    period_scope=scope,
+                    value=value,
+                    unit=unit,
+                    source=source,
+                    input_evidence_ids=(f"{statement_type}:{index}:{report_date}:{metric}",),
+                    status="HAS_DATA" if value is not None else FIELD_MISSING,
+                )
+            )
+    return facts
+
+
+def derive_single_quarters(facts: Iterable[FinancialFact]) -> list[FinancialFact]:
+    """Derive Q2/Q3/Q4 from cumulative income/cash-flow facts where possible."""
+    grouped: dict[str, dict[tuple[int, str], FinancialFact]] = defaultdict(dict)
+    for fact in facts:
+        if fact.period_scope in {Q1_YTD, H1_YTD, Q3_YTD, FY_YTD}:
+            year = _year(fact.report_date)
+            if year:
+                grouped[fact.metric][(year, fact.period_scope)] = fact
+
+    derived: list[FinancialFact] = []
+    for metric, period_facts in grouped.items():
+        years = {year for year, _scope in period_facts}
+        for year in years:
+            derivations = (
+                (H1_YTD, Q1_YTD, "Q2"),
+                (Q3_YTD, H1_YTD, "Q3"),
+                (FY_YTD, Q3_YTD, "Q4"),
+            )
+            for current_scope, previous_scope, quarter in derivations:
+                current = period_facts.get((year, current_scope))
+                previous = period_facts.get((year, previous_scope))
+                if current is None:
+                    continue
+                date = _quarter_end(year, quarter)
+                if previous is None or current.value is None or previous.value is None:
+                    derived.append(
+                        FinancialFact(
+                            metric=metric,
+                            report_date=date,
+                            period_scope=SINGLE_QUARTER,
+                            value=None,
+                            unit=current.unit,
+                            source=current.source,
+                            is_derived=True,
+                            formula=f"{current_scope}-{previous_scope}",
+                            input_evidence_ids=current.input_evidence_ids,
+                            status=FIELD_MISSING,
+                        )
+                    )
+                    continue
+                derived.append(
+                    FinancialFact(
+                        metric=metric,
+                        report_date=date,
+                        period_scope=SINGLE_QUARTER,
+                        value=round(current.value - previous.value, 10),
+                        unit=current.unit,
+                        source=current.source,
+                        is_derived=True,
+                        formula=f"{current_scope}-{previous_scope}",
+                        input_evidence_ids=current.input_evidence_ids + previous.input_evidence_ids,
+                    )
+                )
+    return sorted(derived, key=lambda item: (item.metric, item.report_date))
+
+
+
+2026-07-23T08:06:39.858011Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+exec
+/bin/zsh -lc 'source .venv/bin/activate 2>/dev/null || true; pytest tests/test_c006_financial_validator.py tests/test_fund004a_integrity_gate.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -q' in /Users/maybee/TradingAgents-AShare
+2026-07-23T08:06:47.244688Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+ succeeded in 1482ms:
+........................................................................ [ 44%]
+........................................................................ [ 88%]
+..................                                                       [100%]
+162 passed in 1.01s
+
+codex
+The code change correctly binds net_profit and operating_cashflow to the same financial fact group before comparison, and the added adversarial tests cover the intended cross-date, cross-scope, cross-unit, and one-sided-missing cases. I did not find a correctness issue introduced by the current changes.
+The code change correctly binds net_profit and operating_cashflow to the same financial fact group before comparison, and the added adversarial tests cover the intended cross-date, cross-scope, cross-unit, and one-sided-missing cases. I did not find a correctness issue introduced by the current changes.
