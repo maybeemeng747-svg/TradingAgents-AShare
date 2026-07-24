@@ -1326,6 +1326,7 @@ _SYSTEM_BLOCK_MARKERS = [
     "📊 数据源可用性：",
     "--- 报告质量评分 ---",
     "### 执行等级与证据门禁",
+    "🚨 [C-007] 事件风控警告",
     "⚠️ [D-002]",
 ]
 
@@ -1333,8 +1334,8 @@ _SYSTEM_BLOCK_MARKERS = [
 def _split_llm_body_and_system_blocks(text: str) -> tuple:
     """分离 LLM 原始输出（body）和系统追加区块。
 
-    系统追加区块的起始标记包括：
-    📊 数据源可用性、--- 报告质量评分 ---、### 执行等级与证据门禁、⚠️ [D-002]
+    系统追加区块的起始标记包括数据源、质量评分、执行门禁、
+    C-007 事件风控警告和 D-002 降级说明。
 
     Returns:
         (body, system_blocks) where body is the LLM original output

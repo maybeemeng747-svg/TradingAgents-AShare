@@ -107,6 +107,12 @@ _MOCK_DRY_RUN = {
 
 
 class TestGeneratePending:
+    def test_request_model_defers_channel_validation_to_service(self):
+        from api.main import NotificationGenerateRequest
+
+        assert NotificationGenerateRequest(channel="Feishu").channel == "Feishu"
+        assert NotificationGenerateRequest(channel="bark").channel == "bark"
+
     def test_generates_drafts_to_db(self, db_session):
         with patch(
             "api.services.notification_confirmation_service.build_notification_dry_run",

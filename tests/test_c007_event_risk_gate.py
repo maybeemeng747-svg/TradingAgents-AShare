@@ -944,3 +944,33 @@ class TestBuyLevelEventRiskDowngrade:
             assert forbidden not in sanitized
         assert "立即清仓" in sanitized
         assert any("买入动作" in change for change in changes)
+
+    def test_event_risk_warning_is_not_rewritten_by_sanitizer(self):
+        from tradingagents.agents.utils.readiness_score import (
+            sanitize_forbidden_strong_actions,
+        )
+
+        warning = format_event_risk_warning(
+            {
+                "has_risk": True,
+                "risk_level": "high",
+                "risk_events": ["performance_warning"],
+                "risk_details": {"performance_warning": "存在业绩预警"},
+                "event_severities": {"performance_warning": "high"},
+                "risk_first_mode": True,
+                "block_open": True,
+                "forbidden_actions": ["建议建仓", "建议买入", "ENTER"],
+            }
+        )
+        text = f"当前仅记录事件风险，不给出交易动作。{warning}"
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            {"passed": False, "failures": ["event_risk_block_open"]},
+            position_status="has_position",
+            buy_level=0,
+            risk_level=3,
+        )
+
+        assert sanitized == text
+        assert changes == []
+        assert "禁止动作：建议建仓, 建议买入, ENTER" in sanitized

@@ -5172,7 +5172,9 @@ def post_briefing_payload_dry_run(
 
 # [M-010] feishu_notification_confirmation
 class NotificationGenerateRequest(BaseModel):
-    channel: Literal["feishu"] = "feishu"
+    # Keep this open at the transport layer so service validation can
+    # normalize case variants and return a structured 400 for bad channels.
+    channel: str = "feishu"
     force_refresh: bool = False
 
 

@@ -744,7 +744,10 @@ def get_sync_status(db: Session, user_id: str, file_path: str | None = None) -> 
 
     return {
         "file_path": path,
-        "file_exists": ext_data["error"] != "file_not_found",
+        "file_exists": ext_data["error"] not in {
+            "file_not_found",
+            "path_not_allowed",
+        },
         "file_error": ext_data["error"],
         "file_meta": ext_data.get("meta"),
         "ta_count": len(ta_positions),

@@ -644,7 +644,7 @@ class TestB004R1PathWhitelist:
         assert loaded["error"] is None
         assert loaded["holdings"] == payload
 
-    def test_read_rejects_path_outside_whitelist(self, monkeypatch, tmp_path):
+    def test_read_rejects_path_outside_whitelist(self, db, monkeypatch, tmp_path):
         # [B-004-R1] tmp_path is whitelisted by the fixture env var; we point
         # the service at a sibling dir that is NOT whitelisted.
         from api.services import holdings_sync_service
@@ -657,6 +657,12 @@ class TestB004R1PathWhitelist:
         result = holdings_sync_service.read_external_holdings(str(target))
         assert result["error"] == "path_not_allowed"
         assert result["holdings"] == []
+
+        status = holdings_sync_service.get_sync_status(
+            db, "u1", str(target)
+        )
+        assert status["file_exists"] is False
+        assert status["file_error"] == "path_not_allowed"
 
     def test_write_rejects_path_outside_whitelist(self, monkeypatch, tmp_path):
         # [B-004-R1] Writes to out-of-whitelist paths are rejected before any
