@@ -1,5 +1,20 @@
 # 修改日志
 
+## 2026-07-24 | PLAYBOOK-002-R1 三笔法组合约束补修
+
+- **问题 1**：规则引擎算出默认计划仓位后，`allow_add` 仍读取原始空值，导致 ETF 等默认计划场景被误判为“计划仓位未设置”。
+- **修复 1**：使用不可变 context 的副本把已计算计划仓位传给许可检查；默认 15% 上限现在能正确允许 5% 仓位、阻断 15% 仓位。
+- **问题 2**：`first_big_drop` 只阻断回踩进攻，冲突输入仍可从突破路径进入进攻仓。
+- **修复 2**：把第一次大跌提升为进攻仓统一前置门禁，回踩和突破均不可绕过。
+- **问题 3**：试错仓虽然定义 8% 可接受亏损，却未校验当前价与失效价。
+- **修复 3**：失效价缺失/非法/不低于当前价一律 fail closed；潜在下行超过 8% 阻断，正好 8% 使用数值容差后允许。
+- **验证**：PLAYBOOK-002 专项 **130 passed**；PLAYBOOK/portfolio/API/runtime 相关回归 **517 passed**；Codex review 结论为 “No discrete correctness issues were found”；`py_compile` 与 `git diff --check` 通过。
+- **全量套件说明**：Codex review 额外运行全量测试，**2098 passed / 2 skipped** 后在 live-source sampling 路径主动中断，未出现测试失败。
+- **状态迁移**：PLAYBOOK-002-R1 标记 done；SCORE-001-R1 释放为 ready。
+- **约束**：未修改 prompts、未调用 live LLM、未写生产数据库、未 push。
+
+---
+
 ## 2026-07-24 | F-001-R1 人工 Codex Review 收口
 
 - **并发说明**：19:00 自动链与人工修复同时领取 F-001-R1；自动链未覆盖代码，但 Codex 调用返回 exit 127，因此按 fail-closed 规则留下 `NEEDS_HUMAN` 档案。

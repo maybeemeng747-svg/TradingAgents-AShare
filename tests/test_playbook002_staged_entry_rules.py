@@ -72,6 +72,7 @@ def _make_trial_context(**overrides) -> StagedEntryContext:
         current_price=10.0,
         entry_low=9.0,
         entry_high=11.0,
+        invalid_price=9.3,
         investment_thesis_clear=True,
         sector_retreat=False,
         volume_blowoff_top=False,
@@ -308,21 +309,30 @@ class TestEvaluateTrialLot:
         assert forbidden is False
         assert "已建" in reason
 
-    def test_no_price_info_conservative_pass(self):
+    def test_no_price_info_cannot_verify_downside(self):
         ctx = StagedEntryContext(investment_thesis_clear=True)
         eligible, reason, forbidden, f_reason = evaluate_trial_lot(ctx)
-        assert eligible is True
-        assert "价格信息不足" in reason
+        assert eligible is False
+        assert forbidden is True
+        assert "最大下行" in reason
 
     def test_price_below_extreme_high(self):
-        ctx = _make_trial_context(current_price=11.5, entry_high=11.0)
+        ctx = _make_trial_context(
+            current_price=11.5,
+            entry_high=11.0,
+            invalid_price=10.7,
+        )
         eligible, _, forbidden, _ = evaluate_trial_lot(ctx)
         assert eligible is True
         assert forbidden is False
 
     def test_price_below_extreme_high_boundary(self):
         # 11.0 * 1.15 = 12.65, just below should pass
-        ctx = _make_trial_context(current_price=12.60, entry_high=11.0)
+        ctx = _make_trial_context(
+            current_price=12.60,
+            entry_high=11.0,
+            invalid_price=11.8,
+        )
         eligible, _, forbidden, _ = evaluate_trial_lot(ctx)
         assert eligible is True
 
@@ -331,6 +341,29 @@ class TestEvaluateTrialLot:
         ctx = _make_trial_context(current_price=12.70, entry_high=11.0)
         eligible, _, forbidden, _ = evaluate_trial_lot(ctx)
         assert eligible is False
+
+    def test_downside_above_eight_percent_is_forbidden(self):
+        ctx = _make_trial_context(current_price=10.0, invalid_price=9.19)
+        eligible, reason, forbidden, f_reason = evaluate_trial_lot(ctx)
+        assert eligible is False
+        assert forbidden is True
+        assert "8.1%" in reason
+        assert "8.0% 上限" in f_reason
+
+    def test_downside_at_eight_percent_is_allowed(self):
+        ctx = _make_trial_context(current_price=10.0, invalid_price=9.2)
+        eligible, reason, forbidden, _ = evaluate_trial_lot(ctx)
+        assert eligible is True
+        assert forbidden is False
+        assert "8.0%" in reason
+
+    def test_invalid_price_above_current_price_is_forbidden(self):
+        ctx = _make_trial_context(current_price=10.0, invalid_price=10.1)
+        eligible, reason, forbidden, f_reason = evaluate_trial_lot(ctx)
+        assert eligible is False
+        assert forbidden is True
+        assert "失效价必须低于当前价" in reason
+        assert f_reason == reason
 
 
 # ── Confirm Lot ───────────────────────────────────────────────────────────────
@@ -456,6 +489,21 @@ class TestEvaluateAttackLot:
         ctx = _make_attack_context(first_big_drop=True)
         eligible, attack_type, reason = evaluate_attack_lot(ctx)
         assert eligible is False
+        assert attack_type is None
+        assert "第一次大跌" in reason
+
+    def test_breakout_first_big_drop_forbidden(self):
+        ctx = _make_attack_context(
+            pullback_shrink_volume=False,
+            above_support=False,
+            breakout_confirmed=True,
+            sector_leader_sync=True,
+            first_big_drop=True,
+        )
+        eligible, attack_type, reason = evaluate_attack_lot(ctx)
+        assert eligible is False
+        assert attack_type is None
+        assert "第一次大跌" in reason
 
     def test_breakout_blowoff_top_forbidden(self):
         ctx = _make_attack_context(
@@ -693,6 +741,27 @@ class TestApplyStagedEntryRules:
         result = apply_staged_entry_rules(ctx)
         assert result.planned_max_position_pct is not None
         assert result.planned_max_position_pct > 0
+
+    def test_computed_default_plan_is_used_by_allow_add(self):
+        ctx = _make_trial_context(
+            strategy_tags=["ETF"],
+            planned_max_position_pct=None,
+            current_position_pct=5.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.planned_max_position_pct == 15.0
+        assert result.allow_add is True
+        assert "15.0%" in result.allow_add_reason
+
+    def test_computed_default_plan_blocks_position_at_cap(self):
+        ctx = _make_trial_context(
+            strategy_tags=["ETF"],
+            planned_max_position_pct=None,
+            current_position_pct=15.0,
+        )
+        result = apply_staged_entry_rules(ctx)
+        assert result.planned_max_position_pct == 15.0
+        assert result.allow_add is False
 
     def test_tranches_populated(self):
         ctx = StagedEntryContext(strategy_tags=["ETF"])

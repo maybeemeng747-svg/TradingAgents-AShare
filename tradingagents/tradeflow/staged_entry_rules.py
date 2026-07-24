@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -323,7 +323,36 @@ def evaluate_trial_lot(context: StagedEntryContext) -> Tuple[bool, str, bool, st
     # 3. 板块没有明显退潮（已检查）
     reasons.append("板块未退潮")
 
-    # 4. 仓位足够小（通过三笔法自然保证）
+    # 4. 失效价必须把试错仓最大下行控制在 8% 内。
+    try:
+        current_price = float(context.current_price)
+        invalid_price = float(context.invalid_price)
+    except (TypeError, ValueError, OverflowError):
+        current_price = invalid_price = math.nan
+
+    if (
+        not math.isfinite(current_price)
+        or not math.isfinite(invalid_price)
+        or current_price <= 0
+        or invalid_price <= 0
+    ):
+        reason = "缺少有效当前价或失效价，无法校验试错仓最大下行"
+        return (False, reason, True, reason)
+
+    if invalid_price >= current_price:
+        reason = "失效价必须低于当前价，试错仓风险边界无效"
+        return (False, reason, True, reason)
+
+    downside_pct = (current_price - invalid_price) / current_price * 100.0
+    if downside_pct - TRIAL_ACCEPTABLE_LOSS_PCT > 1e-9:
+        reason = (
+            f"试错仓最大下行 {downside_pct:.1f}% > "
+            f"{TRIAL_ACCEPTABLE_LOSS_PCT:.1f}% 上限"
+        )
+        return (False, reason, True, reason)
+    reasons.append(f"最大下行 {downside_pct:.1f}% 可控")
+
+    # 5. 仓位足够小（通过三笔法自然保证）
     reasons.append("仓位通过三笔法控制")
 
     return (True, "；".join(reasons), False, "")
@@ -404,12 +433,13 @@ def evaluate_attack_lot(context: StagedEntryContext) -> Tuple[bool, Optional[str
         return (False, None, "放量破位，禁止进攻")
     if context.sector_retreat:
         return (False, None, "板块龙头集体退潮，禁止进攻")
+    if context.first_big_drop:
+        return (False, None, "第一次大跌尚未企稳，禁止进攻")
 
     # ── 回踩进攻 ──
     # 条件：逻辑已确认、上涨后回调、回调缩量、不破平台、再次放量转强、板块健康
     if (context.pullback_shrink_volume
-            and context.above_support
-            and not context.first_big_drop):
+            and context.above_support):
         return (True, "pullback",
                 "回踩缩量不破支撑，板块健康，回踩进攻窗口")
 
@@ -518,6 +548,12 @@ def apply_staged_entry_rules(context: StagedEntryContext) -> StagedEntryResult:
     result.trial_pct, result.confirm_pct, result.attack_pct = compute_tranche_sizes(
         result.planned_max_position_pct,
     )
+    # Use the computed default/override consistently in downstream permission
+    # checks without mutating the frozen caller context.
+    effective_context = replace(
+        context,
+        planned_max_position_pct=result.planned_max_position_pct,
+    )
 
     # ── 4. 试错仓 ──
     eligible, reason, forbidden, forbidden_reason = evaluate_trial_lot(context)
@@ -539,7 +575,7 @@ def apply_staged_entry_rules(context: StagedEntryContext) -> StagedEntryResult:
     result.attack_lot_reason = reason
 
     # ── 7. 操作许可 ──
-    allow, reason = check_allow_add(context)
+    allow, reason = check_allow_add(effective_context)
     result.allow_add = allow
     result.allow_add_reason = reason
 
