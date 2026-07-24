@@ -16,6 +16,7 @@ import pytest
 
 from tradingagents.agents.utils.event_risk_gate import (
     check_event_risk,
+    check_event_risk_from_state,  # [C-007-R1]
     detect_events_from_text,
     extract_event_risk_inputs,
     format_event_risk_warning,
@@ -23,6 +24,9 @@ from tradingagents.agents.utils.event_risk_gate import (
     EventSeverity,
     RISK_EVENT_TYPES,
     _RISK_FIRST_FORBIDDEN_ACTIONS,
+    _extract_unlock_ratio_from_text,  # [C-007-R1]
+    _detect_suspension_from_text,  # [C-007-R1]
+    _detect_ma_event_from_text,  # [C-007-R1]
 )
 
 
@@ -52,6 +56,11 @@ class TestTextDetectionLargeUnlock:
         events = detect_events_from_text(text)
         assert not any(e["event_type"] == "large_unlock" for e in events)
 
+    def test_small_unlock_ratio_does_not_trigger_large_unlock(self):
+        text = "本次限售股上市流通，占流通股本1.5%。"
+        events = detect_events_from_text(text)
+        assert not any(e["event_type"] == "large_unlock" for e in events)
+
 
 class TestTextDetectionMajorMA:
     """重大并购/重组文本检测。"""
@@ -71,6 +80,11 @@ class TestTextDetectionMajorMA:
         events = detect_events_from_text(text)
         assert any(e["event_type"] == "major_ma" for e in events)
 
+    def test_negated_restructuring_does_not_trigger(self):
+        text = "本次交易不构成重大资产重组。"
+        events = detect_events_from_text(text)
+        assert not any(e["event_type"] == "major_ma" for e in events)
+
 
 class TestTextDetectionSuspension:
     """停复牌文本检测。"""
@@ -84,6 +98,11 @@ class TestTextDetectionSuspension:
         text = "公司股票将于下周一复牌。"
         events = detect_events_from_text(text)
         assert any(e["event_type"] == "suspension" for e in events)
+
+    def test_negated_suspension_does_not_trigger(self):
+        text = "本次交易不构成重大资产重组，公司股票不停牌。"
+        events = detect_events_from_text(text)
+        assert not any(e["event_type"] in ("major_ma", "suspension") for e in events)
 
 
 class TestTextDetectionEarningsCrash:
@@ -577,3 +596,351 @@ class TestDeterminism:
         e2 = detect_events_from_text(text)
         assert len(e1) == len(e2)
         assert [e["event_type"] for e in e1] == [e["event_type"] for e in e2]
+
+
+# ── [C-007-R1] regression: 扭亏为盈 not a crash ──────────────────────────────
+
+
+class TestNiuKuiWeiYingNotCrash:
+    """[C-007-R1] '扭亏为盈'（turning losses into profits）是利好，
+    不应被误判为业绩暴雷 earnings_crash。"""
+
+    def test_niukuiweiying_not_detected_as_crash(self):
+        text = "公司业绩扭亏为盈，预计全年盈利2亿元。"
+        events = detect_events_from_text(text)
+        assert not any(e["event_type"] == "earnings_crash" for e in events)
+
+    def test_niukuiweiying_check_event_risk_no_risk(self):
+        result = check_event_risk("600000", announcements_text="公司业绩扭亏为盈，预计全年盈利2亿元。")
+        assert result["has_risk"] is False
+
+    def test_youyingzhuikui_still_crash(self):
+        # 由盈转亏 (profits turning into losses) IS a crash — must still trigger
+        text = "公司由盈转亏，预计全年亏损2亿元。"
+        events = detect_events_from_text(text)
+        assert any(e["event_type"] == "earnings_crash" for e in events)
+
+    def test_yingzhuikui_still_crash(self):
+        # 盈转亏 (profits turning into losses) IS a crash
+        text = "公司本年度盈转亏。"
+        events = detect_events_from_text(text)
+        assert any(e["event_type"] == "earnings_crash" for e in events)
+
+
+# ── [C-007-R1] data source query logic ───────────────────────────────────────
+
+
+class TestExtractUnlockRatio:
+    """[C-007-R1] 从公告/新闻文本提取解禁比例。"""
+
+    def test_unlock_ratio_percentage_with_ratio_word(self):
+        assert _extract_unlock_ratio_from_text("本次解禁流通股本比例为8.5%。") is not None
+        assert abs(_extract_unlock_ratio_from_text("本次解禁流通股本比例为8.5%。") - 0.085) < 0.001
+
+    def test_unlock_ratio_simple(self):
+        assert abs(_extract_unlock_ratio_from_text("解禁比例 8.5%") - 0.085) < 0.001
+
+    def test_unlock_ratio_of_liutong(self):
+        assert abs(_extract_unlock_ratio_from_text("占流通股本5.5%") - 0.055) < 0.001
+
+    def test_unlock_ratio_before_liutong(self):
+        assert abs(_extract_unlock_ratio_from_text("解禁8%的流通股") - 0.08) < 0.001
+
+    def test_unlock_ratio_none_when_no_mention(self):
+        assert _extract_unlock_ratio_from_text("公司经营正常，无重大事项。") is None
+
+    def test_unlock_ratio_none_empty(self):
+        assert _extract_unlock_ratio_from_text("") is None
+
+
+class TestExtractSuspension:
+    """[C-007-R1] 从文本检测停复牌。"""
+
+    def test_suspension_detected(self):
+        assert _detect_suspension_from_text("公司股票自2025年1月1日起停牌。") is True
+
+    def test_resume_detected(self):
+        assert _detect_suspension_from_text("公司股票将于下周一复牌。") is False  # 复牌 alone is resumption
+
+    def test_continuous_suspension(self):
+        assert _detect_suspension_from_text("公司股票连续停牌。") is True
+
+    def test_no_suspension(self):
+        assert _detect_suspension_from_text("公司经营正常。") is False
+
+    def test_negated_suspension(self):
+        assert _detect_suspension_from_text("公司股票不停牌。") is False
+
+
+class TestExtractMAEvent:
+    """[C-007-R1] 从文本检测重大并购/重组。"""
+
+    def test_ma_detected_restructuring(self):
+        assert _detect_ma_event_from_text("公司正在筹划重大资产重组事项。") is True
+
+    def test_ma_detected_share_purchase(self):
+        assert _detect_ma_event_from_text("公司拟发行股份购买资产。") is True
+
+    def test_ma_detected_tender_offer(self):
+        assert _detect_ma_event_from_text("涉及要约收购相关安排。") is True
+
+    def test_no_ma(self):
+        assert _detect_ma_event_from_text("公司经营正常。") is False
+
+    def test_negated_ma(self):
+        assert _detect_ma_event_from_text("本次交易不构成重大资产重组。") is False
+
+
+class TestExtractInputsDataStatus:
+    """[C-007-R1] extract_event_risk_inputs 返回 data_status。"""
+
+    def test_data_status_collected_with_announcements(self):
+        raw = {"announcements": {"raw": "公司发布重大公告。", "status": "HAS_DATA"}}
+        result = extract_event_risk_inputs(raw_evidence=raw)
+        assert result["data_status"] == "collected"
+
+    def test_data_status_collected_with_news(self):
+        raw = {"news": {"raw": "某新闻", "status": "HAS_DATA"}}
+        result = extract_event_risk_inputs(raw_evidence=raw)
+        assert result["data_status"] == "collected"
+
+    def test_data_status_collected_with_explicit_text(self):
+        result = extract_event_risk_inputs(announcements_text="外部公告文本")
+        assert result["data_status"] == "collected"
+
+    def test_data_status_not_collected_empty(self):
+        result = extract_event_risk_inputs(raw_evidence={})
+        assert result["data_status"] == "not_collected"
+
+    def test_data_status_not_collected_none(self):
+        result = extract_event_risk_inputs(raw_evidence=None)
+        assert result["data_status"] == "not_collected"
+
+    def test_unlock_extracted_from_announcements_text(self):
+        raw = {"announcements": {"raw": "本次解禁流通股本比例为8.5%。", "status": "HAS_DATA"}}
+        result = extract_event_risk_inputs(raw_evidence=raw)
+        assert result["unlock_ratio"] is not None
+        assert abs(result["unlock_ratio"] - 0.085) < 0.001
+
+    def test_suspension_extracted_from_announcements_text(self):
+        raw = {"announcements": {"raw": "公司股票停牌。", "status": "HAS_DATA"}}
+        result = extract_event_risk_inputs(raw_evidence=raw)
+        assert result["is_suspended"] is True
+
+    def test_ma_extracted_from_announcements_text(self):
+        raw = {"announcements": {"raw": "公司正在筹划重大资产重组事项。", "status": "HAS_DATA"}}
+        result = extract_event_risk_inputs(raw_evidence=raw)
+        assert result["has_ma_event"] is True
+
+
+# ── [C-007-R1] check_event_risk data_status passthrough ──────────────────────
+
+
+class TestCheckEventRiskDataStatus:
+    """[C-007-R1] check_event_risk 返回 data_status。"""
+
+    def test_data_status_collected_when_risk(self):
+        result = check_event_risk("X", unlock_ratio=0.08)
+        assert result["has_risk"] is True
+        assert result["data_status"] == "collected"
+
+    def test_data_status_collected_when_text_only(self):
+        result = check_event_risk("X", announcements_text="公司被证监会立案调查。")
+        assert result["data_status"] == "collected"
+
+    def test_data_status_not_collected_when_all_none(self):
+        result = check_event_risk("X")
+        assert result["data_status"] == "not_collected"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"unlock_ratio": 0.0},
+            {"debt_ratio": 0.0},
+            {"net_profit_change": 0.0},
+        ],
+    )
+    def test_zero_valued_metric_is_still_collected(self, kwargs):
+        result = check_event_risk("X", **kwargs)
+        assert result["has_risk"] is False
+        assert result["data_status"] == "collected"
+
+    def test_data_status_collected_from_raw_evidence(self):
+        raw = {"announcements": {"raw": "公司经营正常。", "status": "HAS_DATA"}}
+        result = check_event_risk("X", raw_evidence=raw)
+        assert result["data_status"] == "collected"
+
+
+# ── [C-007-R1] check_event_risk_from_state ───────────────────────────────────
+
+
+class TestCheckEventRiskFromState:
+    """[C-007-R1] check_event_risk_from_state 从 state 自动填充风险参数。"""
+
+    def test_from_state_suspension_triggers(self):
+        # 之前 check_event_risk(stock_code) 不会触发；现在应触发
+        state = {
+            "metadata": {
+                "raw_evidence": {
+                    "announcements": {"raw": "公司股票停牌。", "status": "HAS_DATA"},
+                },
+            },
+        }
+        result = check_event_risk_from_state("600000", state=state)
+        assert result["has_risk"] is True
+        assert "suspension" in result["risk_events"]
+        assert result["risk_level"] == "high"
+
+    def test_from_state_unlock_triggers(self):
+        state = {
+            "metadata": {
+                "raw_evidence": {
+                    "announcements": {"raw": "本次解禁流通股本比例为8.5%。", "status": "HAS_DATA"},
+                },
+            },
+        }
+        result = check_event_risk_from_state("600000", state=state)
+        assert result["has_risk"] is True
+        assert "large_unlock" in result["risk_events"]
+
+    def test_from_state_ma_triggers(self):
+        state = {
+            "metadata": {
+                "raw_evidence": {
+                    "announcements": {"raw": "公司正在筹划重大资产重组事项。", "status": "HAS_DATA"},
+                },
+            },
+        }
+        result = check_event_risk_from_state("600000", state=state)
+        assert result["has_risk"] is True
+        assert "major_ma" in result["risk_events"]
+
+    def test_from_state_not_collected_emits_status(self):
+        # 数据未采集时不应静默，应在 risk_details 中显式提示
+        state = {"metadata": {"raw_evidence": {}}}
+        result = check_event_risk_from_state("600000", state=state)
+        assert result["data_status"] == "not_collected"
+        assert "_data_status" in result["risk_details"]
+        assert "未采集" in result["risk_details"]["_data_status"]
+
+    def test_from_state_uses_top_level_news_report(self):
+        # news_report 在 state 顶层时应作为 fallback 文本
+        state = {
+            "metadata": {"raw_evidence": {}},
+            "news_report": "该公司被ST处理，投资者注意风险。",
+        }
+        result = check_event_risk_from_state("600000", state=state)
+        assert result["has_risk"] is True
+        assert "risk_warning" in result["risk_events"]
+
+    def test_from_state_clean_text_no_risk(self):
+        state = {
+            "metadata": {
+                "raw_evidence": {
+                    "announcements": {"raw": "公司经营正常，无重大事项。", "status": "HAS_DATA"},
+                },
+            },
+        }
+        result = check_event_risk_from_state("600000", state=state)
+        assert result["has_risk"] is False
+        assert result["data_status"] == "collected"
+
+    def test_from_state_empty_state(self):
+        result = check_event_risk_from_state("600000", state={})
+        assert result["data_status"] == "not_collected"
+
+    def test_from_state_none_state(self):
+        result = check_event_risk_from_state("600000", state=None)
+        assert result["data_status"] == "not_collected"
+
+    def test_from_state_gate_actually_triggers_regression(self):
+        # [C-007-R1] 核心回归：之前所有风险参数默认 None，门禁永不触发。
+        # 现在传入包含停牌公告的 state，门禁必须触发。
+        state = {
+            "metadata": {
+                "raw_evidence": {
+                    "announcements": {"raw": "公司股票连续停牌。", "status": "HAS_DATA"},
+                },
+            },
+        }
+        result = check_event_risk_from_state("600000", state=state)
+        # 这是修复的核心：必须 has_risk=True
+        assert result["has_risk"] is True, "event gate must trigger when risk data present"
+
+
+# ── [C-007-R1] Buy Level downgrade by event risk ─────────────────────────────
+
+
+class TestBuyLevelEventRiskDowngrade:
+    """[C-007-R1] 事件门禁真正能降级 Buy Level。"""
+
+    def _buy_kwargs(self, **overrides):
+        kwargs = dict(
+            source_coverage=100,
+            evidence_coverage=100,
+            trend_confirmed=True,
+            main_capital_inflow_days=3,
+            volume_healthy_expansion=True,
+            position_status="has_position",
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_critical_event_forces_buy_level_zero(self):
+        from tradingagents.agents.utils.readiness_score import calculate_buy_level
+        result = calculate_buy_level(
+            **self._buy_kwargs(event_risk_active=True, event_risk_level="critical")
+        )
+        assert result["level"] == 0
+
+    def test_high_event_caps_buy_level_at_one(self):
+        from tradingagents.agents.utils.readiness_score import calculate_buy_level
+        result = calculate_buy_level(
+            **self._buy_kwargs(event_risk_active=True, event_risk_level="high")
+        )
+        assert result["level"] <= 1
+        assert result["level"] >= 1  # not forced to 0
+
+    def test_medium_event_caps_buy_level_at_two(self):
+        from tradingagents.agents.utils.readiness_score import calculate_buy_level
+        result = calculate_buy_level(
+            **self._buy_kwargs(event_risk_active=True, event_risk_level="medium")
+        )
+        assert result["level"] <= 2
+
+    def test_no_event_allows_buy_level_four(self):
+        from tradingagents.agents.utils.readiness_score import calculate_buy_level
+        result = calculate_buy_level(**self._buy_kwargs())
+        assert result["level"] == 4
+
+    def test_event_risk_note_present(self):
+        from tradingagents.agents.utils.readiness_score import calculate_buy_level
+        result = calculate_buy_level(
+            **self._buy_kwargs(event_risk_active=True, event_risk_level="critical")
+        )
+        assert "C-007-R1" in result["note"]
+
+    def test_event_risk_gate_sanitizes_buy_but_preserves_exit(self):
+        from tradingagents.agents.utils.readiness_score import (
+            sanitize_forbidden_strong_actions,
+        )
+
+        text = (
+            "建议立即买入、建议建仓、建议买入、建议入场、积极建仓，"
+            "执行 BUY/ENTER；若风险继续扩大则立即清仓。"
+        )
+        gate = {"passed": False, "failures": ["event_risk_block_open"]}
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate,
+            position_status="has_position",
+            buy_level=0,
+            risk_level=3,
+        )
+        assert "立即买入" not in sanitized
+        for forbidden in (
+            "建议建仓", "建议买入", "建议入场", "积极建仓", "BUY", "ENTER",
+        ):
+            assert forbidden not in sanitized
+        assert "立即清仓" in sanitized
+        assert any("买入动作" in change for change in changes)

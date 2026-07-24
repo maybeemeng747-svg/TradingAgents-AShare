@@ -102,7 +102,9 @@ _TEXT_EVENT_PATTERNS: dict[str, list[tuple[str, Optional[str]]]] = {
         (r"(?:业绩暴雷|业绩变脸|业绩大幅下滑)", None),
         (r"(?:预亏|预减|大幅下降).{0,10}(?:50%|60%|70%|80%|90%|100%)", None),
         (r"业绩.{0,4}(?:预亏|预减)", None),
-        (r"(?:由盈转亏|盈转亏|扭亏为盈)", None),
+        # [C-007-R1] 扭亏为盈 = turning losses into profits (bullish, NOT a crash).
+        # Only 由盈转亏 / 盈转亏 (profits turning into losses) are bearish crashes.
+        (r"(?:由盈转亏|盈转亏)", None),
     ],
     "major_litigation": [
         (r"(?:重大诉讼|重大仲裁|诉讼事项)", None),
@@ -169,6 +171,25 @@ _RISK_FIRST_FORBIDDEN_ACTIONS = [
 
 # ── 核心检测函数 ─────────────────────────────────────────────────────────────
 
+def _strip_negated_event_phrases(text: str, event_type: str) -> str:
+    """Remove explicit negative disclosures before keyword matching."""
+    if event_type == "major_ma":
+        return re.sub(
+            r"(?:不构成|未构成|不涉及|不属于|未筹划|无需|无须)"
+            r".{0,10}?(?:重大资产重组|资产重组|并购|借壳|收购)",
+            "",
+            text,
+        )
+    if event_type == "suspension":
+        return re.sub(
+            r"(?:不|未|无需|无须|不会|不再|不涉及|不申请)"
+            r"(?:会|再|涉及|申请)?停牌",
+            "",
+            text,
+        )
+    return text
+
+
 def detect_events_from_text(text: str) -> list[dict]:
     """从公告/新闻文本中检测重大风险事件。
 
@@ -184,12 +205,22 @@ def detect_events_from_text(text: str) -> list[dict]:
     events: list[dict] = []
     seen_spans: set[tuple[str, int, int]] = set()
 
+    unlock_ratio = _extract_unlock_ratio_from_text(text)
     for event_type, patterns in _TEXT_EVENT_PATTERNS.items():
+        event_text = _strip_negated_event_phrases(text, event_type)
         meta = RISK_EVENT_TYPES.get(event_type, {})
         default_severity = meta.get("default_severity", EventSeverity.MEDIUM)
 
         for pattern, severity_override in patterns:
-            for m in re.finditer(pattern, text, re.IGNORECASE):
+            for m in re.finditer(pattern, event_text, re.IGNORECASE):
+                matched_text = m.group(0)
+                if (
+                    event_type == "large_unlock"
+                    and unlock_ratio is not None
+                    and unlock_ratio <= _STRUCTURED_THRESHOLDS["large_unlock"]["threshold"]
+                    and any(term in matched_text for term in ("解禁", "限售", "上市流通"))
+                ):
+                    continue
                 key = (event_type, m.start(), m.end())
                 if key in seen_spans:
                     continue
@@ -197,7 +228,7 @@ def detect_events_from_text(text: str) -> list[dict]:
                 events.append({
                     "event_type": event_type,
                     "severity": severity_override or default_severity,
-                    "matched_text": m.group(),
+                    "matched_text": matched_text,
                     "offset": m.start(),
                     "source": "text_detection",
                 })
@@ -214,8 +245,14 @@ def extract_event_risk_inputs(
 
     类似 extract_financial_anomaly_inputs()，但专注于事件风险相关字段。
 
+    [C-007-R1] 此前本函数只填充 debt_ratio / net_profit_change，其余字段
+    （is_suspended / has_ma_event / unlock_ratio）恒为默认值，导致门禁永不
+    触发。现增加数据源查询逻辑：从已采集的 announcements / news 文本中
+    提取解禁比例、停复牌、并购事件；并返回 data_status 标记数据采集状态，
+    避免风险参数静默缺失。
+
     Args:
-        raw_evidence: 原始证据字典（包含 announcements, stock_data 等）
+        raw_evidence: 原始证据字典（包含 announcements, news, stock_data 等）
         announcements_text: 公告文本（直接传入，优先级低于 raw_evidence）
         news_text: 新闻文本（直接传入，优先级低于 raw_evidence）
 
@@ -228,6 +265,7 @@ def extract_event_risk_inputs(
             "has_ma_event": bool,
             "announcements_text": str,
             "news_text": str,
+            "data_status": str,   # [C-007-R1] "collected" / "not_collected"
         }
     """
     result = {
@@ -238,13 +276,23 @@ def extract_event_risk_inputs(
         "has_ma_event": False,
         "announcements_text": "",
         "news_text": "",
+        "data_status": "not_collected",  # [C-007-R1] default until proven
     }
+
+    # [C-007-R1] 记录数据采集来源是否真的存在（而非静默缺失）
+    has_announcements_source = False
+    has_news_source = False
 
     # 从 raw_evidence 提取公告文本
     if raw_evidence:
         ann_entry = raw_evidence.get("announcements")
         if isinstance(ann_entry, dict):
+            ann_status = ann_entry.get("status", "")
             raw_ann = ann_entry.get("raw")
+            # [C-007-R1] 只要公告字段存在且被采集过，就视为已采集
+            # （即便无数据 NORMAL_NO_DATA 也算"已查询"）
+            if ann_status or raw_ann is not None:
+                has_announcements_source = True
             if isinstance(raw_ann, str):
                 result["announcements_text"] = raw_ann
             elif isinstance(raw_ann, list):
@@ -261,18 +309,26 @@ def extract_event_risk_inputs(
         # 从 raw_evidence 提取新闻文本
         news_entry = raw_evidence.get("news")
         if isinstance(news_entry, dict):
+            news_status = news_entry.get("status", "")
             raw_news = news_entry.get("raw")
+            if news_status or raw_news is not None:
+                has_news_source = True
             if isinstance(raw_news, str):
                 result["news_text"] = raw_news
 
-    # 外部传入的文本作为 fallback
+    # 外部传入的文本作为 fallback（调用方显式传入也视为已采集）
     if not result["announcements_text"] and announcements_text:
         result["announcements_text"] = announcements_text
+        has_announcements_source = True
     if not result["news_text"] and news_text:
         result["news_text"] = news_text
+        has_news_source = True
+
+    # [C-007-R1] 只要公告或新闻任一被采集，就标记为 collected
+    if has_announcements_source or has_news_source:
+        result["data_status"] = "collected"
 
     # 从 raw_evidence 提取结构化指标（如果可用）
-    # 解禁比例：从公告关键词推断（结构化解禁数据不在标准 raw_evidence 中）
     # 杠杆率：从 financial_period_facts 提取
     if raw_evidence:
         period_entry = raw_evidence.get("financial_period_facts")
@@ -290,7 +346,70 @@ def extract_event_risk_inputs(
                 if isinstance(entries, list):
                     result["net_profit_change"] = _extract_profit_change_from_explanations(entries)
 
+    # [C-007-R1] 从已采集的公告/新闻文本中提取解禁/停复牌/并购事件。
+    # 这是对 raw_evidence 数据源查询逻辑的补充：解禁比例、停复牌、并购
+    # 没有独立的结构化字段，而是出现在公告/新闻文本中。
+    combined_text = f"{result['announcements_text']}\n{result['news_text']}".strip()
+    if combined_text:
+        if result["unlock_ratio"] is None:
+            unlock = _extract_unlock_ratio_from_text(combined_text)
+            if unlock is not None:
+                result["unlock_ratio"] = unlock
+        if not result["is_suspended"]:
+            result["is_suspended"] = _detect_suspension_from_text(combined_text)
+        if not result["has_ma_event"]:
+            result["has_ma_event"] = _detect_ma_event_from_text(combined_text)
+
     return result
+
+
+def _extract_unlock_ratio_from_text(text: str) -> Optional[float]:
+    """[C-007-R1] 从公告/新闻文本中提取解禁比例。
+
+    匹配模式如 "解禁比例 8.5%" / "解禁流通股本比例为8%" /
+    "占流通股本5.5%" / "解禁8%流通股"。返回 0-1 之间的小数；
+    无法确定时返回 None。
+    """
+    if not text:
+        return None
+    patterns = [
+        # 解禁 ... 为/占 ... 8.5%（中间可含"流通股本比例"等描述）
+        r"解禁[^\d%]{0,20}?(\d+(?:\.\d+)?)\s*%",
+        # 占流通股本 ... 5.5%
+        r"占流通股本[^\d]{0,4}(\d+(?:\.\d+)?)\s*%",
+        # 8% 的流通股本 解禁
+        r"(\d+(?:\.\d+)?)\s*%\s*(?:的)?流通[^\d]{0,6}解禁",
+    ]
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            try:
+                val = float(m.group(1)) / 100
+                return val  # [C-007-R1] 信任正则命中的百分比
+            except ValueError:
+                continue
+    return None
+
+
+def _detect_suspension_from_text(text: str) -> bool:
+    """[C-007-R1] 从文本中检测停复牌事件。"""
+    if not text:
+        return False
+    filtered = _strip_negated_event_phrases(text, "suspension")
+    return bool(re.search(r"(?:停牌|停盘|连续停牌|盘中停牌|紧急停牌|临时停牌)", filtered))
+
+
+def _detect_ma_event_from_text(text: str) -> bool:
+    """[C-007-R1] 从文本中检测重大并购/重组事件。"""
+    if not text:
+        return False
+    filtered = _strip_negated_event_phrases(text, "major_ma")
+    return bool(re.search(
+        r"(?:重大|筹划|拟).{0,6}(?:并购|重组|借壳|收购)"
+        r"|(?:发行股份|现金).{0,6}(?:购买|收购|重组)"
+        r"|(?:要约收购|吸收合并|资产注入|资产重组)",
+        filtered,
+    ))
 
 
 def _extract_leverage_from_facts(facts: list) -> dict:
@@ -357,6 +476,11 @@ def check_event_risk(
     2. raw_evidence 中的结构化数据
     3. 文本检测（公告/新闻关键词匹配）
 
+    [C-007-R1] 之前调用方只传 stock_code，所有参数默认 None，门禁永不
+    触发。现返回 data_status 字段，标记数据是否被采集，避免静默缺失。
+    调用方应优先使用 check_event_risk_from_state(state=...) 以从已采集
+    的 raw_evidence 自动填充风险参数。
+
     返回:
         {
             "has_risk": bool,
@@ -367,16 +491,20 @@ def check_event_risk(
             "block_open": bool,          # 是否阻止开仓
             "risk_first_mode": bool,     # 是否进入风控优先模式
             "forbidden_actions": list[str],  # 风控优先模式下禁止的动作
+            "data_status": str,          # [C-007-R1] "collected" / "not_collected"
         }
     """
     risk_events: list[str] = []
     risk_details: dict[str, str] = {}
     event_severities: dict[str, str] = {}
+    # [C-007-R1] 跟踪数据采集状态
+    data_status = "not_collected"
 
     # ── 1. 结构化数据检测 ──
     # 如果没有直接传入参数，从 raw_evidence 提取
     if raw_evidence is not None:
         inputs = extract_event_risk_inputs(raw_evidence=raw_evidence)
+        data_status = inputs.get("data_status", "not_collected")
         if unlock_ratio is None:
             unlock_ratio = inputs.get("unlock_ratio")
         if debt_ratio is None:
@@ -391,6 +519,25 @@ def check_event_risk(
             announcements_text = inputs.get("announcements_text", "")
         if not news_text:
             news_text = inputs.get("news_text", "")
+
+    # [C-007-R1] 直接传入的结构化参数或文本也视为数据已采集
+    if data_status == "not_collected":
+        numeric_provided = any(
+            value is not None
+            for value in (unlock_ratio, debt_ratio, net_profit_change)
+        )
+        text_provided = any(
+            bool(value)
+            for value in (announcements_text, news_text)
+        )
+        provided_any = (
+            numeric_provided
+            or text_provided
+            or is_suspended
+            or has_ma_event
+        )
+        if provided_any:
+            data_status = "collected"
 
     # 解禁检查
     if unlock_ratio is not None and unlock_ratio > 0.05:
@@ -438,6 +585,8 @@ def check_event_risk(
     has_risk = len(risk_events) > 0
 
     if not has_risk:
+        # [C-007-R1] 即便无风险，也回传 data_status，调用方可据此决定
+        # 是否提示"数据未采集"。详见 check_event_risk_from_state。
         return {
             "has_risk": False,
             "risk_level": "none",
@@ -447,6 +596,7 @@ def check_event_risk(
             "block_open": False,
             "risk_first_mode": False,
             "forbidden_actions": [],
+            "data_status": data_status,
         }
 
     # 取最高严重程度
@@ -484,7 +634,56 @@ def check_event_risk(
         "block_open": block_open,
         "risk_first_mode": risk_first_mode,
         "forbidden_actions": forbidden_actions,
+        "data_status": data_status,
     }
+
+
+def check_event_risk_from_state(stock_code: str, state: Optional[dict] = None) -> dict:
+    """[C-007-R1] 从已采集的 state/raw_evidence 读取解禁/停复牌/并购数据
+    填充风险参数，替代错误调用 check_event_risk(stock_code)。
+
+    这是 risk_manager 等节点应该调用的主入口：
+      - 从 state["metadata"]["raw_evidence"]（或 state["raw_evidence"]）读取
+        已采集的 announcements / news / financial_period_facts 等数据；
+      - 数据未采集时返回 data_status="not_collected"，并在 risk_details
+        中写入显式提示，避免静默缺失；
+      - 兼容直接传入的 news_report 等字段（部分节点把报告放在顶层）。
+
+    Args:
+        stock_code: 股票代码
+        state: LangGraph state 字典
+
+    Returns:
+        check_event_risk 的返回字典（额外保证 data_status 已填充）。
+    """
+    state = state or {}
+    metadata = state.get("metadata") or {}
+    raw_evidence = metadata.get("raw_evidence") or state.get("raw_evidence") or {}
+
+    # 部分节点把 news/announcements 报告放在 state 顶层，作为 fallback 文本
+    news_report = state.get("news_report") or ""
+    announcements_report = state.get("announcements_report") or ""
+
+    result = check_event_risk(
+        stock_code,
+        raw_evidence=raw_evidence,
+        news_text=news_report,
+        announcements_text=announcements_report,
+    )
+
+    # [C-007-R1] 数据未采集时输出显式提示，而非静默返回"无风险"
+    if not result["has_risk"] and result.get("data_status") == "not_collected":
+        result["risk_details"]["_data_status"] = (
+            "未采集到公告/新闻数据，事件门禁无法判定，已静默放行；"
+            "建议补采 announcements/news 后重新评估。"
+        )
+        _logger.warning(
+            "[C-007] event_risk_gate: %s 数据未采集（not_collected），"
+            "事件门禁无法判定，已静默放行。",
+            stock_code,
+        )
+
+    return result
 
 
 def format_event_risk_warning(risk_info: dict) -> str:

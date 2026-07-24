@@ -16,7 +16,12 @@ from tradingagents.agents.utils.debate_utils import (
     safe_int,
 )
 from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
-from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning, extract_event_risk_inputs
+from tradingagents.agents.utils.event_risk_gate import (
+    check_event_risk,  # [C-007-R1] 仍保留以支持直接调用
+    check_event_risk_from_state,  # [C-007-R1] 从 state 自动填充风险参数
+    format_event_risk_warning,
+    extract_event_risk_inputs,
+)
 from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
 from tradingagents.agents.utils.fundamental_integrity import (  # [FUND-004] fundamental_semantic_gate
     evaluate_fundamental_integrity,
@@ -45,6 +50,8 @@ from tradingagents.agents.utils.readiness_score import (
     validate_stock_name,
     check_valuation_mismatch,
     _sanitize_short_selling_text,
+    # [C-003-R1] streaming short-selling sanitizer
+    ShortSellingStreamFilter,
 )
 
 _logger = logging.getLogger(__name__)
@@ -64,6 +71,12 @@ def create_risk_manager(llm, memory):
     async def risk_manager_node(state) -> dict:
         # [C-001] position_validation_gate
         user_context = state.get('user_context', {})
+
+        # [C-003-R1] short_filter — read can_short so the risk agent's stream
+        # is sanitized token-by-token (true server-side blocking), not only the
+        # final aggregated text.
+        config = get_config()
+        can_short = config.get('account_capability', {}).get('can_short', False)
 
         company_name = state["company_of_interest"]
 
@@ -90,7 +103,7 @@ def create_risk_manager(llm, memory):
         context_view = build_agent_context_view(state, "risk")
         claims = risk_debate_state.get("claims", [])
         unresolved_claim_ids = risk_debate_state.get("unresolved_claim_ids", [])
-        prompt = get_prompt("risk_manager_prompt", config=get_config()).format(
+        prompt = get_prompt("risk_manager_prompt", config=config).format(
             trader_plan=trader_plan,
             past_memory_str=past_memory_str,
             history=history,
@@ -104,14 +117,39 @@ def create_risk_manager(llm, memory):
         # ── 流式输出 ──
         tracker = current_tracker_var.get()
         full_content = ""
+
+        # [C-003-R1] Server-side blocking: sanitize every risk token *before*
+        # it reaches SSE / frontend. The audit (round 1) found the risk agent's
+        # raw tokens were streamed before _sanitize_short_selling_text ran, so
+        # short-selling language leaked to the frontend. The stream filter
+        # catches keywords (including those split across chunks) prior to
+        # emission; legitimate SELL/EXIT is never stripped.
+        short_stream_filter = ShortSellingStreamFilter(can_short=can_short)
+
         async for chunk in llm.astream(prompt):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
-            full_content += content
+            safe_token = short_stream_filter.feed(content)
+            full_content += safe_token
+            if tracker and safe_token:
+                tracker.emit_debate_token(
+                    debate="risk", agent="Portfolio Manager",
+                    round_num=-1, token=safe_token,
+                )
+
+        # [C-003-R1] Flush the buffered tail (sanitized) into full_content.
+        flushed_tail = short_stream_filter.finalize()
+        if flushed_tail:
+            full_content += flushed_tail
             if tracker:
                 tracker.emit_debate_token(
                     debate="risk", agent="Portfolio Manager",
-                    round_num=-1, token=content,
+                    round_num=-1, token=flushed_tail,
                 )
+        if short_stream_filter.changes:
+            _logger.warning(
+                "[C-003-R1] risk short_stream_filter applied: %s",
+                short_stream_filter.changes,
+            )
 
         judge_result = extract_risk_judge_result(full_content)
         cleaned_response = judge_result["cleaned_response"]
@@ -147,13 +185,13 @@ def create_risk_manager(llm, memory):
         save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
 
         # [C-007] event_risk_gate — 检查重大风险事件
-        # Extract raw_evidence early so event_risk_gate can use it
+        # [C-007-R1] 之前调用 check_event_risk(stock_code, raw_evidence=...,
+        # news_text=...) 未填充 unlock_ratio / is_suspended / has_ma_event
+        # 等参数（它们恒为 None/False），导致门禁永不触发。现改用
+        # check_event_risk_from_state，从已采集的 raw_evidence / 公告 / 新闻
+        # 自动提取解禁比例、停复牌、并购事件，并回传 data_status。
         raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
-        event_risk_info = check_event_risk(
-            stock_code,
-            raw_evidence=raw_evidence,
-            news_text=news_report or "",
-        )
+        event_risk_info = check_event_risk_from_state(stock_code, state=state)
         if event_risk_info["has_risk"]:
             final_response += format_event_risk_warning(event_risk_info)
             _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
@@ -348,6 +386,15 @@ def create_risk_manager(llm, memory):
         if not fundamental_integrity["is_valid"]:
             gate["passed"] = False
             gate["failures"].append("fundamental_semantic_gate")
+        # [C-007-R1] A high/critical event risk blocks opening or adding a
+        # position even when the ordinary evidence gate passes. Mark the gate
+        # explicitly so the final action sanitizer removes executable BUY
+        # language. The sanitizer treats this failure as buy-only and preserves
+        # legitimate de-risking/exit actions for an existing position.
+        if event_risk_info.get("block_open"):
+            gate["passed"] = False
+            if "event_risk_block_open" not in gate["failures"]:
+                gate["failures"].append("event_risk_block_open")
 
         risk_result = calculate_risk_level(
             source_coverage=source_coverage,
@@ -371,6 +418,9 @@ def create_risk_manager(llm, memory):
             position_status=position_status,
             name_mismatch=is_name_mismatch,
             research_bearish=_research_bearish,
+            # [C-007-R1] 事件门禁真降级 Buy Level
+            event_risk_active=event_risk_info["has_risk"],
+            event_risk_level=event_risk_info.get("risk_level", "none"),
         )
 
         opp_score = calculate_opportunity_score(
