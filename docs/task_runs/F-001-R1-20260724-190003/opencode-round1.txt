@@ -1,0 +1,468 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m• [0mFind Buy Level code[90m Explore Agent[0m
+[0m✓ [0mFind Buy Level code[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [offset=645, limit=100][0m
+[0m→ [0mRead tests/test_readiness_score.py[90m [offset=600, limit=50][0m
+[0m✱ [0mGlob "docs/task_runs/F-001-R1*/**/*"[90m 4 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=15, offset=654][0m
+[0m→ [0mRead docs/task_runs/F-001-R1-20260724-190003/task.md
+[0m
+[0m$ [0mgit status --short
+M docs/TASKS.md
+ M tests/test_f001_report_execution_fixes.py
+ M tests/test_readiness_score.py
+ M tradingagents/agents/utils/readiness_score.py
+?? docs/task_runs/F-001-R1-20260724-190003/
+[0m
+[0m$ [0mgit diff -- tradingagents/agents/utils/readiness_score.py
+diff --git a/tradingagents/agents/utils/readiness_score.py b/tradingagents/agents/utils/readiness_score.py
+index a247aef..b907c7b 100644
+--- a/tradingagents/agents/utils/readiness_score.py
++++ b/tradingagents/agents/utils/readiness_score.py
+@@ -651,7 +651,10 @@ def calculate_buy_level(
+     返回:
+         {"level": int, "note": str}
+     """
+-    max_level = 2 if position_status == "unknown" else 4
++    # [F-001-R1] A no-position signal is an entry trial, never an aggressive
++    # add-position instruction. Even perfect entry evidence is capped at
++    # Level 2; Level 3/4 remain available only when a position already exists.
++    max_level = 2 if position_status in {"unknown", "no_position"} else 4
+     if name_mismatch:
+         max_level = min(max_level, 3)
+
+@@ -679,7 +682,7 @@ def calculate_buy_level(
+
+     # [Fix-5] No-position: cap at level 1 unless real entry conditions met
+     if position_status == "no_position":
+-        # Only allow level 2+ if ALL actual entry conditions are confirmed
++        # Only allow level 2 if ALL actual entry conditions are confirmed.
+         real_entry_ready = (
+             trend_confirmed
+             and main_capital_inflow_days >= 1
+@@ -691,7 +694,8 @@ def calculate_buy_level(
+             max_level = min(max_level, 1)
+             note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
+         else:
+-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
++            max_level = min(max_level, 2)
++            note_prefix = "未持仓但入场条件已确认，Buy Level 上限为 2（条件试仓）"
+     elif position_status == "unknown":
+         note_prefix = "持仓状态未知，Buy Level 上限为 2"
+     else:
+[0m
+[0m$ [0mgit diff -- tests/test_readiness_score.py tests/test_f001_report_execution_fixes.py
+diff --git a/tests/test_f001_report_execution_fixes.py b/tests/test_f001_report_execution_fixes.py
+index fc43749..35cf50e 100644
+--- a/tests/test_f001_report_execution_fixes.py
++++ b/tests/test_f001_report_execution_fixes.py
+@@ -337,10 +337,39 @@ class TestFix5BuyRiskLevelConflict:
+             has_major_negative_announcement=False,
+             position_status="no_position",
+         )
+-        # Entry ready: level can reach 2+ (conditional candidate)
+-        assert result["level"] >= 2
++        # Entry ready: no position is still only a conditional trial.
++        assert result["level"] == 2
+         assert "入场条件已确认" in result["note"]
+
++    def test_no_position_perfect_signals_never_reach_level_3(self):
++        result = calculate_buy_level(
++            source_coverage=100,
++            evidence_coverage=100,
++            trend_confirmed=True,
++            main_capital_inflow_days=3,
++            volume_healthy_expansion=True,
++            no_execution_conflict=True,
++            no_unresolved_analyst_conflict=True,
++            has_major_negative_announcement=False,
++            position_status="no_position",
++        )
++        assert result["level"] == 2
++        assert "上限为 2" in result["note"]
++
++    def test_has_position_perfect_signals_can_reach_level_4(self):
++        result = calculate_buy_level(
++            source_coverage=100,
++            evidence_coverage=100,
++            trend_confirmed=True,
++            main_capital_inflow_days=3,
++            volume_healthy_expansion=True,
++            no_execution_conflict=True,
++            no_unresolved_analyst_conflict=True,
++            has_major_negative_announcement=False,
++            position_status="has_position",
++        )
++        assert result["level"] == 4
++
+     def test_has_position_risk_level_can_reach_4(self):
+         result = calculate_risk_level(
+             source_coverage=90,
+diff --git a/tests/test_readiness_score.py b/tests/test_readiness_score.py
+index 9283b70..62c44d3 100644
+--- a/tests/test_readiness_score.py
++++ b/tests/test_readiness_score.py
+@@ -259,7 +259,7 @@ def test_buy_level_4_requires_all_conditions():
+         has_major_negative_announcement=False,
+         no_execution_conflict=True,
+         no_unresolved_analyst_conflict=True,
+-        position_status="no_position",
++        position_status="has_position",
+     )
+     assert result["level"] == 4
+
+@@ -271,7 +271,7 @@ def test_buy_level_4_blocked_by_negative_announcement():
+         main_capital_inflow_days=2,
+         volume_healthy_expansion=True,
+         has_major_negative_announcement=True,
+-        position_status="no_position",
++        position_status="has_position",
+     )
+     assert result["level"] < 4
+
+@@ -282,7 +282,7 @@ def test_buy_level_4_blocked_by_low_coverage():
+         trend_confirmed=True,
+         main_capital_inflow_days=2,
+         volume_healthy_expansion=True,
+-        position_status="no_position",
++        position_status="has_position",
+     )
+     assert result["level"] < 4
+
+@@ -609,7 +609,7 @@ def test_evidence_announcement_with_date_is_has_data():
+ # P1: extract_execution_signals + Buy/Risk/Opportunity integration tests
+ # ══════════════════════════════════════════════════════════════════════════════
+
+-def test_buy_level_3_with_positive_signals():
++def test_no_position_positive_signals_cap_at_buy_level_2():
+     signals = extract_execution_signals(
+         {},
+         "",
+@@ -626,7 +626,7 @@ def test_buy_level_3_with_positive_signals():
+         volume_healthy_expansion=signals["volume_healthy_expansion"],
+         position_status="no_position",
+     )
+-    assert result["level"] >= 3
++    assert result["level"] == 2
+
+
+ def test_risk_level_4_with_negative_signals():
+[0m
+[0m# [0mTodos
+[✓] Verify code fix: no_position buy_level capped at 2 in readiness_score.py
+[•] Run test suite: test_readiness_score.py + test_f001_report_execution_fixes.py
+[ ] Run regression: test_api_smoke.py + test_runtime_tier_contract.py
+[ ] Run py_compile on modified files
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_readiness_score.py tests/test_f001_report_execution_fixes.py -v --tb=short 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 188 items
+
+tests/test_readiness_score.py::test_four_basic_reports_give_50_percent PASSED [  0%]
+tests/test_readiness_score.py::test_all_eight_sources_give_100_percent PASSED [  1%]
+tests/test_readiness_score.py::test_source_coverage_equals_data_completeness PASSED [  1%]
+tests/test_readiness_score.py::test_missing_evidence_below_70 PASSED     [  2%]
+tests/test_readiness_score.py::test_full_evidence_coverage_100 PASSED    [  2%]
+tests/test_readiness_score.py::test_normal_no_data_counts_as_half PASSED [  3%]
+tests/test_readiness_score.py::test_query_failed_not_counted_as_valid PASSED [  3%]
+tests/test_readiness_score.py::test_strong_action_gate_blocks_on_low_source_coverage PASSED [  4%]
+tests/test_readiness_score.py::test_strong_action_gate_blocks_on_low_evidence_coverage PASSED [  4%]
+tests/test_readiness_score.py::test_strong_action_gate_blocks_on_unknown_position PASSED [  5%]
+tests/test_readiness_score.py::test_strong_action_gate_passes_unknown_position_no_strong_action PASSED [  5%]
+tests/test_readiness_score.py::test_strong_action_gate_passes_when_all_good PASSED [  6%]
+tests/test_readiness_score.py::test_strong_action_gate_blocks_on_conflict PASSED [  6%]
+tests/test_readiness_score.py::test_risk_level_4_requires_all_conditions PASSED [  7%]
+tests/test_readiness_score.py::test_risk_level_4_blocked_by_insufficient_coverage PASSED [  7%]
+tests/test_readiness_score.py::test_risk_level_4_blocked_by_positive_announcement PASSED [  8%]
+tests/test_readiness_score.py::test_risk_level_capped_at_3_when_position_unknown PASSED [  9%]
+tests/test_readiness_score.py::test_risk_level_defaults_to_0 PASSED      [  9%]
+tests/test_readiness_score.py::test_buy_level_4_requires_all_conditions PASSED [ 10%]
+tests/test_readiness_score.py::test_buy_level_4_blocked_by_negative_announcement PASSED [ 10%]
+tests/test_readiness_score.py::test_buy_level_4_blocked_by_low_coverage PASSED [ 11%]
+tests/test_readiness_score.py::test_buy_level_max_2_when_position_unknown PASSED [ 11%]
+tests/test_readiness_score.py::test_buy_level_0_when_coverage_very_low PASSED [ 12%]
+tests/test_readiness_score.py::test_no_position_blocks_reduce_keywords PASSED [ 12%]
+tests/test_readiness_score.py::test_position_unknown_caps_buy_level_at_2 PASSED [ 13%]
+tests/test_readiness_score.py::test_get_position_status_unknown PASSED   [ 13%]
+tests/test_readiness_score.py::test_get_position_status_no_position PASSED [ 14%]
+tests/test_readiness_score.py::test_get_position_status_has_position PASSED [ 14%]
+tests/test_readiness_score.py::test_opportunity_score_no_signals PASSED  [ 15%]
+tests/test_readiness_score.py::test_opportunity_score_all_positive PASSED [ 15%]
+tests/test_readiness_score.py::test_opportunity_score_event_risk_penalty PASSED [ 16%]
+tests/test_readiness_score.py::test_format_execution_block PASSED        [ 17%]
+tests/test_readiness_score.py::test_format_execution_block_with_failures PASSED [ 17%]
+tests/test_readiness_score.py::test_sanitize_removes_liquidate_when_gate_fails PASSED [ 18%]
+tests/test_readiness_score.py::test_sanitize_removes_strong_buy_when_gate_fails PASSED [ 18%]
+tests/test_readiness_score.py::test_sanitize_no_position_removes_sell_actions PASSED [ 19%]
+tests/test_readiness_score.py::test_sanitize_noop_when_gate_passes PASSED [ 19%]
+tests/test_readiness_score.py::test_sanitize_warning_not_coexisting_with_original_strong PASSED [ 20%]
+tests/test_readiness_score.py::test_sanitize_preserves_execution_block PASSED [ 20%]
+tests/test_readiness_score.py::test_evidence_plain_text_no_ohlc_is_field_missing PASSED [ 21%]
+tests/test_readiness_score.py::test_evidence_ohlc_table_gives_has_data PASSED [ 21%]
+tests/test_readiness_score.py::test_evidence_lhb_normal_no_trigger PASSED [ 22%]
+tests/test_readiness_score.py::test_evidence_lhb_query_failed PASSED     [ 22%]
+tests/test_readiness_score.py::test_evidence_margin_trading_not_queried_by_default PASSED [ 23%]
+tests/test_readiness_score.py::test_evidence_no_report_means_not_queried PASSED [ 23%]
+tests/test_readiness_score.py::test_evidence_coverage_not_inflated_by_report_existence PASSED [ 24%]
+tests/test_readiness_score.py::test_evidence_announcement_with_date_is_has_data PASSED [ 25%]
+tests/test_readiness_score.py::test_no_position_positive_signals_cap_at_buy_level_2 PASSED [ 25%]
+tests/test_readiness_score.py::test_risk_level_4_with_negative_signals PASSED [ 26%]
+tests/test_readiness_score.py::test_strong_gate_fails_on_execution_conflict PASSED [ 26%]
+tests/test_readiness_score.py::test_opportunity_score_higher_with_positive_signals PASSED [ 27%]
+tests/test_readiness_score.py::test_gate_passes_unknown_position_without_strong_action PASSED [ 27%]
+tests/test_readiness_score.py::test_gate_blocks_unknown_position_with_strong_buy PASSED [ 28%]
+tests/test_readiness_score.py::test_buy_level_capped_at_2_when_unknown PASSED [ 28%]
+tests/test_readiness_score.py::test_risk_level_capped_at_3_when_unknown PASSED [ 29%]
+tests/test_readiness_score.py::test_sanitize_preserves_禁止加仓 PASSED   [ 29%]
+tests/test_readiness_score.py::test_sanitize_replaces_建议加仓 PASSED    [ 30%]
+tests/test_readiness_score.py::test_sanitize_preserves_system_block_加仓 PASSED [ 30%]
+tests/test_readiness_score.py::test_contains_strong_禁止加仓_is_false PASSED [ 31%]
+tests/test_readiness_score.py::test_contains_strong_建议加仓_is_true PASSED [ 31%]
+tests/test_readiness_score.py::test_sanitize_replaces_立刻清仓 PASSED    [ 32%]
+tests/test_readiness_score.py::test_sanitize_replaces_清仓离场 PASSED    [ 32%]
+tests/test_readiness_score.py::test_sanitize_replaces_满仓买入 PASSED    [ 33%]
+tests/test_readiness_score.py::test_sanitize_replaces_重仓布局 PASSED    [ 34%]
+tests/test_readiness_score.py::test_sanitize_preserves_减仓 PASSED       [ 34%]
+tests/test_readiness_score.py::test_sanitize_preserves_卖出 PASSED       [ 35%]
+tests/test_readiness_score.py::test_lhb_query_failed_with_no_data_returns_query_failed PASSED [ 35%]
+tests/test_readiness_score.py::test_lhb_normal_no_trigger_still_works PASSED [ 36%]
+tests/test_readiness_score.py::test_no_position_减仓_replaced_when_gate_passes PASSED [ 36%]
+tests/test_readiness_score.py::test_no_position_止损_replaced_when_gate_passes PASSED [ 37%]
+tests/test_readiness_score.py::test_has_position_减仓_preserved_when_gate_passes PASSED [ 37%]
+tests/test_readiness_score.py::test_downgrade_note_newline_before_system_blocks PASSED [ 38%]
+tests/test_readiness_score.py::test_sanitize_replaces_强买 PASSED        [ 38%]
+tests/test_readiness_score.py::test_strong_buy_keywords_contains_强买 PASSED [ 39%]
+tests/test_readiness_score.py::test_name_mismatch_blocks_strong_action_gate PASSED [ 39%]
+tests/test_readiness_score.py::test_name_mismatch_caps_risk_level_at_3 PASSED [ 40%]
+tests/test_readiness_score.py::test_name_mismatch_caps_buy_level_at_3 PASSED [ 40%]
+tests/test_readiness_score.py::test_no_name_mismatch_allows_level_4 PASSED [ 41%]
+tests/test_readiness_score.py::test_stop_loss_red_line_detected PASSED   [ 42%]
+tests/test_readiness_score.py::test_stop_loss_position_detected PASSED   [ 42%]
+tests/test_readiness_score.py::test_stop_loss_price_detected PASSED      [ 43%]
+tests/test_readiness_score.py::test_stop_loss_line_detected PASSED       [ 43%]
+tests/test_readiness_score.py::test_entry_zone_detected PASSED           [ 44%]
+tests/test_readiness_score.py::test_reduce_zone_detected PASSED          [ 44%]
+tests/test_readiness_score.py::test_entry_and_reduce_conflict PASSED     [ 45%]
+tests/test_readiness_score.py::test_stop_loss_higher_than_entry_conflict PASSED [ 45%]
+tests/test_readiness_score.py::test_entry_reduce_no_conflict_separate_contexts PASSED [ 46%]
+tests/test_readiness_score.py::test_gate_blocks_on_execution_zone_conflict PASSED [ 46%]
+tests/test_readiness_score.py::test_stop_loss_lower_than_entry_no_conflict PASSED [ 47%]
+tests/test_readiness_score.py::test_entry_only_no_reduce_no_conflict PASSED [ 47%]
+tests/test_readiness_score.py::test_entry_reduce_overlap_conflict PASSED [ 48%]
+tests/test_readiness_score.py::test_validate_stock_name_mismatch_wrong_name PASSED [ 48%]
+tests/test_readiness_score.py::test_validate_stock_name_match_correct PASSED [ 49%]
+tests/test_readiness_score.py::test_validate_stock_name_no_name_in_report PASSED [ 50%]
+tests/test_readiness_score.py::test_validate_stock_name_industry_word_not_extracted PASSED [ 50%]
+tests/test_readiness_score.py::test_validate_stock_name_md_title_extracts_name PASSED [ 51%]
+tests/test_readiness_score.py::test_raw_evidence_stock_data_overrides_text PASSED [ 51%]
+tests/test_readiness_score.py::test_raw_evidence_stock_data_failed PASSED [ 52%]
+tests/test_readiness_score.py::test_raw_evidence_fund_flow_individual PASSED [ 52%]
+tests/test_readiness_score.py::test_raw_evidence_fund_flow_failed PASSED [ 53%]
+tests/test_readiness_score.py::test_raw_evidence_lhb_normal PASSED       [ 53%]
+tests/test_readiness_score.py::test_raw_evidence_lhb_failed PASSED       [ 54%]
+tests/test_readiness_score.py::test_raw_evidence_lhb_has_data PASSED     [ 54%]
+tests/test_readiness_score.py::test_raw_evidence_news_has_data PASSED    [ 55%]
+tests/test_readiness_score.py::test_raw_evidence_news_failed PASSED      [ 55%]
+tests/test_readiness_score.py::test_raw_evidence_turnover_rate_not_in_pool PASSED [ 56%]
+tests/test_readiness_score.py::test_raw_evidence_margin_trading_not_in_pool PASSED [ 56%]
+tests/test_readiness_score.py::test_raw_evidence_none_falls_back_to_text PASSED [ 57%]
+tests/test_readiness_score.py::test_raw_evidence_lhb_not_triggered PASSED [ 57%]
+tests/test_readiness_score.py::test_raw_evidence_lhb_not_triggered_short PASSED [ 58%]
+tests/test_readiness_score.py::test_fund_flow_anomaly_no_false_positive_on_dates PASSED [ 59%]
+tests/test_readiness_score.py::test_fund_flow_anomaly_triggers_on_pct PASSED [ 59%]
+tests/test_readiness_score.py::test_fund_flow_anomaly_no_trigger_small_pct PASSED [ 60%]
+tests/test_readiness_score.py::test_fund_flow_anomaly_unsigned_pct PASSED [ 60%]
+tests/test_readiness_score.py::test_fund_flow_anomaly_table_ratio_col PASSED [ 61%]
+tests/test_readiness_score.py::test_fund_flow_anomaly_table_amount_no_trigger PASSED [ 61%]
+tests/test_f001_report_execution_fixes.py::TestFix1StopLossParsing::test_risk_manager_section_takes_priority PASSED [ 62%]
+tests/test_f001_report_execution_fixes.py::TestFix1StopLossParsing::test_conditional_stop_loss_pattern PASSED [ 62%]
+tests/test_f001_report_execution_fixes.py::TestFix1StopLossParsing::test_bold_markdown_price PASSED [ 63%]
+tests/test_f001_report_execution_fixes.py::TestFix1StopLossParsing::test_multi_price_on_same_line PASSED [ 63%]
+tests/test_f001_report_execution_fixes.py::TestFix1StopLossParsing::test_no_stop_loss_returns_none PASSED [ 64%]
+tests/test_f001_report_execution_fixes.py::TestFix1StopLossParsing::test_no_position_without_entry_no_error PASSED [ 64%]
+tests/test_f001_report_execution_fixes.py::TestFix2ValuationSanityCheck::test_old_price_pollution_detected PASSED [ 65%]
+tests/test_f001_report_execution_fixes.py::TestFix2ValuationSanityCheck::test_close_prices_no_mismatch PASSED [ 65%]
+tests/test_f001_report_execution_fixes.py::TestFix2ValuationSanityCheck::test_none_current_price_no_mismatch PASSED [ 66%]
+tests/test_f001_report_execution_fixes.py::TestFix2ValuationSanityCheck::test_empty_report_no_mismatch PASSED [ 67%]
+tests/test_f001_report_execution_fixes.py::TestFix2ValuationSanityCheck::test_estimated_price_pattern PASSED [ 67%]
+tests/test_f001_report_execution_fixes.py::TestFix2ValuationSanityCheck::test_within_20_percent_threshold PASSED [ 68%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_gate_not_passed_cap_60 PASSED [ 68%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_bearish_direction_cap_60 PASSED [ 69%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_trader_disallows_buy_cap_50 PASSED [ 69%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_low_data_completeness_cap_70 PASSED [ 70%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_unknown_position_cap_70 PASSED [ 70%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_multiple_caps_take_lowest PASSED [ 71%]
+tests/test_f001_report_execution_fixes.py::TestFix3OpportunityScoreCap::test_all_conditions_good_no_cap PASSED [ 71%]
+tests/test_f001_report_execution_fixes.py::TestFix4NoPositionSemantics::test_reduce_actions_replaced PASSED [ 72%]
+tests/test_f001_report_execution_fixes.py::TestFix4NoPositionSemantics::test_hold_replaced_with_wait PASSED [ 72%]
+tests/test_f001_report_execution_fixes.py::TestFix4NoPositionSemantics::test_hold_slash_wait_replaced PASSED [ 73%]
+tests/test_f001_report_execution_fixes.py::TestFix4NoPositionSemantics::test_has_position_preserves_actions PASSED [ 73%]
+tests/test_f001_report_execution_fixes.py::TestFix4NoPositionSemantics::test_stop_loss_field_name_preserved PASSED [ 74%]
+tests/test_f001_report_execution_fixes.py::TestFix4NoPositionSemantics::test_format_execution_block_no_position PASSED [ 75%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_no_position_risk_level_cap_at_1 PASSED [ 75%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_no_position_buy_level_cap_at_1_without_entry_conditions PASSED [ 76%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_no_position_buy_level_0_when_bearish PASSED [ 76%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_no_position_buy_level_2_when_entry_ready PASSED [ 77%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_no_position_perfect_signals_never_reach_level_3 PASSED [ 77%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_has_position_perfect_signals_can_reach_level_4 PASSED [ 78%]
+tests/test_f001_report_execution_fixes.py::TestFix5BuyRiskLevelConflict::test_has_position_risk_level_can_reach_4 PASSED [ 78%]
+tests/test_f001_report_execution_fixes.py::TestFix6SentimentVerdictContradiction::test_extract_verdict_basic PASSED [ 79%]
+tests/test_f001_report_execution_fixes.py::TestFix6SentimentVerdictContradiction::test_extract_verdict_bearish PASSED [ 79%]
+tests/test_f001_report_execution_fixes.py::TestFix6SentimentVerdictContradiction::test_extract_verdict_neutral PASSED [ 80%]
+tests/test_f001_report_execution_fixes.py::TestFix6SentimentVerdictContradiction::test_no_verdict_returns_neutral PASSED [ 80%]
+tests/test_f001_report_execution_fixes.py::TestFix6SentimentVerdictContradiction::test_analyst_conflict_detection_in_signals PASSED [ 81%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_explicit_entry_range_extracted PASSED [ 81%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_buy_range_extracted PASSED [ 82%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_no_entry_statement_returns_none PASSED [ 82%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_no_entry_zone_statement_returns_none PASSED [ 83%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_oscillation_range_not_treated_as_entry PASSED [ 84%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_support_zone_not_treated_as_entry PASSED [ 84%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_entry_condition_with_range PASSED [ 85%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_inline_entry_pattern PASSED [ 85%]
+tests/test_f001_report_execution_fixes.py::TestFix7EntryZoneMisidentification::test_priority_final_range PASSED [ 86%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_performance_pressure_tag PASSED [ 86%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_performance_beat_tag PASSED [ 87%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_theme_expectation_tag PASSED [ 87%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_event_driven_tag PASSED [ 88%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_volume_price_tag PASSED [ 88%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_trend_breakout_tag PASSED [ 89%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_no_match_returns_unidentified PASSED [ 89%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_max_three_tags PASSED [ 90%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_performance_direction_unclear PASSED [ 90%]
+tests/test_f001_report_execution_fixes.py::TestFix8SetupTypeTags::test_quality_check_includes_setup_type PASSED [ 91%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_short_strategy_replaced PASSED [ 92%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_short_open_replaced PASSED [ 92%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_consider_short_replaced PASSED [ 93%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_suggest_short_replaced PASSED [ 93%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_can_short_replaced PASSED [ 94%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_no_short_selling_no_changes PASSED [ 94%]
+tests/test_f001_report_execution_fixes.py::TestFix9ShortSellingWording::test_risk_manager_integrates_short_filter PASSED [ 95%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_all_has_data_gives_100 PASSED [ 95%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_normal_no_data_counts_half PASSED [ 96%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_all_normal_no_data_gives_50 PASSED [ 96%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_not_available_excluded_from_denominator PASSED [ 97%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_low_coverage_caps_confidence PASSED [ 97%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_query_failed_counts_zero PASSED [ 98%]
+tests/test_f001_report_execution_fixes.py::TestFix10EvidenceCoverageConservative::test_gate_fails_below_70 PASSED [ 98%]
+tests/test_f001_report_execution_fixes.py::TestF001Integration::test_full_quality_check_output PASSED [ 99%]
+tests/test_f001_report_execution_fixes.py::TestF001Integration::test_position_status_detection PASSED [100%]
+
+============================= 188 passed in 10.28s =============================
+[0m
+[0m# [0mTodos
+[✓] Verify code fix: no_position buy_level capped at 2 in readiness_score.py
+[✓] Run test suite: test_readiness_score.py + test_f001_report_execution_fixes.py
+[•] Run regression: test_api_smoke.py + test_runtime_tier_contract.py
+[ ] Run py_compile on modified files
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && python -c "import py_compile; py_compile.compile('tradingagents/agents/utils/readiness_score.py', doraise=True); py_compile.compile('tests/test_readiness_score.py', doraise=True); py_compile.compile('tests/test_f001_report_execution_fixes.py', doraise=True); print('py_compile OK')"
+py_compile OK
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short 2>&1
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 23.49s
+[0m
+[0m# [0mTodos
+[✓] Verify code fix: no_position buy_level capped at 2 in readiness_score.py
+[✓] Run test suite: test_readiness_score.py + test_f001_report_execution_fixes.py
+[✓] Run regression: test_api_smoke.py + test_runtime_tier_contract.py
+[✓] Run py_compile on modified files
+[•] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,46 @@
+ # 修改日志
+
++## 2026-07-24 | F-001-R1 未持仓试错 Buy Level 上限补修
++
++- **任务**：F-001-R1 — 未持仓条件试错的 Buy Level 上限固定为 2，不得进入 Level 3（P2）
++- **状态**：✅ 实现完成；188 项 F-001/readiness_score 测试 passed，API smoke 122 passed
++- **代码标注**：`# [F-001-R1]`
++
++### 改动
++
++- **`tradingagents/agents/utils/readiness_score.py`**（修改）
++  - **核心修复 — `calculate_buy_level()` 初始 max_level**：原代码 `max_level = 2 if position_status == "unknown" else 4`，`no_position` 未被包含在上限集合中，当 `real_entry_ready=True` 时 `max_level` 保持 4，Level 3/4 仍可达
++  - 修复：`max_level = 2 if position_status in {"unknown", "no_position"} else 4`，未持仓信号本质是入场试错，不是加仓指令，Level 3/4 仅对已持仓可用
++  - **else 分支补 cap**：`real_entry_ready=True` 分支原代码只改 note 不设 cap，现增加 `max_level = min(max_level, 2)` 与对应注释
++
++- **`tests/test_f001_report_execution_fixes.py`**（修改）
++  - `test_no_position_buy_level_2_when_entry_ready`：断言从 `>= 2` 收紧为 `== 2`
++  - 新增 `test_no_position_perfect_signals_never_reach_level_3`：全覆盖/高流入/趋势确认等完美信号仍断言 `== 2`
++  - 新增 `test_has_position_perfect_signals_can_reach_level_4`：已持仓完美信号可达 Level 4，验证上限仅约束未持仓
++
++- **`tests/test_readiness_score.py`**（修改）
++  - `test_buy_level_4_requires_all_conditions` / `test_buy_level_4_blocked_by_negative_announcement` / `test_buy_level_4_blocked_by_low_coverage`：`position_status` 从 `"no_position"` 改为 `"has_position"`（Level 4 测试应使用已持仓上下文）
++  - `test_buy_level_3_with_positive_signals` 重命名为 `test_no_position_positive_signals_cap_at_buy_level_2`，断言从 `>= 3` 收紧为 `== 2`
++
++### 设计要点
++
++- **单行核心修复**：`max_level` 初始判断增加 `"no_position"`，两处改动确保未持仓信号不会产生 Level 3/4
++- **向后兼容**：`has_position` 和 `unknown` 行为不变；`no_position` 在 `real_entry_ready=False` 时仍上限为 1（观察）
++- **三态一致**：`unknown` → max 2，`no_position` → max 2（试仓），`has_position` → max 4（积极建仓）
++
++### 回归
++
++- `pytest tests/test_readiness_score.py tests/test_f001_report_execution_fixes.py -v`：**188 passed**
++- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
++- `py_compile` 全部修改文件通过
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-24 | FUND-007A-R1 因果短语基准补修
+
+ - **问题**：原基准主要比较最终门禁与规则码；正向样本在报告侧未抽取出因果关系时仍可能以 `VALID` 假通过。
+ - **实现**：
+
+[0m
+[0m# [0mTodos
+[✓] Verify code fix: no_position buy_level capped at 2 in readiness_score.py
+[✓] Run test suite: test_readiness_score.py + test_f001_report_execution_fixes.py
+[✓] Run regression: test_api_smoke.py + test_runtime_tier_contract.py
+[✓] Run py_compile on modified files
+[✓] Update docs/DEVLOG.md
+[0m
+## F-001-R1 完成总结
+
+### 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `tradingagents/agents/utils/readiness_score.py` | 核心修复：`max_level` 初始判断增加 `"no_position"` → 未持仓上限固定为 2；`real_entry_ready` 分支补 `min(max_level, 2)` |
+| `tests/test_f001_report_execution_fixes.py` | 收紧断言 `== 2`；新增 `test_no_position_perfect_signals_never_reach_level_3` 和 `test_has_position_perfect_signals_can_reach_level_4` |
+| `tests/test_readiness_score.py` | 3 个 Level 4 测试改为 `has_position`；重命名并收紧 `test_no_position_positive_signals_cap_at_buy_level_2` |
+| `docs/DEVLOG.md` | 新增 F-001-R1 开发日志 |
+
+### 关键逻辑
+
+原 bug：`calculate_buy_level()` 第 654 行 `max_level = 2 if position_status == "unknown" else 4`，`no_position` 未被包含。当 `real_entry_ready=True` 时 `max_level` 保持 4，完美信号下未持仓仍可达 Level 3/4。
+
+修复：`max_level = 2 if position_status in {"unknown", "no_position"} else 4`，确保未持仓信号（入场试错）永远不超过 Level 2（条件试仓）。
+
+### 测试结果
+
+- **188 passed** — F-001/readiness_score 专项
+- **122 passed** — API smoke + runtime tier 回归
+- **py_compile** — 全部修改文件通过

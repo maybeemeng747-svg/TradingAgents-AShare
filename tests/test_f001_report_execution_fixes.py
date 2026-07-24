@@ -337,9 +337,38 @@ class TestFix5BuyRiskLevelConflict:
             has_major_negative_announcement=False,
             position_status="no_position",
         )
-        # Entry ready: level can reach 2+ (conditional candidate)
-        assert result["level"] >= 2
+        # Entry ready: no position is still only a conditional trial.
+        assert result["level"] == 2
         assert "入场条件已确认" in result["note"]
+
+    def test_no_position_perfect_signals_never_reach_level_3(self):
+        result = calculate_buy_level(
+            source_coverage=100,
+            evidence_coverage=100,
+            trend_confirmed=True,
+            main_capital_inflow_days=3,
+            volume_healthy_expansion=True,
+            no_execution_conflict=True,
+            no_unresolved_analyst_conflict=True,
+            has_major_negative_announcement=False,
+            position_status="no_position",
+        )
+        assert result["level"] == 2
+        assert "上限为 2" in result["note"]
+
+    def test_has_position_perfect_signals_can_reach_level_4(self):
+        result = calculate_buy_level(
+            source_coverage=100,
+            evidence_coverage=100,
+            trend_confirmed=True,
+            main_capital_inflow_days=3,
+            volume_healthy_expansion=True,
+            no_execution_conflict=True,
+            no_unresolved_analyst_conflict=True,
+            has_major_negative_announcement=False,
+            position_status="has_position",
+        )
+        assert result["level"] == 4
 
     def test_has_position_risk_level_can_reach_4(self):
         result = calculate_risk_level(

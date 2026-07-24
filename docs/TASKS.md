@@ -41,8 +41,9 @@
 11. `B-004-R1`：持仓同步路径白名单、失败语义和输入校验（done，`d0ecfd2`）。
 12. `FUND-006A-R1`：离线回放测试有效性补修（done，第三轮人工收口）。
 13. `FUND-007A-R1`：错误模式基准因果短语补修（done，claim 级回归与两轮 Codex review 收口）。
-14. `F-001-R1`：未持仓试错 Buy Level 上限补修（P2，ready）。
-15. 其余 review finding 进入第二批：`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+14. `F-001-R1`：未持仓试错 Buy Level 上限补修（done，人工 Codex review 收口）。
+15. `PLAYBOOK-002-R1`：三笔法组合约束补修（P1，ready）。
+16. 其余 review finding 进入第二批：`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -191,14 +192,14 @@
 ### F-001-R1: 未持仓试错 Buy Level 上限补修（P2）
 - **描述**：未持仓条件试错的 Buy Level 上限固定为 2，不得进入 Level 3。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 200 项专项、96 项语义回归与 122 项 smoke 通过；人工 Codex review 无 correctness finding
 - **depends_on**：FUND-007A-R1
 - **auto_release**：true
 
 ### PLAYBOOK-002-R1: 三笔法组合约束补修（P1）
 - **描述**：把计算后的计划仓位传入加仓检查；第一次大跌/跌停未打开禁止进攻仓；试错仓补最大下行约束。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：F-001-R1
 - **auto_release**：true
 

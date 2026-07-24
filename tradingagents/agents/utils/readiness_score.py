@@ -651,7 +651,10 @@ def calculate_buy_level(
     返回:
         {"level": int, "note": str}
     """
-    max_level = 2 if position_status == "unknown" else 4
+    # [F-001-R1] A no-position signal is an entry trial, never an aggressive
+    # add-position instruction. Even perfect entry evidence is capped at
+    # Level 2; Level 3/4 remain available only when a position already exists.
+    max_level = 2 if position_status in {"unknown", "no_position"} else 4
     if name_mismatch:
         max_level = min(max_level, 3)
 
@@ -679,7 +682,7 @@ def calculate_buy_level(
 
     # [Fix-5] No-position: cap at level 1 unless real entry conditions met
     if position_status == "no_position":
-        # Only allow level 2+ if ALL actual entry conditions are confirmed
+        # Only allow level 2 if ALL actual entry conditions are confirmed.
         real_entry_ready = (
             trend_confirmed
             and main_capital_inflow_days >= 1
@@ -691,7 +694,8 @@ def calculate_buy_level(
             max_level = min(max_level, 1)
             note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
         else:
-            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2（条件试仓）"
+            max_level = min(max_level, 2)
+            note_prefix = "未持仓但入场条件已确认，Buy Level 上限为 2（条件试仓）"
     elif position_status == "unknown":
         note_prefix = "持仓状态未知，Buy Level 上限为 2"
     else:

@@ -259,7 +259,7 @@ def test_buy_level_4_requires_all_conditions():
         has_major_negative_announcement=False,
         no_execution_conflict=True,
         no_unresolved_analyst_conflict=True,
-        position_status="no_position",
+        position_status="has_position",
     )
     assert result["level"] == 4
 
@@ -271,7 +271,7 @@ def test_buy_level_4_blocked_by_negative_announcement():
         main_capital_inflow_days=2,
         volume_healthy_expansion=True,
         has_major_negative_announcement=True,
-        position_status="no_position",
+        position_status="has_position",
     )
     assert result["level"] < 4
 
@@ -282,7 +282,7 @@ def test_buy_level_4_blocked_by_low_coverage():
         trend_confirmed=True,
         main_capital_inflow_days=2,
         volume_healthy_expansion=True,
-        position_status="no_position",
+        position_status="has_position",
     )
     assert result["level"] < 4
 
@@ -609,7 +609,7 @@ def test_evidence_announcement_with_date_is_has_data():
 # P1: extract_execution_signals + Buy/Risk/Opportunity integration tests
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_buy_level_3_with_positive_signals():
+def test_no_position_positive_signals_cap_at_buy_level_2():
     signals = extract_execution_signals(
         {},
         "",
@@ -626,7 +626,7 @@ def test_buy_level_3_with_positive_signals():
         volume_healthy_expansion=signals["volume_healthy_expansion"],
         position_status="no_position",
     )
-    assert result["level"] >= 3
+    assert result["level"] == 2
 
 
 def test_risk_level_4_with_negative_signals():

@@ -1,5 +1,55 @@
 # 修改日志
 
+## 2026-07-24 | F-001-R1 人工 Codex Review 收口
+
+- **并发说明**：19:00 自动链与人工修复同时领取 F-001-R1；自动链未覆盖代码，但 Codex 调用返回 exit 127，因此按 fail-closed 规则留下 `NEEDS_HUMAN` 档案。
+- **人工复核**：随后独立运行 `codex review --uncommitted`，结论为 “No actionable correctness issues were found in the current changes.”
+- **验证**：专项与 readiness 回归 **200 passed**；决策语义回归 **96 passed**；API/runtime smoke **122 passed**；`py_compile` 与 `git diff --check` 通过。
+- **状态迁移**：F-001-R1 标记 done；PLAYBOOK-002-R1 释放为 ready。自动链第一次失败档案保留，第二轮人工收口另行归档。
+
+---
+
+## 2026-07-24 | F-001-R1 未持仓试错 Buy Level 上限补修
+
+- **任务**：F-001-R1 — 未持仓条件试错的 Buy Level 上限固定为 2，不得进入 Level 3（P2）
+- **状态**：✅ 实现完成并人工复核；200 项专项/readiness 测试、96 项语义回归、122 项 API/runtime smoke passed
+- **代码标注**：`# [F-001-R1]`
+
+### 改动
+
+- **`tradingagents/agents/utils/readiness_score.py`**（修改）
+  - **核心修复 — `calculate_buy_level()` 初始 max_level**：原代码 `max_level = 2 if position_status == "unknown" else 4`，`no_position` 未被包含在上限集合中，当 `real_entry_ready=True` 时 `max_level` 保持 4，Level 3/4 仍可达
+  - 修复：`max_level = 2 if position_status in {"unknown", "no_position"} else 4`，未持仓信号本质是入场试错，不是加仓指令，Level 3/4 仅对已持仓可用
+  - **else 分支补 cap**：`real_entry_ready=True` 分支原代码只改 note 不设 cap，现增加 `max_level = min(max_level, 2)` 与对应注释
+
+- **`tests/test_f001_report_execution_fixes.py`**（修改）
+  - `test_no_position_buy_level_2_when_entry_ready`：断言从 `>= 2` 收紧为 `== 2`
+  - 新增 `test_no_position_perfect_signals_never_reach_level_3`：全覆盖/高流入/趋势确认等完美信号仍断言 `== 2`
+  - 新增 `test_has_position_perfect_signals_can_reach_level_4`：已持仓完美信号可达 Level 4，验证上限仅约束未持仓
+
+- **`tests/test_readiness_score.py`**（修改）
+  - `test_buy_level_4_requires_all_conditions` / `test_buy_level_4_blocked_by_negative_announcement` / `test_buy_level_4_blocked_by_low_coverage`：`position_status` 从 `"no_position"` 改为 `"has_position"`（Level 4 测试应使用已持仓上下文）
+  - `test_buy_level_3_with_positive_signals` 重命名为 `test_no_position_positive_signals_cap_at_buy_level_2`，断言从 `>= 3` 收紧为 `== 2`
+
+### 设计要点
+
+- **单行核心修复**：`max_level` 初始判断增加 `"no_position"`，两处改动确保未持仓信号不会产生 Level 3/4
+- **向后兼容**：`has_position` 和 `unknown` 行为不变；`no_position` 在 `real_entry_ready=False` 时仍上限为 1（观察）
+- **三态一致**：`unknown` → max 2，`no_position` → max 2（试仓），`has_position` → max 4（持仓场景的加仓评估）
+
+### 回归
+
+- `pytest tests/test_f001_report_execution_fixes.py tests/test_p0_p1_acceptance.py tests/test_readiness_score.py -q`：**200 passed**
+- `pytest tests/test_execution_schema.py tests/test_g001_three_layer.py tests/test_report_ux003_wait_reason_codes.py -q`：**96 passed**
+- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
+- `py_compile` 全部修改文件通过
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库。
+
+---
+
 ## 2026-07-24 | FUND-007A-R1 因果短语基准补修
 
 - **问题**：原基准主要比较最终门禁与规则码；正向样本在报告侧未抽取出因果关系时仍可能以 `VALID` 假通过。
@@ -15056,3 +15106,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
   - `82fd146` — SCORE-002/003 TradeFlow score-card contracts.
 - Combined focused regression: 552 passed.
 - Synchronized task status and released `FUND-006A-R1` as the next ready task.
+
+## 2026-07-24 | AUTO-002 Auto Dev Loop
+
+- **Task**: F-001-R1 - 未持仓试错 Buy Level 上限补修（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/F-001-R1-20260724-190003/
