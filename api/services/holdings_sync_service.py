@@ -18,6 +18,18 @@ Design contract:
       symbol, the side with the newer modification wins.
     * Never erases holdings silently — empty input produces a warning.
     * Never reads/writes API keys or calls LLM.
+
+    [B-004-R1] Hardening:
+    * Path whitelist — all file I/O is restricted to the investment-controller
+      config dir, the knowledge-base root, and any extra roots configured via
+      ``HOLDINGS_SYNC_ALLOWED_ROOTS``. Paths outside the whitelist are rejected
+      with a ``path_not_allowed`` error and never probed for existence.
+    * ``direction`` validation — only ``export``/``import``/``bidirectional``
+      are accepted; anything else is rejected instead of silently falling
+      through to bidirectional.
+    * External read failure protection — distinct, machine-checkable error
+      codes for ``file_not_found`` / ``empty_file`` / ``permission_denied`` /
+      ``json_parse_error`` / ``unexpected_format`` / ``holdings_not_list``.
 """
 
 from __future__ import annotations
@@ -25,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,17 +49,94 @@ from api.services import portfolio_import_service
 
 logger = logging.getLogger(__name__)
 
-# Default path for the external holdings JSON file.
-# Can be overridden via INVESTMENT_CONTROLLER_HOLDINGS_PATH env var.
-_DEFAULT_HOLDINGS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "investment-controller",
-    "current_holdings.json",
-)
-
 _HOLDINGS_SOURCE = "investment_controller"
 
 _SYNC_SCHEMA_VERSION = "1.0"
+
+# [B-004-R1] Allowed sync directions. Any other value must be rejected
+# instead of silently falling through to bidirectional.
+_VALID_DIRECTIONS = frozenset({"export", "import", "bidirectional"})
+
+# [B-004-R1] Canonical roots the sync service is allowed to read/write.
+# Any file_path outside these roots (after symlink/resolution) is rejected
+# with a ``path_not_allowed`` error and is never probed for existence —
+# this prevents path-traversal / arbitrary-file read-write abuse.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_KNOWLEDGE_ROOT = Path.home() / "Documents" / "knowledge"
+_INVESTMENT_CONTROLLER_DIR = (
+    Path(os.environ.get("INVESTMENT_CONTROLLER_DIR", _REPO_ROOT / "investment-controller"))
+    .expanduser()
+)
+# Default path follows the configured controller root so the fallback always
+# remains inside the same whitelist used by read/write operations.
+_DEFAULT_HOLDINGS_PATH = str(
+    _INVESTMENT_CONTROLLER_DIR / "current_holdings.json"
+)
+
+
+def _allowed_sync_roots() -> list[Path]:
+    """Return the list of root directories the sync may touch.
+
+    Includes the investment-controller config dir, the knowledge-base root
+    when it exists, and any extra colon-separated roots configured via the
+    ``HOLDINGS_SYNC_ALLOWED_ROOTS`` env var. Missing roots are skipped.
+    """
+    roots: list[Path] = [_INVESTMENT_CONTROLLER_DIR]
+    if _KNOWLEDGE_ROOT.exists():
+        roots.append(_KNOWLEDGE_ROOT)
+
+    extra = os.environ.get("HOLDINGS_SYNC_ALLOWED_ROOTS", "")
+    for chunk in extra.split(os.pathsep):
+        chunk = chunk.strip()
+        if chunk:
+            roots.append(Path(chunk).expanduser())
+    return roots
+
+
+def _resolve_for_check(file_path: str) -> Path:
+    """Resolve a path as far as possible for whitelist checking.
+
+    The parent directory is resolved (it must exist for a meaningful write),
+    while the leaf component is kept literal so non-existent target files can
+    still be validated against their containing directory.
+    """
+    raw = Path(file_path).expanduser()
+    # ``strict=False`` still resolves every existing symlink component,
+    # including a symlink used as the leaf file. This prevents a whitelisted
+    # ``root/holdings.json -> /outside/secret`` link from escaping the root,
+    # while still allowing a new target file to be checked before creation.
+    return raw.resolve(strict=False)
+
+
+def _resolve_allowed_sync_path(file_path: str) -> Path | None:
+    """Return the normalized path when it lives under an allowed root."""
+    try:
+        target = _resolve_for_check(file_path)
+    except (OSError, RuntimeError):
+        return None
+
+    for root in _allowed_sync_roots():
+        try:
+            root_resolved = root.resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
+        try:
+            target.relative_to(root_resolved)
+            return target
+        except ValueError:
+            continue
+    return None
+
+
+def is_path_allowed(file_path: str) -> bool:
+    """Return True iff ``file_path`` lives under an allowed sync root.
+
+    [B-004-R1] Path whitelist gate. Symlink-resolved paths are compared so
+    that traversal tricks (``../``) and links pointing outside the roots are
+    rejected.
+    """
+    return _resolve_allowed_sync_path(file_path) is not None
+
 
 # Fields that are tracked for diff computation.
 _TRACKED_FIELDS = (
@@ -63,10 +153,19 @@ def get_default_sync_path() -> str:
     """Return the default file path for the external holdings JSON.
 
     Respects ``INVESTMENT_CONTROLLER_HOLDINGS_PATH`` env var.
+    The env override is validated against the [B-004-R1] path whitelist;
+    if it falls outside the allowed roots, the canonical default is used
+    and a warning is logged.
     """
-    return os.environ.get(
-        "INVESTMENT_CONTROLLER_HOLDINGS_PATH", _DEFAULT_HOLDINGS_PATH
-    )
+    override = os.environ.get("INVESTMENT_CONTROLLER_HOLDINGS_PATH")
+    if override:
+        if is_path_allowed(override):
+            return override
+        logger.warning(
+            "INVESTMENT_CONTROLLER_HOLDINGS_PATH=%r is outside the sync "
+            "whitelist; falling back to default path.", override,
+        )
+    return _DEFAULT_HOLDINGS_PATH
 
 
 def read_external_holdings(file_path: str) -> dict[str, Any]:
@@ -75,13 +174,28 @@ def read_external_holdings(file_path: str) -> dict[str, Any]:
     Returns:
         ``{"holdings": [...], "meta": {...}}`` on success.
         ``{"holdings": [], "meta": None, "error": "..."}`` on failure.
+
+    [B-004-R1] Failure modes are reported with distinct, machine-checkable
+    error codes: ``path_not_allowed``, ``file_not_found``, ``empty_file``,
+    ``permission_denied``, ``json_parse_error``, ``unexpected_format``,
+    ``holdings_not_list``.
     """
-    path = Path(file_path)
+    # [B-004-R1] Path whitelist — reject before any filesystem probe.
+    path = _resolve_allowed_sync_path(file_path)
+    if path is None:
+        logger.warning(
+            "read_external_holdings rejected out-of-whitelist path: %r",
+            file_path,
+        )
+        return {"holdings": [], "meta": None, "error": "path_not_allowed"}
+
     if not path.exists():
         return {"holdings": [], "meta": None, "error": "file_not_found"}
 
     try:
         raw = path.read_text(encoding="utf-8")
+    except PermissionError as exc:  # [B-004-R1] explicit permission semantics
+        return {"holdings": [], "meta": None, "error": f"permission_denied: {exc}"}
     except OSError as exc:
         return {"holdings": [], "meta": None, "error": f"read_error: {exc}"}
 
@@ -112,8 +226,20 @@ def write_external_holdings(file_path: str, holdings: list[dict[str, Any]], meta
     """Write holdings to the external JSON file atomically.
 
     Uses write-to-temp-then-rename for atomicity.
+
+    [B-004-R1] Rejects paths outside the sync whitelist with
+    ``path_not_allowed`` before any filesystem write, and surfaces
+    ``permission_denied`` distinctly from generic write errors.
     """
-    path = Path(file_path)
+    # [B-004-R1] Path whitelist — reject before touching the filesystem.
+    path = _resolve_allowed_sync_path(file_path)
+    if path is None:
+        logger.warning(
+            "write_external_holdings rejected out-of-whitelist path: %r",
+            file_path,
+        )
+        return {"success": False, "error": "path_not_allowed"}
+
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     payload = {
@@ -126,16 +252,39 @@ def write_external_holdings(file_path: str, holdings: list[dict[str, Any]], meta
         "holdings": holdings,
     }
 
+    tmp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        # Use an unpredictable O_EXCL-created sibling instead of a fixed
+        # ``current_holdings.tmp`` path. A pre-planted symlink therefore
+        # cannot redirect the write outside the allowed root.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
         )
-        tmp_path.replace(path)
+        tmp_path = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            )
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    except PermissionError as exc:  # [B-004-R1] explicit permission semantics
+        return {"success": False, "error": f"permission_denied: {exc}"}
     except OSError as exc:
         return {"success": False, "error": f"write_error: {exc}"}
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "Failed to clean holdings sync temp file: %s",
+                    tmp_path,
+                )
 
     return {"success": True, "file_path": str(path), "count": len(holdings)}
 
@@ -170,6 +319,39 @@ def external_to_ta_positions(holdings: list[dict[str, Any]]) -> list[dict[str, A
             "current_position_pct": h.get("current_position_pct"),
         })
     return out
+
+
+def validate_external_holdings(
+    holdings: Any,
+) -> dict[str, Any]:
+    """Validate external rows before either side is mutated.
+
+    The portfolio validator is the canonical input contract for symbols,
+    duplicates and numeric fields. B-004-R1 fails the entire sync when any
+    malformed row is present instead of silently dropping the bad rows.
+    """
+    try:
+        validation = portfolio_import_service.validate_positions(holdings)
+    except ValueError as exc:
+        return {
+            "valid": [],
+            "invalid": [{"reason": str(exc), "fields": []}],
+            "warnings": [],
+            "valid_count": 0,
+            "invalid_count": 1,
+        }
+    fatal_warnings = [
+        warning
+        for warning in validation.get("warnings", [])
+        if str(warning.get("reason", "")).startswith("unparseable_")
+    ]
+    if fatal_warnings:
+        validation["invalid"] = [
+            *validation.get("invalid", []),
+            *fatal_warnings,
+        ]
+        validation["invalid_count"] = len(validation["invalid"])
+    return validation
 
 
 def _to_float(value: Any) -> float | None:
@@ -323,7 +505,14 @@ def import_holdings(db: Session, user_id: str, file_path: str | None = None) -> 
     if not ext_holdings:
         return {"success": False, "error": "external_file_empty"}
 
-    ta_positions = external_to_ta_positions(ext_holdings)
+    validation = validate_external_holdings(ext_holdings)
+    if validation["invalid_count"]:
+        return {
+            "success": False,
+            "error": "malformed_rows",
+            "invalid_rows": validation["invalid"],
+        }
+    ta_positions = external_to_ta_positions(validation["valid"])
 
     try:
         diff = portfolio_import_service.dry_run_import(
@@ -353,10 +542,26 @@ def sync_holdings(
         direction: ``"export"``, ``"import"``, or ``"bidirectional"`` (default).
 
     Returns:
-        Structured result dict with sync outcome.
+        Structured result dict with sync outcome. An unsupported
+        ``direction`` yields ``{"success": False, "error": "invalid_direction"}``
+        ([B-004-R1]).
     """
     path = file_path or get_default_sync_path()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # [B-004-R1] Reject unknown directions explicitly — previously any
+    # non-export/non-import value silently fell through to bidirectional.
+    if direction not in _VALID_DIRECTIONS:
+        logger.warning(
+            "sync_holdings rejected invalid direction=%r (allowed: %s)",
+            direction, sorted(_VALID_DIRECTIONS),
+        )
+        return {
+            "success": False,
+            "error": "invalid_direction",
+            "direction": direction,
+            "allowed_directions": sorted(_VALID_DIRECTIONS),
+        }
 
     if direction == "export":
         return export_holdings(db, user_id, path)
@@ -366,7 +571,33 @@ def sync_holdings(
     # --- Bidirectional sync ---
     ta_positions = get_ta_positions(db, user_id)
     ext_data = read_external_holdings(path)
-    ext_holdings_raw = ext_data["holdings"] if not ext_data["error"] else []
+    read_error = ext_data["error"]
+    if read_error not in (None, "file_not_found", "empty_file"):
+        return {
+            "success": False,
+            "direction": "none",
+            "reason": "external_read_failed",
+            "error": read_error,
+            "export_result": None,
+            "import_result": None,
+            "synced_at": now,
+        }
+
+    ext_holdings_raw = ext_data["holdings"] if not read_error else []
+    if ext_holdings_raw:
+        validation = validate_external_holdings(ext_holdings_raw)
+        if validation["invalid_count"]:
+            return {
+                "success": False,
+                "direction": "none",
+                "reason": "external_validation_failed",
+                "error": "malformed_rows",
+                "invalid_rows": validation["invalid"],
+                "export_result": None,
+                "import_result": None,
+                "synced_at": now,
+            }
+        ext_holdings_raw = validation["valid"]
     ext_positions = external_to_ta_positions(ext_holdings_raw)
 
     diff = compute_bidirectional_diff(ta_positions, ext_positions)
@@ -422,6 +653,17 @@ def sync_holdings(
         "source": "bidirectional_sync",
         "count": len(ext_merged),
     })
+    if not write_result.get("success"):
+        return {
+            "success": False,
+            "direction": "bidirectional",
+            "reason": "external_write_failed",
+            "error": write_result.get("error", "external_write_failed"),
+            "diff": diff,
+            "export_result": write_result,
+            "import_result": None,
+            "synced_at": now,
+        }
 
     # Write to TA (import merged as investment_controller source)
     ta_merged = external_to_ta_positions(ext_merged)
@@ -444,7 +686,7 @@ def sync_holdings(
         }
 
     return {
-        "success": True,
+        "success": bool(write_result.get("success")),
         "direction": "bidirectional",
         "reason": "merged",
         "diff": diff,

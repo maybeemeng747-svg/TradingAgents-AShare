@@ -27,8 +27,13 @@ def db():
 
 
 @pytest.fixture
-def tmp_holdings_file(tmp_path):
-    """Return a path to a temp file for external holdings."""
+def tmp_holdings_file(tmp_path, monkeypatch):
+    """Return a path to a temp file for external holdings.
+
+    [B-004-R1] The sync service now enforces a path whitelist, so we register
+    pytest's tmp_path as an allowed root for the duration of each test.
+    """
+    monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(tmp_path))
     return str(tmp_path / "current_holdings.json")
 
 
@@ -158,8 +163,10 @@ class TestWriteExternalHoldings:
         assert result["success"] is True
         assert result["count"] == 0
 
-    def test_write_creates_parent_dirs(self, tmp_path):
+    def test_write_creates_parent_dirs(self, tmp_path, monkeypatch):
+        # [B-004-R1] Register tmp_path as allowed root for the whitelist.
         from api.services import holdings_sync_service
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(tmp_path))
         nested = str(tmp_path / "a" / "b" / "c" / "holdings.json")
         result = holdings_sync_service.write_external_holdings(nested, [{"symbol": "600519.SH"}])
         assert result["success"] is True
@@ -489,11 +496,26 @@ class TestGetDefaultSyncPath:
         assert path.endswith("current_holdings.json")
         assert "investment-controller" in path
 
-    def test_env_override(self, monkeypatch):
+    def test_env_override_allowed(self, monkeypatch, tmp_path):
+        # [B-004-R1] An override inside the whitelist is honoured.
         from api.services import holdings_sync_service
-        monkeypatch.setenv("INVESTMENT_CONTROLLER_HOLDINGS_PATH", "/custom/path/holdings.json")
+        allowed = tmp_path / "controller"
+        allowed.mkdir()
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(allowed))
+        target = str(allowed / "holdings.json")
+        monkeypatch.setenv("INVESTMENT_CONTROLLER_HOLDINGS_PATH", target)
         path = holdings_sync_service.get_default_sync_path()
-        assert path == "/custom/path/holdings.json"
+        assert path == target
+
+    def test_env_override_outside_whitelist_falls_back(self, monkeypatch):
+        # [B-004-R1] An override outside the whitelist falls back to default.
+        from api.services import holdings_sync_service
+        monkeypatch.setenv(
+            "INVESTMENT_CONTROLLER_HOLDINGS_PATH", "/etc/passwd"
+        )
+        path = holdings_sync_service.get_default_sync_path()
+        assert path != "/etc/passwd"
+        assert path.endswith("current_holdings.json")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -593,3 +615,371 @@ class TestEdgeCases:
         # Verify file has the data
         ext = holdings_sync_service.read_external_holdings(tmp_holdings_file)
         assert len(ext["holdings"]) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [B-004-R1] Hardening: path whitelist, direction validation, read protection
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestB004R1PathWhitelist:
+    def test_tilde_path_uses_same_normalized_target_for_read_and_write(
+        self, monkeypatch, tmp_path
+    ):
+        from api.services import holdings_sync_service
+
+        controller = tmp_path / "controller"
+        controller.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", "~/controller")
+
+        relative_home_path = "~/controller/current_holdings.json"
+        payload = [{"symbol": "600519.SH", "name": "贵州茅台"}]
+        written = holdings_sync_service.write_external_holdings(
+            relative_home_path, payload
+        )
+
+        assert written["success"] is True
+        assert (controller / "current_holdings.json").exists()
+        loaded = holdings_sync_service.read_external_holdings(relative_home_path)
+        assert loaded["error"] is None
+        assert loaded["holdings"] == payload
+
+    def test_read_rejects_path_outside_whitelist(self, monkeypatch, tmp_path):
+        # [B-004-R1] tmp_path is whitelisted by the fixture env var; we point
+        # the service at a sibling dir that is NOT whitelisted.
+        from api.services import holdings_sync_service
+        outside = tmp_path.parent / "b004_outside_sibling"
+        outside.mkdir(exist_ok=True)
+        target = outside / "current_holdings.json"
+        target.write_text(json.dumps({"holdings": []}), encoding="utf-8")
+        # Whitelist only tmp_path, not the sibling.
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(tmp_path))
+        result = holdings_sync_service.read_external_holdings(str(target))
+        assert result["error"] == "path_not_allowed"
+        assert result["holdings"] == []
+
+    def test_write_rejects_path_outside_whitelist(self, monkeypatch, tmp_path):
+        # [B-004-R1] Writes to out-of-whitelist paths are rejected before any
+        # filesystem access.
+        from api.services import holdings_sync_service
+        outside = tmp_path.parent / "b004_write_outside"
+        outside.mkdir(exist_ok=True)
+        target = outside / "holdings.json"
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(tmp_path))
+        result = holdings_sync_service.write_external_holdings(
+            str(target), [{"symbol": "600519.SH"}]
+        )
+        assert result["success"] is False
+        assert result["error"] == "path_not_allowed"
+        # Ensure nothing was written.
+        assert not target.exists()
+
+    def test_traversal_outside_root_rejected(self, monkeypatch, tmp_path):
+        # [B-004-R1] ../../ escapes from a whitelisted root are rejected.
+        from api.services import holdings_sync_service
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(tmp_path))
+        evil = str(tmp_path / ".." / ".." / "etc" / "passwd_holdings.json")
+        result = holdings_sync_service.read_external_holdings(evil)
+        assert result["error"] == "path_not_allowed"
+
+    def test_default_investment_controller_dir_allowed(self):
+        # [B-004-R1] The canonical investment-controller config dir is in the
+        # whitelist by construction.
+        from api.services import holdings_sync_service
+        default_path = holdings_sync_service._DEFAULT_HOLDINGS_PATH
+        assert holdings_sync_service.is_path_allowed(default_path) is True
+
+    def test_is_path_allowed_under_extra_root(self, monkeypatch, tmp_path):
+        # [B-004-R1] Files under an explicitly allowed root pass.
+        from api.services import holdings_sync_service
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(tmp_path))
+        target = tmp_path / "sub" / "holdings.json"
+        assert holdings_sync_service.is_path_allowed(str(target)) is True
+
+    def test_is_path_allowed_rejects_arbitrary(self):
+        # [B-004-R1] A path under /etc (not in any root) is rejected.
+        from api.services import holdings_sync_service
+        assert holdings_sync_service.is_path_allowed("/etc/passwd") is False
+
+    def test_leaf_symlink_escape_rejected(self, monkeypatch, tmp_path):
+        from api.services import holdings_sync_service
+
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        target = outside / "secret.json"
+        target.write_text('{"holdings": []}', encoding="utf-8")
+        link = allowed / "current_holdings.json"
+        link.symlink_to(target)
+        monkeypatch.setenv("HOLDINGS_SYNC_ALLOWED_ROOTS", str(allowed))
+
+        assert holdings_sync_service.is_path_allowed(str(link)) is False
+        assert holdings_sync_service.read_external_holdings(str(link))["error"] == "path_not_allowed"
+
+
+class TestB004R1InvalidDirection:
+    def test_request_model_allows_service_to_return_structured_error(self):
+        from api.main import HoldingsSyncRequest
+
+        body = HoldingsSyncRequest(direction="nonsense")
+        assert body.direction == "nonsense"
+
+    def test_endpoint_returns_structured_invalid_direction(
+        self, db, tmp_holdings_file
+    ):
+        from types import SimpleNamespace
+
+        from fastapi import HTTPException
+
+        from api.main import HoldingsSyncRequest, sync_holdings_with_controller
+
+        body = HoldingsSyncRequest(
+            file_path=tmp_holdings_file,
+            direction="nonsense",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            sync_holdings_with_controller(
+                body=body,
+                current_user=SimpleNamespace(id="u1"),
+                db=db,
+            )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["error"] == "invalid_direction"
+        assert set(exc_info.value.detail["allowed_directions"]) == {
+            "export",
+            "import",
+            "bidirectional",
+        }
+
+    def test_sync_rejects_unknown_direction(self, db, tmp_holdings_file):
+        # [B-004-R1] Unknown directions are rejected instead of silently
+        # falling through to bidirectional.
+        from api.services import holdings_sync_service
+        result = holdings_sync_service.sync_holdings(
+            db, "u1", tmp_holdings_file, "nonsense"
+        )
+        assert result["success"] is False
+        assert result["error"] == "invalid_direction"
+        assert result["direction"] == "nonsense"
+        assert set(result["allowed_directions"]) == {
+            "export",
+            "import",
+            "bidirectional",
+        }
+
+    def test_configured_controller_dir_owns_default_path(
+        self, monkeypatch, tmp_path
+    ):
+        import importlib
+        from api.services import holdings_sync_service
+
+        controller = tmp_path / "configured-controller"
+        monkeypatch.setenv("INVESTMENT_CONTROLLER_DIR", str(controller))
+        reloaded = importlib.reload(holdings_sync_service)
+        try:
+            default_path = reloaded.get_default_sync_path()
+            assert default_path == str(controller / "current_holdings.json")
+            assert reloaded.is_path_allowed(default_path) is True
+        finally:
+            monkeypatch.delenv("INVESTMENT_CONTROLLER_DIR", raising=False)
+            importlib.reload(reloaded)
+
+    def test_sync_rejects_buy_sell_verbs(self, db, tmp_holdings_file):
+        # [B-004-R1] Trade verbs that are not sync directions must be rejected.
+        from api.services import holdings_sync_service
+        for bad in ("buy", "sell", "increase", "decrease"):
+            result = holdings_sync_service.sync_holdings(
+                db, "u1", tmp_holdings_file, bad
+            )
+            assert result["success"] is False, bad
+            assert result["error"] == "invalid_direction", bad
+
+    def test_sync_rejects_empty_direction(self, db, tmp_holdings_file):
+        from api.services import holdings_sync_service
+        result = holdings_sync_service.sync_holdings(db, "u1", tmp_holdings_file, "")
+        assert result["success"] is False
+        assert result["error"] == "invalid_direction"
+
+
+class TestB004R1ReadProtection:
+    def test_permission_denied_is_distinct(self, tmp_holdings_file, monkeypatch):
+        # [B-004-R1] A PermissionError on read surfaces as permission_denied,
+        # distinct from a generic read_error.
+        from api.services import holdings_sync_service
+        from api.services.holdings_sync_service import read_external_holdings
+
+        # Create the file so path.exists() passes and we reach the read call.
+        Path(tmp_holdings_file).write_text(
+            json.dumps({"holdings": []}), encoding="utf-8"
+        )
+
+        real_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == tmp_holdings_file:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        result = read_external_holdings(tmp_holdings_file)
+        assert result["error"].startswith("permission_denied")
+
+    def test_write_permission_denied_is_distinct(self, tmp_holdings_file, monkeypatch):
+        # [B-004-R1] A PermissionError on write surfaces as permission_denied.
+        from api.services import holdings_sync_service
+
+        def boom(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(holdings_sync_service.tempfile, "mkstemp", boom)
+        result = holdings_sync_service.write_external_holdings(
+            tmp_holdings_file, [{"symbol": "600519.SH"}]
+        )
+        assert result["success"] is False
+        assert result["error"].startswith("permission_denied")
+
+    def test_fixed_temp_symlink_cannot_escape_whitelist(
+        self, tmp_holdings_file, tmp_path
+    ):
+        from api.services import holdings_sync_service
+
+        outside = tmp_path.parent / "outside-holdings.json"
+        outside.write_text("do-not-touch", encoding="utf-8")
+        fixed_temp = Path(tmp_holdings_file).with_suffix(".tmp")
+        fixed_temp.symlink_to(outside)
+
+        result = holdings_sync_service.write_external_holdings(
+            tmp_holdings_file, [{"symbol": "600519.SH"}]
+        )
+
+        assert result["success"] is True
+        assert outside.read_text(encoding="utf-8") == "do-not-touch"
+        assert fixed_temp.is_symlink()
+
+    def test_json_parse_error_code_preserved(self, tmp_holdings_file):
+        # [B-004-R1] Malformed JSON still yields a json_parse_error code.
+        from api.services import holdings_sync_service
+        Path(tmp_holdings_file).write_text("{not json", encoding="utf-8")
+        result = holdings_sync_service.read_external_holdings(tmp_holdings_file)
+        assert result["error"] and result["error"].startswith("json_parse_error")
+
+    def test_bidirectional_corrupt_file_is_not_overwritten(
+        self, db, tmp_holdings_file
+    ):
+        from api.services import holdings_sync_service
+
+        _seed_ta_positions(
+            db, "u1", [{"symbol": "600519.SH", "current_position": 100}]
+        )
+        original = "{corrupt json"
+        Path(tmp_holdings_file).write_text(original, encoding="utf-8")
+
+        result = holdings_sync_service.sync_holdings(
+            db, "u1", tmp_holdings_file, "bidirectional"
+        )
+
+        assert result["success"] is False
+        assert result["reason"] == "external_read_failed"
+        assert Path(tmp_holdings_file).read_text(encoding="utf-8") == original
+
+    def test_bidirectional_write_failure_stops_before_ta_import(
+        self, db, tmp_holdings_file, monkeypatch
+    ):
+        from api.services import holdings_sync_service
+
+        _seed_ta_positions(
+            db, "u1", [{"symbol": "600519.SH", "current_position": 100}]
+        )
+        _write_external_json(
+            tmp_holdings_file,
+            [{"symbol": "000001.SZ", "current_position": 200}],
+        )
+        monkeypatch.setattr(
+            holdings_sync_service,
+            "write_external_holdings",
+            lambda *args, **kwargs: {
+                "success": False,
+                "error": "permission_denied",
+            },
+        )
+
+        result = holdings_sync_service.sync_holdings(
+            db, "u1", tmp_holdings_file, "bidirectional"
+        )
+
+        assert result["success"] is False
+        assert result["reason"] == "external_write_failed"
+        symbols = {
+            row.symbol
+            for row in db.query(ImportedPortfolioPositionDB)
+            .filter(ImportedPortfolioPositionDB.user_id == "u1")
+            .all()
+        }
+        assert symbols == {"600519.SH"}
+
+    def test_malformed_rows_fail_closed(self, db, tmp_holdings_file):
+        from api.services import holdings_sync_service
+
+        _write_external_json(
+            tmp_holdings_file,
+            [
+                {"symbol": "600519.SH", "current_position": 100},
+                {"symbol": "not-a-stock", "current_position": 200},
+            ],
+        )
+
+        result = holdings_sync_service.sync_holdings(
+            db, "u1", tmp_holdings_file, "import"
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "malformed_rows"
+        assert result["invalid_rows"]
+        assert db.query(ImportedPortfolioPositionDB).count() == 0
+
+    def test_unparseable_numeric_field_fails_closed(
+        self, db, tmp_holdings_file
+    ):
+        from api.services import holdings_sync_service
+
+        _write_external_json(
+            tmp_holdings_file,
+            [{"symbol": "600519.SH", "current_position": "N/A"}],
+        )
+
+        result = holdings_sync_service.sync_holdings(
+            db, "u1", tmp_holdings_file, "import"
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "malformed_rows"
+        assert result["invalid_rows"][0]["reason"] == "unparseable_current_position"
+        assert db.query(ImportedPortfolioPositionDB).count() == 0
+
+    def test_api_maps_malformed_rows_to_http_400(
+        self, db, tmp_holdings_file
+    ):
+        from types import SimpleNamespace
+
+        from fastapi import HTTPException
+
+        from api.main import HoldingsSyncRequest, sync_holdings_with_controller
+
+        _write_external_json(
+            tmp_holdings_file,
+            [{"symbol": "bad-symbol", "current_position": 100}],
+        )
+        body = HoldingsSyncRequest(
+            file_path=tmp_holdings_file,
+            direction="import",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            sync_holdings_with_controller(
+                body=body,
+                current_user=SimpleNamespace(id="u1"),
+                db=db,
+            )
+        assert exc_info.value.status_code == 400

@@ -115,6 +115,79 @@ def mask_webhook_url(webhook_url: str | None) -> str | None:
     return f"{parsed.scheme}://{parsed.netloc}/******"
 
 
+# ── Sensitive-text scrubbing ─────────────────────────────────────────────────
+
+# [M-010-R1] Patterns that may leak from exception text. We never log/store the
+# raw ``str(exc)`` because transport errors (e.g. requests exceptions) frequently
+# embed the full request URL — which contains the webhook token in the path.
+import re as _re
+
+# Full webhook URL: https://open.feishu.cn/open-apis/bot/v2/hook/{token}
+# Captures the token tail as group 1 so we can mask it regardless of length.
+_WEBHOOK_URL_RE = _re.compile(
+    r"(https?://[^\s\"'<>]+/open-apis/bot/v2/hook/)([^\s\"'<>/?#]+)",
+    flags=_re.IGNORECASE,
+)
+# Bare token segment after the hook path (fallback if only the tail leaked).
+# Only match plausible tokens (>=5 chars) to avoid false positives on prose.
+_HOOK_TOKEN_RE = _re.compile(
+    r"(?<=bot/v2/hook/)[^\s\"'<>/?#]+",
+)
+# ``FEISHU_WEBHOOK_URL=...`` style env leaks.
+_ENV_URL_RE = _re.compile(
+    r"FEISHU_WEBHOOK_(?:URL|TOKEN)\s*[:=]\s*[\"']?[A-Za-z0-9_\-:/.\u4e00-\u9fa5@%]+",
+    flags=_re.IGNORECASE,
+)
+
+_SANITIZED_PLACEHOLDER = "***"
+
+
+def _mask_token_tail(token: str) -> str:
+    """Fully mask a token in error text.
+
+    Unlike the separate operator-facing ``mask_webhook_url`` helper, error
+    persistence keeps no token prefix or suffix.
+    """
+    return _SANITIZED_PLACEHOLDER
+
+
+def _mask_token_match(match: "_re.Match[str]") -> str:
+    """``re.sub`` replacement that masks the matched hook token."""
+    return _mask_token_tail(match.group(0))
+
+
+def sanitize_error_text(text: str | BaseException | None) -> str:
+    """Scrub webhook URL / token from arbitrary error text.
+
+    [M-010-R1] Exception messages from ``requests``/HTTP libs commonly embed the
+    request URL, which for Feishu includes the signing token in the path. Before
+    any error string is written to the DB or returned to callers, route it
+    through here so the token cannot leak into ``notification_logs.error`` or
+    API responses.
+    """
+    if text is None:
+        return ""
+    raw = text if isinstance(text, str) else str(text)
+    if not raw:
+        return ""
+
+    # 1) Replace full webhook URLs by masking only their trailing token.
+    #    Group 1 = scheme/host/path prefix; group 2 = token (masked).
+    scrubbed = _WEBHOOK_URL_RE.sub(
+        lambda m: m.group(1) + _mask_token_tail(m.group(2)),
+        raw,
+    )
+    # 2) Mask any bare ``bot/v2/hook/{token}`` tails that leaked without a host.
+    scrubbed = _HOOK_TOKEN_RE.sub(_mask_token_match, scrubbed)
+    # 3) Mask ``FEISHU_WEBHOOK_URL=...`` / ``FEISHU_WEBHOOK_TOKEN=...`` leaks.
+    scrubbed = _ENV_URL_RE.sub(
+        lambda m: m.group(0).split("=", 1)[0].split(":", 1)[0]
+        + "=" + _SANITIZED_PLACEHOLDER,
+        scrubbed,
+    )
+    return scrubbed
+
+
 # ── Sign support ─────────────────────────────────────────────────────────────
 
 def _compute_sign(secret: str, timestamp: int) -> str:
@@ -272,9 +345,10 @@ def send_message(payload: dict, webhook_url: str) -> bool:
     try:
         body = response.json()
     except Exception:
+        # [M-010-R1] response body could echo the request URL; scrub it.
         logger.warning(
             "[feishu-wh] non-JSON response body=%s",
-            str(getattr(response, "text", ""))[:240],
+            sanitize_error_text(str(getattr(response, "text", ""))[:240]),
         )
         return False
     code = body.get("code", -1)
@@ -293,7 +367,13 @@ async def send_with_retry(payload: dict, webhook_url: str, max_retries: int = 2)
             if ok:
                 return True
         except Exception as exc:
-            logger.warning("[feishu-wh] attempt %d failed: %s", attempt + 1, exc)
+            # [M-010-R1] never log raw exc — requests exceptions embed the URL
+            # (and therefore the webhook token) in their message.
+            logger.warning(
+                "[feishu-wh] attempt %d failed: %s",
+                attempt + 1,
+                sanitize_error_text(exc),
+            )
         if attempt < max_retries:
             await asyncio.sleep(15)
     return False
@@ -352,6 +432,7 @@ __all__ = [
     "get_feishu_webhook_url",
     "normalize_webhook_url",
     "mask_webhook_url",
+    "sanitize_error_text",
     "build_card_message",
     "build_text_message",
     "build_report_card",

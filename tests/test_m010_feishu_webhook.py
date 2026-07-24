@@ -118,6 +118,72 @@ class TestMaskWebhookUrl:
 
 
 # ---------------------------------------------------------------------------
+# [M-010-R1] sanitize_error_text tests
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeErrorText:
+    def test_full_url_token_scrubbed(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        token = "abcdefgh1234567890"
+        msg = f"failed to POST https://open.feishu.cn/open-apis/bot/v2/hook/{token}"
+        scrubbed = sanitize_error_text(msg)
+        assert token not in scrubbed
+        assert "abcd" not in scrubbed
+        assert "open.feishu.cn" in scrubbed
+
+    def test_token_in_path_segment_scrubbed(self):
+        """Even without scheme://host, a hook-path token should be masked."""
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        token = "abcdefgh1234567890"
+        msg = f"url=/open-apis/bot/v2/hook/{token} timed out"
+        scrubbed = sanitize_error_text(msg)
+        assert token not in scrubbed
+
+    def test_env_leak_scrubbed(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        token = "abcdefgh1234567890"
+        msg = f"FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/{token}"
+        scrubbed = sanitize_error_text(msg)
+        assert token not in scrubbed
+
+    def test_plain_message_preserved(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        assert sanitize_error_text("connection timeout") == "connection timeout"
+
+    def test_exception_object_accepted(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        token = "abcdefgh1234567890"
+        exc = ConnectionError(
+            f"POST /open-apis/bot/v2/hook/{token} failed"
+        )
+        scrubbed = sanitize_error_text(exc)
+        assert token not in scrubbed
+
+    def test_none_returns_empty(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        assert sanitize_error_text(None) == ""
+
+    def test_empty_returns_empty(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        assert sanitize_error_text("") == ""
+
+    def test_short_token_after_hook_path_masked(self):
+        from api.services.feishu_webhook_service import sanitize_error_text
+
+        msg = "https://open.feishu.cn/open-apis/bot/v2/hook/ab"
+        scrubbed = sanitize_error_text(msg)
+        assert "ab" not in scrubbed.split("/bot/v2/hook/")[-1]
+
+
+# ---------------------------------------------------------------------------
 # Message building tests
 # ---------------------------------------------------------------------------
 
@@ -389,7 +455,7 @@ class TestSendWithRetry:
         from api.services.feishu_webhook_service import send_with_retry
 
         with patch("api.services.feishu_webhook_service.send_message", return_value=True):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 send_with_retry({"msg_type": "text"}, "https://open.feishu.cn/open-apis/bot/v2/hook/abc")
             )
             assert result is True
@@ -406,7 +472,7 @@ class TestSendWithRetry:
 
         with patch("api.services.feishu_webhook_service.send_message", side_effect=mock_send):
             with patch("api.services.feishu_webhook_service.asyncio.sleep"):
-                result = asyncio.get_event_loop().run_until_complete(
+                result = asyncio.run(
                     send_with_retry(
                         {"msg_type": "text"},
                         "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
@@ -415,6 +481,33 @@ class TestSendWithRetry:
                 )
                 assert result is True
                 assert call_count == 2
+
+    def test_exception_log_scrubs_webhook_token(self, caplog):
+        import asyncio
+        import logging
+
+        from api.services.feishu_webhook_service import send_with_retry
+
+        token = "secret-token-123456"
+        error = ConnectionError(
+            f"timeout posting /open-apis/bot/v2/hook/{token}"
+        )
+        with patch(
+            "api.services.feishu_webhook_service.send_message",
+            side_effect=error,
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = asyncio.run(
+                    send_with_retry(
+                        {"msg_type": "text"},
+                        f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}",
+                        max_retries=0,
+                    )
+                )
+
+        assert result is False
+        assert token not in caplog.text
+        assert "secret" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

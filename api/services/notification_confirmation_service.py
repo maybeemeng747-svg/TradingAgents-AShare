@@ -62,6 +62,11 @@ def generate_pending(
     Returns:
         dict with ``generated_count``, ``skipped_count``, ``pending_items``.
     """
+    normalized_channel = (channel or "").strip().lower()
+    if normalized_channel != CHANNEL_FEISHU:
+        raise ValueError(f"不支持的通知渠道: {channel!r}（当前仅支持 feishu）")
+    channel = normalized_channel
+
     now = now or datetime.now()
     dry_run = build_notification_dry_run(
         db, user_id, force_refresh=force_refresh, now=now,
@@ -259,9 +264,23 @@ def _do_send(db: Session, row: NotificationLogDB) -> dict[str, Any]:
         get_feishu_webhook_url,
         is_feishu_webhook_enabled,
         mask_webhook_url,
+        sanitize_error_text,
         send_message,
         build_draft_card,
     )
+
+    # [M-010-R1] Channel guard: only ``feishu`` may go through the feishu
+    # webhook. Drafts generated for any other channel (e.g. bark / wecom /
+    # unknown) must NOT silently fall through to feishu sending.
+    if (row.channel or "").strip().lower() != CHANNEL_FEISHU:
+        row.status = STATUS_FAILED
+        row.error = f"不支持的通知渠道: {row.channel!r}（当前仅支持 feishu）"
+        db.commit()
+        logger.warning(
+            "[m-010] blocked non-feishu send for %s (channel=%s)",
+            row.id, row.channel,
+        )
+        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
 
     if not is_feishu_webhook_enabled():
         row.status = STATUS_FAILED
@@ -304,11 +323,15 @@ def _do_send(db: Session, row: NotificationLogDB) -> dict[str, Any]:
             db.commit()
             return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
     except Exception as exc:
+        # [M-010-R1] Scrub the exception text BEFORE persisting / returning —
+        # transport exceptions (requests, urllib3) routinely embed the request
+        # URL, which for Feishu carries the signing token in the path.
+        safe_err = sanitize_error_text(exc)[:500]
         row.status = STATUS_FAILED
-        row.error = str(exc)[:500]
+        row.error = safe_err
         db.commit()
-        logger.warning("[m-010] send failed for %s: %s", row.id, exc)
-        return {"success": False, "error": row.error, "notification": _log_to_dict(row)}
+        logger.warning("[m-010] send failed for %s: %s", row.id, safe_err)
+        return {"success": False, "error": safe_err, "notification": _log_to_dict(row)}
 
 
 def _log_to_dict(row: NotificationLogDB) -> dict[str, Any]:

@@ -593,6 +593,142 @@ class TestDoSend:
                 assert result["success"] is False
                 assert "timeout" in result["error"]
 
+    # ── [M-010-R1] channel guard & exception sanitization ───────────────────
+
+    def test_m010_r1_non_feishu_channel_blocked(self, db_session):
+        """Non-feishu channel must NOT fall through to feishu sending."""
+        entry = NotificationLogDB(
+            id="test-send-r1-bark",
+            user_id="user-1",
+            channel="bark",  # not feishu
+            event_type="test",
+            priority="P1",
+            title="test",
+            status="confirmed",
+            payload={"symbol": "000001.SZ"},
+        )
+        db_session.add(entry)
+        db_session.commit()
+
+        with patch.dict(os.environ, {
+            "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+            "FEISHU_WEBHOOK_ENABLED": "true",
+        }):
+            # send_message must never be reached for a non-feishu channel
+            with patch(
+                "api.services.feishu_webhook_service.send_message",
+                side_effect=AssertionError("send_message should not be called"),
+            ):
+                from api.services.notification_confirmation_service import _do_send
+                result = _do_send(db_session, entry)
+                assert result["success"] is False
+                assert "渠道" in result["error"]
+
+                db_session.refresh(entry)
+                assert entry.status == "failed"
+                assert entry.webhook_url_masked is None  # never assigned
+
+    def test_m010_r1_non_feishu_channel_case_insensitive(self, db_session):
+        """``Feishu`` / ``FEISHU`` (case variants) are still accepted."""
+        entry = NotificationLogDB(
+            id="test-send-r1-feishu-ci",
+            user_id="user-1",
+            channel="Feishu",  # case variant
+            event_type="test",
+            priority="P1",
+            title="test",
+            status="confirmed",
+            payload={"symbol": "000001.SZ"},
+        )
+        db_session.add(entry)
+        db_session.commit()
+
+        with patch.dict(os.environ, {
+            "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+            "FEISHU_WEBHOOK_ENABLED": "true",
+        }):
+            with patch("api.services.feishu_webhook_service.send_message", return_value=True):
+                from api.services.notification_confirmation_service import _do_send
+                result = _do_send(db_session, entry)
+                assert result["success"] is True
+
+    def test_m010_r1_exception_token_scrubbed_from_db(self, db_session):
+        """Exception text with a webhook URL must be scrubbed before persisting."""
+        entry = NotificationLogDB(
+            id="test-send-r1-scrub",
+            user_id="user-1",
+            channel="feishu",
+            event_type="test",
+            priority="P1",
+            title="test",
+            status="confirmed",
+        )
+        db_session.add(entry)
+        db_session.commit()
+
+        token = "abcdefgh1234567890"
+        leaky_msg = (
+            f"HTTPSConnectionPool(host='open.feishu.cn', port=443): "
+            f"Max retries exceeded with url: /open-apis/bot/v2/hook/{token} "
+            f"(Caused by ConnectTimeoutError(<connection timeout>))"
+        )
+
+        with patch.dict(os.environ, {
+            "FEISHU_WEBHOOK_URL": f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}",
+            "FEISHU_WEBHOOK_ENABLED": "true",
+        }):
+            with patch(
+                "api.services.feishu_webhook_service.send_message",
+                side_effect=ConnectionError(leaky_msg),
+            ):
+                from api.services.notification_confirmation_service import _do_send
+                result = _do_send(db_session, entry)
+                assert result["success"] is False
+
+                # The raw token must never reach the DB or the response.
+                db_session.refresh(entry)
+                assert token not in (entry.error or "")
+                assert token not in (result.get("error") or "")
+                # Error persistence uses full masking, not a token prefix.
+                assert "abcd" not in entry.error
+
+    def test_m010_r1_exception_plain_message_preserved(self, db_session):
+        """Non-sensitive exception text (e.g. 'timeout') is preserved."""
+        entry = NotificationLogDB(
+            id="test-send-r1-plain",
+            user_id="user-1",
+            channel="feishu",
+            event_type="test",
+            priority="P1",
+            title="test",
+            status="confirmed",
+        )
+        db_session.add(entry)
+        db_session.commit()
+
+        with patch.dict(os.environ, {
+            "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+            "FEISHU_WEBHOOK_ENABLED": "true",
+        }):
+            with patch(
+                "api.services.feishu_webhook_service.send_message",
+                side_effect=ConnectionError("connection timeout"),
+            ):
+                from api.services.notification_confirmation_service import _do_send
+                result = _do_send(db_session, entry)
+                assert result["success"] is False
+                assert "timeout" in result["error"]
+
+
+class TestM010R1ChannelValidation:
+    def test_generate_pending_rejects_non_feishu_before_writing(self, db_session):
+        from api.services.notification_confirmation_service import generate_pending
+
+        with pytest.raises(ValueError, match="不支持的通知渠道"):
+            generate_pending(db_session, "user-1", channel="bark")
+
+        assert db_session.query(NotificationLogDB).count() == 0
+
 
 # ---------------------------------------------------------------------------
 # _log_to_dict tests

@@ -5013,7 +5013,19 @@ async def parse_position_image_endpoint(
 # [B-004] holdings_sync — TA ↔ investment-controller holdings sync
 class HoldingsSyncRequest(BaseModel):
     file_path: str = ""
+    # Keep this as a string so unsupported values reach the service's
+    # structured invalid_direction response instead of becoming a generic 422.
     direction: str = "bidirectional"
+
+
+_HOLDINGS_SYNC_CLIENT_ERRORS = {
+    "invalid_direction",
+    "path_not_allowed",
+    "malformed_rows",
+    "holdings_not_list",
+    "unexpected_format",
+    "json_parse_error",
+}
 
 
 @app.post("/v1/portfolio/holdings-sync")
@@ -5028,12 +5040,16 @@ def sync_holdings_with_controller(
     or ``"bidirectional"`` (both, default). Runtime tier=FAST_RADAR.
     """
     try:
-        return holdings_sync_service.sync_holdings(
+        result = holdings_sync_service.sync_holdings(
             db=db,
             user_id=current_user.id,
             file_path=body.file_path or None,
             direction=body.direction,
         )
+        error_code = str(result.get("error") or "").split(":", 1)[0]
+        if not result.get("success") and error_code in _HOLDINGS_SYNC_CLIENT_ERRORS:
+            raise HTTPException(400, detail=result)
+        return result
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -5059,7 +5075,11 @@ def read_external_holdings_file(
 ):
     """Read the external current_holdings.json (read-only)."""
     path = file_path or holdings_sync_service.get_default_sync_path()
-    return holdings_sync_service.read_external_holdings(path)
+    result = holdings_sync_service.read_external_holdings(path)
+    error_code = str(result.get("error") or "").split(":", 1)[0]
+    if error_code in _HOLDINGS_SYNC_CLIENT_ERRORS:
+        raise HTTPException(400, detail=result)
+    return result
 
 
 @app.get("/v1/dashboard/tracking-board")
@@ -5152,7 +5172,7 @@ def post_briefing_payload_dry_run(
 
 # [M-010] feishu_notification_confirmation
 class NotificationGenerateRequest(BaseModel):
-    channel: str = "feishu"
+    channel: Literal["feishu"] = "feishu"
     force_refresh: bool = False
 
 
@@ -5168,11 +5188,14 @@ def post_notification_generate(
     状态为 pending_confirmation。用户后续通过 confirm 接口确认发送。
     runtime_tier=FAST_RADAR（不触发 LLM）。
     """
-    return notification_confirmation_service.generate_pending(
-        db, current_user.id,
-        channel=body.channel,
-        force_refresh=body.force_refresh,
-    )
+    try:
+        return notification_confirmation_service.generate_pending(
+            db, current_user.id,
+            channel=body.channel,
+            force_refresh=body.force_refresh,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/v1/notifications/pending")
