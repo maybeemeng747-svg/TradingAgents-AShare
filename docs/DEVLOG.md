@@ -14961,3 +14961,13 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Timeout budget**: OpenCode 1800s / tests 900s
 - **Review file**: docs/reviews/FUND-005A-R1-20260724-round1.txt
 - **Run archive**: docs/task_runs/FUND-005A-R1-20260724-141405/
+
+## 2026-07-24 | R1 mixed-worktree closeout
+
+- Split the reviewed mixed worktree into four scoped commits:
+  - `7cadd35` — C-003 streaming short-strategy sanitation.
+  - `dcaa81d` — C-007 event-risk action downgrade.
+  - `d0ecfd2` — B-004 holdings sync and M-010 Feishu hardening.
+  - `82fd146` — SCORE-002/003 TradeFlow score-card contracts.
+- Combined focused regression: 552 passed.
+- Synchronized task status and released `FUND-006A-R1` as the next ready task.

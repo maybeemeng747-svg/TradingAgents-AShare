@@ -22,7 +22,7 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-23）
+### 当前执行队列（2026-07-24）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -31,15 +31,16 @@
 1. `AUTO-008`：Codex final-answer 结构化解析与 fail-closed 门禁（done，`0901b91`）。
 2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（done，2026-07-23 人工复核通过）。
 3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（done，`fe0edf9`；2026-07-24 人工复核）。
-4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，ready）。
-5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（P0，blocked-auto）。
-6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（P1，blocked-auto）。
-7. `SCORE-003-R1`：`portfolio_fit` 响应契约、未知账户与部分风险预算（P0，blocked-auto）。
-8. `C-003-R1`：保留多头退出动作并封住流式未清洗输出（P0，blocked-auto）。
-9. `C-007-R1`：事件门禁必须覆盖可执行 BUY，修复“扭亏为盈”误判（P0，blocked-auto）。
-10. `M-010-R1`：飞书 webhook 脱敏、渠道校验与异步测试（P0，blocked-auto）。
-11. `B-004-R1`：持仓同步路径白名单、失败语义和输入校验（P0，blocked-auto）。
-12. 其余 review finding 进入第二批：`FUND-006A/007A-R1`、`F-001-R1`、`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+4. `FUND-005A-R1`：actual model 缺失时保持 unknown（done，`fd2f465`）。
+5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（done，`f344b20`）。
+6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（done，`82fd146`）。
+7. `SCORE-003-R1`：`portfolio_fit` 响应契约、未知账户与部分风险预算（done，`82fd146`）。
+8. `C-003-R1`：保留多头退出动作并封住流式未清洗输出（done，`7cadd35`）。
+9. `C-007-R1`：事件门禁必须覆盖可执行 BUY，修复“扭亏为盈”误判（done，`dcaa81d`）。
+10. `M-010-R1`：飞书 webhook 脱敏、渠道校验与异步测试（done，`d0ecfd2`）。
+11. `B-004-R1`：持仓同步路径白名单、失败语义和输入校验（done，`d0ecfd2`）。
+12. `FUND-006A-R1`：离线回放测试有效性补修（P1，ready）。
+13. 其余 review finding 进入第二批：`FUND-007A-R1`、`F-001-R1`、`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -111,7 +112,7 @@
 ### SCORE-001B-R1: 快照时点、动作词与失败态补修（P0）
 - **描述**：补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据。
 - **优先级**：P0
-- **状态**：in_progress — claimed SCORE-001B-R1-20260724-142121
+- **状态**：done — `f344b20`
 - **预计耗时**：35-45 分钟
 - **depends_on**：FUND-005A-R1
 - **auto_release**：true
@@ -120,7 +121,7 @@
 ### SCORE-002-R1: entry_timing API 与持久化补修（P1）
 - **描述**：补修 `594d742`，把已计算的评分卡暴露到真实响应模型，并把 risk penalty 接入候选持久化/回读。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：done — `82fd146`
 - **预计耗时**：25-35 分钟
 - **depends_on**：SCORE-001B-R1
 - **auto_release**：true
@@ -129,7 +130,7 @@
 ### SCORE-003-R1: portfolio_fit 契约与未知上下文补修（P0）
 - **描述**：补修 `cd6bb36`：响应模型暴露评分卡；缺账户上下文不得归一为高适配；部分风险预算必须影响 fit 与原因。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：done — `82fd146`
 - **预计耗时**：30-45 分钟
 - **depends_on**：SCORE-002-R1
 - **auto_release**：true
@@ -138,7 +139,7 @@
 ### C-003-R1: 做空过滤边界与流式清洗（P0）
 - **描述**：补修 `7f74755`：SELL/EXIT/减仓等多头退出不得当成做空删除；流式事件不得先暴露未清洗 manager 文本；英文匹配不区分大小写。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：done — `7cadd35`
 - **预计耗时**：30-40 分钟
 - **depends_on**：SCORE-003-R1
 - **auto_release**：true
@@ -147,7 +148,7 @@
 ### C-007-R1: 事件风险门禁实际动作覆盖（P0）
 - **描述**：补修 `1616543`：门禁触发时必须覆盖可执行 BUY/ENTER，而非仅追加告警；“扭亏为盈”不得命中业绩暴雷。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：done — `dcaa81d`
 - **预计耗时**：25-35 分钟
 - **depends_on**：C-003-R1
 - **auto_release**：true
@@ -156,7 +157,7 @@
 ### M-010-R1: 飞书 webhook 安全与异步测试补修（P0）
 - **描述**：补修 `52cadc2`：异常不得泄漏 webhook/token；非飞书 channel 不得走飞书发送；修复依赖全局 event loop 的顺序敏感测试。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：done — `d0ecfd2`
 - **预计耗时**：30-40 分钟
 - **depends_on**：C-007-R1
 - **auto_release**：true
@@ -165,7 +166,7 @@
 ### B-004-R1: 持仓同步路径与失败语义补修（P0）
 - **描述**：补修 `fc864bb`：限制可写路径；外部文件不可读时不得覆盖；双向写失败不得报告成功；非法 direction 和 malformed rows 返回明确 4xx。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：done — `d0ecfd2`
 - **预计耗时**：35-50 分钟
 - **depends_on**：M-010-R1
 - **auto_release**：true
@@ -174,7 +175,7 @@
 ### FUND-006A-R1: 离线回放测试有效性补修（P1）
 - **描述**：修正 `3655339` 中未实际断言生产行为、断言过宽或被 fixture 自证的七类测试。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：B-004-R1
 - **auto_release**：true
 
