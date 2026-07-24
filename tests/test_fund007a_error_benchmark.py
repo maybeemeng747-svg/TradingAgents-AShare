@@ -25,6 +25,8 @@ from tradingagents.agents.utils.fundamental_integrity import (
     DERIVATION_CONFLICT,
     IDENTITY_UNVERIFIED,
     PERIOD_SCOPE_INVALID,
+    _CAUSE_KEYWORDS,
+    _extract_term_occurrences,
     build_official_explanation_context,
     evaluate_fundamental_integrity,
     extract_financial_anomaly_inputs,
@@ -114,6 +116,7 @@ class BenchmarkCase:
     report_text: str
     expected_gate: str  # "VALID" or "NEEDS_REVIEW"
     expected_rule_ids: list[str]
+    expected_claims: list[dict[str, str]] = field(default_factory=list)
     # Filled at runtime
     actual_result: dict[str, Any] = field(default_factory=dict)
     passed: bool = False
@@ -224,6 +227,10 @@ def _build_negative_cases() -> list[BenchmarkCase]:
         report_text="第四季度收入增长主要系旺季效应及产品涨价所致。",
         expected_gate="NEEDS_REVIEW",
         expected_rule_ids=[CAUSE_UNSUPPORTED],
+        expected_claims=[
+            {"metric": "旺季", "status": "unexplained"},
+            {"metric": "产品涨价", "status": "unexplained"},
+        ],
     ))
 
     # NEG-006: Net/gross method misread — report says 净额法, announcement says 总额法
@@ -343,6 +350,13 @@ def _build_positive_cases() -> list[BenchmarkCase]:
         report_text="原材料采购成本下降推动营业收入增长。",
         expected_gate="VALID",
         expected_rule_ids=[],
+        expected_claims=[
+            {
+                "metric": "原材料下降",
+                "status": "officially_explained",
+                "report_relation_target": "营业收入",
+            },
+        ],
     ))
 
     # POS-003: Valid accounting policy — announcement says 总额法, report confirms
@@ -384,12 +398,88 @@ def _build_positive_cases() -> list[BenchmarkCase]:
         expected_rule_ids=[],
     ))
 
+    # POS-006: "result + 主要系 + cause + 所致" must be parsed and bound,
+    # not merely pass because no claim was extracted.
+    suozhi_text = "营业收入增长主要系原材料采购成本下降所致。"
+    cases.append(BenchmarkCase(
+        case_id="POS-006",
+        description="所致因果句：报告与公告一致，必须抽取并绑定到营业收入",
+        category="valid_suozhi_causal_binding",
+        identity=_build_identity(_AKSHARE_PROFILE),
+        period_facts=facts,
+        explanation_context=_build_explanation(suozhi_text),
+        report_text=suozhi_text,
+        expected_gate="VALID",
+        expected_rule_ids=[],
+        expected_claims=[
+            {
+                "metric": "原材料下降",
+                "status": "officially_explained",
+                "report_relation_cue": "所致",
+                "report_relation_target": "营业收入",
+            },
+        ],
+    ))
+
     return cases
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Runner: execute benchmark and collect results
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _claim_matches(actual: Mapping[str, Any], expected: Mapping[str, str]) -> bool:
+    if actual.get("metric") != expected.get("metric"):
+        return False
+    if actual.get("status") != expected.get("status"):
+        return False
+    return True
+
+
+def _report_occurrence_matches(
+    occurrence: Mapping[str, Any],
+    expected: Mapping[str, str],
+) -> bool:
+    if occurrence.get("canonical") != expected.get("metric"):
+        return False
+    if (
+        expected.get("report_relation_cue")
+        and occurrence.get("relation_cue") != expected["report_relation_cue"]
+    ):
+        return False
+    if (
+        expected.get("report_relation_target")
+        and occurrence.get("relation_target") != expected["report_relation_target"]
+    ):
+        return False
+    return occurrence.get("relation") == "causal"
+
+
+def _missing_expected_claims(
+    actual_claims: list[Mapping[str, Any]],
+    expected_claims: list[Mapping[str, str]],
+    report_text: str,
+) -> list[Mapping[str, str]]:
+    report_occurrences = _extract_term_occurrences(report_text, _CAUSE_KEYWORDS)
+    missing: list[Mapping[str, str]] = []
+    for expected in expected_claims:
+        claim_found = any(_claim_matches(actual, expected) for actual in actual_claims)
+        expects_report_relation = bool(
+            expected.get("report_relation_cue")
+            or expected.get("report_relation_target")
+        )
+        relation_found = (
+            any(
+                _report_occurrence_matches(occurrence, expected)
+                for occurrence in report_occurrences
+            )
+            if expects_report_relation
+            else True
+        )
+        if not claim_found or not relation_found:
+            missing.append(expected)
+    return missing
+
 
 def run_benchmark() -> tuple[list[BenchmarkCase], dict[str, Any]]:
     """Execute all benchmark cases and return results with summary."""
@@ -408,18 +498,27 @@ def run_benchmark() -> tuple[list[BenchmarkCase], dict[str, Any]]:
         actual_gate = result.get("status", "UNKNOWN")
         actual_codes = {b["code"] for b in result.get("blockers", [])}
         expected_codes = set(case.expected_rule_ids)
+        actual_claims = result.get("claims") or []
+        missing_claims = _missing_expected_claims(
+            actual_claims,
+            case.expected_claims,
+            case.report_text,
+        )
 
         gate_match = actual_gate == case.expected_gate
         # For rule IDs: expected must be a subset of actual (actual may have extra blockers)
         rules_match = expected_codes.issubset(actual_codes)
+        claims_match = not missing_claims
 
-        case.passed = gate_match and rules_match
+        case.passed = gate_match and rules_match and claims_match
         reasons = []
         if not gate_match:
             reasons.append(f"gate: expected={case.expected_gate}, actual={actual_gate}")
         if not rules_match:
             missing = expected_codes - actual_codes
             reasons.append(f"missing rules: {missing}")
+        if missing_claims:
+            reasons.append(f"missing claims: {missing_claims}")
         case.failure_reason = "; ".join(reasons)
 
     elapsed_ms = (time.time() - started) * 1000
@@ -456,8 +555,30 @@ def generate_json_results(cases: list[BenchmarkCase], summary: dict[str, Any]) -
                 "category": c.category,
                 "expected_gate": c.expected_gate,
                 "expected_rule_ids": c.expected_rule_ids,
+                "expected_claims": c.expected_claims,
                 "actual_gate": c.actual_result.get("status", "UNKNOWN"),
                 "actual_rule_ids": [b["code"] for b in c.actual_result.get("blockers", [])],
+                "actual_claims": [
+                    {
+                        "metric": claim.get("metric"),
+                        "status": claim.get("status"),
+                        "relation_cue": (claim.get("audit_fragment") or {}).get("relation_cue"),
+                        "relation_target": (claim.get("audit_fragment") or {}).get("relation_target"),
+                    }
+                    for claim in c.actual_result.get("claims", [])
+                ],
+                "actual_report_occurrences": [
+                    {
+                        "metric": occurrence.get("canonical"),
+                        "relation": occurrence.get("relation"),
+                        "relation_cue": occurrence.get("relation_cue"),
+                        "relation_target": occurrence.get("relation_target"),
+                    }
+                    for occurrence in _extract_term_occurrences(
+                        c.report_text,
+                        _CAUSE_KEYWORDS,
+                    )
+                ],
                 "passed": c.passed,
                 "failure_reason": c.failure_reason,
             }
@@ -578,12 +699,21 @@ class TestFund007aBenchmark:
         actual_gate = result.get("status", "UNKNOWN")
         actual_codes = {b["code"] for b in result.get("blockers", [])}
         expected_codes = set(case.expected_rule_ids)
+        missing_claims = _missing_expected_claims(
+            result.get("claims") or [],
+            case.expected_claims,
+            case.report_text,
+        )
 
         assert actual_gate == case.expected_gate, (
             f"{case_id}: gate mismatch — expected {case.expected_gate}, got {actual_gate}"
         )
         assert expected_codes.issubset(actual_codes), (
             f"{case_id}: missing rules — expected {expected_codes}, actual {actual_codes}"
+        )
+        assert not missing_claims, (
+            f"{case_id}: expected claims were not extracted/bound — {missing_claims}; "
+            f"actual={result.get('claims', [])}"
         )
 
     def test_tampered_expected_rule_fails(self):

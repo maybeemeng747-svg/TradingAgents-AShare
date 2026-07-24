@@ -40,8 +40,9 @@
 10. `M-010-R1`：飞书 webhook 脱敏、渠道校验与异步测试（done，`d0ecfd2`）。
 11. `B-004-R1`：持仓同步路径白名单、失败语义和输入校验（done，`d0ecfd2`）。
 12. `FUND-006A-R1`：离线回放测试有效性补修（done，第三轮人工收口）。
-13. `FUND-007A-R1`：错误模式基准因果短语补修（P2，ready）。
-14. 其余 review finding 进入第二批：`F-001-R1`、`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+13. `FUND-007A-R1`：错误模式基准因果短语补修（done，claim 级回归与两轮 Codex review 收口）。
+14. `F-001-R1`：未持仓试错 Buy Level 上限补修（P2，ready）。
+15. 其余 review finding 进入第二批：`PLAYBOOK-002-R1`、`SCORE-001-R1`、`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -183,14 +184,14 @@
 ### FUND-007A-R1: 错误模式基准因果短语补修（P2）
 - **描述**：补齐“所致”等因果短语并强化基准结果断言，避免错误样本漏检。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 17/17 benchmark cases、22 项专项、208 项 FUND 回归与 122 项 smoke 通过；Codex review 无 correctness finding
 - **depends_on**：FUND-006A-R1
 - **auto_release**：true
 
 ### F-001-R1: 未持仓试错 Buy Level 上限补修（P2）
 - **描述**：未持仓条件试错的 Buy Level 上限固定为 2，不得进入 Level 3。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：FUND-007A-R1
 - **auto_release**：true
 

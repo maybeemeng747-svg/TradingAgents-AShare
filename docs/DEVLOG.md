@@ -1,5 +1,22 @@
 # 修改日志
 
+## 2026-07-24 | FUND-007A-R1 因果短语基准补修
+
+- **问题**：原基准主要比较最终门禁与规则码；正向样本在报告侧未抽取出因果关系时仍可能以 `VALID` 假通过。
+- **实现**：
+  - `BenchmarkCase` 增加稳定的 `expected_claims` 契约，回归同时比较 claim 指标、状态与报告侧因果关系。
+  - 增加 `POS-006`，固定“营业收入增长主要系原材料采购成本下降所致”正向样本。
+  - `NEG-005` 明确要求“旺季/产品涨价”两个无来源 claim 被抽取为 `unexplained`。
+  - JSON 结果增加预期 claim、实际 claim 与报告侧 occurrence，失败时能定位缺失关系，而不只显示 PASS/FAIL。
+- **对抗审查**：
+  - Round 1 P2：最初错误地读取 supporting evidence 的 `audit_fragment`，未验证报告侧解析。
+  - Round 2：改为对 `report_text` 独立运行 occurrence 提取并核对 `relation_cue/relation_target`；Codex review 无 correctness finding。
+- **验证**：17/17 benchmark cases；专项 **22 passed**；FUND 回归 **208 passed**；API/runtime smoke **122 passed**；`py_compile` 与 `git diff --check` 通过。
+- **状态迁移**：`FUND-007A-R1` done；`F-001-R1` 释放为 ready。
+- **约束**：未调用 live provider/LLM，未写生产数据库，未修改 prompts。
+
+---
+
 ## 2026-07-24 | FUND-006A-R1 第三轮人工收口
 
 - **原因**：自动链两轮修复后仍有一项 P2：叙事被拒绝、财务事实保留的测试只检查了 integrity 中间结果，没有调用最终门禁报告构造函数。
