@@ -1058,8 +1058,15 @@ FIX_EOF
     CODEX_AVAILABLE=true
     REVIEW_SKIPPED=false
     CODEX_EXIT=127  # default: not run (codex unavailable)
+    # Resolve codex binary (same PATH issue as opencode)
+    CODEX_BIN="${AUTO_DEV_CODEX_BIN:-codex}"
+    if ! command -v "$CODEX_BIN" &>/dev/null; then
+        for _cb in /opt/homebrew/bin/codex "$HOME/.local/bin/codex" /usr/local/bin/codex; do
+            if [ -x "$_cb" ]; then CODEX_BIN="$_cb"; break; fi
+        done
+    fi
     set +e
-    run_with_timeout 30 codex review --help > /dev/null 2>&1
+    run_with_timeout 30 "$CODEX_BIN" review --help > /dev/null 2>&1
     CODEX_HELP_EXIT=$?
     set -e
     if [ $CODEX_HELP_EXIT -ne 0 ]; then
@@ -1076,7 +1083,7 @@ FIX_EOF
         # partial output was captured before killpg.
         CODEX_REVIEW_START_EPOCH=$(date +%s)
         set +e
-        run_with_timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" codex review --uncommitted > "$REVIEW_FILE" 2>&1
+        run_with_timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" "$CODEX_BIN" review --uncommitted > "$REVIEW_FILE" 2>&1
         CODEX_EXIT=$?
         set -e
         CODEX_REVIEW_END_EPOCH=$(date +%s)
