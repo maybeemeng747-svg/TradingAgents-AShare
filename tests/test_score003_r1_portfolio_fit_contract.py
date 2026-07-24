@@ -126,6 +126,32 @@ class TestUnknownAccountContext:
         assert r.trading_permission.status == "ok"
         assert r.context_unknown is False
 
+    def test_known_zero_cash_is_constrained_not_unknown(self) -> None:
+        """An explicit zero balance is known account state, not missing data."""
+        kw = _full_account_kwargs()
+        kw["cash_available"] = 0.0
+        r = compute_portfolio_fit(**kw)
+
+        assert r.cash_defense.status == "ok"
+        assert r.cash_defense.score == 0.0
+        assert r.insufficient_cash is True
+        assert r.context_unknown is False
+        assert "无法新增仓位" in r.cash_defense.reasons[0]
+
+    @pytest.mark.parametrize("invalid_cash", [-1.0, float("nan"), float("inf")])
+    def test_invalid_cash_fails_closed(self, invalid_cash: float) -> None:
+        """Corrupt cash values must remain unknown, not usable context."""
+        kw = _full_account_kwargs()
+        kw["cash_available"] = invalid_cash
+        r = compute_portfolio_fit(**kw)
+
+        assert r.cash_defense.status == "missing"
+        assert r.cash_defense.source_fields == []
+        assert r.cash_defense.missing_fields == ["cash_available"]
+        assert r.insufficient_cash is None
+        assert r.context_unknown is True
+        assert r.data_status == "partial"
+
 
 # ── Score normalization (no inflation) ──────────────────────────────
 

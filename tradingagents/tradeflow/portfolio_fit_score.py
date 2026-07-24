@@ -286,19 +286,21 @@ def _score_cash_defense(
     reasons: list[str] = []
     missing_fields: list[str] = []
 
-    has_cash = cash_available is not None and cash_available > 0
     has_price = current_price is not None and current_price > 0
 
-    if not has_cash:
+    if cash_available is None:
         missing_fields.append("cash_available")
         reasons.append("可用资金未知")
         return 0.0, source_fields, reasons, missing_fields
 
-    source_fields.append("cash_available")
     cash = float(cash_available)
-    if not math.isfinite(cash) or cash <= 0:
+    if not math.isfinite(cash) or cash < 0:
         missing_fields.append("cash_available")
         reasons.append("可用资金异常")
+        return 0.0, source_fields, reasons, missing_fields
+    source_fields.append("cash_available")
+    if cash == 0:
+        reasons.append("可用资金为0，无法新增仓位")
         return 0.0, source_fields, reasons, missing_fields
 
     if not has_price:
