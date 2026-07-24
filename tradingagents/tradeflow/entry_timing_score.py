@@ -16,6 +16,14 @@ Design constraints:
 - Research snapshot scores are background evidence only and never
   inflate entry_timing.
 - Missing data must lower confidence, never produce a neutral perfect score.
+
+[SCORE-002-R1] entry_timing API contract & risk deduction persistence:
+- entry_timing_card is exposed as a structured response model
+  (api.tradeflow_schemas.EntryTimingCard), not an opaque Dict[str, Any].
+- every deduction applied to the composite entry_timing is persisted as a
+  RiskDeductionRecord(source_field / raw_score / applied_deduction) on the
+  result, so downstream/DB readback can reconstruct the penalty path.
+- entry_timing_pre_flags captures the score before timing risk flag penalty.
 """
 
 from __future__ import annotations
@@ -39,6 +47,27 @@ class TimingDimension:
     missing_fields: list[str] = field(default_factory=list)
 
 
+# [SCORE-002-R1] risk_deduction_persistence
+@dataclass
+class RiskDeductionRecord:
+    """Structured record of a single risk deduction applied to entry_timing.
+
+    Persists the audit trail so downstream consumers (and DB readback) can
+    reconstruct exactly why the composite score was lowered, instead of only
+    seeing the final ``risk_penalty`` scalar.
+
+    Fields:
+        source_field: the input field that triggered this deduction
+                      (e.g. "risk_penalty", "timing_risk_flags", "contradiction_level").
+        raw_score:    the raw value observed on that source field (sign preserved
+                      for risk_penalty; flag count for timing_risk_flags).
+        applied_deduction: the points actually subtracted from entry_timing (>= 0).
+    """
+    source_field: str = ""
+    raw_score: float = 0.0
+    applied_deduction: float = 0.0
+
+
 @dataclass
 class EntryTimingResult:
     """Full entry timing score card."""
@@ -50,6 +79,14 @@ class EntryTimingResult:
     catalyst_effectiveness: TimingDimension = field(default_factory=lambda: TimingDimension(weight=0.25))
     downside_odds: TimingDimension = field(default_factory=lambda: TimingDimension(weight=0.10))
     timing_risk_flags: list[str] = field(default_factory=list)
+    # [SCORE-002-R1] risk_deduction_persistence — structured audit trail of
+    # every deduction applied to the composite entry_timing. Empty when no
+    # deductions were applied. Allows downstream/DB readback to reconstruct
+    # the penalty path instead of only seeing the final scalar.
+    risk_deductions: list[RiskDeductionRecord] = field(default_factory=list)
+    # entry_timing before any timing_risk_flags deduction was applied, so the
+    # flag penalty is separately attributable.
+    entry_timing_pre_flags: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -543,12 +580,87 @@ def compute_entry_timing(
         else:
             data_status = "ok"
 
+    # [SCORE-002-R1] risk_deduction_persistence — record the timing risk flag
+    # deduction as a structured record so it survives serialization/DB round-trip.
+    # entry_timing_pre_flags captures the score before flag penalty so the flag
+    # contribution is separately attributable.
+    entry_timing_pre_flags = round(min(100.0, max(0.0, entry_timing)), 1)
+    risk_deductions: list[RiskDeductionRecord] = []
+
     # Timing risk flags reduce overall score
     if timing_flags:
         flag_penalty = min(30.0, len(timing_flags) * 10.0)
+        pre = entry_timing
         entry_timing = round(max(0.0, entry_timing - flag_penalty), 1)
+        actual_flag_deduction = round(pre - entry_timing, 1)
+        if actual_flag_deduction > 0:
+            risk_deductions.append(RiskDeductionRecord(
+                source_field="timing_risk_flags",
+                raw_score=float(len(timing_flags)),
+                applied_deduction=actual_flag_deduction,
+            ))
 
     entry_timing = round(min(100.0, max(0.0, entry_timing)), 1)
+
+    # [SCORE-002-R1] Record within-dimension risk deductions that lowered the
+    # weighted composite. Each deduction is attributable to entry_timing via
+    # its dimension weight, so the recorded applied_deduction is the points
+    # actually removed from the (pre-flag) composite entry_timing.
+    _contradiction_penalty_map = {"high": 50.0, "medium": 25.0, "low": 10.0, "none": 0.0}
+    if contradiction_level and contradiction_level in _contradiction_penalty_map:
+        cp = _contradiction_penalty_map[contradiction_level]
+        if cp > 0:
+            # catalyst_effectiveness weight only contributes when its dimension
+            # status is "ok"; otherwise the penalty had no path into the composite.
+            if catalyst_dim.status == "ok" and available_weight > 0:
+                baseline_catalyst_score, *_ = _score_catalyst_effectiveness(
+                    event_score=event_score,
+                    ambush_score=ambush_score,
+                    narrative_score=narrative_score,
+                    contradiction_level="",
+                )
+                actual_dimension_loss = round(
+                    max(0.0, baseline_catalyst_score - catalyst_dim.score),
+                    1,
+                )
+                applied = round(
+                    actual_dimension_loss * (catalyst_dim.weight / available_weight),
+                    1,
+                )
+                if applied > 0:
+                    risk_deductions.append(RiskDeductionRecord(
+                        source_field="contradiction_level",
+                        raw_score=cp,
+                        applied_deduction=applied,
+                    ))
+
+    # risk_penalty / invalid_price deductions flow through the downside_odds
+    # dimension. Compare the actual dimension score with and without the risk
+    # penalty while keeping all other inputs identical. Averaging a moderate
+    # risk component with a weak stop margin can otherwise improve the
+    # dimension, in which case no deduction should be claimed.
+    if risk_penalty != 0.0 and downside_dim.status == "ok" and available_weight > 0:
+        baseline_downside_score, *_ = _score_downside_odds(
+            risk_penalty=0.0,
+            invalid_price=invalid_price,
+            current_price=current_price,
+            risk_flags=risk_flags,
+        )
+        actual_dimension_loss = round(
+            max(0.0, baseline_downside_score - downside_dim.score),
+            1,
+        )
+        if actual_dimension_loss > 0:
+            applied = round(
+                actual_dimension_loss * (downside_dim.weight / available_weight),
+                1,
+            )
+            if applied > 0:
+                risk_deductions.append(RiskDeductionRecord(
+                    source_field="risk_penalty",
+                    raw_score=float(risk_penalty),
+                    applied_deduction=applied,
+                ))
 
     return EntryTimingResult(
         entry_timing=entry_timing,
@@ -559,6 +671,8 @@ def compute_entry_timing(
         catalyst_effectiveness=catalyst_dim,
         downside_odds=downside_dim,
         timing_risk_flags=timing_flags,
+        risk_deductions=risk_deductions,
+        entry_timing_pre_flags=entry_timing_pre_flags if timing_flags else None,
     )
 
 
@@ -577,6 +691,15 @@ def _dim_to_dict(dim: TimingDimension) -> dict:
     }
 
 
+# [SCORE-002-R1] risk_deduction_persistence
+def _risk_deduction_to_dict(rec: RiskDeductionRecord) -> dict:
+    return {
+        "source_field": rec.source_field,
+        "raw_score": rec.raw_score,
+        "applied_deduction": rec.applied_deduction,
+    }
+
+
 def entry_timing_to_dict(result: EntryTimingResult) -> dict:
     """Serialize EntryTimingResult to a JSON-safe dict."""
     return {
@@ -588,4 +711,7 @@ def entry_timing_to_dict(result: EntryTimingResult) -> dict:
         "catalyst_effectiveness": _dim_to_dict(result.catalyst_effectiveness),
         "downside_odds": _dim_to_dict(result.downside_odds),
         "timing_risk_flags": result.timing_risk_flags,
+        # [SCORE-002-R1] risk_deduction_persistence
+        "risk_deductions": [_risk_deduction_to_dict(r) for r in result.risk_deductions],
+        "entry_timing_pre_flags": result.entry_timing_pre_flags,
     }

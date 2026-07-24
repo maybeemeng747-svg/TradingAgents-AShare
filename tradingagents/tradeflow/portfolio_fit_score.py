@@ -10,6 +10,17 @@ Six sub-dimensions:
 5. liquidity_execution   — 流动性执行难度 (lot size, price level, spread)
 6. risk_budget           — 账户风险预算 (budget utilization, daily limit)
 
+[SCORE-003-R1] contract & unknown-context fixes:
+- unknown_account_context: any core dimension (permission / cash / position /
+  risk budget) whose critical input was not provided is marked "unknown";
+  context_unknown is True if ANY core dimension is unknown/missing.
+- risk_budget_unit_pairing: amount-budget (budget_utilization_pct) and
+  count-budget (daily_new / tracking) are scored within same-unit groups and
+  the group means averaged, instead of flat-averaging across incompatible units.
+- score_normalization: portfolio_fit is normalized against total weight 1.0,
+  so unknown/missing dimensions contribute 0 and cannot inflate a sparse
+  context into a high fit score.
+
 Design constraints:
 - No LLM calls, no network, no prompts modification.
 - Purely deterministic mapping from existing fields.
@@ -478,6 +489,14 @@ def _score_risk_budget(
 ) -> tuple[float, list[str], list[str], list[str]]:
     """账户风险预算: how much budget remains for new positions.
 
+    [SCORE-003-R1] risk_budget_unit_pairing — 金额预算 (budget_utilization_pct)
+    与 个数预算 (daily_new_today / tracking_count) 单位不同，不得直接混比平均。
+    现按单位分组各自评分：
+      - amount_components: 金额维度（budget_utilization_pct，0-100%）
+      - count_components:  个数维度（daily_new_today、tracking_count）
+    最终分 = 两组子均值的平均；仅有一组时取该组均值。这样同单位内成对比较，
+    避免金额 vs 个数混比导致单一维度被放大或稀释。
+
     Returns (score, source_fields, reasons, missing_fields).
     """
     source_fields: list[str] = []
@@ -495,65 +514,76 @@ def _score_risk_budget(
         reasons.append("风险预算数据未知")
         return 0.0, source_fields, reasons, missing_fields
 
-    components: list[float] = []
+    # [SCORE-003-R1] keep amount-budget (金额) and count-budget (个数) separate.
+    amount_components: list[float] = []
+    count_components: list[float] = []
 
-    # Budget utilization
+    # Budget utilization (金额维度)
     if has_budget:
         source_fields.append("budget_utilization_pct")
         util = float(budget_utilization_pct)
         if util >= _BUDGET_UTILIZATION_FULL:
-            components.append(0.0)
+            amount_components.append(0.0)
             reasons.append(f"预算已耗尽({util:.0f}%)")
         elif util >= _BUDGET_UTILIZATION_HIGH:
-            components.append(20.0)
+            amount_components.append(20.0)
             reasons.append(f"预算紧张({util:.0f}%)")
         elif util >= 50.0:
-            components.append(60.0)
+            amount_components.append(60.0)
             reasons.append(f"预算中等({util:.0f}%)")
         else:
-            components.append(90.0)
+            amount_components.append(90.0)
             reasons.append(f"预算充裕({util:.0f}%)")
     else:
         missing_fields.append("budget_utilization_pct")
 
-    # Daily new limit
+    # Daily new limit (个数维度)
     if has_daily:
         source_fields.extend(["daily_new_today", "daily_new_max"])
         today = max(0, int(daily_new_today))
         limit = max(1, int(daily_new_max))
         if today >= limit:
-            components.append(0.0)
+            count_components.append(0.0)
             reasons.append(f"今日已达新开仓上限({today}/{limit})")
         elif today >= limit - 1:
-            components.append(30.0)
+            count_components.append(30.0)
             reasons.append(f"今日仅剩{limit - today}个新开仓名额")
         else:
-            components.append(80.0)
+            count_components.append(80.0)
             reasons.append(f"今日新开仓{today}/{limit}")
     else:
         missing_fields.extend(["daily_new_today", "daily_new_max"])
 
-    # Concurrent tracking limit
+    # Concurrent tracking limit (个数维度)
     if has_tracking:
         source_fields.extend(["tracking_count", "max_concurrent_tracking"])
         tc = max(0, int(tracking_count))
         mt = max(1, int(max_concurrent_tracking))
         if tc >= mt:
-            components.append(10.0)
+            count_components.append(10.0)
             reasons.append(f"跟踪标的已满({tc}/{mt})")
         elif tc >= mt * 0.8:
-            components.append(40.0)
+            count_components.append(40.0)
             reasons.append(f"跟踪标的接近上限({tc}/{mt})")
         else:
-            components.append(80.0)
+            count_components.append(80.0)
             reasons.append(f"跟踪标的{tc}/{mt}")
     else:
         missing_fields.extend(["tracking_count", "max_concurrent_tracking"])
 
-    if not components:
+    # [SCORE-003-R1] average within each unit group first, then average the
+    # group means. This keeps amount-vs-count from being mixed in a single
+    # flat average. When only one group is present, use that group's mean.
+    group_means: list[float] = []
+    if amount_components:
+        group_means.append(sum(amount_components) / len(amount_components))
+    if count_components:
+        group_means.append(sum(count_components) / len(count_components))
+
+    if not group_means:
         return 0.0, source_fields, reasons, missing_fields
 
-    score = sum(components) / len(components)
+    score = sum(group_means) / len(group_means)
     return round(min(100.0, max(0.0, score)), 1), source_fields, reasons, missing_fields
 
 
@@ -655,19 +685,39 @@ def compute_portfolio_fit(
             return "partial"
         return "missing"
 
+    # [SCORE-003-R1] unknown_account_context — core dimensions whose critical
+    # account input was not provided must be marked "unknown" rather than the
+    # generic "missing", so context_unknown can fire on any single unknown core
+    # dimension (permission / cash / position / risk budget).
+    def _core_dim_status(has_data: bool, missing: list[str], critical_unknown: bool) -> str:
+        if critical_unknown:
+            return "unknown"
+        return _dim_status(has_data, missing)
+
+    # Permission is unknown when a special board requires it and the account
+    # map is absent, omits that board, or carries a non-boolean placeholder.
+    board = _infer_board_type(symbol)
+    permission_known = (
+        isinstance(user_permissions, dict)
+        and isinstance(user_permissions.get(board), bool)
+    )
+    perm_critical_unknown = (
+        board in ("star", "chinext", "bse")
+        and not permission_known
+    )
     perm_dim = PortfolioFitDimension(
         score=perm_score, weight=0.20,
-        status=_dim_status(bool(perm_src), perm_missing),
+        status=_core_dim_status(bool(perm_src), perm_missing, perm_critical_unknown),
         source_fields=perm_src, reasons=perm_reasons, missing_fields=perm_missing,
     )
     pos_dim = PortfolioFitDimension(
         score=pos_score, weight=0.20,
-        status=_dim_status(bool(pos_src), pos_missing),
+        status=_core_dim_status(bool(pos_src), pos_missing, current_position_pct is None),
         source_fields=pos_src, reasons=pos_reasons, missing_fields=pos_missing,
     )
     cash_dim = PortfolioFitDimension(
         score=cash_score, weight=0.15,
-        status=_dim_status(bool(cash_src), cash_missing),
+        status=_core_dim_status(bool(cash_src), cash_missing, cash_available is None),
         source_fields=cash_src, reasons=cash_reasons, missing_fields=cash_missing,
     )
     conc_dim = PortfolioFitDimension(
@@ -680,14 +730,24 @@ def compute_portfolio_fit(
         status=_dim_status(bool(liq_src), liq_missing),
         source_fields=liq_src, reasons=liq_reasons, missing_fields=liq_missing,
     )
+    rb_critical_unknown = (
+        budget_utilization_pct is None
+        and daily_new_today is None
+        and tracking_count is None
+    )
     rb_dim = PortfolioFitDimension(
         score=rb_score, weight=0.15,
-        status=_dim_status(bool(rb_src), rb_missing),
+        status=_core_dim_status(bool(rb_src), rb_missing, rb_critical_unknown),
         source_fields=rb_src, reasons=rb_reasons, missing_fields=rb_missing,
     )
 
-    # Weighted composite — only dimensions with actual data (status != "missing")
-    # contribute to the score. "partial" means some data was available.
+    # [SCORE-003-R1] score_normalization_to_total_weight — normalize the
+    # composite against the TOTAL weight (1.0) instead of only the available
+    # weight. Unknown / missing dimensions contribute 0, so a sparse context
+    # can no longer be inflated into a high fit score by re-normalizing over
+    # the surviving dimensions. Only dimensions with usable data ("ok" or
+    # "partial") contribute their weighted score; everything else is treated
+    # as 0.
     dimensions = [perm_dim, pos_dim, cash_dim, conc_dim, liq_dim, rb_dim]
     total_weight = sum(d.weight for d in dimensions)
     available_weight = sum(d.weight for d in dimensions if d.status in ("ok", "partial"))
@@ -697,7 +757,9 @@ def compute_portfolio_fit(
         data_status = "missing"
     else:
         weighted_sum = sum(d.score * d.weight for d in dimensions if d.status in ("ok", "partial"))
-        portfolio_fit = round(weighted_sum / available_weight, 1)
+        # Normalize against total weight so missing/unknown dims pull the
+        # score down toward 0 rather than being re-normalized away.
+        portfolio_fit = round(weighted_sum / total_weight, 1)
         if available_weight < total_weight:
             data_status = "partial"
         else:
@@ -737,10 +799,14 @@ def compute_portfolio_fit(
     if rb_dim.status == "ok":
         risk_budget_exceeded = rb_score <= 10.0
 
-    # context_unknown: true when most critical inputs are missing or partial
-    critical_dims = [perm_dim, pos_dim, cash_dim]
-    unknown_count = sum(1 for d in critical_dims if d.status != "ok")
-    context_unknown = unknown_count >= 2
+    # [SCORE-003-R1] unknown_account_context — context is unknown whenever ANY
+    # core account dimension (permission / cash / position / risk budget) is
+    # "unknown" or "missing". Previously this only fired when ≥2 of permission /
+    # position / cash were non-ok, which let a single missing critical input
+    # (e.g. unknown cash) be interpreted as "fit well". risk_budget is now a
+    # core dimension too.
+    critical_dims = [perm_dim, pos_dim, cash_dim, rb_dim]
+    context_unknown = any(d.status in ("unknown", "missing") for d in critical_dims)
 
     return PortfolioFitResult(
         portfolio_fit=portfolio_fit,

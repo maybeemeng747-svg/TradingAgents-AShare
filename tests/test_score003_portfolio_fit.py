@@ -578,6 +578,8 @@ class TestComputePortfolioFit:
         assert result.context_unknown is True
 
     def test_context_not_unknown_when_enough_data(self):
+        # [SCORE-003-R1] context is only "known" when ALL core dimensions
+        # (permission / position / cash / risk budget) are provided.
         result = compute_portfolio_fit(
             symbol="600519.SH",
             current_price=50.0,
@@ -585,6 +587,7 @@ class TestComputePortfolioFit:
             cash_available=50000.0,
             current_position_pct=0.0,
             planned_max_position_pct=15.0,
+            budget_utilization_pct=30.0,
         )
         assert result.context_unknown is False
         assert result.portfolio_fit > 0.0
@@ -872,7 +875,9 @@ class TestAcceptanceScenarios:
 
     def test_real_vs_sim_source_conflict(self):
         """模拟/真实来源冲突：关键数据缺失时 context_unknown"""
-        # Cash available but no position data and unknown symbol → permission partial
+        # [SCORE-003-R1] STAR board requires permission; when user_permissions
+        # is None the permission dimension is "unknown" (not merely "partial"),
+        # which forces context_unknown=True.
         r = compute_portfolio_fit(
             symbol="688256.SH",
             current_price=50.0,
@@ -880,8 +885,9 @@ class TestAcceptanceScenarios:
             # No user_permissions (STAR needs it), no current_position_pct
         )
         assert r.context_unknown is True
-        # Permission is partial (STAR needs permission), position is missing
-        assert r.trading_permission.status == "partial"
+        # Permission is unknown (STAR needs permission, none provided);
+        # position is missing.
+        assert r.trading_permission.status == "unknown"
 
     def test_missing_context_not_interpreted_as_fit(self):
         """任意缺省上下文不会被解释为"适配良好" """

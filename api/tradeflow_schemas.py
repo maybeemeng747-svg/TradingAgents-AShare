@@ -9,6 +9,70 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# ---------------------------------------------------------------------------
+# [SCORE-002-R1] entry_timing response contract — structured score card.
+# Previously entry_timing_card was an opaque Dict[str, Any]; these models make
+# the API response self-describing and let clients rely on the shape.
+# ---------------------------------------------------------------------------
+
+class ScoreCardDimension(BaseModel):
+    """Generic sub-dimension shared by entry_timing / portfolio_fit cards."""
+    score: float = 0.0
+    weight: float = 0.0
+    status: str = "missing"  # ok / partial / missing / unknown
+    source_fields: List[str] = Field(default_factory=list)
+    reasons: List[str] = Field(default_factory=list)
+    missing_fields: List[str] = Field(default_factory=list)
+
+
+class RiskDeductionRecord(BaseModel):
+    """[SCORE-002-R1] Structured audit record of a single risk deduction."""
+    source_field: str = ""
+    raw_score: float = 0.0
+    applied_deduction: float = 0.0
+
+
+class EntryTimingCard(BaseModel):
+    """[SCORE-002-R1] Structured entry_timing score card.
+
+    Replaces the previous unstructured ``Dict[str, Any]`` so the API response
+    carries an explicit, documented contract for clients and DB round-trip.
+    """
+    entry_timing: float = 0.0
+    data_status: str = "missing"  # ok / partial / missing
+    valuation_position: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    crowding: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    fund_price_confirm: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    catalyst_effectiveness: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    downside_odds: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    timing_risk_flags: List[str] = Field(default_factory=list)
+    # [SCORE-002-R1] risk_deduction_persistence
+    risk_deductions: List[RiskDeductionRecord] = Field(default_factory=list)
+    entry_timing_pre_flags: Optional[float] = None
+
+
+# ---------------------------------------------------------------------------
+# [SCORE-003-R1] portfolio_fit response contract — structured score card.
+# ---------------------------------------------------------------------------
+
+class PortfolioFitCard(BaseModel):
+    """[SCORE-003-R1] Structured portfolio_fit score card."""
+    portfolio_fit: float = 0.0
+    data_status: str = "missing"  # ok / partial / missing / unknown
+    trading_permission: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    position_and_limit: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    cash_defense: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    correlation_concentration: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    liquidity_execution: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    risk_budget: ScoreCardDimension = Field(default_factory=ScoreCardDimension)
+    tradable_by_user: Optional[bool] = None
+    position_overweight: Optional[bool] = None
+    insufficient_cash: Optional[bool] = None
+    concentration_exceeded: Optional[bool] = None
+    risk_budget_exceeded: Optional[bool] = None
+    context_unknown: bool = True
+
+
 # [PERF-001] runtime_tier_contract
 class RuntimeTierMeta(BaseModel):
     runtime_tier: str = "FAST_RADAR"
@@ -137,9 +201,16 @@ class TradeFlowCandidateItem(BaseModel):
     needs_research_review: bool = False  # [HY-006] tradeflow_half_year_factor
     created_at: str = ""
     updated_at: str = ""
+    # [SCORE-002-R1] entry_timing response contract
+    entry_timing_card: Optional[EntryTimingCard] = None
+    # [SCORE-003-R1] portfolio_fit response contract
+    portfolio_fit_card: Optional[PortfolioFitCard] = None
 
 
 class TradeFlowCandidateDetail(TradeFlowCandidateItem):
+    # [SCORE-001B-R1] Preserve a status-only FAILED payload at the public API
+    # boundary even when no formal snapshot body could be parsed.
+    research_score_snapshot: Optional[Dict[str, Any]] = None
     evidence: Dict[str, Any] = Field(default_factory=dict)
     policy_evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)
     narrative_evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)

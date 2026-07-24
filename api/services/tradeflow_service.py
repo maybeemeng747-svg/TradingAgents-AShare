@@ -460,6 +460,13 @@ def _enrich_candidate_with_entry_timing(item: dict) -> dict:
             compute_entry_timing,
             entry_timing_to_dict,
         )
+        persisted_risk_penalty = item.get("risk_penalty_score")
+        if persisted_risk_penalty not in (None, "", 0, 0.0):
+            # risk_penalty_score is persisted as an absolute positive amount;
+            # compute_entry_timing accepts the signed penalty convention.
+            risk_penalty = -abs(float(persisted_risk_penalty))
+        else:
+            risk_penalty = item.get("risk_penalty") or 0.0
         result = compute_entry_timing(
             pricing_gap_score=item.get("pricing_gap_score") or 0.0,
             current_price=item.get("current_price"),
@@ -475,11 +482,7 @@ def _enrich_candidate_with_entry_timing(item: dict) -> dict:
             ambush_score=item.get("ambush_score") or 0.0,
             narrative_score=item.get("narrative_score") or 0.0,
             contradiction_level=item.get("contradiction_level") or "",
-            risk_penalty=(
-                item.get("risk_penalty_score")
-                if item.get("risk_penalty_score") is not None
-                else item.get("risk_penalty")
-            ) or 0.0,
+            risk_penalty=risk_penalty,
             invalid_price=item.get("invalid_price"),
             risk_flags=item.get("risk_flags"),
             overheat_flags=item.get("overheat_flags"),
