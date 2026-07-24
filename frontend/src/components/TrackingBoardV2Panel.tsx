@@ -470,32 +470,24 @@ export default function TrackingBoardV2Panel() {
     }
 
     return (
-        <div className="space-y-4">
+        <div className="space-y-5">
             {/* Header */}
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                <div>
-                    <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">跟踪看板 v2</h1>
-                    <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-                        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 dark:bg-slate-700/70">
-                            交易日：{data?.is_trading_day ? '是' : '否'}
-                        </span>
-                        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 dark:bg-slate-700/70">
-                            上一个交易日：{data?.previous_trade_date || '--'}
-                        </span>
-                        {freshness && (
-                            <span className={`rounded-full px-2.5 py-0.5 ${
-                                freshness.status === 'fresh'
-                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
-                                    : freshness.status === 'stale'
-                                        ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300'
-                                        : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
-                            }`}>
-                                数据：{freshness.status === 'fresh' ? '实时' : freshness.status === 'stale' ? '过期' : '非交易日'}
-                            </span>
-                        )}
-                        <span className="text-slate-400">{data?.as_of}</span>
-                        {refreshing && <RefreshCw className="h-3 w-3 animate-spin text-slate-400" />}
-                    </div>
+            <div>
+                <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">跟踪看板 v2</h1>
+                <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 border-l-2 border-indigo-500 pl-3 text-xs">
+                    <HeaderField label="交易日" value={data?.is_trading_day ? '是' : '否'} />
+                    <HeaderField label="最近交易日" value={data?.previous_trade_date || '--'} />
+                    {freshness && (
+                        <HeaderField
+                            label="数据状态"
+                            value={freshness.status === 'fresh' ? '实时' : freshness.status === 'stale' ? '过期' : '非交易日'}
+                            tone={freshness.status === 'fresh' ? 'fresh' : freshness.status === 'stale' ? 'stale' : undefined}
+                        />
+                    )}
+                    <span className="ml-auto inline-flex items-center gap-1.5 whitespace-nowrap text-slate-400">
+                        更新于 {data?.as_of || '--'}
+                        {refreshing && <RefreshCw className="h-3 w-3 animate-spin" />}
+                    </span>
                 </div>
             </div>
 
@@ -570,13 +562,13 @@ export default function TrackingBoardV2Panel() {
             />
 
             {/* Tabs */}
-            <div className="flex gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1 sm:grid-cols-4 dark:bg-slate-800">
                 {tabs.map(tab => (
                     <button
                         key={tab.id}
                         type="button"
                         onClick={() => setActiveTab(tab.id)}
-                        className={`relative flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                        className={`relative flex min-h-10 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                             activeTab === tab.id
                                 ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-slate-100'
                                 : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
@@ -618,15 +610,37 @@ export default function TrackingBoardV2Panel() {
 
 // ─── Stat card ─────────────────────────────────────────────
 
+function HeaderField({
+    label,
+    value,
+    tone,
+}: {
+    label: string
+    value: string
+    tone?: 'fresh' | 'stale'
+}) {
+    const valueCls = tone === 'fresh'
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : tone === 'stale'
+            ? 'text-rose-600 dark:text-rose-400'
+            : 'text-slate-700 dark:text-slate-200'
+    return (
+        <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+            <span className="text-slate-400">{label}</span>
+            <span className={`font-medium ${valueCls}`}>{value}</span>
+        </span>
+    )
+}
+
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' | 'alert' }) {
     const valueCls = tone === 'up' ? 'text-rose-600 dark:text-rose-400'
         : tone === 'down' ? 'text-emerald-600 dark:text-emerald-400'
         : tone === 'alert' ? 'text-rose-600 dark:text-rose-400'
         : 'text-slate-900 dark:text-slate-100'
     return (
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
-            <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
-            <div className={`mt-1 text-lg font-semibold ${valueCls}`}>{value}</div>
+        <div className="flex min-h-[76px] flex-col justify-between rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
+            <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</div>
+            <div className={`mt-2 whitespace-nowrap text-lg font-semibold tabular-nums ${valueCls}`}>{value}</div>
         </div>
     )
 }
@@ -1142,7 +1156,16 @@ function HoldingsZone({ items, onAnalyze }: { items: TrackingBoardItem[]; onAnal
         return <EmptyState icon={Wallet} title="暂无持仓" desc="导入持仓后，这里会展示实时行情和 TA 报告摘要。" />
     }
     return (
-        <div className="space-y-2">
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+            <div className="hidden grid-cols-[minmax(145px,1.2fr)_92px_76px_72px_96px_82px_minmax(108px,.8fr)] items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-[11px] font-medium text-slate-400 md:grid dark:border-slate-700 dark:bg-slate-800/70">
+                <span>标的</span>
+                <span>行情</span>
+                <span className="text-right">持仓</span>
+                <span className="text-right">成本</span>
+                <span className="text-right">市值</span>
+                <span className="text-right">浮盈亏</span>
+                <span className="text-right">TA 状态</span>
+            </div>
             {items.map(item => (
                 <HoldingsRow key={item.symbol} item={item} onAnalyze={onAnalyze} />
             ))}
@@ -1153,39 +1176,40 @@ function HoldingsZone({ items, onAnalyze }: { items: TrackingBoardItem[]; onAnal
 function HoldingsRow({ item, onAnalyze }: { item: TrackingBoardItem; onAnalyze: (s: string) => void }) {
     const changePct = item.price_change_pct ?? null
     return (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800/80">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                {/* Left: symbol + price */}
-                <div className="flex items-start gap-3">
-                    <div>
-                        <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">{item.name}</div>
-                        <div className="text-sm text-slate-500 dark:text-slate-400">{item.symbol}</div>
-                    </div>
-                    <div className="ml-4 text-right sm:ml-6">
-                        <div className={`text-xl font-bold ${pctColor(changePct)}`}>{fmtPrice(item.live_price)}</div>
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-sm font-semibold ${pctBg(changePct)}`}>
+        <div className="border-b border-slate-100 px-4 py-3 transition-colors last:border-b-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60">
+            <div className="grid grid-cols-2 items-center gap-x-4 gap-y-3 md:grid-cols-[minmax(145px,1.2fr)_92px_76px_72px_96px_82px_minmax(108px,.8fr)] md:gap-3">
+                <div className="col-span-2 min-w-0 md:col-span-1">
+                    <div className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">{item.name}</div>
+                    <div className="mt-0.5 font-mono text-xs text-slate-400">{item.symbol}</div>
+                </div>
+
+                <div className="min-w-0">
+                    <div className="mb-1 text-[10px] text-slate-400 md:hidden">行情</div>
+                    <div className="flex items-center gap-2 md:block">
+                        <div className={`font-semibold tabular-nums ${pctColor(changePct)}`}>{fmtPrice(item.live_price)}</div>
+                        <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${pctBg(changePct)}`}>
                             {fmtPct(changePct)}
                         </span>
                     </div>
                 </div>
 
-                {/* Right: metrics */}
-                <div className="flex flex-wrap items-center gap-3 text-sm">
-                    <Metric label="持仓" value={item.current_position != null ? `${item.current_position}股` : '--'} />
-                    <Metric label="成本" value={fmtPrice(item.average_cost)} />
-                    <Metric label="市值" value={item.live_market_value != null ? `¥${fmtMoney(item.live_market_value)}` : '--'} />
-                    <Metric label="浮盈" value={item.floating_pnl_pct != null ? fmtPct(item.floating_pnl_pct) : '--'} tone={item.floating_pnl_pct} />
-                    {item.analysis && (
+                <Metric label="持仓" value={item.current_position != null ? `${item.current_position}股` : '--'} />
+                <Metric label="成本" value={fmtPrice(item.average_cost)} />
+                <Metric label="市值" value={item.live_market_value != null ? `¥${fmtMoney(item.live_market_value)}` : '--'} />
+                <Metric label="浮盈亏" value={item.floating_pnl_pct != null ? fmtPct(item.floating_pnl_pct) : '--'} tone={item.floating_pnl_pct} />
+
+                <div className="col-span-2 min-w-0 md:col-span-1 md:justify-self-end">
+                    <div className="mb-1 text-[10px] text-slate-400 md:hidden">TA 状态</div>
+                    {item.analysis ? (
                         <button
                             type="button"
                             onClick={() => onAnalyze(item.symbol)}
-                            className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
+                            className="inline-flex max-w-full items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
                         >
-                            <TrendingUp className="h-3 w-3" />
-                            {item.analysis.action_label || item.analysis.decision || '查看报告'}
+                            <TrendingUp className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{item.analysis.action_label || item.analysis.decision || '查看报告'}</span>
                         </button>
-                    )}
-                    {!item.analysis && (
+                    ) : (
                         <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
                             <Info className="h-3 w-3" />
                             未分析
@@ -1199,9 +1223,9 @@ function HoldingsRow({ item, onAnalyze }: { item: TrackingBoardItem; onAnalyze: 
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: number | null }) {
     return (
-        <div className="text-center">
-            <div className="text-[11px] text-slate-400">{label}</div>
-            <div className={`text-sm font-medium ${tone != null ? pctColor(tone) : 'text-slate-700 dark:text-slate-200'}`}>{value}</div>
+        <div className="min-w-0 md:text-right">
+            <div className="mb-1 text-[10px] text-slate-400 md:hidden">{label}</div>
+            <div className={`whitespace-nowrap text-sm font-medium tabular-nums ${tone != null ? pctColor(tone) : 'text-slate-700 dark:text-slate-200'}`}>{value}</div>
         </div>
     )
 }
@@ -1306,27 +1330,32 @@ function GuidanceZone({ guidance, onAnalyze }: { guidance: TrackingBoardV2Guidan
                         <div className="mb-2 flex items-center gap-2">
                             <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${badge.cls}`}>{badge.label} ({p})</span>
                         </div>
-                        <div className="space-y-1.5">
+                        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+                            <div className="hidden grid-cols-[minmax(145px,.9fr)_84px_minmax(0,2fr)_64px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-[11px] font-medium text-slate-400 md:grid dark:border-slate-700 dark:bg-slate-800/70">
+                                <span>标的</span>
+                                <span>类型</span>
+                                <span>触发原因</span>
+                                <span className="text-right">时间</span>
+                            </div>
                             {items.map((g, i) => (
-                                <div key={`${g.symbol}-${g.type}-${i}`} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 dark:border-slate-700 dark:bg-slate-900">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => onAnalyze(g.symbol)}
-                                                    className="text-sm font-semibold text-slate-900 hover:text-blue-600 dark:text-slate-100 dark:hover:text-blue-400"
-                                                >
-                                                    {g.name} <span className="text-slate-400">{g.symbol}</span>
-                                                </button>
-                                                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">
-                                                    {guidanceTypeLabel(g.type)}
-                                                </span>
-                                            </div>
-                                            <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">{g.reason}</div>
-                                        </div>
-                                        <div className="text-[10px] text-slate-400">{g.as_of.split(' ')[1]}</div>
+                                <div key={`${g.symbol}-${g.type}-${i}`} className="grid gap-2 border-b border-slate-100 px-4 py-3 last:border-b-0 md:grid-cols-[minmax(145px,.9fr)_84px_minmax(0,2fr)_64px] md:items-center md:gap-3 dark:border-slate-800">
+                                    <button
+                                        type="button"
+                                        onClick={() => onAnalyze(g.symbol)}
+                                        className="min-w-0 text-left hover:text-blue-600 dark:hover:text-blue-400"
+                                    >
+                                        <span className="block truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{g.name}</span>
+                                        <span className="mt-0.5 block font-mono text-xs text-slate-400">{g.symbol}</span>
+                                    </button>
+                                    <div>
+                                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-300">
+                                            {guidanceTypeLabel(g.type)}
+                                        </span>
                                     </div>
+                                    <div className="break-words text-sm leading-5 text-slate-600 dark:text-slate-300">{g.reason}</div>
+                                    <time className="whitespace-nowrap text-left text-[11px] tabular-nums text-slate-400 md:text-right">
+                                        {g.as_of.split(' ')[1] || '--'}
+                                    </time>
                                 </div>
                             ))}
                         </div>

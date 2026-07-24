@@ -34,7 +34,7 @@ def annotate_agent_traces(
             "input_statuses": statuses, "requested_model": model,
         })
         if "actual_model" not in trace:
-            trace["actual_model"] = model
+            trace["actual_model"] = "unknown"
         if fallback_from and "fallback_from" not in trace:
             trace["fallback_from"] = fallback_from
         output.append(trace)

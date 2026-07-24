@@ -45,15 +45,15 @@ def _evidence():
 
 
 def test_no_fallback_actual_matches_requested():
-    """When all tier keys are populated, actual_model == requested_model and
-    fallback_from is absent."""
+    """When analyst does not provide actual_model, annotate sets it to
+    'unknown' (never fakes the config-derived requested_model)."""
     traces = annotate_agent_traces(
         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
         config=_config(), raw_evidence=_evidence(),
     )
     trace = traces[0]
     assert trace["requested_model"] == "glm-mid"
-    assert trace["actual_model"] == "glm-mid"
+    assert trace["actual_model"] == "unknown"
     assert "fallback_from" not in trace
     assert trace["model_tier"] == "mid"
     assert trace["provider"] == "zhipu"
@@ -187,14 +187,13 @@ def test_annotate_preserves_runtime_actual_model():
 
 
 def test_actual_model_unknown_when_not_provided_by_analyst():
-    """When analyst does not provide actual_model, annotate sets it to the
-    config-derived model (no runtime detection available)."""
+    """When analyst does not provide actual_model, annotate sets it to
+    'unknown' — never fakes the config-derived requested_model."""
     traces = annotate_agent_traces(
         [{"agent": "news_analyst", "verdict": "中性"}],
         config=_config(), raw_evidence=_evidence(),
     )
-    # Without runtime detection, actual_model falls back to requested
-    assert traces[0]["actual_model"] == "glm-quick"
+    assert traces[0]["actual_model"] == "unknown"
     assert traces[0]["requested_model"] == "glm-quick"
 
 
@@ -250,11 +249,12 @@ def test_history_traces_not_affected_by_config_mutation():
         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
         config=cfg, raw_evidence=_evidence(),
     )
-    assert traces[0]["actual_model"] == "glm-mid"
+    assert traces[0]["actual_model"] == "unknown"
+    assert traces[0]["requested_model"] == "glm-mid"
     # Mutate config after annotation
     cfg["mid_think_llm"] = "different-model"
     # Original trace unchanged
-    assert traces[0]["actual_model"] == "glm-mid"
+    assert traces[0]["actual_model"] == "unknown"
     assert traces[0]["requested_model"] == "glm-mid"
 
 

@@ -1,0 +1,1107 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m$ [0mgit log --oneline --all | head -30
+9a12f07 fix(auto-dev): close FUND-004A review false negative
+fe0edf9 docs(tasks): reset FUND-004A-R1 to ready after parser fix
+5edf331 fix(auto-dev): broaden clean verdict patterns for descriptive reviews
+8044a94 docs(tasks): extend nightly remediation batch
+54c0cd3 fix(fundamentals): bind profit and cashflow evidence groups
+b847a09 docs(tasks): requeue overnight review findings
+0901b91 fix(auto-dev): fail closed on Codex review findings
+1273118 docs: mark UI-014 done after auto run
+a959761 auto: UI-014 TA 研报证据中心与来源下钻（P2） [AUTO-002]
+679912d docs: mark M-010 done after auto run
+52cadc2 auto: M-010 飞书/通知链路人工确认版（P2） [AUTO-002]
+10f3b0f docs: mark M-009 done after auto run
+67e98e9 auto: M-009 TradeFlow 前端观察池面板（P2） [AUTO-002]
+9068ce7 docs: mark HY-009 done after auto run
+c23e891 auto: HY-009 半年报增量刷新、缓存失效与事实冲突审计（P2） [AUTO-002]
+91e3000 docs: mark B-004 done after auto run
+fc864bb auto: B-004 持仓快照与 investment-controller 同步 [AUTO-002]
+49ce239 docs: mark B-003 done after auto run
+3d0c2cb auto: B-003 研报导出为飞书文档 [AUTO-002]
+9bc21ff docs: mark B-002 done after auto run
+5ab6750 auto: B-002 定时任务与 OpenClaw 联动 [AUTO-002]
+b4c82c0 docs: C-008 NEEDS_HUMAN review notes, loop paused
+f86bea6 docs: mark C-007 done after auto run
+1616543 auto: C-007 event_risk_gate（P1） [AUTO-002]
+0048766 docs: mark C-006 done after auto run
+f015ac6 auto: C-006 financial_data_validator — 分期实现（P2） [AUTO-002]
+d073fb1 docs: mark C-005 done after auto run
+38e3261 auto: C-005 same_symbol_delta_check（P2） [AUTO-002]
+69baa6a docs: mark C-004 done after auto run
+abb151c auto: C-004 动作枚举重设计（P1） [AUTO-002]
+[0m
+[0m$ [0mgit show fad65d9 --stat 2>/dev/null || echo "Commit not found"
+commit fad65d9d0ab2c68e4a218a14f585404161844fa8
+Author: maybeemeng747-svg <maybeemeng747@gmail.com>
+Date:   Wed Jul 22 20:55:39 2026 +0800
+
+    auto: FUND-005A 逐 Agent 真实模型与运行时 trace 补修（P1） [AUTO-002]
+
+ docs/DEVLOG.md                                     |   35 +
+ docs/TASKS.md                                      |    2 +-
+ docs/reviews/FUND-005A-20260722-round1.txt         | 3027 ++++++++++++++++++++
+ .../codegraph-context.txt                          |   21 +
+ .../FUND-005A-20260722-203834/codegraph-impact.txt |   94 +
+ .../codegraph-status.json                          |   43 +
+ .../codex-review-round1.txt                        | 3027 ++++++++++++++++++++
+ .../FUND-005A-20260722-203834/opencode-round1.txt  | 1019 +++++++
+ .../FUND-005A-20260722-203834/prompt-round1.md     |   16 +
+ .../review-meta-round1.json                        |   14 +
+ .../task_runs/FUND-005A-20260722-203834/summary.md |   14 +
+ docs/task_runs/FUND-005A-20260722-203834/task.md   |   23 +
+ .../FUND-005A-20260722-203834/tests-round1.txt     |    7 +
+ tests/test_fund005_agent_trace.py                  |  312 +-
+ .../agents/analysts/fundamentals_analyst.py        |   11 +
+ tradingagents/agents/analysts/macro_analyst.py     |   11 +
+ tradingagents/agents/analysts/market_analyst.py    |   11 +
+ tradingagents/agents/analysts/news_analyst.py      |   11 +
+ .../agents/analysts/smart_money_analyst.py         |   11 +
+ .../agents/analysts/social_media_analyst.py        |   11 +
+ .../agents/analysts/volume_price_analyst.py        |   11 +
+ tradingagents/agents/utils/agent_states.py         |    5 +
+ tradingagents/agents/utils/agent_trace.py          |   46 +-
+ 23 files changed, 7763 insertions(+), 19 deletions(-)
+[0m
+Now let me understand the original commit and the context around actual model tracking.
+[0m$ [0mgit show fad65d9 -- tradingagents/agents/utils/agent_trace.py
+commit fad65d9d0ab2c68e4a218a14f585404161844fa8
+Author: maybeemeng747-svg <maybeemeng747@gmail.com>
+Date:   Wed Jul 22 20:55:39 2026 +0800
+
+    auto: FUND-005A 逐 Agent 真实模型与运行时 trace 补修（P1） [AUTO-002]
+
+diff --git a/tradingagents/agents/utils/agent_trace.py b/tradingagents/agents/utils/agent_trace.py
+index b61a4ff..473a823 100644
+--- a/tradingagents/agents/utils/agent_trace.py
++++ b/tradingagents/agents/utils/agent_trace.py
+@@ -27,12 +27,16 @@ def annotate_agent_traces(
+     for raw_trace in traces or []:
+         trace = dict(raw_trace)
+         tier = _TIER_BY_AGENT.get(str(trace.get("agent") or ""), "unknown")
+-        model = _model_for_tier(config, tier)
++        model, fallback_from = _model_for_tier_with_fallback(config, tier)
+         trace.update({
+             "provider": provider, "model": model, "model_tier": tier,
+             "prompt_version": "config-driven", "input_contract_digest": digest,
+-            "input_statuses": statuses, "requested_model": model, "actual_model": model,
++            "input_statuses": statuses, "requested_model": model,
+         })
++        if "actual_model" not in trace:
++            trace["actual_model"] = model
++        if fallback_from and "fallback_from" not in trace:
++            trace["fallback_from"] = fallback_from
+         output.append(trace)
+     return output
+ 
+@@ -43,17 +47,47 @@ def build_run_model_snapshot(config: Mapping[str, Any]) -> dict[str, str]:
+     }}
+ 
+ 
++def _extract_actual_model_from_response(last_chunk: Any) -> str | None:
++    """Extract the actual model name from the last LLM response chunk.
++
++    Returns the model name if available in response metadata, else None.
++    Caller should treat None as "unknown".
++    """
++    if last_chunk is None:
++        return None
++    response_meta = getattr(last_chunk, "response_metadata", None) or {}
++    model = response_meta.get("model") or response_meta.get("model_name")
++    if model:
++        return str(model)
++    return None
++
++
+ def _model_for_tier(config: Mapping[str, Any], tier: str) -> str:
++    model, _ = _model_for_tier_with_fallback(config, tier)
++    return model
++
++
++def _model_for_tier_with_fallback(config: Mapping[str, Any], tier: str) -> tuple[str, str | None]:
++    """Return (resolved_model, fallback_from) for a tier.
++
++    fallback_from is the first-choice config key when it was empty and
++    the resolved model came from a subsequent candidate.
++    """
+     candidates = {
+         "quick": ("quick_think_llm",),
+         "mid": ("mid_think_llm", "deep_think_llm", "quick_think_llm"),
+         "deep": ("deep_think_llm", "quick_think_llm"),
+         "ultra": ("ultra_think_llm", "deep_think_llm", "quick_think_llm"),
+     }.get(tier, ())
+-    for key in candidates:
+-        if config.get(key):
+-            return str(config[key])
+-    return "unknown"
++    if candidates:
++        first_key = candidates[0]
++        for key in candidates:
++            if config.get(key):
++                resolved = str(config[key])
++                if key != first_key:
++                    return resolved, first_key
++                return resolved, None
++    return "unknown", None
+ 
+ 
+ def _input_statuses(raw_evidence: Mapping[str, Any]) -> list[dict[str, str]]:
+[0m
+[0m$ [0mgit show fad65d9 -- tests/test_fund005_agent_trace.py
+commit fad65d9d0ab2c68e4a218a14f585404161844fa8
+Author: maybeemeng747-svg <maybeemeng747@gmail.com>
+Date:   Wed Jul 22 20:55:39 2026 +0800
+
+    auto: FUND-005A 逐 Agent 真实模型与运行时 trace 补修（P1） [AUTO-002]
+
+diff --git a/tests/test_fund005_agent_trace.py b/tests/test_fund005_agent_trace.py
+index 8be3a01..4c97482 100644
+--- a/tests/test_fund005_agent_trace.py
++++ b/tests/test_fund005_agent_trace.py
+@@ -1,4 +1,22 @@
++"""FUND-005A: Per-agent real model and runtime trace tests.
++
++Five mock scenarios:
++  1. No fallback — actual model matches requested
++  2. Config-level tier fallback — actual model from fallback tier
++  3. Runtime actual_model from LLM response metadata
++  4. Actual model unknown (no response metadata, empty stream)
++  5. Historical config change — snapshot immutability
++"""
++
++from __future__ import annotations
++
++import time
++from types import SimpleNamespace
++from typing import Any
++
+ from tradingagents.agents.utils.agent_trace import (
++    _extract_actual_model_from_response,
++    _model_for_tier_with_fallback,
+     annotate_agent_traces,
+     build_run_model_snapshot,
+ )
+@@ -23,20 +41,224 @@ def _evidence():
+     }
+ 
+ 
+-def test_fundamentals_trace_has_actual_run_snapshot_and_safe_digest():
++# ── Scenario 1: No fallback — actual model matches requested ──
++
++
++def test_no_fallback_actual_matches_requested():
++    """When all tier keys are populated, actual_model == requested_model and
++    fallback_from is absent."""
+     traces = annotate_agent_traces(
+         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
+         config=_config(), raw_evidence=_evidence(),
+     )
+     trace = traces[0]
+-    assert trace["provider"] == "zhipu"
+-    assert trace["model_tier"] == "mid"
++    assert trace["requested_model"] == "glm-mid"
+     assert trace["actual_model"] == "glm-mid"
+-    assert trace["input_contract_digest"].startswith("sha256:")
+-    assert trace["input_statuses"] == [
+-        {"field": "company_profile", "status": "PARTIAL", "vendor": "akshare"},
+-        {"field": "fundamentals", "status": "HAS_DATA", "vendor": "akshare"},
+-    ]
++    assert "fallback_from" not in trace
++    assert trace["model_tier"] == "mid"
++    assert trace["provider"] == "zhipu"
++
++
++def test_no_fallback_timing_fields_present_when_analyst_provides():
++    """When analyst emits started_at/finished_at/latency_ms, annotate_agent_traces
++    preserves them."""
++    now = time.time()
++    traces = annotate_agent_traces(
++        [{
++            "agent": "market_analyst",
++            "verdict": "看多",
++            "started_at": now,
++            "finished_at": now + 1.5,
++            "latency_ms": 1500.0,
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    trace = traces[0]
++    assert trace["started_at"] == now
++    assert trace["finished_at"] == now + 1.5
++    assert trace["latency_ms"] == 1500.0
++
++
++# ── Scenario 2: Config-level tier fallback ──
++
++
++def test_tier_fallback_from_mid_to_deep():
++    """When mid_think_llm is empty, tier falls back to deep_think_llm and
++    fallback_from is set."""
++    cfg = _config()
++    del cfg["mid_think_llm"]
++    model, fallback_from = _model_for_tier_with_fallback(cfg, "mid")
++    assert model == "glm-deep"
++    assert fallback_from == "mid_think_llm"
++
++
++def test_tier_fallback_from_ultra_to_deep():
++    """When ultra_think_llm is empty, tier falls back to deep_think_llm."""
++    cfg = _config()
++    del cfg["ultra_think_llm"]
++    model, fallback_from = _model_for_tier_with_fallback(cfg, "ultra")
++    assert model == "glm-deep"
++    assert fallback_from == "ultra_think_llm"
++
++
++def test_tier_fallback_annotate_preserves_analyst_actual_model():
++    """annotate_agent_traces sets fallback_from from config but preserves
++    analyst-provided actual_model."""
++    cfg = _config()
++    del cfg["mid_think_llm"]  # triggers fallback to deep_think_llm
++    traces = annotate_agent_traces(
++        [{
++            "agent": "fundamentals_analyst",
++            "verdict": "看多",
++            "actual_model": "mimo-v2.5-pro",  # runtime-detected
++        }],
++        config=cfg, raw_evidence=_evidence(),
++    )
++    trace = traces[0]
++    assert trace["requested_model"] == "glm-deep"  # config fallback
++    assert trace["actual_model"] == "mimo-v2.5-pro"  # preserved from analyst
++    assert trace["fallback_from"] == "mid_think_llm"
++
++
++def test_tier_fallback_no_fallback_when_first_key_populated():
++    """When the first candidate key is populated, no fallback_from is set."""
++    model, fallback_from = _model_for_tier_with_fallback(_config(), "quick")
++    assert model == "glm-quick"
++    assert fallback_from is None
++
++
++def test_tier_fallback_all_keys_missing():
++    """When all tier keys are missing, returns unknown with no fallback_from
++    (no fallback occurred — the entire tier is empty)."""
++    cfg = {"llm_provider": "test"}
++    model, fallback_from = _model_for_tier_with_fallback(cfg, "mid")
++    assert model == "unknown"
++    assert fallback_from is None
++
++
++# ── Scenario 3: Runtime actual_model from LLM response metadata ──
++
++
++def test_extract_actual_model_from_response_with_model_field():
++    """Chunks with response_metadata['model'] yield the actual model name."""
++    chunk = SimpleNamespace(response_metadata={"model": "mimo-v2.5-pro", "token_usage": {}})
++    assert _extract_actual_model_from_response(chunk) == "mimo-v2.5-pro"
++
++
++def test_extract_actual_model_from_response_with_model_name_field():
++    """Some providers use 'model_name' instead of 'model'."""
++    chunk = SimpleNamespace(response_metadata={"model_name": "deepseek-chat"})
++    assert _extract_actual_model_from_response(chunk) == "deepseek-chat"
++
++
++def test_extract_actual_model_from_response_none_chunk():
++    """None chunk (empty stream) yields None."""
++    assert _extract_actual_model_from_response(None) is None
++
++
++def test_extract_actual_model_from_response_no_metadata():
++    """Chunk without response_metadata yields None."""
++    chunk = SimpleNamespace(content="hello")
++    assert _extract_actual_model_from_response(chunk) is None
++
++
++def test_extract_actual_model_from_response_empty_metadata():
++    """Chunk with empty response_metadata yields None."""
++    chunk = SimpleNamespace(response_metadata={})
++    assert _extract_actual_model_from_response(chunk) is None
++
++
++def test_annotate_preserves_runtime_actual_model():
++    """When analyst provides actual_model from runtime, annotate does not
++    overwrite it with the config-derived value."""
++    traces = annotate_agent_traces(
++        [{
++            "agent": "fundamentals_analyst",
++            "verdict": "看多",
++            "actual_model": "gpt-4o-real",  # runtime-detected from response
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "gpt-4o-real"
++    assert traces[0]["requested_model"] == "glm-mid"
++
++
++# ── Scenario 4: Actual model unknown ──
++
++
++def test_actual_model_unknown_when_not_provided_by_analyst():
++    """When analyst does not provide actual_model, annotate sets it to the
++    config-derived model (no runtime detection available)."""
++    traces = annotate_agent_traces(
++        [{"agent": "news_analyst", "verdict": "中性"}],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    # Without runtime detection, actual_model falls back to requested
++    assert traces[0]["actual_model"] == "glm-quick"
++    assert traces[0]["requested_model"] == "glm-quick"
++
++
++def test_actual_model_unknown_explicit():
++    """When analyst explicitly sets actual_model to 'unknown' (no response
++    metadata), annotate preserves it."""
++    traces = annotate_agent_traces(
++        [{
++            "agent": "news_analyst",
++            "verdict": "中性",
++            "actual_model": "unknown",
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "unknown"
++    assert traces[0]["requested_model"] == "glm-quick"
++
++
++def test_actual_model_unknown_with_fallback():
++    """When config has fallback AND analyst reports unknown actual_model."""
++    cfg = _config()
++    del cfg["mid_think_llm"]
++    traces = annotate_agent_traces(
++        [{
++            "agent": "fundamentals_analyst",
++            "verdict": "中性",
++            "actual_model": "unknown",
++        }],
++        config=cfg, raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "unknown"
++    assert traces[0]["requested_model"] == "glm-deep"  # config fallback
++    assert traces[0]["fallback_from"] == "mid_think_llm"
++
++
++# ── Scenario 5: Historical config change — snapshot immutability ──
++
++
++def test_history_snapshot_is_independent_from_later_config_changes():
++    """Once a run snapshot is taken, later config mutations do not affect it."""
++    snapshot = build_run_model_snapshot(_config())
++    changed = _config()
++    changed["mid_think_llm"] = "new-model"
++    assert snapshot["mid"] == "glm-mid"
++    assert changed["mid_think_llm"] == "new-model"
++
++
++def test_history_traces_not_affected_by_config_mutation():
++    """Traces annotated with a config are not affected if the config dict
++    is later mutated."""
++    cfg = _config()
++    traces = annotate_agent_traces(
++        [{"agent": "fundamentals_analyst", "verdict": "中性"}],
++        config=cfg, raw_evidence=_evidence(),
++    )
++    assert traces[0]["actual_model"] == "glm-mid"
++    # Mutate config after annotation
++    cfg["mid_think_llm"] = "different-model"
++    # Original trace unchanged
++    assert traces[0]["actual_model"] == "glm-mid"
++    assert traces[0]["requested_model"] == "glm-mid"
++
++
++# ── Privacy tests (carried from FUND-005) ──
+ 
+ 
+ def test_trace_never_contains_secret_or_raw_evidence_content():
+@@ -49,9 +271,75 @@ def test_trace_never_contains_secret_or_raw_evidence_content():
+     assert "very long text" not in serialized
+ 
+ 
+-def test_history_snapshot_is_independent_from_later_config_changes():
++def test_trace_never_contains_api_key_or_base_url():
++    """Even with fallback, secrets are not leaked."""
++    cfg = _config()
++    cfg["api_key"] = "super-secret-key"
++    cfg["backend_url"] = "https://secret-url.example/v1"
++    del cfg["mid_think_llm"]
++    traces = annotate_agent_traces(
++        [{"agent": "fundamentals_analyst"}], config=cfg, raw_evidence=_evidence()
++    )
++    serialized = str(traces)
++    assert "super-secret-key" not in serialized
++    assert "secret-url.example" not in serialized
++
++
++# ── Snapshot includes all tiers ──
++
++
++def test_build_run_model_snapshot_all_tiers():
+     snapshot = build_run_model_snapshot(_config())
+-    changed = _config()
+-    changed["mid_think_llm"] = "new-model"
++    assert snapshot["provider"] == "zhipu"
++    assert snapshot["quick"] == "glm-quick"
+     assert snapshot["mid"] == "glm-mid"
+-    assert changed["mid_think_llm"] == "new-model"
++    assert snapshot["deep"] == "glm-deep"
++    assert snapshot["ultra"] == "glm-ultra"
++
++
++def test_build_run_model_snapshot_unknown_for_missing_tier():
++    cfg = {"llm_provider": "test", "quick_think_llm": "q"}
++    snapshot = build_run_model_snapshot(cfg)
++    assert snapshot["quick"] == "q"
++    # mid falls back to quick_think_llm via tier cascade
++    assert snapshot["mid"] == "q"
++    # deep falls back to quick_think_llm via tier cascade
++    assert snapshot["deep"] == "q"
++    # ultra falls back to deep_think_llm → quick_think_llm via tier cascade
++    assert snapshot["ultra"] == "q"
++
++
++# ── Timing integration ──
++
++
++def test_latency_ms_is_positive_when_timing_provided():
++    """When analyst provides timing, latency_ms is positive."""
++    now = time.time()
++    traces = annotate_agent_traces(
++        [{
++            "agent": "macro_analyst",
++            "verdict": "看空",
++            "started_at": now,
++            "finished_at": now + 2.3,
++            "latency_ms": 2300.0,
++        }],
++        config=_config(), raw_evidence=_evidence(),
++    )
++    assert traces[0]["latency_ms"] == 2300.0
++    assert traces[0]["finished_at"] > traces[0]["started_at"]
++
++
++# ── All 7 agents covered ──
++
++
++def test_all_analyst_tiers_covered():
++    """Every known analyst agent has a tier mapping."""
++    expected = {
++        "market_analyst": "quick", "social_media_analyst": "quick",
++        "news_analyst": "quick", "smart_money_analyst": "quick",
++        "volume_price_analyst": "quick", "fundamentals_analyst": "mid",
++        "macro_analyst": "mid",
++    }
++    from tradingagents.agents.utils.agent_trace import _TIER_BY_AGENT
++    for agent, tier in expected.items():
++        assert _TIER_BY_AGENT.get(agent) == tier, f"{agent} tier mismatch"
+[0m
+[0m→ [0mRead tradingagents/agents/utils/agent_trace.py
+[0m→ [0mRead tests/test_fund005_agent_trace.py
+Now let me read the current state of the files and the analyst code to understand where `actual_model` is set.
+[0m✱ [0mGrep "actual_model"[90m in tradingagents · 25 matches[0m
+Now let me check how analysts set `actual_model` in their code to understand the full picture.
+[0m✱ [0mGrep "_extract_actual_model_from_response"[90m in . · 193 matches[0m
+[0m
+[0m# [0mTodos
+[•] Fix agent_trace.py: change actual_model fallback from config model to "unknown"
+[ ] Fix test_actual_model_unknown_when_not_provided_by_analyst to assert "unknown"
+[ ] Run tests to verify fix
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a clear picture. The bug is at `agent_trace.py:36-37`: when the analyst doesn't provide `actual_model`, it's set to the config-derived `model` (faking it as the requested model). It should be `"unknown"`.
+
+Let me check the DEVLOG and then implement the fix.
+[0m← [0mEdit tradingagents/agents/utils/agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/agent_trace.py
+@@ -33,9 +33,9 @@
+         "prompt_version": "config-driven", "input_contract_digest": digest,
+         "input_statuses": statuses, "requested_model": model,
+     })
+     if "actual_model" not in trace:
+-        trace["actual_model"] = model
++        trace["actual_model"] = "unknown"
+     if fallback_from and "fallback_from" not in trace:
+         trace["fallback_from"] = fallback_from
+     output.append(trace)
+ return output
+
+[0m
+Now let me apply the fix. The core issue is at `agent_trace.py:36-37` — the fallback for missing `actual_model` should be `"unknown"`, not the config model.
+[0m← [0mEdit tests/test_fund005_agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+@@ -44,17 +44,17 @@
+ # ── Scenario 1: No fallback — actual model matches requested ──
+ 
+ 
+ def test_no_fallback_actual_matches_requested():
+-    """When all tier keys are populated, actual_model == requested_model and
+-    fallback_from is absent."""
++    """When analyst does not provide actual_model, annotate sets it to
++    'unknown' (never fakes the config-derived requested_model)."""
+     traces = annotate_agent_traces(
+         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
+         config=_config(), raw_evidence=_evidence(),
+     )
+     trace = traces[0]
+     assert trace["requested_model"] == "glm-mid"
+-    assert trace["actual_model"] == "glm-mid"
++    assert trace["actual_model"] == "unknown"
+     assert "fallback_from" not in trace
+     assert trace["model_tier"] == "mid"
+     assert trace["provider"] == "zhipu"
+ 
+
+[0m
+Now update the tests that assert the old (wrong) behavior. Let me fix them:
+[0m← [0mEdit tests/test_fund005_agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+@@ -186,16 +186,15 @@
+ # ── Scenario 4: Actual model unknown ──
+ 
+ 
+ def test_actual_model_unknown_when_not_provided_by_analyst():
+-    """When analyst does not provide actual_model, annotate sets it to the
+-    config-derived model (no runtime detection available)."""
++    """When analyst does not provide actual_model, annotate sets it to
++    'unknown' — never fakes the config-derived requested_model."""
+     traces = annotate_agent_traces(
+         [{"agent": "news_analyst", "verdict": "中性"}],
+         config=_config(), raw_evidence=_evidence(),
+     )
+-    # Without runtime detection, actual_model falls back to requested
+-    assert traces[0]["actual_model"] == "glm-quick"
++    assert traces[0]["actual_model"] == "unknown"
+     assert traces[0]["requested_model"] == "glm-quick"
+ 
+ 
+ def test_actual_model_unknown_explicit():
+
+[0m
+[0m← [0mEdit tests/test_fund005_agent_trace.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund005_agent_trace.py
+@@ -248,13 +248,14 @@
+     traces = annotate_agent_traces(
+         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
+         config=cfg, raw_evidence=_evidence(),
+     )
+-    assert traces[0]["actual_model"] == "glm-mid"
++    assert traces[0]["actual_model"] == "unknown"
++    assert traces[0]["requested_model"] == "glm-mid"
+     # Mutate config after annotation
+     cfg["mid_think_llm"] = "different-model"
+     # Original trace unchanged
+-    assert traces[0]["actual_model"] == "glm-mid"
++    assert traces[0]["actual_model"] == "unknown"
+     assert traces[0]["requested_model"] == "glm-mid"
+ 
+ 
+ # ── Privacy tests (carried from FUND-005) ──
+
+[0m
+[0m✱ [0mGrep "actual_model|annotate_agent_traces"[90m in tests/test_fund006a_provider_replay.py · 18 matches[0m
+Now let me check if the FUND-006A tests also need updating.
+[0m→ [0mRead tests/test_fund006a_provider_replay.py[90m [offset=585, limit=110][0m
+[0m→ [0mRead tests/test_fund006a_provider_replay.py[90m [limit=30, offset=825][0m
+[0m→ [0mRead tradingagents/agents/utils/agent_states.py
+Good, the FUND-006A tests don't assert `actual_model` for traces without explicit `actual_model`. They should pass unchanged.
+
+Now let me also check the `agent_states.py` to understand the `actual_model` field in the state:
+[0m
+[0m# [0mTodos
+[✓] Fix agent_trace.py: change actual_model fallback from config model to "unknown"
+[✓] Fix test_actual_model_unknown_when_not_provided_by_analyst to assert "unknown"
+[•] Run tests to verify fix
+[ ] Update docs/DEVLOG.md
+[0m
+Good. The `TraceItem` type at `agent_states.py:59` already has `actual_model: str`. Now let me run the tests.
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund005_agent_trace.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 24 items
+
+tests/test_fund005_agent_trace.py::test_no_fallback_actual_matches_requested PASSED [  4%]
+tests/test_fund005_agent_trace.py::test_no_fallback_timing_fields_present_when_analyst_provides PASSED [  8%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_mid_to_deep PASSED [ 12%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_ultra_to_deep PASSED [ 16%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_annotate_preserves_analyst_actual_model PASSED [ 20%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_no_fallback_when_first_key_populated PASSED [ 25%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_all_keys_missing PASSED [ 29%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_field PASSED [ 33%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_name_field PASSED [ 37%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_none_chunk PASSED [ 41%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_no_metadata PASSED [ 45%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_empty_metadata PASSED [ 50%]
+tests/test_fund005_agent_trace.py::test_annotate_preserves_runtime_actual_model PASSED [ 54%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_when_not_provided_by_analyst PASSED [ 58%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_explicit PASSED [ 62%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_with_fallback PASSED [ 66%]
+tests/test_fund005_agent_trace.py::test_history_snapshot_is_independent_from_later_config_changes PASSED [ 70%]
+tests/test_fund005_agent_trace.py::test_history_traces_not_affected_by_config_mutation PASSED [ 75%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_secret_or_raw_evidence_content PASSED [ 79%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_api_key_or_base_url PASSED [ 83%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_all_tiers PASSED [ 87%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_unknown_for_missing_tier PASSED [ 91%]
+tests/test_fund005_agent_trace.py::test_latency_ms_is_positive_when_timing_provided PASSED [ 95%]
+tests/test_fund005_agent_trace.py::test_all_analyst_tiers_covered PASSED [100%]
+
+============================== 24 passed in 1.23s ==============================
+[0m
+All 24 tests pass. Now let me run the FUND-006A tests to check for regressions.
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py -v -k "Axis5 or AgentTrace" 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 52 items / 45 deselected / 7 selected
+
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_annotate_traces_attaches_routing_facts PASSED [ 14%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_model_tier_fallback PASSED [ 28%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_run_model_snapshot PASSED [ 42%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_extract_actual_model_from_response PASSED [ 57%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_extract_actual_model_none_chunk PASSED [ 71%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_trace_privacy_no_secrets PASSED [ 85%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_actual_model_from_response_overrides_default PASSED [100%]
+
+======================= 7 passed, 45 deselected in 1.23s =======================
+[0m
+All passing. Let me run the full FUND-006A suite and also the full pipeline replay test to be thorough.
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 52 items
+
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_akshare_table_format PASSED [  1%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_eastmoney_list_format PASSED [  3%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_cninfo_cross_source_conflict PASSED [  5%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_contract_has_data PASSED [  7%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_missing_profile PASSED [  9%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_partial_profile PASSED [ 11%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_cross_source_conflict PASSED [ 13%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_render_identity_context_injects_constraint PASSED [ 15%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_render_identity_context_for_valid PASSED [ 17%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_income_cumulative_recognized PASSED [ 19%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_single_quarter_derivation PASSED [ 21%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_cashflow_scopes PASSED [ 23%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_balance_sheet_point_in_time PASSED [ 25%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_period_scope_for_date PASSED [ 26%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_render_period_context_mentions_scopes PASSED [ 28%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping PASSED [ 30%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_explanation_context_from_announcement PASSED [ 32%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_bind_claims_match_official_evidence PASSED [ 34%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_unsupported_claim_detected PASSED [ 36%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_accounting_policy_detected PASSED [ 38%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_negation_handling PASSED [ 40%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_direction_conflict PASSED [ 42%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_synonym_normalization PASSED [ 44%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_per_occurrence_binding PASSED [ 46%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_consensus_excludes_gated_fundamentals PASSED [ 48%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_consensus_includes_valid_fundamentals PASSED [ 50%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_gate_node_replaces_report PASSED [ 51%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_gate_stores_integrity_in_metadata PASSED [ 53%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_full_integrity_eval_with_real_fixtures PASSED [ 55%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_valid_report_passes_integrity PASSED [ 57%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_annotate_traces_attaches_routing_facts PASSED [ 59%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_model_tier_fallback PASSED [ 61%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_run_model_snapshot PASSED [ 63%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_extract_actual_model_from_response PASSED [ 65%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_extract_actual_model_none_chunk PASSED [ 67%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_trace_privacy_no_secrets PASSED [ 69%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_actual_model_from_response_overrides_default PASSED [ 71%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_identity_injected_into_analyst_context PASSED [ 73%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_period_context_injected_into_analyst PASSED [ 75%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_integrity_gate_with_real_pool PASSED [ 76%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_risk_judge_consumes_integrity PASSED [ 78%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_consensus_exclusion_after_gate PASSED [ 80%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_trace_annotation_on_full_run PASSED [ 82%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_cross_industry_replay PASSED [ 84%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_603629_historical_bug_regression PASSED [ 86%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_financial_facts_retained_when_narrative_rejected PASSED [ 88%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_empty_profile_gated PASSED [ 90%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_missing_period_facts_handled PASSED [ 92%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_future_report_date_no_crash PASSED [ 94%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_duplicate_report_dates PASSED [ 96%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_unit_mismatch_warning PASSED [ 98%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_gate_no_crash_on_malformed_state PASSED [100%]
+
+============================== 52 passed in 1.11s ==============================
+[0m
+All 52 tests pass. Let me also run a broader test to catch any other regressions.
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund004b_cashflow.py tests/test_fund004a_integrity.py -v --tb=short 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... ERROR: file or directory not found: tests/test_fund004b_cashflow.py
+
+collected 0 items
+
+============================ no tests ran in 0.01s =============================
+[0m
+[0m$ [0mls tests/test_fund*.py 2>&1
+tests/test_fund001_instrument_identity.py
+tests/test_fund002_financial_periods.py
+tests/test_fund003_fund004_integrity.py
+tests/test_fund004a_integrity_gate.py
+tests/test_fund005_agent_trace.py
+tests/test_fund006_integrity_replay.py
+tests/test_fund006a_provider_replay.py
+tests/test_fund007a_error_benchmark.py
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund004a_integrity_gate.py -v --tb=short 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 99 items
+
+tests/test_fund005_agent_trace.py::test_no_fallback_actual_matches_requested PASSED [  1%]
+tests/test_fund005_agent_trace.py::test_no_fallback_timing_fields_present_when_analyst_provides PASSED [  2%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_mid_to_deep PASSED [  3%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_from_ultra_to_deep PASSED [  4%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_annotate_preserves_analyst_actual_model PASSED [  5%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_no_fallback_when_first_key_populated PASSED [  6%]
+tests/test_fund005_agent_trace.py::test_tier_fallback_all_keys_missing PASSED [  7%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_field PASSED [  8%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_with_model_name_field PASSED [  9%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_none_chunk PASSED [ 10%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_no_metadata PASSED [ 11%]
+tests/test_fund005_agent_trace.py::test_extract_actual_model_from_response_empty_metadata PASSED [ 12%]
+tests/test_fund005_agent_trace.py::test_annotate_preserves_runtime_actual_model PASSED [ 13%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_when_not_provided_by_analyst PASSED [ 14%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_explicit PASSED [ 15%]
+tests/test_fund005_agent_trace.py::test_actual_model_unknown_with_fallback PASSED [ 16%]
+tests/test_fund005_agent_trace.py::test_history_snapshot_is_independent_from_later_config_changes PASSED [ 17%]
+tests/test_fund005_agent_trace.py::test_history_traces_not_affected_by_config_mutation PASSED [ 18%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_secret_or_raw_evidence_content PASSED [ 19%]
+tests/test_fund005_agent_trace.py::test_trace_never_contains_api_key_or_base_url PASSED [ 20%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_all_tiers PASSED [ 21%]
+tests/test_fund005_agent_trace.py::test_build_run_model_snapshot_unknown_for_missing_tier PASSED [ 22%]
+tests/test_fund005_agent_trace.py::test_latency_ms_is_positive_when_timing_provided PASSED [ 23%]
+tests/test_fund005_agent_trace.py::test_all_analyst_tiers_covered PASSED [ 24%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_akshare_table_format PASSED [ 25%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_eastmoney_list_format PASSED [ 26%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_cninfo_cross_source_conflict PASSED [ 27%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_contract_has_data PASSED [ 28%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_missing_profile PASSED [ 29%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_partial_profile PASSED [ 30%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_identity_cross_source_conflict PASSED [ 31%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_render_identity_context_injects_constraint PASSED [ 32%]
+tests/test_fund006a_provider_replay.py::TestAxis1_IdentitySource::test_render_identity_context_for_valid PASSED [ 33%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_income_cumulative_recognized PASSED [ 34%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_single_quarter_derivation PASSED [ 35%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_cashflow_scopes PASSED [ 36%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_balance_sheet_point_in_time PASSED [ 37%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_period_scope_for_date PASSED [ 38%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_render_period_context_mentions_scopes PASSED [ 39%]
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping PASSED [ 40%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_explanation_context_from_announcement PASSED [ 41%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_bind_claims_match_official_evidence PASSED [ 42%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_unsupported_claim_detected PASSED [ 43%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_accounting_policy_detected PASSED [ 44%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_negation_handling PASSED [ 45%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_direction_conflict PASSED [ 46%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_synonym_normalization PASSED [ 47%]
+tests/test_fund006a_provider_replay.py::TestAxis3_ClaimEvidenceBinding::test_per_occurrence_binding PASSED [ 48%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_consensus_excludes_gated_fundamentals PASSED [ 49%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_consensus_includes_valid_fundamentals PASSED [ 50%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_gate_node_replaces_report PASSED [ 51%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_gate_stores_integrity_in_metadata PASSED [ 52%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_full_integrity_eval_with_real_fixtures PASSED [ 53%]
+tests/test_fund006a_provider_replay.py::TestAxis4_ResearchWeightRemoval::test_valid_report_passes_integrity PASSED [ 54%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_annotate_traces_attaches_routing_facts PASSED [ 55%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_model_tier_fallback PASSED [ 56%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_run_model_snapshot PASSED [ 57%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_extract_actual_model_from_response PASSED [ 58%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_extract_actual_model_none_chunk PASSED [ 59%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_trace_privacy_no_secrets PASSED [ 60%]
+tests/test_fund006a_provider_replay.py::TestAxis5_AgentTrace::test_actual_model_from_response_overrides_default PASSED [ 61%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_identity_injected_into_analyst_context PASSED [ 62%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_period_context_injected_into_analyst PASSED [ 63%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_integrity_gate_with_real_pool PASSED [ 64%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_risk_judge_consumes_integrity PASSED [ 65%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_consensus_exclusion_after_gate PASSED [ 66%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_trace_annotation_on_full_run PASSED [ 67%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_cross_industry_replay PASSED [ 68%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_603629_historical_bug_regression PASSED [ 69%]
+tests/test_fund006a_provider_replay.py::TestFullPipelineOfflineReplay::test_financial_facts_retained_when_narrative_rejected PASSED [ 70%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_empty_profile_gated PASSED [ 71%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_missing_period_facts_handled PASSED [ 72%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_future_report_date_no_crash PASSED [ 73%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_duplicate_report_dates PASSED [ 74%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_unit_mismatch_warning PASSED [ 75%]
+tests/test_fund006a_provider_replay.py::TestAdversarialCases::test_gate_no_crash_on_malformed_state PASSED [ 76%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_replaces_report_when_identity_unverified PASSED [ 77%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_replaces_report_when_cause_unsupported PASSED [ 78%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_preserves_verified_facts PASSED [ 79%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_stores_integrity_in_metadata PASSED [ 80%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_passes_through_when_integrity_valid PASSED [ 81%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_no_data_collector PASSED [ 82%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_no_pool PASSED [ 83%]
+tests/test_fund004a_integrity_gate.py::TestFundamentalsIntegrityGateNode::test_gate_skips_when_empty_report PASSED [ 84%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_contains_blocker_reasons PASSED [ 85%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_no_unsupported_narrative PASSED [ 86%]
+tests/test_fund004a_integrity_gate.py::TestGatedReportContent::test_gated_report_preserves_financial_numbers PASSED [ 87%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_excludes_fundamentals_when_gated PASSED [ 88%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_includes_fundamentals_when_valid PASSED [ 89%]
+tests/test_fund004a_integrity_gate.py::TestResearchManagerConsensusExclusion::test_consensus_works_without_integrity_metadata PASSED [ 90%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_risk_manager_uses_precomputed_integrity PASSED [ 91%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_risk_manager_falls_back_without_precomputed PASSED [ 92%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_period_facts_defined_when_precomputed_integrity PASSED [ 93%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_period_facts_empty_when_no_raw_evidence PASSED [ 94%]
+tests/test_fund004a_integrity_gate.py::TestRiskJudgePrecomputedIntegrity::test_period_facts_fallback_on_the_fly_computation PASSED [ 95%]
+tests/test_fund004a_integrity_gate.py::TestMemoryProtection::test_reflection_uses_gated_report_from_state PASSED [ 96%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_603629_style_invalid_report_is_gated PASSED [ 97%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_valid_report_passes_through PASSED [ 98%]
+tests/test_fund004a_integrity_gate.py::TestEndToEndGateBehavior::test_accounting_claim_without_evidence_is_gated PASSED [100%]
+
+============================== 99 passed in 1.30s ==============================
+[0m
+[0m# [0mTodos
+[✓] Fix agent_trace.py: change actual_model fallback from config model to "unknown"
+[✓] Fix test_actual_model_unknown_when_not_provided_by_analyst to assert "unknown"
+[✓] Run tests to verify fix
+[•] Update docs/DEVLOG.md
+[0m
+All 99 FUND series tests pass. Now let me update the DEVLOG.
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=50][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,44 @@
+ # 修改日志
+ 
++## 2026-07-24 | FUND-005A-R1 actual model 未知态修复
++
++- **任务**：FUND-005A-R1 — 补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model（P1）
++- **状态**：✅ 实现完成；24 项 FUND-005A 测试 passed，FUND 系列回归 99 passed
++- **代码标注**：无新增标注（修改 `annotate_agent_traces` fallback 语义）
++
++### 改动
++
++- **`tradingagents/agents/utils/agent_trace.py`**（修改）
++  - `annotate_agent_traces()` 中当分析师未提供 `actual_model` 时，原代码将其设为 config 推导的 `model`（与 `requested_model` 相同），伪装成实际运行模型
++  - 修复：fallback 值从 `model` 改为 `"unknown"`，三态契约明确：actual/fallback/unknown
++  - 当分析师通过 `_extract_actual_model_from_response()` 提供了 `actual_model` 时，annotate 保留该值不变
++
++- **`tests/test_fund005_agent_trace.py`**（修改）
++  - `test_no_fallback_actual_matches_requested`：断言 `actual_model == "unknown"`（分析师未提供时不再伪装）
++  - `test_actual_model_unknown_when_not_provided_by_analyst`：断言 `actual_model == "unknown"`
++  - `test_history_traces_not_affected_by_config_mutation`：断言 `actual_model == "unknown"`
++
++### 设计要点
++
++- **最小改动**：仅修改 `agent_trace.py` 一行（37 行 `model` → `"unknown"`），三行测试断言同步更新
++- **三态契约**：`actual_model` 现在严格区分三种状态：
++  1. 分析师提供具体值（如 `"gpt-4o-real"`）→ 保留
++  2. 分析师显式写 `"unknown"`（无 response metadata）→ 保留
++  3. 分析师未提供该字段 → fallback 为 `"unknown"`（不再伪装成 requested_model）
++- **向后兼容**：所有 7 个分析师节点已统一使用 `_extract_actual_model_from_response(last_chunk) or "unknown"`，运行时始终提供 `actual_model`；此修复仅影响旧数据或非分析师代码路径的 fallback 行为
++
++### 回归
++
++- `pytest tests/test_fund005_agent_trace.py -v`：**24 passed**
++- `pytest tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund004a_integrity_gate.py -v`：**99 passed**
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-23 | FUND-004A-R1 预计算 integrity 路径初始化 period_facts
+ 
+ - **任务**：FUND-004A-R1 — 补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`（P0）
+ - **状态**：✅ 实现完成；23 项 FUND-004A 测试 passed，FUND/C-006 回归 168 passed
+
+[0m
+[0m# [0mTodos
+[✓] Fix agent_trace.py: change actual_model fallback from config model to "unknown"
+[✓] Fix test_actual_model_unknown_when_not_provided_by_analyst to assert "unknown"
+[✓] Run tests to verify fix
+[✓] Update docs/DEVLOG.md
+[0m
+[0m$ [0mgit diff --stat
+docs/DEVLOG.md                                   |  38 +++++
+ docs/TASKS.md                                    |   2 +-
+ frontend/src/components/TrackingBoardV2Panel.tsx | 181 +++++++++++++----------
+ tests/test_fund005_agent_trace.py                |  18 +--
+ tradingagents/agents/utils/agent_trace.py        |   2 +-
+ 5 files changed, 154 insertions(+), 87 deletions(-)
+[0m
+Let me verify the final diff:
+[0m$ [0mgit diff tradingagents/agents/utils/agent_trace.py tests/test_fund005_agent_trace.py docs/DEVLOG.md
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index adfb908..87d143c 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -1,5 +1,43 @@
+ # 修改日志
+ 
++## 2026-07-24 | FUND-005A-R1 actual model 未知态修复
++
++- **任务**：FUND-005A-R1 — 补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model（P1）
++- **状态**：✅ 实现完成；24 项 FUND-005A 测试 passed，FUND 系列回归 99 passed
++- **代码标注**：无新增标注（修改 `annotate_agent_traces` fallback 语义）
++
++### 改动
++
++- **`tradingagents/agents/utils/agent_trace.py`**（修改）
++  - `annotate_agent_traces()` 中当分析师未提供 `actual_model` 时，原代码将其设为 config 推导的 `model`（与 `requested_model` 相同），伪装成实际运行模型
++  - 修复：fallback 值从 `model` 改为 `"unknown"`，三态契约明确：actual/fallback/unknown
++  - 当分析师通过 `_extract_actual_model_from_response()` 提供了 `actual_model` 时，annotate 保留该值不变
++
++- **`tests/test_fund005_agent_trace.py`**（修改）
++  - `test_no_fallback_actual_matches_requested`：断言 `actual_model == "unknown"`（分析师未提供时不再伪装）
++  - `test_actual_model_unknown_when_not_provided_by_analyst`：断言 `actual_model == "unknown"`
++  - `test_history_traces_not_affected_by_config_mutation`：断言 `actual_model == "unknown"`
++
++### 设计要点
++
++- **最小改动**：仅修改 `agent_trace.py` 一行（37 行 `model` → `"unknown"`），三行测试断言同步更新
++- **三态契约**：`actual_model` 现在严格区分三种状态：
++  1. 分析师提供具体值（如 `"gpt-4o-real"`）→ 保留
++  2. 分析师显式写 `"unknown"`（无 response metadata）→ 保留
++  3. 分析师未提供该字段 → fallback 为 `"unknown"`（不再伪装成 requested_model）
++- **向后兼容**：所有 7 个分析师节点已统一使用 `_extract_actual_model_from_response(last_chunk) or "unknown"`，运行时始终提供 `actual_model`；此修复仅影响旧数据或非分析师代码路径的 fallback 行为
++
++### 回归
++
++- `pytest tests/test_fund005_agent_trace.py -v`：**24 passed**
++- `pytest tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund004a_integrity_gate.py -v`：**99 passed**
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-23 | FUND-004A-R1 预计算 integrity 路径初始化 period_facts
+ 
+ - **任务**：FUND-004A-R1 — 补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`（P0）
+diff --git a/tests/test_fund005_agent_trace.py b/tests/test_fund005_agent_trace.py
+index 4c97482..9aa0ce8 100644
+--- a/tests/test_fund005_agent_trace.py
++++ b/tests/test_fund005_agent_trace.py
+@@ -45,15 +45,15 @@ def _evidence():
+ 
+ 
+ def test_no_fallback_actual_matches_requested():
+-    """When all tier keys are populated, actual_model == requested_model and
+-    fallback_from is absent."""
++    """When analyst does not provide actual_model, annotate sets it to
++    'unknown' (never fakes the config-derived requested_model)."""
+     traces = annotate_agent_traces(
+         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
+         config=_config(), raw_evidence=_evidence(),
+     )
+     trace = traces[0]
+     assert trace["requested_model"] == "glm-mid"
+-    assert trace["actual_model"] == "glm-mid"
++    assert trace["actual_model"] == "unknown"
+     assert "fallback_from" not in trace
+     assert trace["model_tier"] == "mid"
+     assert trace["provider"] == "zhipu"
+@@ -187,14 +187,13 @@ def test_annotate_preserves_runtime_actual_model():
+ 
+ 
+ def test_actual_model_unknown_when_not_provided_by_analyst():
+-    """When analyst does not provide actual_model, annotate sets it to the
+-    config-derived model (no runtime detection available)."""
++    """When analyst does not provide actual_model, annotate sets it to
++    'unknown' — never fakes the config-derived requested_model."""
+     traces = annotate_agent_traces(
+         [{"agent": "news_analyst", "verdict": "中性"}],
+         config=_config(), raw_evidence=_evidence(),
+     )
+-    # Without runtime detection, actual_model falls back to requested
+-    assert traces[0]["actual_model"] == "glm-quick"
++    assert traces[0]["actual_model"] == "unknown"
+     assert traces[0]["requested_model"] == "glm-quick"
+ 
+ 
+@@ -250,11 +249,12 @@ def test_history_traces_not_affected_by_config_mutation():
+         [{"agent": "fundamentals_analyst", "verdict": "中性"}],
+         config=cfg, raw_evidence=_evidence(),
+     )
+-    assert traces[0]["actual_model"] == "glm-mid"
++    assert traces[0]["actual_model"] == "unknown"
++    assert traces[0]["requested_model"] == "glm-mid"
+     # Mutate config after annotation
+     cfg["mid_think_llm"] = "different-model"
+     # Original trace unchanged
+-    assert traces[0]["actual_model"] == "glm-mid"
++    assert traces[0]["actual_model"] == "unknown"
+     assert traces[0]["requested_model"] == "glm-mid"
+ 
+ 
+diff --git a/tradingagents/agents/utils/agent_trace.py b/tradingagents/agents/utils/agent_trace.py
+index 473a823..7bf6a0f 100644
+--- a/tradingagents/agents/utils/agent_trace.py
++++ b/tradingagents/agents/utils/agent_trace.py
+@@ -34,7 +34,7 @@ def annotate_agent_traces(
+             "input_statuses": statuses, "requested_model": model,
+         })
+         if "actual_model" not in trace:
+-            trace["actual_model"] = model
++            trace["actual_model"] = "unknown"
+         if fallback_from and "fallback_from" not in trace:
+             trace["fallback_from"] = fallback_from
+         output.append(trace)
+[0m
+Done. Here's the summary:
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `tradingagents/agents/utils/agent_trace.py:37` | Core fix: `model` → `"unknown"` |
+| `tests/test_fund005_agent_trace.py` | 3 test assertions updated |
+| `docs/DEVLOG.md` | New entry for FUND-005A-R1 |
+
+## Key Logic
+
+In `annotate_agent_traces()`, when the analyst trace does not contain `actual_model`, the fallback was the config-derived `model` (same as `requested_model`), which "faked" the actual model. Fixed to write `"unknown"` instead.
+
+**Three-state contract** now enforced:
+1. Analyst provides concrete value (e.g. `"gpt-4o-real"`) → preserved
+2. Analyst writes `"unknown"` (no response metadata) → preserved
+3. Analyst omits the field → fallback `"unknown"` (never fakes requested_model)
+
+## Test Results
+
+- `test_fund005_agent_trace.py`: **24 passed**
+- FUND series regression (`test_fund005` + `test_fund006a` + `test_fund004a`): **99 passed**, 0 failed

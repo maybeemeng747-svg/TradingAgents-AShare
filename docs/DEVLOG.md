@@ -1,5 +1,43 @@
 # 修改日志
 
+## 2026-07-24 | FUND-005A-R1 actual model 未知态修复
+
+- **任务**：FUND-005A-R1 — 补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model（P1）
+- **状态**：✅ 实现完成；24 项 FUND-005A 测试 passed，FUND 系列回归 99 passed
+- **代码标注**：无新增标注（修改 `annotate_agent_traces` fallback 语义）
+
+### 改动
+
+- **`tradingagents/agents/utils/agent_trace.py`**（修改）
+  - `annotate_agent_traces()` 中当分析师未提供 `actual_model` 时，原代码将其设为 config 推导的 `model`（与 `requested_model` 相同），伪装成实际运行模型
+  - 修复：fallback 值从 `model` 改为 `"unknown"`，三态契约明确：actual/fallback/unknown
+  - 当分析师通过 `_extract_actual_model_from_response()` 提供了 `actual_model` 时，annotate 保留该值不变
+
+- **`tests/test_fund005_agent_trace.py`**（修改）
+  - `test_no_fallback_actual_matches_requested`：断言 `actual_model == "unknown"`（分析师未提供时不再伪装）
+  - `test_actual_model_unknown_when_not_provided_by_analyst`：断言 `actual_model == "unknown"`
+  - `test_history_traces_not_affected_by_config_mutation`：断言 `actual_model == "unknown"`
+
+### 设计要点
+
+- **最小改动**：仅修改 `agent_trace.py` 一行（37 行 `model` → `"unknown"`），三行测试断言同步更新
+- **三态契约**：`actual_model` 现在严格区分三种状态：
+  1. 分析师提供具体值（如 `"gpt-4o-real"`）→ 保留
+  2. 分析师显式写 `"unknown"`（无 response metadata）→ 保留
+  3. 分析师未提供该字段 → fallback 为 `"unknown"`（不再伪装成 requested_model）
+- **向后兼容**：所有 7 个分析师节点已统一使用 `_extract_actual_model_from_response(last_chunk) or "unknown"`，运行时始终提供 `actual_model`；此修复仅影响旧数据或非分析师代码路径的 fallback 行为
+
+### 回归
+
+- `pytest tests/test_fund005_agent_trace.py -v`：**24 passed**
+- `pytest tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund004a_integrity_gate.py -v`：**99 passed**
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-23 | FUND-004A-R1 预计算 integrity 路径初始化 period_facts
 
 - **任务**：FUND-004A-R1 — 补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`（P0）
@@ -14834,3 +14872,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
   `UNKNOWN`.
 - Added an exact parser regression, manually verified the implementation and
   released `FUND-005A-R1`.
+
+## 2026-07-24 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-005A-R1 - actual model 未知态修复（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1/P2 correctness findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/FUND-005A-R1-20260724-round1.txt
+- **Run archive**: docs/task_runs/FUND-005A-R1-20260724-141405/

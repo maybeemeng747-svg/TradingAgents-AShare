@@ -102,7 +102,7 @@
 ### FUND-005A-R1: actual model 未知态修复（P1）
 - **描述**：补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed FUND-005A-R1-20260724-141405
 - **预计耗时**：20-30 分钟
 - **depends_on**：FUND-004A-R1
 - **auto_release**：true
