@@ -75,6 +75,10 @@ def test_common_clean_codex_verdicts_are_recognized() -> None:
             "The code change is correct. I did not find a correctness issue "
             "introduced by the current changes."
         ),
+        (
+            "The current diff only marks task state, and I did not find a "
+            "discrete correctness issue in these changes."
+        ),
     )
     for verdict in verdicts:
         assert classify_review(f"codex\n{verdict}\n")[0] == "CLEAN"

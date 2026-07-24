@@ -30,8 +30,8 @@
 
 1. `AUTO-008`：Codex final-answer 结构化解析与 fail-closed 门禁（done，`0901b91`）。
 2. `FUND-004B-R1`：利润与经营现金流同财务组绑定（done，2026-07-23 人工复核通过）。
-3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（P0，ready）。
-4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，blocked-auto）。
+3. `FUND-004A-R1`：预计算 integrity 路径初始化 `period_facts`（done，`fe0edf9`；2026-07-24 人工复核）。
+4. `FUND-005A-R1`：actual model 缺失时保持 unknown（P1，ready）。
 5. `SCORE-001B-R1`：按报告交易日取快照并清洗动作词/失败态（P0，blocked-auto）。
 6. `SCORE-002-R1`：`entry_timing` 响应契约与风险扣分持久化（P1，blocked-auto）。
 7. `SCORE-003-R1`：`portfolio_fit` 响应契约、未知账户与部分风险预算（P0，blocked-auto）。
@@ -93,7 +93,7 @@
 ### FUND-004A-R1: 预计算 integrity 路径初始化 period_facts（P0）
 - **描述**：补修 `d250dd8` 的 `risk_manager.py` 预计算分支未定义 `period_facts`，避免复用 integrity 时触发 `UnboundLocalError`。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — implementation `fe0edf9`; review parser false-negative manually closed 2026-07-24
 - **预计耗时**：25-40 分钟
 - **depends_on**：FUND-004B-R1
 - **auto_release**：true
@@ -102,7 +102,7 @@
 ### FUND-005A-R1: actual model 未知态修复（P1）
 - **描述**：补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **预计耗时**：20-30 分钟
 - **depends_on**：FUND-004A-R1
 - **auto_release**：true

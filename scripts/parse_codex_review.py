@@ -45,8 +45,8 @@ _CLEAN_PATTERNS = (
     ),
     re.compile(
         r"\b(?:did not|didn't|do not|don't) find (?:a|any) "
-        r"correctness issues? introduced by "
-        r"(?:the )?(?:current|these|this) changes?\b",
+        r"(?:(?:actionable|discrete|introduced) )?correctness issues?"
+        r"(?: introduced by (?:the )?(?:current|these|this) changes?)?\b",
         re.IGNORECASE,
     ),
     re.compile(r"\bno (?:introduced )?correctness issue\b", re.IGNORECASE),

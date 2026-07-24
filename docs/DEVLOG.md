@@ -14815,3 +14815,22 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review verdict was ambiguous
 - **Run archive**: docs/task_runs/FUND-004A-R1-20260723-185024/
+
+## 2026-07-24 | AUTO-002 Auto Dev Loop
+
+- **Task**: FUND-004A-R1 - 预计算 integrity 路径初始化 period_facts（P0）
+- **Priority**: P0
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review verdict was ambiguous
+- **Run archive**: docs/task_runs/FUND-004A-R1-20260723-235521/
+
+## 2026-07-24 | FUND-004A-R1 manual closeout
+
+- The second run repeated code already committed in `fe0edf9`; its only
+  remaining diff was task state plus audit artifacts.
+- Codex explicitly reported no discrete correctness issue, but
+  `parse_codex_review.py` did not recognise that clean wording and returned
+  `UNKNOWN`.
+- Added an exact parser regression, manually verified the implementation and
+  released `FUND-005A-R1`.
