@@ -102,7 +102,7 @@
 ### FUND-005A-R1: actual model 未知态修复（P1）
 - **描述**：补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model。
 - **优先级**：P1
-- **状态**：in_progress — claimed FUND-005A-R1-20260724-141405
+- **状态**：done -- commit fd2f465
 - **预计耗时**：20-30 分钟
 - **depends_on**：FUND-004A-R1
 - **auto_release**：true
@@ -111,7 +111,7 @@
 ### SCORE-001B-R1: 快照时点、动作词与失败态补修（P0）
 - **描述**：补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：ready
 - **预计耗时**：35-45 分钟
 - **depends_on**：FUND-005A-R1
 - **auto_release**：true
