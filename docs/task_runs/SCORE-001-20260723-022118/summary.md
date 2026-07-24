@@ -6,6 +6,9 @@
 - Rounds: 1
 - Tests: PASS
 - Codex review: no P0/P1 findings
+- Reachable implementation commit: efeff84
+- Acceptance archive commit: c6f6ea7
+- Later hardening commit: f344b20
 - OpenCode timeout seconds: 1800
 - Test timeout seconds: 900
 - Codex review timeout seconds: 1200

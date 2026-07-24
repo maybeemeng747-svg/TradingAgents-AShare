@@ -1,5 +1,22 @@
 # 修改日志
 
+## 2026-07-24 | SCORE-001-R1 验收档案一致性收口
+
+- **问题 1**：TASKS/DEVLOG 把 `87dcd44 + 24881f6` 写成当前分支实现提交，但两者均不是 `HEAD` 的祖先，无法从当前发布链复现。
+- **修复 1**：改用当前分支可达的生产实现提交 `efeff84`、验收归档提交 `c6f6ea7`，并注明后续加固提交 `f344b20`。
+- **问题 2**：`docs/task_runs/SCORE-001-20260723-022118/summary.md` 已是 PASS，但 `task.md` 仍为 `CLAIMED`。
+- **修复 2**：将运行档案状态校准为 DONE，并在 summary 中记录可达实现/验收提交。
+- **边界**：只修治理文档与历史运行档案，不改生产 loader、测试 fixture、知识库、数据库或 prompts。
+- **Review Round 1**：Codex 指出 SCORE-001-R1 缺少自己的 `task_runs` 档案；本轮按 P2 finding 补齐，复审通过前不释放 B-001-R1。
+- **Review Round 2**：独立运行档案补齐后无 P0/P1/P2 correctness finding；作为预释放审核凭据保留。
+- **Review Round 3**：最终状态复核发现 Round 2 原文描述的是释放前状态，不能直接作为释放后状态的审核凭据；恢复 in_progress/blocked，等待独立最终复审。
+- **Review Round 4**：in_progress/blocked 状态与档案一致，未发现 correctness issue；随后仅执行预定的 done/ready 状态迁移，并立即对最终释放状态做独立复审。
+- **Review Round 5**：最终释放状态复审发现运行档案仍写“复审进行中”时，B-001-R1 已提前进入 ready，存在被自动链抢先领取的竞态；已恢复 SCORE-001-R1 in_progress 与 B-001-R1 blocked-auto，待干净复审后再释放。
+- **Review Round 6**：修复竞态后，Codex 确认文档、依赖阻塞、提交可达性与运行档案均和 in-progress 状态一致；审核门完成后再将 SCORE-001-R1 标记 done，并释放 B-001-R1。
+- **测试**：`test_m002_summarize_runs.py` 与 `test_score001_research_score_snapshot.py` 共 94 passed。
+
+---
+
 ## 2026-07-24 | PLAYBOOK-002-R1 三笔法组合约束补修
 
 - **问题 1**：规则引擎算出默认计划仓位后，`allow_add` 仍读取原始空值，导致 ETF 等默认计划场景被误判为“计划仓位未设置”。
@@ -958,7 +975,7 @@
 
 - **任务**：SCORE-001 — TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1）
 - **操作**：re-validate 已有实现，确认契约完整性，更新 TASKS.md 状态为 done。
-- **实现**：已有实现（commit 87dcd44 + 24881f6）完整覆盖任务要求：
+- **实现**：当前分支可达实现 `efeff84`（生产 loader + fixture + tests）与验收归档 `c6f6ea7` 完整覆盖任务要求；后续由 `f344b20` 加固：
   - `tradingagents/dataflows/research_score_snapshot.py` — 只读 loader/provider，五类状态、fail-closed 降级表、路径安全、禁止动作字段、证据闭包、来源等级复用 KB-014。
   - `tests/research_score_snapshot_fixtures.py` — 21 个 fixture 样本。
   - `tests/test_score001_research_score_snapshot.py` — 73 tests。

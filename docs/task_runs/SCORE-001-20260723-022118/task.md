@@ -2,7 +2,7 @@
 
 - Task: SCORE-001 - TA 只读 research_score_snapshot 契约与安全接入（P1）
 - Priority: P1
-- Status: CLAIMED
+- Status: DONE
 - Started at: 2026-07-23_02:21:18
 - Git HEAD: 92caccc
 - Test commands: pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short
@@ -13,6 +13,8 @@
 - OpenCode version: 1.15.12
 - Full tests enabled: 0
 - Runner: scripts/auto_dev_loop.sh
+- Reachable implementation commit: efeff84
+- Acceptance archive commit: c6f6ea7
 
 ## Trace Files
 

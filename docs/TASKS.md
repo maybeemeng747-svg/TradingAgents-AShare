@@ -43,8 +43,9 @@
 13. `FUND-007A-R1`：错误模式基准因果短语补修（done，claim 级回归与两轮 Codex review 收口）。
 14. `F-001-R1`：未持仓试错 Buy Level 上限补修（done，人工 Codex review 收口）。
 15. `PLAYBOOK-002-R1`：三笔法组合约束补修（done，Codex review 收口）。
-16. `SCORE-001-R1`：快照 loader 验收档案修正（P2，ready）。
-17. 其余 review finding 进入第二批：`B-001/002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+16. `SCORE-001-R1`：快照 loader 验收档案修正（done，第 6 轮最终复审通过）。
+17. `B-001-R1`：MiMo provider 配置与凭据路由补修（P1，ready）。
+18. 其余 review finding 进入第二批：`B-002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -207,14 +208,14 @@
 ### SCORE-001-R1: 快照 loader 验收档案修正（P2）
 - **描述**：修正文档中不可达/过期 commit 引用和 run archive 的 CLAIMED 状态，不改生产 loader。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 可达实现提交、旧 run 状态和独立 R1 运行档案已校准；94 tests passed，第 6 轮最终复审通过
 - **depends_on**：PLAYBOOK-002-R1
 - **auto_release**：true
 
 ### B-001-R1: MiMo provider 配置与凭据路由补修（P1）
 - **描述**：让存储的 MiMo key、base_url、默认模型在完整图路径一致生效，目录 key scope 与实际读取保持一致。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：SCORE-001-R1
 - **auto_release**：true
 
@@ -613,7 +614,7 @@
 171. `KB-018`：同股研报观点版本演化与共识漂移时间线（P1，done — commit 0879941，依赖 KB-016/KB-017 ✓）。
 172. `HY-009`：半年报增量刷新、缓存失效与事实冲突审计（P2，done，HY-009-20260723-054123）。
 173. `V-014`：真实本地知识库只读 smoke 与研报主线验收日报（P2，blocked，等待 HY-009）。
-174. `SCORE-001`：TA 只读 `research_score_snapshot` v1.1.0 loader 与安全契约（P1，done，commit 87dcd44 + 24881f6）。
+174. `SCORE-001`：TA 只读 `research_score_snapshot` loader 与安全契约（P1，done；当前分支可达实现 `efeff84`，验收归档 `c6f6ea7`，后续由 `f344b20` 加固）。
 175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，done，SCORE-002-20260723-023857）。
 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
@@ -6164,7 +6165,7 @@
 ### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
 - **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 `research_score_snapshot` v1.1.0 可被稳定读取和降级，但本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
-- **状态**：done — commit 87dcd44 + 24881f6，73 tests passed
+- **状态**：done — 当前分支可达实现 `efeff84`，验收归档 `c6f6ea7`，后续加固 `f344b20`；73 tests passed
 - **前置条件**：KB-001、KB-014 完成；ZCode v1.1.0 Schema/validator/fixture 已人工确认。
 - **depends_on**：KB-001, KB-014
 - **auto_release**：false
