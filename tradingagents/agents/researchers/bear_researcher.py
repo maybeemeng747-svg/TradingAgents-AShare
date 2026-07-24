@@ -13,6 +13,11 @@ from tradingagents.agents.utils.debate_utils import (
     format_claims_for_prompt,
     update_debate_state_with_payload,
 )
+# [C-003-R1] streaming short-selling sanitizer
+from tradingagents.agents.utils.readiness_score import (
+    ShortSellingStreamFilter,
+    filter_short_strategy,
+)
 
 
 def create_bear_researcher(llm, memory):
@@ -65,13 +70,18 @@ def create_bear_researcher(llm, memory):
             round_goal=round_goal,
         )
 
-        # [C-003] short_filter — 如果不允许做空，修改 prompt 移除做空策略
+        # [C-003-R1] short_filter — 如果不允许做空，修改 prompt 移除做空策略。
+        # [P1 fix] 仅禁止开空方向策略；卖出/减仓/止损/EXIT 属于合法多头离场，不禁。
         if not can_short:
             prompt += (
-                "\n\n⚠️ 重要约束：当前账户不允许做空。\n"
-                "请不要输出任何做空、试空、平空、融券卖出等策略。\n"
-                "如果分析结论是看空，请改为输出：不买/回避/等待重新评估。\n"
-                "不要使用 SHORT、SELL、EXIT 等做空方向的动作。"
+                "\n\n⚠️ 重要约束：当前账户不允许做空（can_short=false）。\n"
+                "禁止输出任何开空方向策略：做空、试空、平空、融券卖出、空头开仓、"
+                "反手做空、short position、open short 等。\n"
+                "如果分析结论是看空：\n"
+                " - 未持仓者：改为不买/回避/等待重新评估。\n"
+                " - 已持仓者：可正常输出卖出/减仓/止损/止盈/清仓/EXIT/SELL 等多头离场动作"
+                "（这是平掉多头仓位，不是做空）。\n"
+                "注意：卖出/减仓/止损/EXIT 属于合法多头离场，请不要回避。"
             )
 
         # ── 实现 Token 级流式输出 ──────────────────
@@ -81,22 +91,53 @@ def create_bear_researcher(llm, memory):
         except (ValueError, TypeError):
             debate_round = 1
         full_content = ""
+
+        # [C-003-R1] Server-side blocking: sanitize every token before it
+        # reaches SSE / frontend. Short-selling keywords (including those split
+        # across chunks) are caught before emission; legitimate SELL/EXIT is
+        # never stripped.
+        short_stream_filter = ShortSellingStreamFilter(can_short=can_short)
+
         async for chunk in llm.astream(prompt):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
-            full_content += content
-            if tracker:
-                tracker._emit_token("Bear Researcher", "investment_debate_state", content)
+            safe_token = short_stream_filter.feed(content)
+            full_content += safe_token
+            if tracker and safe_token:
+                tracker._emit_token("Bear Researcher", "investment_debate_state", safe_token)
                 tracker.emit_debate_token(
                     debate="research", agent="Bear Researcher",
-                    round_num=debate_round, token=content,
+                    round_num=debate_round, token=safe_token,
                 )
 
-        # ── 推送辩论完整消息（标记流式结束）──
+        # [C-003-R1] Flush buffered tail (sanitized) into full_content.
+        flushed_tail = short_stream_filter.finalize()
+        if flushed_tail:
+            full_content += flushed_tail
+            if tracker:
+                tracker._emit_token("Bear Researcher", "investment_debate_state", flushed_tail)
+                tracker.emit_debate_token(
+                    debate="research", agent="Bear Researcher",
+                    round_num=debate_round, token=flushed_tail,
+                )
+        if short_stream_filter.changes:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "[C-003-R1] bear short_stream_filter applied: %s",
+                short_stream_filter.changes,
+            )
+
+        # ── 推送辩论完整消息（标记流式结束，使用已清洗内容）──
+        # [C-003-R1] full_content 已在 token 级别清洗，verdict 不暴露原始做空语言。
         if tracker:
             tracker.emit_debate_message(
                 debate="research", agent="Bear Researcher",
                 round_num=debate_round, content=full_content,
             )
+
+        # [C-003-R1] 防御性兜底清洗（理论上流式已清洗）
+        short_result = filter_short_strategy(full_content, can_short=can_short)
+        if short_result["filtered"]:
+            full_content = short_result["text"]
 
         new_investment_debate_state = update_debate_state_with_payload(
             state=investment_debate_state,

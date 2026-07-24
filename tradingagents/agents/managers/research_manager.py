@@ -12,7 +12,10 @@ from tradingagents.agents.utils.debate_utils import (
 )
 from tradingagents.agents.utils.trade_actions import validate_action, TradeAction
 # [C-003] short_filter
-from tradingagents.agents.utils.readiness_score import filter_short_strategy
+from tradingagents.agents.utils.readiness_score import (
+    filter_short_strategy,
+    ShortSellingStreamFilter,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -212,13 +215,21 @@ def create_research_manager(llm, memory):
             round_summary=round_summary_text,
         )
 
-        # [C-003] short_filter — append constraint when short selling not allowed
+        # [C-003-R1] short_filter — append constraint when short selling not allowed.
+        # [P1 fix] Distinguish short-selling (做空白/融券/空头开仓) from
+        # legitimate long-side exits (卖出/减仓/止损/EXIT/SELL). A user who
+        # already holds a long position may validly SELL/EXIT to close it; only
+        # opening a short position is forbidden. Do NOT blanket-ban SELL/EXIT.
         if not can_short:
             prompt += (
                 "\n\n⚠️ 重要约束：当前账户不允许做空（can_short=false）。\n"
-                "请不要输出任何做空、试空、平空、融券卖出等策略方向。\n"
-                "如果分析结论是看空，请改为输出：不买/回避/等待重新评估。\n"
-                "不要在投资方案中使用 SHORT、SELL、EXIT 等做空方向的动作。"
+                "禁止输出任何开空方向策略：做空、试空、平空、融券卖出、空头开仓、"
+                "反手做空、short position、open short 等。\n"
+                "如果分析结论是看空：\n"
+                " - 未持仓者：改为不买/回避/等待重新评估。\n"
+                " - 已持仓者：可正常输出卖出/减仓/止损/止盈/清仓/EXIT/SELL 等多头离场动作"
+                "（这是平掉多头仓位，不是做空）。\n"
+                "注意：卖出/减仓/止损/EXIT 属于合法多头离场，不属于做空，请不要回避。"
             )
 
         _logger.info(
@@ -244,10 +255,15 @@ def create_research_manager(llm, memory):
         first_reasoning_at: float | None = None
         start = time.monotonic()
 
+        # [C-003-R1] Server-side blocking: sanitize every token *before* it
+        # reaches SSE / frontend. The stream filter buffers a small tail so
+        # short-selling keywords split across chunks (e.g. "做"+"空策略") are
+        # caught before emission. Legitimate SELL/EXIT is never stripped.
+        short_stream_filter = ShortSellingStreamFilter(can_short=can_short)
+
         async for chunk in llm.astream(prompt):
             now = time.monotonic()
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
-            full_content += content
 
             # reasoning_content (thinking 模型) 仅做 server 端日志，不发前端
             reasoning = None
@@ -262,12 +278,32 @@ def create_research_manager(llm, memory):
             if content:
                 if first_token_at is None:
                     first_token_at = now
-                if tracker:
-                    tracker._emit_token("Research Manager", "investment_plan", content)
+                # [C-003-R1] Only emit the sanitized slice; raw short-selling
+                # tokens never reach the tracker / SSE.
+                safe_token = short_stream_filter.feed(content)
+                full_content += safe_token
+                if tracker and safe_token:
+                    tracker._emit_token("Research Manager", "investment_plan", safe_token)
                     tracker.emit_debate_token(
                         debate="research", agent="Research Manager",
-                        round_num=-1, token=content,
+                        round_num=-1, token=safe_token,
                     )
+
+        # [C-003-R1] Flush the buffered tail (sanitized) into full_content.
+        flushed_tail = short_stream_filter.finalize()
+        if flushed_tail:
+            full_content += flushed_tail
+            if tracker:
+                tracker._emit_token("Research Manager", "investment_plan", flushed_tail)
+                tracker.emit_debate_token(
+                    debate="research", agent="Research Manager",
+                    round_num=-1, token=flushed_tail,
+                )
+        if short_stream_filter.changes:
+            _logger.warning(
+                "[C-003-R1] short_stream_filter applied: %s",
+                short_stream_filter.changes,
+            )
 
         total_elapsed = time.monotonic() - start
         reasoning_text = "".join(reasoning_buf)
@@ -288,7 +324,9 @@ def create_research_manager(llm, memory):
                 reasoning_text[:1500],
             )
 
-        # ── 推送辩论裁决（标记流式结束）──
+        # ── 推送辩论裁决（标记流式结束，使用已清洗内容）──
+        # [C-003-R1] full_content is already sanitized at the token level, so
+        # the verdict message never exposes raw short-selling language.
         if tracker:
             tracker.emit_debate_message(
                 debate="research", agent="Research Manager",
@@ -304,7 +342,7 @@ def create_research_manager(llm, memory):
         if not gate_result["passed"]:
             full_content += format_position_validation_warning(gate_result)
 
-        # [C-003] short_filter — sanitize short-selling language from output
+        # [C-003] short_filter — 兜底二次清洗（理论上流式已清洗，此处防御性）
         short_result = filter_short_strategy(full_content, can_short=can_short)
         if short_result["filtered"]:
             full_content = short_result["text"]

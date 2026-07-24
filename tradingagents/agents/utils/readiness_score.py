@@ -204,7 +204,10 @@ _RISK_LABELS = {0: "风险观察", 1: "禁止开仓", 2: "条件减仓", 3: "触
 _BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
 
 # [Fix-9] + [C-003] A-share short-selling filter patterns
-_SHORT_SELLING_PATTERNS = [
+# [C-003-R1] Split into Chinese (literal) and English (case-insensitive)
+# pattern groups. English LLM output commonly uses uppercase action tokens
+# (e.g. "OPEN SHORT", "Short Selling"), which plain re.sub would miss.
+_SHORT_SELLING_PATTERNS_CN = [
     (r'做空策略', '看空信号'),
     (r'空头开仓', '离场信号'),
     (r'若做空', '若确认偏空'),
@@ -224,10 +227,25 @@ _SHORT_SELLING_PATTERNS = [
     (r'试空', '试探离场'),
     (r'平空', '平仓离场'),
     (r'做空仓位', '空仓观望'),
+]
+# [C-003-R1] English patterns evaluated with re.IGNORECASE.
+_SHORT_SELLING_PATTERNS_EN = [
     (r'short\s*position', '回避'),
-    (r'short\s*sel(?:l|ling)', '回避'),
+    (r'short\s*sel(?:l|ling)?', '回避'),
     (r'open\s*(?:a\s*)?short', '回避'),
 ]
+
+# [C-003] Backwards-compatible combined list (CN first, then EN).
+# NOTE: callers that need case-insensitive English matching should use
+# _sanitize_short_selling_text / ShortSellingStreamFilter rather than
+# iterating this list with plain re.sub.
+_SHORT_SELLING_PATTERNS = _SHORT_SELLING_PATTERNS_CN + _SHORT_SELLING_PATTERNS_EN
+
+# [C-003-R1] Legitimate long-side exit vocabulary that must NOT be filtered
+# as short-selling. These are valid for an already-held long position.
+_LEGIT_LONG_EXIT_KEYWORDS = (
+    '卖出', '减仓', '止损', '止盈', '清仓', 'EXIT', 'SELL', 'REDUCE',
+)
 
 
 def calculate_data_completeness(
@@ -612,6 +630,8 @@ def calculate_buy_level(
     position_status: str = "unknown",
     name_mismatch: bool = False,
     research_bearish: bool = False,
+    event_risk_active: bool = False,  # [C-007-R1]
+    event_risk_level: str = "none",  # [C-007-R1] "critical"/"high"/"medium"/"none"
 ) -> dict:
     """计算 Buy Level（买入/建仓侧等级 0-4）。
 
@@ -623,6 +643,11 @@ def calculate_buy_level(
     [P1-2] For no-position + research bearish (研究经理偏空/不建议入场):
     - Buy Level forced to 0 (禁止买入)
 
+    [C-007-R1] 事件门禁真降级：
+    - critical 风险事件 → Buy Level 强制为 0（禁止买入）
+    - high 风险事件 → Buy Level 上限 1（仅观察，禁止新建仓）
+    - medium 风险事件 → Buy Level 上限 2（条件试仓，降权但不阻断）
+
     返回:
         {"level": int, "note": str}
     """
@@ -630,9 +655,27 @@ def calculate_buy_level(
     if name_mismatch:
         max_level = min(max_level, 3)
 
+    # [C-007-R1] 事件门禁真降级 — 在所有其它判定之前生效
+    event_note = ""
+    if event_risk_active:
+        if event_risk_level == "critical":
+            return {
+                "level": 0,
+                "note": "[C-007-R1] 检测到 critical 级事件风险，Buy Level 强制为 0（禁止买入）",
+            }
+        if event_risk_level == "high":
+            max_level = min(max_level, 1)
+            event_note = "事件风险 high，Buy Level 上限 1（仅观察）"
+        elif event_risk_level == "medium":
+            max_level = min(max_level, 2)
+            event_note = "事件风险 medium，Buy Level 上限 2（条件试仓）"
+
     # [P1-2] No-position + research bearish → force level 0
     if position_status == "no_position" and research_bearish:
-        return {"level": 0, "note": "未持仓且研究经理偏空/不建议入场，Buy Level 降为 0（禁止买入）"}
+        note_parts = ["未持仓且研究经理偏空/不建议入场，Buy Level 降为 0（禁止买入）"]
+        if event_note:
+            note_parts.append(event_note)
+        return {"level": 0, "note": "；".join(note_parts)}
 
     # [Fix-5] No-position: cap at level 1 unless real entry conditions met
     if position_status == "no_position":
@@ -669,7 +712,9 @@ def calculate_buy_level(
     else:
         note_suffix = ""
 
-    note = (note_prefix + "；" + note_suffix).strip("；") if note_prefix and note_suffix else (note_prefix or note_suffix)
+    # [C-007-R1] 合并事件风险提示到 note
+    _note_parts = [p for p in (note_prefix, note_suffix, event_note) if p]
+    note = "；".join(_note_parts)
 
     if level_4_ok:
         return {"level": min(4, max_level), "note": note}
@@ -763,15 +808,26 @@ def _sanitize_short_selling_text(text: str) -> tuple:
     - 若做空 → 若确认偏空
     - etc.
 
+    [C-003-R1] English patterns are matched case-insensitively so that
+    uppercase LLM action tokens like "OPEN SHORT" / "Short Selling" are
+    caught.
+
     Returns (sanitized_text, list_of_changes)
     """
     changes = []
     result = text
-    for pattern, replacement in _SHORT_SELLING_PATTERNS:
+    # [C-003-R1] Chinese patterns: literal match.
+    for pattern, replacement in _SHORT_SELLING_PATTERNS_CN:
         matches = list(re.finditer(pattern, result))
         if matches:
             changes.append(f'"{matches[0].group(0)}" → "{replacement}"')
             result = re.sub(pattern, replacement, result)
+    # [C-003-R1] English patterns: case-insensitive match.
+    for pattern, replacement in _SHORT_SELLING_PATTERNS_EN:
+        matches = list(re.finditer(pattern, result, re.IGNORECASE))
+        if matches:
+            changes.append(f'"{matches[0].group(0)}" → "{replacement}"')
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     return result, changes
 
 
@@ -792,6 +848,125 @@ def filter_short_strategy(text: str, *, can_short: bool = False) -> dict:
         return {"text": text, "filtered": False, "changes": []}
     sanitized, changes = _sanitize_short_selling_text(text)
     return {"text": sanitized, "filtered": bool(changes), "changes": changes}
+
+
+# ── [C-003-R1] streaming short-selling filter ──────────────────────────────
+# The audit (round 1) found that when can_short=false the manager/risk nodes
+# streamed each raw LLM token via emit_debate_token / _emit_token *before* the
+# post-processing filter ran, so short-selling language leaked to the SSE /
+# frontend. The class below does true server-side blocking at generation time:
+# it buffers a small tail of every chunk so that short-selling keywords
+# (including those split across chunk boundaries) are sanitized before any
+# token is emitted, while legitimate long-side exits (卖出/减仓/止损/EXIT/SELL)
+# pass through untouched.
+
+# Keep a raw trailing window large enough for the supported cross-chunk
+# phrases and ordinary surrounding whitespace.
+_SHORT_STREAM_HOLD_LEN = 64
+_SHORT_STREAM_ENGLISH_TARGETS = (
+    "shortposition",
+    "shortsel",
+    "shortsell",
+    "shortselling",
+    "openshort",
+    "openashort",
+)
+
+
+def _pending_english_short_start(text: str, release_to: int) -> int:
+    """Move a raw release boundary before an incomplete English short phrase.
+
+    The non-streaming regexes intentionally accept unbounded whitespace. A
+    fixed tail alone therefore cannot protect ``open`` + many spaces +
+    ``short``. Compacting whitespace lets us recognize any suffix that is
+    still a prefix of a supported phrase and retain it until completion or
+    disqualification.
+    """
+    lowered = text.lower()
+    for start in range(len(lowered)):
+        if lowered[start] not in ("s", "o"):
+            continue
+        compact = re.sub(r"\s+", "", lowered[start:])
+        if compact and any(target.startswith(compact) for target in _SHORT_STREAM_ENGLISH_TARGETS):
+            release_to = min(release_to, start)
+    return release_to
+
+
+class ShortSellingStreamFilter:
+    """[C-003-R1] Stateful, cross-chunk short-selling sanitizer.
+
+    Wrap an LLM token stream so that no raw short-selling keyword ever reaches
+    the SSE / frontend. Each ``feed(chunk)`` returns a *safe-to-emit* string
+    (already sanitized). A small tail is held back internally so a keyword
+    split across chunks (e.g. "做" + "空策略") is caught before emission.
+
+    Algorithm: retain a raw trailing window and consume only a prefix that
+    cannot contain a keyword completed by a later chunk. The raw prefix is
+    sanitized exactly once before emission. This is important because a
+    replacement may be shorter than its source phrase; offsets into repeatedly
+    sanitized text can otherwise rewind, duplicate, or drop output.
+
+    When ``can_short`` is True the filter is a passthrough (no filtering).
+
+    Legitimate long-side exit vocabulary (卖出/减仓/止损/止盈/清仓/EXIT/SELL/
+    REDUCE) is never stripped — only true short-selling language is replaced.
+    """
+
+    def __init__(self, *, can_short: bool = False):
+        self.can_short = bool(can_short)
+        self._buf = ""
+        self.changes: list[str] = []
+
+    def feed(self, chunk: str) -> str:
+        """Append a streaming chunk and return text safe to emit now.
+
+        Returns "" when the only safe output is nothing (e.g. the buffered tail
+        is still ambiguous and must wait for the next chunk / finalize()).
+        """
+        if self.can_short or chunk is None:
+            return chunk or ""
+        if not isinstance(chunk, str):
+            chunk = str(chunk)
+
+        self._buf += chunk
+
+        release_to = max(0, len(self._buf) - _SHORT_STREAM_HOLD_LEN)
+        if release_to == 0:
+            return ""
+
+        # If the tentative cut crosses a complete match, retain that entire
+        # match. It will be sanitized on the next feed or during finalize().
+        for pattern, _replacement in _SHORT_SELLING_PATTERNS_CN:
+            for match in re.finditer(pattern, self._buf):
+                if match.start() < release_to < match.end():
+                    release_to = match.start()
+        for pattern, _replacement in _SHORT_SELLING_PATTERNS_EN:
+            for match in re.finditer(pattern, self._buf, re.IGNORECASE):
+                if match.start() < release_to < match.end():
+                    release_to = match.start()
+        release_to = _pending_english_short_start(self._buf, release_to)
+
+        raw_prefix = self._buf[:release_to]
+        self._buf = self._buf[release_to:]
+        sanitized, ch = _sanitize_short_selling_text(raw_prefix)
+        for change in ch:
+            if change not in self.changes:
+                self.changes.append(change)
+        return sanitized
+
+    def finalize(self) -> str:
+        """Flush any buffered tail. Call once when the stream ends."""
+        if self.can_short:
+            flushed = self._buf
+            self._buf = ""
+            return flushed
+        sanitized, ch = _sanitize_short_selling_text(self._buf)
+        if ch:
+            for c in ch:
+                if c not in self.changes:
+                    self.changes.append(c)
+        self._buf = ""
+        return sanitized
 
 
 def check_valuation_mismatch(
@@ -1073,6 +1248,22 @@ _SANITIZE_STRONG_BUY = [
     (r'可以追涨', '暂不执行强买入，等待条件确认'),
     (r'追涨买入', '暂不执行强买入，等待条件确认'),
 ]
+_SANITIZE_EVENT_RISK_BUY = [
+    # C-007 event-risk gate forbids opening/adding actions, including ordinary
+    # (not only "strong") buy wording. Keep this list aligned with
+    # event_risk_gate._RISK_FIRST_FORBIDDEN_ACTIONS.
+    (r'重仓买入', '等待风险解除'),
+    (r'建议加仓', '等待风险解除'),
+    (r'加仓买入', '等待风险解除'),
+    (r'追涨买入', '等待风险解除'),
+    (r'建议建仓', '等待风险解除'),
+    (r'建议买入', '等待风险解除'),
+    (r'建议入场', '等待风险解除'),
+    (r'积极建仓', '等待风险解除'),
+    (r'(?i)\bSTRONG_BUY\b', 'WAIT'),
+    (r'(?i)\bBUY\b', 'WAIT'),
+    (r'(?i)\bENTER\b', 'WAIT'),
+]
 _SANITIZE_NO_POSITION = [
     # ── [P0-2] Replace action suggestions but preserve field names ──
     # Field names (止损价, 止损位, 止损条件, 止损红线, 止损线) are preserved by
@@ -1188,11 +1379,23 @@ def sanitize_forbidden_strong_actions(
                 body = re.sub(pattern, replacement, body)
 
     if not gate.get("passed", True):
-        for pattern, replacement in _SANITIZE_STRONG_SELL:
-            matches = list(re.finditer(pattern, body))
-            if matches:
-                changes.append(f"强卖出动作已降级为「{replacement}」")
-                body = re.sub(pattern, replacement, body)
+        failures = list(gate.get("failures", []))
+        if "event_risk_block_open" in failures:
+            for pattern, replacement in _SANITIZE_EVENT_RISK_BUY:
+                matches = list(re.finditer(pattern, body))
+                if matches:
+                    changes.append(f"事件风险买入动作已降级为「{replacement}」")
+                    body = re.sub(pattern, replacement, body)
+        event_risk_buy_only = (
+            "event_risk_block_open" in failures
+            and not any(reason != "event_risk_block_open" for reason in failures)
+        )
+        if not event_risk_buy_only:
+            for pattern, replacement in _SANITIZE_STRONG_SELL:
+                matches = list(re.finditer(pattern, body))
+                if matches:
+                    changes.append(f"强卖出动作已降级为「{replacement}」")
+                    body = re.sub(pattern, replacement, body)
 
         for pattern, replacement in _SANITIZE_STRONG_BUY:
             matches = list(re.finditer(pattern, body))
