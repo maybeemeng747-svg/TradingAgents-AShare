@@ -197,8 +197,8 @@ class TestFailClosedValidation:
         result = query_research_score_snapshot(
             str(root), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
         )
-        # 损坏文件无可读候选 → NORMAL_NO_DATA；errors 记录损坏。
-        assert result.status == STATUS_NORMAL_NO_DATA
+        # [SCORE-001B-R1] 损坏文件在磁盘上存在但读取失败 → FAILED（非 NORMAL_NO_DATA）。
+        assert result.status == STATUS_FAILED
         assert any("JSON" in e or "解析" in e for e in result.errors)
 
     def test_symbol_mismatch_fail_closed(self, tmp_path: Path) -> None:
@@ -410,7 +410,7 @@ class TestDraftsExclusion:
         assert result.snapshot.scores.research_evidence_confidence == 80
 
     def test_draft_not_counted_as_candidate(self, tmp_path: Path) -> None:
-        # 只有草案 + 一个损坏正式文件 → 无可读正式候选。
+        # 只有草案 + 一个损坏正式文件 → 正式文件读取失败 → FAILED。
         root = tmp_path
         (root / SNAPSHOTS_DIR_NAME / "603629.SH").mkdir(parents=True)
         (root / SNAPSHOTS_DIR_NAME / "603629.SH" / "broken.json").write_text(
@@ -423,7 +423,8 @@ class TestDraftsExclusion:
         result = query_research_score_snapshot(
             str(root), symbol="603629.SH", analysis_time=_at(2026, 7, 14)
         )
-        assert result.status == STATUS_NORMAL_NO_DATA
+        # [SCORE-001B-R1] 正式文件损坏在磁盘上存在但读取失败 → FAILED。
+        assert result.status == STATUS_FAILED
 
 
 # ── 多版本 / 时序 / 时间穿越 ─────────────────────────────────────────

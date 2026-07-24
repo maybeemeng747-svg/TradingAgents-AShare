@@ -1,0 +1,361 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m# [0mTodos
+[•] Read tradeflow_service.py around line 919-920 to understand the date fallback issue
+[ ] Read research_score_snapshot.py around line 1252 to understand sanitization issue
+[ ] Fix P1: Read TradeFlow rows' actual dates before falling back
+[ ] Fix P1: Sanitize every emitted snapshot text field
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=900, limit=60][0m
+[0m→ [0mRead tradingagents/dataflows/research_score_snapshot.py[90m [offset=1220, limit=80][0m
+[0m✱ [0mGrep "_row_to_candidate_item"[90m in api/services/tradeflow_service.py · 8 matches[0m
+Let me also look at `_row_to_candidate_item` to see the actual date fields:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=100, limit=100][0m
+[0m✱ [0mGrep "trade_date"[90m in api/services/tradeflow_service.py · 217 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=50, offset=1356][0m
+[0m✱ [0mGrep "def _row_to_candidate_detail"[90m in api/services/tradeflow_service.py · 1 match[0m
+[0m✱ [0mGrep "def _enrich_candidate_with_research_score_snapshot"[90m in api/services/tradeflow_service.py · 1 match[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=201][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=50, offset=872][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=1231][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=1406][0m
+[0m✱ [0mGrep "item\[.trade_date.\]|detail\[.trade_date.\]"[90m in api/services/tradeflow_service.py · 0 matches[0m
+[0m→ [0mRead tradingagents/dataflows/research_score_snapshot.py[90m [limit=40, offset=1210][0m
+Now I have full context. Let me also check the theses_summary to see how `topic` is handled:
+[0m
+[0m# [0mTodos
+[✓] Read tradeflow_service.py around line 919-920 to understand the date fallback issue
+[✓] Read research_score_snapshot.py around line 1252 to understand sanitization issue
+[•] Fix P1: Read TradeFlow rows' actual dates before falling back
+[ ] Fix P1: Sanitize every emitted snapshot text field
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have full context. Let me apply both fixes:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -912,12 +912,13 @@
+ 
+ def _resolve_candidate_analysis_time(item: dict) -> datetime:
+     """[SCORE-001B-R1] 从候选记录解析 analysis_time。
+ 
+-    优先使用 candidate 的 date 或 discovered_at 字段；fallback 到当前 UTC。
++    优先使用 candidate 的日期字段（effective_trade_date / plan_date / observe_date）；
++    fallback 到当前 UTC。
+     """
+     from datetime import timezone as _tz
+-    for key in ("date", "discovered_at"):
++    for key in ("effective_trade_date", "plan_date", "observe_date"):
+         raw = item.get(key)
+         if raw:
+             try:
+                 text = str(raw).strip()
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1216,9 +1216,9 @@
+ theses_summary: List[Dict[str, Any]] = []
+ for th in snap.theses[:_MAX_THESES]:
+     theses_summary.append({
+         "thesis_id": th.thesis_id,
+-        "topic": th.topic,
++        "topic": _strip_strong_action_verbs(th.topic),
+         "direction": th.direction,
+         "status": th.status,
+         "core_hypothesis": _strip_strong_action_verbs(
+             _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS)
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1245,9 +1245,9 @@
+ score_change_summary: Optional[Dict[str, Any]] = None
+ if sc and (sc.previous or sc.current or sc.reasons):
+     score_change_summary = {
+         "previous_snapshot_id": sc.previous_snapshot_id,
+-        "reasons": list(sc.reasons or [])[:5],
++        "reasons": [_strip_strong_action_verbs(r) for r in (sc.reasons or [])][:5],
+     }
+ 
+ # [SCORE-001B-R1] 所有文本字段清洗强动作词。
+ base["snapshot"] = {
+
+[0m
+**Fix 1**: `_resolve_candidate_analysis_time` — look for the actual date fields (`effective_trade_date`, `plan_date`, `observe_date`) instead of nonexistent `date`/`discovered_at`.
+
+**Fix 2**: Sanitize `topic` and `score_change_summary.reasons` with `_strip_strong_action_verbs`.
+[0m# [0mTodos
+[✓] Read tradeflow_service.py around line 919-920 to understand the date fallback issue
+[✓] Read research_score_snapshot.py around line 1252 to understand sanitization issue
+[✓] Fix P1: Read TradeFlow rows' actual dates before falling back
+[✓] Fix P1: Sanitize every emitted snapshot text field
+[•] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=25, offset=913][0m
+[0m→ [0mRead tradingagents/dataflows/research_score_snapshot.py[90m [limit=40, offset=1214][0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=40][0m
+Let me verify the edits and update the devlog:
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,23 @@
+ # 修改日志
+ 
++## 2026-07-24 | SCORE-001B-R1 Codex Review 补修
++
++- **任务**：SCORE-001B-R1 Codex review 两项 P1 correctness findings
++- **状态**：✅ 修复完成
++
++### 改动
++
++- **`api/services/tradeflow_service.py`**（修改）
++  - **Fix P1 — 日期字段查找**：`_resolve_candidate_analysis_time()` 查找键从 `"date"` / `"discovered_at"` 改为 `"effective_trade_date"` / `"plan_date"` / `"observe_date"`
++    - `_row_to_candidate_item()` 暴露的是 `effective_trade_date` / `plan_date` / `observe_date`，原查找键不存在导致每次都 fallback 到 `datetime.now()`，历史候选仍可能选中未来快照
++
++- **`tradingagents/dataflows/research_score_snapshot.py`**（修改）
++  - **Fix P1 — 全文本清洗**：`snapshot_to_api_dict()` 中 `theses_summary[].topic` 和 `score_change_summary.reasons[]` 现在也经过 `_strip_strong_action_verbs()` 清洗
++    - 原实现中这两处直接透传原始文本，ZCode 若在 topic 或 reason 中使用强动作词（如 `建议买入`）会泄漏到 API 输出
++
++---
++
+ ## 2026-07-24 | SCORE-001B-R1 快照时点、动作词与失败态补修
+ 
+ - **任务**：SCORE-001B-R1 — 补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据（P0）
+ - **状态**：✅ 实现完成；37 项 SCORE-001B-R1 测试 passed，SCORE-001/001B 回归 110 passed，API smoke 52 passed
+
+[0m
+Edits verified. Now let me update DEVLOG and run tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_score001b_r1_snapshot_fixes.py -v --tb=short 2>&1 | tail -60
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 37 items
+
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_buy PASSED [  2%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_sell PASSED [  5%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_full_position PASSED [  8%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_clear_position PASSED [ 10%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_all_in PASSED [ 13%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_strong_buy_sell PASSED [ 16%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_directional_words PASSED [ 18%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_analytical_phrases PASSED [ 21%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_empty_input PASSED [ 24%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_none_like_input PASSED [ 27%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_no_verb_no_change PASSED [ 29%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_multiple_verbs_in_text PASSED [ 32%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_thesis_core_hypothesis_stripped PASSED [ 35%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_evidence_claim_stripped PASSED [ 37%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_warnings_stripped PASSED [ 40%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_missing_evidence_stripped PASSED [ 43%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_no_action_verbs_in_full_output PASSED [ 45%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_corrupt_json_returns_failed PASSED [ 48%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_permission_denied_returns_failed PASSED [ 51%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_empty_dir_returns_normal_no_data PASSED [ 54%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_no_symbol_dir_returns_normal_no_data PASSED [ 56%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_partial_corrupt_one_valid PASSED [ 59%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_all_future_snapshots_returns_normal_no_data PASSED [ 62%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_uses_trade_date PASSED [ 64%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_historical_date_excludes_future PASSED [ 67%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_none_trade_date_uses_now PASSED [ 70%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_invalid_trade_date_fallback PASSED [ 72%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_uses_date_field PASSED [ 75%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_historical_date_excludes_future FAILED [ 78%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_discovered_at_field PASSED [ 81%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_no_date_uses_now PASSED [ 83%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_has_data PASSED [ 86%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_no_data PASSED [ 89%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_failed PASSED [ 91%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_query_with_valid_snapshot PASSED [ 94%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_report_service_backward_compat PASSED [ 97%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_no_action_keys_in_api_output PASSED [100%]
+
+=================================== FAILURES ===================================
+_ TestHistoricalReportSnapshotTiming.test_tradeflow_candidate_historical_date_excludes_future _
+tests/test_score001b_r1_snapshot_fixes.py:428: in test_tradeflow_candidate_historical_date_excludes_future
+    assert result.get("research_score_snapshot") is None
+E   AssertionError: assert {'degradation_reasons': [], 'rubric_id': 'research-score-generic', 'rubric_version': '1.0.0', 'schema_version': '1.1.0', ...} is None
+E    +  where {'degradation_reasons': [], 'rubric_id': 'research-score-generic', 'rubric_version': '1.0.0', 'schema_version': '1.1.0', ...} = <built-in method get of dict object at 0x1102df900>('research_score_snapshot')
+E    +    where <built-in method get of dict object at 0x1102df900> = {'date': '2026-06-01', 'name': '圣泉集团', 'research_score_snapshot': {'degradation_reasons': [], 'rubric_id': 'research-score-generic', 'rubric_version': '1.0.0', 'schema_version': '1.1.0', ...}, 'symbol': '605589.SH'}.get
+=========================== short test summary info ============================
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_historical_date_excludes_future
+========================= 1 failed, 36 passed in 1.43s =========================
+[0m
+[0m→ [0mRead tests/test_score001b_r1_snapshot_fixes.py[90m [limit=50, offset=410][0m
+One test failed — it tests with a `date` key that the old code looked for but my fix no longer does. Let me check:
+[0m→ [0mRead tests/test_score001b_r1_snapshot_fixes.py[90m [limit=15, offset=402][0m
+The tests use the old field names (`date`, `discovered_at`). Need to update them to use the actual TradeFlow fields. Let me also check the earlier test at line 405:
+[0m
+[0m← [0mEdit tests/test_score001b_r1_snapshot_fixes.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_score001b_r1_snapshot_fixes.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_score001b_r1_snapshot_fixes.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_score001b_r1_snapshot_fixes.py
+@@ -403,47 +403,47 @@
+         )
+         # fallback 到当前时间 → 应该有快照
+         assert enriched is not None
+ 
+-def test_tradeflow_candidate_uses_date_field(self, tmp_path: Path) -> None:
+-    """TradeFlow 候选有 date 字段时按日期查询。"""
++def test_tradeflow_candidate_uses_effective_trade_date(self, tmp_path: Path) -> None:
++    """TradeFlow 候选有 effective_trade_date 字段时按日期查询。"""
+     from api.services import tradeflow_service as tfs
+ 
+     # 快照 as_of=2026-07-13
+     root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+     with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+-        # date=2026-07-14 → 能读到 as_of=2026-07-13
+-        item = {"symbol": "605589.SH", "name": "圣泉集团", "date": "2026-07-14"}
++        # effective_trade_date=2026-07-14 → 能读到 as_of=2026-07-13
++        item = {"symbol": "605589.SH", "name": "圣泉集团", "effective_trade_date": "2026-07-14"}
+         result = tfs._enrich_candidate_with_research_score_snapshot(item)
+         assert result.get("research_score_snapshot") is not None
+ 
+ def test_tradeflow_candidate_historical_date_excludes_future(self, tmp_path: Path) -> None:
+-    """TradeFlow 候选 date 早于快照 as_of → 不注入（不泄漏未来数据）。"""
++    """TradeFlow 候选 effective_trade_date 早于快照 as_of → 不注入（不泄漏未来数据）。"""
+     from api.services import tradeflow_service as tfs
+ 
+     root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+     with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+-        # date=2026-06-01 → 快照 as_of=2026-07-13 是未来 → 不注入
+-        item = {"symbol": "605589.SH", "name": "圣泉集团", "date": "2026-06-01"}
++        # effective_trade_date=2026-06-01 → 快照 as_of=2026-07-13 是未来 → 不注入
++        item = {"symbol": "605589.SH", "name": "圣泉集团", "effective_trade_date": "2026-06-01"}
+         result = tfs._enrich_candidate_with_research_score_snapshot(item)
+         assert result.get("research_score_snapshot") is None
+ 
+-def test_tradeflow_candidate_discovered_at_field(self, tmp_path: Path) -> None:
+-    """TradeFlow 候选使用 discovered_at 字段。"""
++def test_tradeflow_candidate_plan_date_field(self, tmp_path: Path) -> None:
++    """TradeFlow 候选使用 plan_date 字段。"""
+     from api.services import tradeflow_service as tfs
+ 
+     root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+     with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+         item = {
+             "symbol": "605589.SH",
+             "name": "圣泉集团",
+-            "discovered_at": "2026-07-14T10:00:00+08:00",
++            "plan_date": "2026-07-14",
+         }
+         result = tfs._enrich_candidate_with_research_score_snapshot(item)
+         assert result.get("research_score_snapshot") is not None
+ 
+ def test_tradeflow_candidate_no_date_uses_now(self, tmp_path: Path) -> None:
+-    """TradeFlow 候选无 date/discovered_at → fallback 到当前时间。"""
++    """TradeFlow 候选无日期字段 → fallback 到当前时间。"""
+     from api.services import tradeflow_service as tfs
+ 
+     root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+     with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_score001b_r1_snapshot_fixes.py -v --tb=short 2>&1 | tail -50
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 37 items
+
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_buy PASSED [  2%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_sell PASSED [  5%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_full_position PASSED [  8%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_clear_position PASSED [ 10%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_all_in PASSED [ 13%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_strong_buy_sell PASSED [ 16%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_directional_words PASSED [ 18%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_analytical_phrases PASSED [ 21%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_empty_input PASSED [ 24%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_none_like_input PASSED [ 27%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_no_verb_no_change PASSED [ 29%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_multiple_verbs_in_text PASSED [ 32%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_thesis_core_hypothesis_stripped PASSED [ 35%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_evidence_claim_stripped PASSED [ 37%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_warnings_stripped PASSED [ 40%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_missing_evidence_stripped PASSED [ 43%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_no_action_verbs_in_full_output PASSED [ 45%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_corrupt_json_returns_failed PASSED [ 48%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_permission_denied_returns_failed PASSED [ 51%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_empty_dir_returns_normal_no_data PASSED [ 54%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_no_symbol_dir_returns_normal_no_data PASSED [ 56%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_partial_corrupt_one_valid PASSED [ 59%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_all_future_snapshots_returns_normal_no_data PASSED [ 62%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_uses_trade_date PASSED [ 64%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_historical_date_excludes_future PASSED [ 67%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_none_trade_date_uses_now PASSED [ 70%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_invalid_trade_date_fallback PASSED [ 72%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_uses_effective_trade_date PASSED [ 75%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_historical_date_excludes_future PASSED [ 78%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_plan_date_field PASSED [ 81%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_no_date_uses_now PASSED [ 83%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_has_data PASSED [ 86%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_no_data PASSED [ 89%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_failed PASSED [ 91%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_query_with_valid_snapshot PASSED [ 94%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_report_service_backward_compat PASSED [ 97%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_no_action_keys_in_api_output PASSED [100%]
+
+============================== 37 passed in 1.15s ==============================
+[0m
+37/37 passed. Let me also run the broader regression tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_score001_research_score_snapshot.py -v --tb=short 2>&1 | tail -20
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[media] PASSED [ 76%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[user_note] PASSED [ 78%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[unknown] PASSED [ 79%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_loader_does_not_invent_new_tier PASSED [ 80%]
+tests/test_score001_research_score_snapshot.py::TestInvalidatedThesis::test_invalidated_thesis_accepted PASSED [ 82%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_result_json_serializable PASSED [ 83%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_snapshot_to_dict_roundtrip PASSED [ 84%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_has_data PASSED [ 86%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_empty_for_no_data PASSED [ 87%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_report PASSED [ 89%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_suggest_output_path PASSED [ 90%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_corrupt_falls_back_to_older PASSED [ 91%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_invalid_falls_back_to_older PASSED [ 93%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_score_summary_defaults_none PASSED [ 94%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_evidence_ref_default_tier_unknown PASSED [ 95%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_thesis_defaults PASSED [ 97%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_validation_error_carries_reason_code PASSED [ 98%]
+tests/test_score001_research_score_snapshot.py::TestSymbolNormalization::test_lowercase_exchange_suffix_reads_uppercase_snapshot_dir PASSED [100%]
+
+============================== 73 passed in 0.10s ==============================
+[0m
+[0m# [0mTodos
+[✓] Read tradeflow_service.py around line 919-920 to understand the date fallback issue
+[✓] Read research_score_snapshot.py around line 1252 to understand sanitization issue
+[✓] Fix P1: Read TradeFlow rows' actual dates before falling back
+[✓] Fix P1: Sanitize every emitted snapshot text field
+[✓] Update docs/DEVLOG.md
+[0m
+All tests pass. Let me update the final todo:
+Both P1 findings fixed. Summary of changes:
+
+**`api/services/tradeflow_service.py:920`** — `_resolve_candidate_analysis_time()` now looks for `effective_trade_date` / `plan_date` / `observe_date` instead of nonexistent `date` / `discovered_at`. Previously, these keys never matched, so every historical candidate fell through to `datetime.now()` and could still select a future snapshot.
+
+**`tradingagents/dataflows/research_score_snapshot.py:1220,1249`** — `snapshot_to_api_dict()` now applies `_strip_strong_action_verbs()` to `theses_summary[].topic` and `score_change_summary.reasons[]`. Previously these two fields were emitted raw, allowing action phrases like `建议买入` to leak through.
+
+**`tests/test_score001b_r1_snapshot_fixes.py`** — Updated test fixtures to use the actual TradeFlow field names (`effective_trade_date`, `plan_date`) instead of the nonexistent `date`/`discovered_at`.
+
+**`docs/DEVLOG.md`** — Added entry documenting the Codex review fixes.
+
+All 37 SCORE-001B-R1 tests + 73 SCORE-001 regression tests pass.

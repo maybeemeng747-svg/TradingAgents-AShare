@@ -907,16 +907,21 @@ def query_research_score_snapshot(
 
     # 第一遍：读取每个候选的 as_of，过滤未来快照，按 as_of 倒序。
     # 未来快照不进入"最新合法"候选（fail closed），但记录到 errors 供审计。
+    # [SCORE-001B-R1] 区分"无候选文件"与"有候选文件但全部读取失败"。
     readable: List[Tuple[date, Path, Dict[str, Any]]] = []
+    had_candidates_on_disk = bool(candidates)
+    had_read_errors = False
     for path in candidates:
         data, err = _read_json_safe(path)
         if err:
             # 损坏文件不阻断其它候选，但记录。
             result.errors.append(f"{path.name}: {err}")
+            had_read_errors = True
             continue
         as_of_date = _extract_as_of(data)
         if as_of_date is None:
             result.errors.append(f"{path.name}: as_of 非法/缺失")
+            had_read_errors = True
             continue
         if as_of_date > analysis_time.date():
             result.errors.append(
@@ -926,7 +931,14 @@ def query_research_score_snapshot(
         readable.append((as_of_date, path, data))
 
     if not readable:
-        result.status = STATUS_NORMAL_NO_DATA
+        # [SCORE-001B-R1] 有候选文件但全部读取/解析失败 → FAILED（非 NORMAL_NO_DATA）。
+        if had_candidates_on_disk and had_read_errors:
+            result.status = STATUS_FAILED
+            result.errors.append(
+                "所有候选快照读取或解析失败（fail closed）"
+            )
+        else:
+            result.status = STATUS_NORMAL_NO_DATA
         return result
 
     readable.sort(key=lambda triple: triple[0], reverse=True)
@@ -1100,6 +1112,16 @@ _SENSITIVE_KEY_RE = re.compile(
 #: 绝对路径前缀（POSIX + Windows）。
 _ABS_PATH_PREFIXES = ("/", "\\\\", "C:\\", "D:\\", "E:\\")
 
+# [SCORE-001B-R1] 强动作词——快照文本不得泄漏知识库交易动作。
+# 只覆盖"建议立即执行"级别的强动词，不覆盖方向性描述词（看多/看空/偏多/偏空）。
+_FORBIDDEN_ACTION_VERBS: Tuple[str, ...] = (
+    "强烈推荐买入", "强烈推荐卖出",
+    "立即买入", "立即卖出", "满仓", "清仓", "全仓", "梭哈",
+    "强烈推荐", "重仓买入", "重仓卖出", "强制清仓", "追涨买入",
+    "建议买入", "建议卖出", "建议加仓", "建议减仓",
+    "建议建仓", "建议清仓",
+)
+
 
 def _is_abs_path_like(value: str) -> bool:
     """判断字符串是否像绝对路径（POSIX 或 Windows）。"""
@@ -1136,6 +1158,39 @@ def _filter_sensitive(obj: Any, depth: int = 0) -> Any:
     return obj
 
 
+# [SCORE-001B-R1] 强动作词清洗
+def _strip_strong_action_verbs(text: str) -> str:
+    """从文本中移除强动作词，替换为 ``[已过滤]``。
+
+    只清洗"建议立即执行"级别的强动词（如"立即买入"、"满仓"），不清洗
+    方向性描述（如"看多"、"偏空"）或分析性措辞。
+    """
+    if not text:
+        return text
+    result = text
+    # Longest-first prevents a generic prefix such as ``强烈推荐`` from
+    # leaving the actionable suffix ``买入``/``卖出`` behind.
+    for verb in sorted(_FORBIDDEN_ACTION_VERBS, key=len, reverse=True):
+        result = result.replace(verb, "[已过滤]")
+    return result
+
+
+def _sanitize_api_action_text(obj: Any, depth: int = 0) -> Any:
+    """Recursively scrub strong-action phrases from the final API payload."""
+    if depth > 6:
+        return obj
+    if isinstance(obj, dict):
+        return {
+            key: _sanitize_api_action_text(value, depth + 1)
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_api_action_text(value, depth + 1) for value in obj]
+    if isinstance(obj, str):
+        return _strip_strong_action_verbs(obj)
+    return obj
+
+
 def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
     """将查询结果序列化为 API 安全的 slim dict（SCORE-001B）。
 
@@ -1168,7 +1223,7 @@ def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
 
     if result.snapshot is None:
         base["snapshot"] = None
-        return _filter_sensitive(base)
+        return _sanitize_api_action_text(_filter_sensitive(base))
 
     snap = result.snapshot
 
@@ -1176,22 +1231,28 @@ def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
     scores = snap.scores.to_dict() if snap.scores else {}
 
     # 投资假设摘要（只保留 topic / direction / status / core_hypothesis 摘要）。
+    # [SCORE-001B-R1] core_hypothesis 清洗强动作词。
     theses_summary: List[Dict[str, Any]] = []
     for th in snap.theses[:_MAX_THESES]:
         theses_summary.append({
             "thesis_id": th.thesis_id,
-            "topic": th.topic,
-            "direction": th.direction,
+            "topic": _strip_strong_action_verbs(th.topic),
+            "direction": _strip_strong_action_verbs(th.direction),
             "status": th.status,
-            "core_hypothesis": _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS),
+            "core_hypothesis": _strip_strong_action_verbs(
+                _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS)
+            ),
         })
 
     # 证据引用摘要（只保留 claim / claim_type / source_quality_tier / report_date）。
+    # [SCORE-001B-R1] claim 清洗强动作词。
     evidence_summary: List[Dict[str, Any]] = []
     for ref in snap.evidence_refs[:_MAX_EVIDENCE_REFS]:
         evidence_summary.append({
             "evidence_id": ref.evidence_id,
-            "claim": _clip(ref.claim, _CLAIM_MAX_CHARS),
+            "claim": _strip_strong_action_verbs(
+                _clip(ref.claim, _CLAIM_MAX_CHARS)
+            ),
             "claim_type": ref.claim_type,
             "source_quality_tier": ref.source_quality_tier,
             "report_date": ref.report_date,
@@ -1204,9 +1265,10 @@ def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
     if sc and (sc.previous or sc.current or sc.reasons):
         score_change_summary = {
             "previous_snapshot_id": sc.previous_snapshot_id,
-            "reasons": list(sc.reasons or [])[:5],
+            "reasons": [_strip_strong_action_verbs(r) for r in (sc.reasons or [])][:5],
         }
 
+    # [SCORE-001B-R1] 所有文本字段清洗强动作词。
     base["snapshot"] = {
         "snapshot_id": snap.snapshot_id,
         "symbol": snap.symbol,
@@ -1216,15 +1278,30 @@ def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
         "scores": scores,
         "theses_summary": theses_summary,
         "evidence_refs_summary": evidence_summary,
-        "missing_evidence": list(snap.missing_evidence or []),
-        "upgrade_conditions": list(snap.upgrade_conditions or [])[:5],
-        "downgrade_conditions": list(snap.downgrade_conditions or [])[:5],
-        "invalidation_conditions": list(snap.invalidation_conditions or [])[:5],
+        "missing_evidence": [
+            _strip_strong_action_verbs(s)
+            for s in (snap.missing_evidence or [])
+        ],
+        "upgrade_conditions": [
+            _strip_strong_action_verbs(s)
+            for s in (snap.upgrade_conditions or [])
+        ][:5],
+        "downgrade_conditions": [
+            _strip_strong_action_verbs(s)
+            for s in (snap.downgrade_conditions or [])
+        ][:5],
+        "invalidation_conditions": [
+            _strip_strong_action_verbs(s)
+            for s in (snap.invalidation_conditions or [])
+        ][:5],
         "score_change_summary": score_change_summary,
-        "warnings": list(snap.warnings or [])[:5],
+        "warnings": [
+            _strip_strong_action_verbs(s)
+            for s in (snap.warnings or [])
+        ][:5],
     }
 
-    return _filter_sensitive(base)
+    return _sanitize_api_action_text(_filter_sensitive(base))
 
 
 __all__ = [
@@ -1255,4 +1332,6 @@ __all__ = [
     "render_research_score_report",
     "suggest_query_output_path",
     "snapshot_to_api_dict",
+    "_strip_strong_action_verbs",
+    "_FORBIDDEN_ACTION_VERBS",
 ]

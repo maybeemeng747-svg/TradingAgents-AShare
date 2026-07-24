@@ -448,15 +448,23 @@ class TestTradeFlowCandidateSnapshotEnrichment:
 
         assert result.get("research_score_snapshot") is None
 
-    def test_enrichment_failure_graceful(self) -> None:
-        """Exception → research_score_snapshot=None (graceful degradation)."""
+    def test_enrichment_missing_root_preserves_failed_status(self) -> None:
+        """Unreadable knowledge root remains an observable FAILED state."""
         from api.services import tradeflow_service as tfs
 
         with patch.object(tfs, "_resolve_knowledge_root", return_value="/nonexistent"):
             item = {"symbol": "605589.SH", "name": "圣泉集团"}
             result = tfs._enrich_candidate_with_research_score_snapshot(item)
 
-        assert result.get("research_score_snapshot") is None
+        snapshot = result.get("research_score_snapshot")
+        assert snapshot is not None
+        assert snapshot["status"] == STATUS_FAILED
+        assert snapshot["snapshot"] is None
+
+        from api.tradeflow_schemas import TradeFlowCandidateDetail
+
+        serialized = TradeFlowCandidateDetail.model_validate(result).model_dump()
+        assert serialized["research_score_snapshot"]["status"] == STATUS_FAILED
 
     def test_enrichment_no_action_keys(self, tmp_path: Path) -> None:
         """No banned action keys in enrichment output."""

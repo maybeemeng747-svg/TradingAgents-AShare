@@ -1,0 +1,1445 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[✓] Read SCORE-001B-R1 task details and understand the 3 requirements
+[•] Explore existing SCORE-001B code and snapshot loader
+[ ] Fix 1: Historical reports query snapshot by trade date/analysis time
+[ ] Fix 2: Snapshot text must not leak strong action words
+[ ] Fix 3: Read failure must not masquerade as normal no-data
+[ ] Write tests for all 3 fixes
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mExplore SCORE-001B codebase[90m Explore Agent[0m
+[0m✓ [0mExplore SCORE-001B codebase[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/dataflows/research_score_snapshot.py
+[0m→ [0mRead api/services/report_service.py[90m [offset=700, limit=80][0m
+[0m→ [0mRead api/services/research_evidence_service.py[90m [offset=240, limit=120][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=860, limit=60][0m
+[0m→ [0mRead api/services/research_evidence_service.py[90m [limit=80, offset=480][0m
+[0m→ [0mRead tests/test_score001b_snapshot_api_adapter.py
+[0m→ [0mRead api/services/report_service.py[90m [limit=80, offset=1200][0m
+[0m→ [0mRead api/services/research_evidence_service.py[90m [limit=120, offset=85][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=30, offset=1180][0m
+[0m→ [0mRead tests/research_score_snapshot_fixtures.py[90m [limit=100, offset=1][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=20, offset=706][0m
+[0m
+[0m# [0mTodos
+[✓] Read SCORE-001B-R1 task details and understand the 3 requirements
+[✓] Explore existing SCORE-001B code and snapshot loader
+[•] Fix 1: Historical reports query snapshot by trade date/analysis time
+[ ] Fix 2: Snapshot text must not leak strong action words
+[ ] Fix 3: Read failure must not masquerade as normal no-data
+[ ] Write tests for all 3 fixes
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1099,9 +1099,18 @@
+ 
+ #: 绝对路径前缀（POSIX + Windows）。
+ _ABS_PATH_PREFIXES = ("/", "\\\\", "C:\\", "D:\\", "E:\\")
+ 
++# [SCORE-001B-R1] 强动作词——快照文本不得泄漏知识库交易动作。
++# 只覆盖"建议立即执行"级别的强动词，不覆盖方向性描述词（看多/看空/偏多/偏空）。
++_FORBIDDEN_ACTION_VERBS: Tuple[str, ...] = (
++    "立即买入", "立即卖出", "满仓", "清仓", "全仓", "梭哈",
++    "强烈推荐", "重仓买入", "重仓卖出", "强制清仓", "追涨买入",
++    "建议买入", "建议卖出", "建议加仓", "建议减仓",
++    "建议建仓", "建议清仓",
++)
+ 
++
+ def _is_abs_path_like(value: str) -> bool:
+     """判断字符串是否像绝对路径（POSIX 或 Windows）。"""
+     if not value:
+         return False
+
+[0m
+Let me implement all three fixes. Starting with `research_score_snapshot.py`:
+
+**Fix 1**: Add `trade_date` parameter to `attach_report_research_score_snapshot` and use it.
+
+**Fix 2**: Add `_strip_strong_action_verbs()` and apply it in `snapshot_to_api_dict()`.
+
+**Fix 3**: Track whether candidates existed on disk but all failed to read → return `FAILED` instead of `NORMAL_NO_DATA`.
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1144,8 +1144,23 @@
+         return "[redacted_path]"
+     return obj
+ 
+ 
++# [SCORE-001B-R1] 强动作词清洗
++def _strip_strong_action_verbs(text: str) -> str:
++    """从文本中移除强动作词，替换为 ``[已过滤]``。
++
++    只清洗"建议立即执行"级别的强动词（如"立即买入"、"满仓"），不清洗
++    方向性描述（如"看多"、"偏空"）或分析性措辞。
++    """
++    if not text:
++        return text
++    result = text
++    for verb in _FORBIDDEN_ACTION_VERBS:
++        result = result.replace(verb, "[已过滤]")
++    return result
++
++
+ def snapshot_to_api_dict(result: ResearchScoreQueryResult) -> Dict[str, Any]:
+     """将查询结果序列化为 API 安全的 slim dict（SCORE-001B）。
+ 
+     设计约束：
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1199,24 +1199,30 @@
+ # 分数摘要。
+ scores = snap.scores.to_dict() if snap.scores else {}
+ 
+ # 投资假设摘要（只保留 topic / direction / status / core_hypothesis 摘要）。
++# [SCORE-001B-R1] core_hypothesis 清洗强动作词。
+ theses_summary: List[Dict[str, Any]] = []
+ for th in snap.theses[:_MAX_THESES]:
+     theses_summary.append({
+         "thesis_id": th.thesis_id,
+         "topic": th.topic,
+         "direction": th.direction,
+         "status": th.status,
+-        "core_hypothesis": _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS),
++        "core_hypothesis": _strip_strong_action_verbs(
++            _clip(th.core_hypothesis, _HYPOTHESIS_MAX_CHARS)
++        ),
+     })
+ 
+ # 证据引用摘要（只保留 claim / claim_type / source_quality_tier / report_date）。
++# [SCORE-001B-R1] claim 清洗强动作词。
+ evidence_summary: List[Dict[str, Any]] = []
+ for ref in snap.evidence_refs[:_MAX_EVIDENCE_REFS]:
+     evidence_summary.append({
+         "evidence_id": ref.evidence_id,
+-        "claim": _clip(ref.claim, _CLAIM_MAX_CHARS),
++        "claim": _strip_strong_action_verbs(
++            _clip(ref.claim, _CLAIM_MAX_CHARS)
++        ),
+         "claim_type": ref.claim_type,
+         "source_quality_tier": ref.source_quality_tier,
+         "report_date": ref.report_date,
+         "financial_period": ref.financial_period,
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1236,23 +1236,38 @@
+         "previous_snapshot_id": sc.previous_snapshot_id,
+         "reasons": list(sc.reasons or [])[:5],
+     }
+ 
+-base["snapshot"] = {
++    base["snapshot"] = {
+     "snapshot_id": snap.snapshot_id,
+     "symbol": snap.symbol,
+     "name": snap.name,
+     "as_of": snap.as_of,
+     "status": snap.status,
+     "scores": scores,
+     "theses_summary": theses_summary,
+     "evidence_refs_summary": evidence_summary,
+-    "missing_evidence": list(snap.missing_evidence or []),
+-    "upgrade_conditions": list(snap.upgrade_conditions or [])[:5],
+-    "downgrade_conditions": list(snap.downgrade_conditions or [])[:5],
+-    "invalidation_conditions": list(snap.invalidation_conditions or [])[:5],
++    "missing_evidence": [
++        _strip_strong_action_verbs(s)
++        for s in (snap.missing_evidence or [])
++    ],
++    "upgrade_conditions": [
++        _strip_strong_action_verbs(s)
++        for s in (snap.upgrade_conditions or [])
++    ][:5],
++    "downgrade_conditions": [
++        _strip_strong_action_verbs(s)
++        for s in (snap.downgrade_conditions or [])
++    ][:5],
++    "invalidation_conditions": [
++        _strip_strong_action_verbs(s)
++        for s in (snap.invalidation_conditions or [])
++    ][:5],
+     "score_change_summary": score_change_summary,
+-    "warnings": list(snap.warnings or [])[:5],
++    "warnings": [
++        _strip_strong_action_verbs(s)
++        for s in (snap.warnings or [])
++    ][:5],
+ }
+ 
+ return _filter_sensitive(base)
+ 
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -906,18 +906,23 @@
+     return result
+ 
+ # 第一遍：读取每个候选的 as_of，过滤未来快照，按 as_of 倒序。
+ # 未来快照不进入"最新合法"候选（fail closed），但记录到 errors 供审计。
++# [SCORE-001B-R1] 区分"无候选文件"与"有候选文件但全部读取失败"。
+ readable: List[Tuple[date, Path, Dict[str, Any]]] = []
++had_candidates_on_disk = bool(candidates)
++had_read_errors = False
+ for path in candidates:
+     data, err = _read_json_safe(path)
+     if err:
+         # 损坏文件不阻断其它候选，但记录。
+         result.errors.append(f"{path.name}: {err}")
++        had_read_errors = True
+         continue
+     as_of_date = _extract_as_of(data)
+     if as_of_date is None:
+         result.errors.append(f"{path.name}: as_of 非法/缺失")
++        had_read_errors = True
+         continue
+     if as_of_date > analysis_time.date():
+         result.errors.append(
+             f"{path.name}: 未来快照 as_of={as_of_date} > analysis_time"
+@@ -925,9 +930,16 @@
+         continue
+     readable.append((as_of_date, path, data))
+ 
+ if not readable:
+-    result.status = STATUS_NORMAL_NO_DATA
++    # [SCORE-001B-R1] 有候选文件但全部读取/解析失败 → FAILED（非 NORMAL_NO_DATA）。
++    if had_candidates_on_disk and had_read_errors:
++        result.status = STATUS_FAILED
++        result.errors.append(
++            "所有候选快照读取或解析失败（fail closed）"
++        )
++    else:
++        result.status = STATUS_NORMAL_NO_DATA
+     return result
+ 
+ readable.sort(key=lambda triple: triple[0], reverse=True)
+ 
+
+[0m
+Now implement Fix 3 in `query_research_score_snapshot`:
+[0m← [0mEdit api/services/report_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/report_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+@@ -703,11 +703,13 @@
+     }
+ 
+ 
+ # [SCORE-001B] research_score_snapshot_api_adapter
++# [SCORE-001B-R1] 新增 trade_date 参数，历史报告按其交易日查询快照。
+ def attach_report_research_score_snapshot(
+     result_data: Optional[Dict[str, Any]],
+     symbol: Optional[str] = None,
++    trade_date: Optional[str] = None,
+ ) -> Optional[Dict[str, Any]]:
+     """Attach [SCORE-001B] research score snapshot summary to report result_data.
+ 
+     Strictly read-only with respect to the strong action gate: this function
+@@ -716,8 +718,12 @@
+ 
+     Output keys (all backward-compatible; old reports simply get None):
+       - ``research_score_snapshot``: dict with structured snapshot summary
+         (status / scores / theses_summary / missing_evidence).
++
++    [SCORE-001B-R1] 参数:
++      trade_date: 报告交易日 (YYYY-MM-DD)。历史回放时用于查询快照，
++                  确保不使用未来快照。None 时 fallback 到当前时间。
+     """
+     if not isinstance(result_data, dict):
+         return result_data
+     try:
+@@ -739,12 +745,15 @@
+         knowledge_root = _snap_default_root()
+         if not knowledge_root:
+             return result_data
+ 
++        # [SCORE-001B-R1] 按报告交易日查询快照，避免未来数据泄漏。
++        analysis_time = _resolve_report_analysis_time(trade_date)
++
+         result = _snap_query(
+             knowledge_root,
+             symbol=resolved_symbol,
+-            analysis_time=datetime.now(timezone.utc),
++            analysis_time=analysis_time,
+         )
+         api_dict = _snap_to_api(result)
+ 
+         # 只有真正有快照数据时才附加；无快照不污染 result_data。
+@@ -758,8 +767,26 @@
+         logger.warning("SCORE-001B research_score_snapshot attachment failed: %s", exc)
+         return result_data
+ 
+ 
++def _resolve_report_analysis_time(trade_date: Optional[str]) -> datetime:
++    """[SCORE-001B-R1] 从 trade_date 解析 analysis_time。
++
++    历史报告按其交易日查询快照（as_of <= trade_date），确保不使用未来快照。
++    trade_date 格式为 YYYY-MM-DD；解析失败时 fallback 到当前 UTC 时间。
++    """
++    from datetime import datetime, timezone
++    if trade_date:
++        try:
++            # trade_date 是 YYYY-MM-DD 格式；取当天 15:00 CST (UTC+8) 作为分析时间
++            dt = datetime.strptime(trade_date, "%Y-%m-%d")
++            from datetime import timedelta
++            return dt.replace(hour=15, minute=0, second=0, tzinfo=timezone(timedelta(hours=8)))
++        except (ValueError, TypeError):
++            pass
++    return datetime.now(timezone.utc)
++
++
+ def extract_structured_data(
+     final_trade_decision: str,
+     fundamentals_report: str = "",
+     config: Optional[Dict[str, Any]] = None,
+
+[0m
+Now implement Fix 1 — `report_service.py`: add `trade_date` parameter to `attach_report_research_score_snapshot`:
+[0m← [0mEdit api/services/report_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/report_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/report_service.py
+@@ -1254,9 +1254,12 @@
+ # strong action gate or mask data_blockers / wait_reason_codes.
+ result_data = attach_report_half_year_facts(result_data, symbol=symbol)
+ # [SCORE-001B] research_score_snapshot_api_adapter — attach snapshot summary.
+ # Background evidence only — must NOT alter the strong action gate.
+-result_data = attach_report_research_score_snapshot(result_data, symbol=symbol)
++# [SCORE-001B-R1] 传入 trade_date，历史报告按其交易日查询快照。
++result_data = attach_report_research_score_snapshot(
++    result_data, symbol=symbol, trade_date=trade_date,
++)
+ 
+ now = datetime.now(timezone.utc)
+ 
+ # Check if we should update an existing record (initialized via init_report)
+
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -873,8 +873,11 @@
+     """单条候选注入研究快照摘要（[SCORE-001B]。
+ 
+     失败 / 无 knowledge_root 时静默退化为 ``research_score_snapshot=None``，
+     绝不阻塞候选读取主链路。只读、不调用 LLM、不改变 tier / action 门禁。
++
++    [SCORE-001B-R1] 候选有 date/discovered_at 时按其日期查询快照，
++    避免使用未来快照导致历史回放数据泄漏。
+     """
+     symbol = item.get("symbol") or ""
+     if not symbol:
+         item.setdefault("research_score_snapshot", None)
+@@ -888,9 +891,10 @@
+         from tradingagents.dataflows.research_score_snapshot import (
+             query_research_score_snapshot as _snap_query,
+             snapshot_to_api_dict as _snap_to_api,
+         )
+-        analysis_time = datetime.now(_tz.utc)
++        # [SCORE-001B-R1] 按候选日期查询快照。
++        analysis_time = _resolve_candidate_analysis_time(item)
+         result = _snap_query(
+             knowledge_root,
+             symbol=symbol,
+             analysis_time=analysis_time,
+@@ -905,8 +909,33 @@
+         item.setdefault("research_score_snapshot", None)
+     return item
+ 
+ 
++def _resolve_candidate_analysis_time(item: dict) -> datetime:
++    """[SCORE-001B-R1] 从候选记录解析 analysis_time。
++
++    优先使用 candidate 的 date 或 discovered_at 字段；fallback 到当前 UTC。
++    """
++    from datetime import timezone as _tz
++    for key in ("date", "discovered_at"):
++        raw = item.get(key)
++        if raw:
++            try:
++                text = str(raw).strip()
++                if len(text) == 10:  # YYYY-MM-DD
++                    from datetime import timedelta
++                    dt = datetime.strptime(text, "%Y-%m-%d")
++                    return dt.replace(hour=15, minute=0, second=0, tzinfo=_tz(timedelta(hours=8)))
++                # ISO datetime
++                dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
++                if dt.tzinfo is None:
++                    dt = dt.replace(tzinfo=_tz.utc)
++                return dt
++            except (ValueError, TypeError):
++                pass
++    return datetime.now(_tz.utc)
++
++
+ def _compute_action(item: dict) -> str:
+     if item.get("need_deep_ta"):
+         return "NEED_DEEP_TA"
+     trigger = item.get("trigger_price")
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1311,5 +1311,7 @@
+     "render_research_score_block",
+     "render_research_score_report",
+     "suggest_query_output_path",
+     "snapshot_to_api_dict",
++    "_strip_strong_action_verbs",
++    "_FORBIDDEN_ACTION_VERBS",
+ ]
+
+[0m
+[0m# [0mTodos
+[✓] Read SCORE-001B-R1 task details and understand the 3 requirements
+[✓] Explore existing SCORE-001B code and snapshot loader
+[✓] Fix 1: Historical reports query snapshot by trade date/analysis time
+[✓] Fix 2: Snapshot text must not leak strong action words
+[✓] Fix 3: Read failure must not masquerade as normal no-data
+[•] Write tests for all 3 fixes
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from tradingagents.dataflows.research_score_snapshot import (
+    snapshot_to_api_dict, _strip_strong_action_verbs, _FORBIDDEN_ACTION_VERBS,
+    query_research_score_snapshot, STATUS_FAILED, STATUS_NORMAL_NO_DATA,
+)
+print('Imports OK')
+print(f'Forbidden verbs count: {len(_FORBIDDEN_ACTION_VERBS)}')
+print(f'Strip test: {_strip_strong_action_verbs(\"建议立即买入该股\")}')
+print(f'Strip no-op: {_strip_strong_action_verbs(\"看多方向\")}')
+"
+
+Imports OK
+Forbidden verbs count: 17
+Strip test: 建议[已过滤]该股
+Strip no-op: 看多方向
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from api.services.report_service import attach_report_research_score_snapshot, _resolve_report_analysis_time
+print('report_service imports OK')
+at = _resolve_report_analysis_time('2026-07-10')
+print(f'trade_date=2026-07-10 -> analysis_time: {at}')
+at2 = _resolve_report_analysis_time(None)
+print(f'trade_date=None -> analysis_time: {at2}')
+at3 = _resolve_report_analysis_time('invalid')
+print(f'trade_date=invalid -> analysis_time: {at3}')
+"
+
+report_service imports OK
+trade_date=2026-07-10 -> analysis_time: 2026-07-10 15:00:00+08:00
+trade_date=None -> analysis_time: 2026-07-24 06:30:10.734325+00:00
+trade_date=invalid -> analysis_time: 2026-07-24 06:30:10.734336+00:00
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from api.services.tradeflow_service import _enrich_candidate_with_research_score_snapshot, _resolve_candidate_analysis_time
+print('tradeflow_service imports OK')
+item = {'symbol': '605589.SH', 'date': '2026-07-10'}
+at = _resolve_candidate_analysis_time(item)
+print(f'date=2026-07-10 -> analysis_time: {at}')
+item2 = {'symbol': '605589.SH', 'discovered_at': '2026-07-10T10:00:00+08:00'}
+at2 = _resolve_candidate_analysis_time(item2)
+print(f'discovered_at=2026-07-10T10:00:00+08:00 -> analysis_time: {at2}')
+item3 = {'symbol': '605589.SH'}
+at3 = _resolve_candidate_analysis_time(item3)
+print(f'no date -> analysis_time: {at3}')
+"
+
+tradeflow_service imports OK
+date=2026-07-10 -> analysis_time: 2026-07-10 15:00:00+08:00
+discovered_at=2026-07-10T10:00:00+08:00 -> analysis_time: 2026-07-10 10:00:00+08:00
+no date -> analysis_time: 2026-07-24 06:30:17.298102+00:00
+[0m
+[0m← [0mWrite tests/test_score001b_r1_snapshot_fixes.py
+Wrote file successfully.
+[0m
+All imports work. Now let me write the tests:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_score001b_r1_snapshot_fixes.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 37 items
+
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_buy PASSED [  2%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_sell PASSED [  5%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_full_position PASSED [  8%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_clear_position PASSED [ 10%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_all_in PASSED [ 13%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_strong_buy_sell PASSED [ 16%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_directional_words PASSED [ 18%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_analytical_phrases PASSED [ 21%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_empty_input PASSED [ 24%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_none_like_input PASSED [ 27%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_no_verb_no_change PASSED [ 29%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_multiple_verbs_in_text PASSED [ 32%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_thesis_core_hypothesis_stripped FAILED [ 35%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_evidence_claim_stripped FAILED [ 37%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_warnings_stripped FAILED [ 40%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_missing_evidence_stripped FAILED [ 43%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_no_action_verbs_in_full_output PASSED [ 45%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_corrupt_json_returns_failed PASSED [ 48%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_permission_denied_returns_failed PASSED [ 51%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_empty_dir_returns_normal_no_data PASSED [ 54%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_no_symbol_dir_returns_normal_no_data PASSED [ 56%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_partial_corrupt_one_valid PASSED [ 59%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_all_future_snapshots_returns_normal_no_data PASSED [ 62%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_uses_trade_date FAILED [ 64%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_historical_date_excludes_future PASSED [ 67%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_none_trade_date_uses_now PASSED [ 70%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_invalid_trade_date_fallback PASSED [ 72%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_uses_date_field FAILED [ 75%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_historical_date_excludes_future PASSED [ 78%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_discovered_at_field FAILED [ 81%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_no_date_uses_now FAILED [ 83%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_has_data FAILED [ 86%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_no_data PASSED [ 89%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_failed PASSED [ 91%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_query_with_valid_snapshot PASSED [ 94%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_report_service_backward_compat PASSED [ 97%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_no_action_keys_in_api_output PASSED [100%]
+
+=================================== FAILURES ===================================
+_ TestSnapshotToApiDictActionVerbStripping.test_thesis_core_hypothesis_stripped _
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestSnapshotToApiDictActionVerbStripping object at 0x10c170740>
+
+    def test_thesis_core_hypothesis_stripped(self) -> None:
+        snap = _build_snapshot(
+            core_hypothesis="建议立即买入该股，满仓操作",
+        )
+        result = _build_result(status=STATUS_HAS_DATA, snapshot=snap)
+        api = snapshot_to_api_dict(result)
+    
+>       hypothesis = api["snapshot"]["theses_summary"][0]["core_hypothesis"]
+                     ^^^^^^^^^^^^^^^
+E       KeyError: 'snapshot'
+
+tests/test_score001b_r1_snapshot_fixes.py:194: KeyError
+____ TestSnapshotToApiDictActionVerbStripping.test_evidence_claim_stripped _____
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestSnapshotToApiDictActionVerbStripping object at 0x10c170170>
+
+    def test_evidence_claim_stripped(self) -> None:
+        snap = _build_snapshot(
+            claim="强烈推荐买入，建议加仓",
+        )
+        result = _build_result(status=STATUS_HAS_DATA, snapshot=snap)
+        api = snapshot_to_api_dict(result)
+    
+>       claim_text = api["snapshot"]["evidence_refs_summary"][0]["claim"]
+                     ^^^^^^^^^^^^^^^
+E       KeyError: 'snapshot'
+
+tests/test_score001b_r1_snapshot_fixes.py:206: KeyError
+_______ TestSnapshotToApiDictActionVerbStripping.test_warnings_stripped ________
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestSnapshotToApiDictActionVerbStripping object at 0x10c171b50>
+
+    def test_warnings_stripped(self) -> None:
+        snap = _build_snapshot()
+        snap.warnings = ["建议清仓离场", "正常警告"]
+        result = _build_result(status=STATUS_HAS_DATA, snapshot=snap)
+        api = snapshot_to_api_dict(result)
+    
+>       assert "建议清仓离场" not in str(api["snapshot"]["warnings"])
+                                   ^^^^^^^^^^^^^^^
+E       KeyError: 'snapshot'
+
+tests/test_score001b_r1_snapshot_fixes.py:216: KeyError
+___ TestSnapshotToApiDictActionVerbStripping.test_missing_evidence_stripped ____
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestSnapshotToApiDictActionVerbStripping object at 0x10c171e20>
+
+    def test_missing_evidence_stripped(self) -> None:
+        snap = _build_snapshot()
+        snap.missing_evidence = ["建议立即卖出该股"]
+        result = _build_result(status=STATUS_HAS_DATA, snapshot=snap)
+        api = snapshot_to_api_dict(result)
+    
+>       assert "建议立即卖出" not in str(api["snapshot"]["missing_evidence"])
+                                   ^^^^^^^^^^^^^^^
+E       KeyError: 'snapshot'
+
+tests/test_score001b_r1_snapshot_fixes.py:225: KeyError
+____ TestHistoricalReportSnapshotTiming.test_report_service_uses_trade_date ____
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestHistoricalReportSnapshotTiming object at 0x10c173710>
+tmp_path = PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-791/test_report_service_uses_trade0')
+
+    def test_report_service_uses_trade_date(self, tmp_path: Path) -> None:
+        """attach_report_research_score_snapshot 按 trade_date 查询。"""
+        from api.services.report_service import attach_report_research_score_snapshot
+    
+        # 快照 as_of=2026-07-13
+        root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+        with patch(
+            "tradingagents.dataflows.research_score_snapshot.default_knowledge_root",
+            return_value=str(root),
+        ):
+            # trade_date=2026-07-14 → 应该能读到 as_of=2026-07-13 的快照
+            result_data = {"key": "val"}
+            enriched = attach_report_research_score_snapshot(
+                result_data, symbol="605589.SH", trade_date="2026-07-14",
+            )
+            assert enriched is not None
+>           assert "research_score_snapshot" in enriched
+E           AssertionError: assert 'research_score_snapshot' in {'key': 'val'}
+
+tests/test_score001b_r1_snapshot_fixes.py:355: AssertionError
+_ TestHistoricalReportSnapshotTiming.test_tradeflow_candidate_uses_date_field __
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestHistoricalReportSnapshotTiming object at 0x10c172c30>
+tmp_path = PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-791/test_tradeflow_candidate_uses_0')
+
+    def test_tradeflow_candidate_uses_date_field(self, tmp_path: Path) -> None:
+        """TradeFlow 候选有 date 字段时按日期查询。"""
+        from api.services import tradeflow_service as tfs
+    
+        # 快照 as_of=2026-07-13
+        root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+        with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+            # date=2026-07-14 → 能读到 as_of=2026-07-13
+            item = {"symbol": "605589.SH", "name": "圣泉集团", "date": "2026-07-14"}
+            result = tfs._enrich_candidate_with_research_score_snapshot(item)
+>           assert result.get("research_score_snapshot") is not None
+E           AssertionError: assert None is not None
+E            +  where None = <built-in method get of dict object at 0x113eae240>('research_score_snapshot')
+E            +    where <built-in method get of dict object at 0x113eae240> = {'date': '2026-07-14', 'name': '圣泉集团', 'research_score_snapshot': None, 'symbol': '605589.SH'}.get
+
+tests/test_score001b_r1_snapshot_fixes.py:417: AssertionError
+_ TestHistoricalReportSnapshotTiming.test_tradeflow_candidate_discovered_at_field _
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestHistoricalReportSnapshotTiming object at 0x10c1722a0>
+tmp_path = PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-791/test_tradeflow_candidate_disco0')
+
+    def test_tradeflow_candidate_discovered_at_field(self, tmp_path: Path) -> None:
+        """TradeFlow 候选使用 discovered_at 字段。"""
+        from api.services import tradeflow_service as tfs
+    
+        root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+        with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+            item = {
+                "symbol": "605589.SH",
+                "name": "圣泉集团",
+                "discovered_at": "2026-07-14T10:00:00+08:00",
+            }
+            result = tfs._enrich_candidate_with_research_score_snapshot(item)
+>           assert result.get("research_score_snapshot") is not None
+E           AssertionError: assert None is not None
+E            +  where None = <built-in method get of dict object at 0x113fb1c00>('research_score_snapshot')
+E            +    where <built-in method get of dict object at 0x113fb1c00> = {'discovered_at': '2026-07-14T10:00:00+08:00', 'name': '圣泉集团', 'research_score_snapshot': None, 'symbol': '605589.SH'}.get
+
+tests/test_score001b_r1_snapshot_fixes.py:442: AssertionError
+_ TestHistoricalReportSnapshotTiming.test_tradeflow_candidate_no_date_uses_now _
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestHistoricalReportSnapshotTiming object at 0x10c171d90>
+tmp_path = PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-791/test_tradeflow_candidate_no_da0')
+
+    def test_tradeflow_candidate_no_date_uses_now(self, tmp_path: Path) -> None:
+        """TradeFlow 候选无 date/discovered_at → fallback 到当前时间。"""
+        from api.services import tradeflow_service as tfs
+    
+        root = build_snapshot_fixture_kb(tmp_path, include=["qualified"])
+        with patch.object(tfs, "_resolve_knowledge_root", return_value=str(root)):
+            item = {"symbol": "605589.SH", "name": "圣泉集团"}
+            result = tfs._enrich_candidate_with_research_score_snapshot(item)
+>           assert result.get("research_score_snapshot") is not None
+E           AssertionError: assert None is not None
+E            +  where None = <built-in method get of dict object at 0x11404edc0>('research_score_snapshot')
+E            +    where <built-in method get of dict object at 0x11404edc0> = {'name': '圣泉集团', 'research_score_snapshot': None, 'symbol': '605589.SH'}.get
+
+tests/test_score001b_r1_snapshot_fixes.py:452: AssertionError
+_________ TestBackwardCompatibility.test_snapshot_to_api_dict_has_data _________
+
+self = <tests.test_score001b_r1_snapshot_fixes.TestBackwardCompatibility object at 0x10c171b20>
+
+    def test_snapshot_to_api_dict_has_data(self) -> None:
+        snap = _build_snapshot()
+        result = _build_result(status=STATUS_HAS_DATA, snapshot=snap)
+        api = snapshot_to_api_dict(result)
+    
+        assert api["status"] == STATUS_HAS_DATA
+>       assert api["snapshot"] is not None
+               ^^^^^^^^^^^^^^^
+E       KeyError: 'snapshot'
+
+tests/test_score001b_r1_snapshot_fixes.py:469: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_thesis_core_hypothesis_stripped
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_evidence_claim_stripped
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_warnings_stripped
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_missing_evidence_stripped
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_uses_trade_date
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_uses_date_field
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_discovered_at_field
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_no_date_uses_now
+FAILED tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_has_data
+========================= 9 failed, 28 passed in 1.48s =========================
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from tradingagents.dataflows.research_score_snapshot import (
+    snapshot_to_api_dict, ResearchScoreQueryResult, ResearchScoreSnapshot,
+    ScoreSummary, InvestmentThesis, EvidenceRef, STATUS_HAS_DATA,
+)
+
+snap = ResearchScoreSnapshot(
+    schema_version='1.1.0',
+    snapshot_id='605589.SH-20260713-r1',
+    symbol='605589.SH',
+    name='圣泉集团',
+    as_of='2026-07-13',
+    created_at='2026-07-13T20:00:00+08:00',
+    source_cutoff_at='2026-07-13T15:00:00+08:00',
+    rubric_id='research-score-generic',
+    rubric_version='1.0.0',
+    status=STATUS_HAS_DATA,
+    scores=ScoreSummary(research_evidence_confidence=82, thesis_quality=78),
+    theses=[InvestmentThesis(thesis_id='T1', topic='test', direction='bullish', status='active', core_hypothesis='test hypothesis')],
+    evidence_refs=[EvidenceRef(evidence_id='E1', claim='test claim', claim_type='fact', source_path='test.md', source_type='report', source_quality_tier='B')],
+)
+
+result = ResearchScoreQueryResult(
+    status=STATUS_HAS_DATA,
+    symbol='605589.SH',
+    analysis_time='2026-07-14T15:00:00+08:00',
+    snapshot=snap,
+    snapshot_id='605589.SH-20260713-r1',
+    schema_version='1.1.0',
+)
+
+api = snapshot_to_api_dict(result)
+print('Keys:', list(api.keys()))
+print('Has snapshot key:', 'snapshot' in api)
+if 'snapshot' in api:
+    print('snapshot value is None:', api['snapshot'] is None)
+else:
+    print('NO SNAPSHOT KEY!')
+    print('Full api:', api)
+"
+
+Keys: ['status', 'snapshot_id', 'schema_version', 'rubric_id', 'rubric_version', 'degradation_reasons', 'validation_warnings']
+Has snapshot key: False
+NO SNAPSHOT KEY!
+Full api: {'status': 'HAS_DATA', 'snapshot_id': '605589.SH-20260713-r1', 'schema_version': '1.1.0', 'rubric_id': None, 'rubric_version': None, 'degradation_reasons': [], 'validation_warnings': []}
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from tradingagents.dataflows.research_score_snapshot import _filter_sensitive
+
+test = {'status': 'HAS_DATA', 'snapshot': {'symbol': 'test'}, 'rubric_id': 'x'}
+filtered = _filter_sensitive(test)
+print('Before:', list(test.keys()))
+print('After:', list(filtered.keys()))
+print('Has snapshot:', 'snapshot' in filtered)
+"
+
+Before: ['status', 'snapshot', 'rubric_id']
+After: ['status', 'snapshot', 'rubric_id']
+Has snapshot: True
+[0m
+[0m→ [0mRead tradingagents/dataflows/research_score_snapshot.py[90m [offset=1150, limit=120][0m
+[0m
+[0m← [0mEdit tradingagents/dataflows/research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/research_score_snapshot.py
+@@ -1248,9 +1248,10 @@
+         "previous_snapshot_id": sc.previous_snapshot_id,
+         "reasons": list(sc.reasons or [])[:5],
+     }
+ 
+-    base["snapshot"] = {
++# [SCORE-001B-R1] 所有文本字段清洗强动作词。
++base["snapshot"] = {
+     "snapshot_id": snap.snapshot_id,
+     "symbol": snap.symbol,
+     "name": snap.name,
+     "as_of": snap.as_of,
+
+[0m
+I see the issue — the `base["snapshot"] = {` block got incorrectly indented inside the `if sc` block. Let me fix it:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from pathlib import Path
+from tests.research_score_snapshot_fixtures import build_snapshot_fixture_kb
+import tempfile
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = build_snapshot_fixture_kb(Path(tmp), include=['qualified'])
+    print('Root:', root)
+    print('Exists:', root.exists())
+    # List contents
+    for p in sorted(root.rglob('*')):
+        print(' ', p.relative_to(root))
+"
+
+Root: /Users/maybee/.openclaw/tmp/tmpt9u_h8lw
+Exists: True
+  research_score_snapshots
+  research_score_snapshots/605589.SH
+  research_score_snapshots/605589.SH/605589.SH-20260713-r1.json
+[0m
+Now let me debug the TradeFlow issue — the fixture might need a different root structure:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+from pathlib import Path
+from tests.research_score_snapshot_fixtures import build_snapshot_fixture_kb
+from tradingagents.dataflows.research_score_snapshot import query_research_score_snapshot, snapshot_to_api_dict, default_knowledge_root
+from datetime import datetime, timezone, timedelta
+import tempfile
+
+_TZ_CN = timezone(timedelta(hours=8))
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = build_snapshot_fixture_kb(Path(tmp), include=['qualified'])
+    print('Root:', root)
+    print('default_knowledge_root():', default_knowledge_root())
+    
+    result = query_research_score_snapshot(
+        str(root), symbol='605589.SH',
+        analysis_time=datetime(2026, 7, 14, 15, 0, 0, tzinfo=_TZ_CN)
+    )
+    print('Status:', result.status)
+    print('Snapshot:', result.snapshot is not None)
+    api = snapshot_to_api_dict(result)
+    print('API keys:', list(api.keys()))
+    print('API snapshot:', api.get('snapshot') is not None)
+"
+
+Root: /Users/maybee/.openclaw/tmp/tmppkvuam_t
+default_knowledge_root(): /Users/maybee/Documents/knowledge
+Status: HAS_DATA
+Snapshot: True
+API keys: ['status', 'snapshot_id', 'schema_version', 'rubric_id', 'rubric_version', 'degradation_reasons', 'validation_warnings', 'snapshot']
+API snapshot: True
+[0m
+The indentation fix works. Let me re-run the tests:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_score001b_r1_snapshot_fixes.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 37 items
+
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_buy PASSED [  2%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_sell PASSED [  5%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_full_position PASSED [  8%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_clear_position PASSED [ 10%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_all_in PASSED [ 13%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_strong_buy_sell PASSED [ 16%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_directional_words PASSED [ 18%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_analytical_phrases PASSED [ 21%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_empty_input PASSED [ 24%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_none_like_input PASSED [ 27%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_no_verb_no_change PASSED [ 29%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_multiple_verbs_in_text PASSED [ 32%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_thesis_core_hypothesis_stripped PASSED [ 35%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_evidence_claim_stripped PASSED [ 37%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_warnings_stripped PASSED [ 40%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_missing_evidence_stripped PASSED [ 43%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_no_action_verbs_in_full_output PASSED [ 45%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_corrupt_json_returns_failed PASSED [ 48%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_permission_denied_returns_failed PASSED [ 51%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_empty_dir_returns_normal_no_data PASSED [ 54%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_no_symbol_dir_returns_normal_no_data PASSED [ 56%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_partial_corrupt_one_valid PASSED [ 59%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_all_future_snapshots_returns_normal_no_data PASSED [ 62%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_uses_trade_date PASSED [ 64%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_historical_date_excludes_future PASSED [ 67%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_none_trade_date_uses_now PASSED [ 70%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_invalid_trade_date_fallback PASSED [ 72%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_uses_date_field PASSED [ 75%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_historical_date_excludes_future PASSED [ 78%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_discovered_at_field PASSED [ 81%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_no_date_uses_now PASSED [ 83%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_has_data PASSED [ 86%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_no_data PASSED [ 89%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_failed PASSED [ 91%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_query_with_valid_snapshot PASSED [ 94%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_report_service_backward_compat PASSED [ 97%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_no_action_keys_in_api_output PASSED [100%]
+
+============================== 37 passed in 1.44s ==============================
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_score001b_snapshot_api_adapter.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 37 items
+
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_has_data_snapshot PASSED [  2%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_data_snapshot PASSED [  5%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_failed_snapshot PASSED [  8%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_low_confidence_snapshot PASSED [ 10%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_stale_snapshot PASSED [ 13%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_none_scores PASSED [ 16%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_sensitive_key_filtering PASSED [ 18%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_absolute_path_redaction PASSED [ 21%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_action_keys_leak PASSED [ 24%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_strong_action_verbs PASSED [ 27%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_invalid_input PASSED [ 29%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_score_change_summary PASSED [ 32%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_degradation_reasons_preserved PASSED [ 35%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_present_in_response PASSED [ 37%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_snapshot PASSED [ 40%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_disabled PASSED [ 43%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_action_keys PASSED [ 45%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_source_freshness_includes_snapshot PASSED [ 48%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_with_snapshot PASSED [ 51%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_without_snapshot PASSED [ 54%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_symbol PASSED [ 56%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_knowledge_root PASSED [ 59%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_failure_graceful PASSED [ 62%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_action_keys PASSED [ 64%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_preserves_existing_fields PASSED [ 67%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_with_snapshot PASSED [ 70%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_without_snapshot PASSED [ 72%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_symbol PASSED [ 75%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_none_result_data PASSED [ 78%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_failure_graceful PASSED [ 81%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_action_keys PASSED [ 83%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_has_data PASSED [ 86%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_no_data PASSED [ 89%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_multi_version PASSED [ 91%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_drafts_excluded PASSED [ 94%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_has_data_json_serializable PASSED [ 97%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_no_data_json_serializable PASSED [100%]
+
+============================== 37 passed in 1.26s ==============================
+[0m
+All 37 tests pass. Now let me run the existing SCORE-001B regression tests:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_score001_research_score_snapshot.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 73 items
+
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_qualified_has_data PASSED [  1%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_stale_status_passthrough PASSED [  2%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_low_confidence_passthrough PASSED [  4%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_normal_no_data_declared PASSED [  5%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_failed_status_declared PASSED [  6%]
+tests/test_score001_research_score_snapshot.py::TestMissingFieldsAndNullSemantics::test_missing_scores_kept_as_none PASSED [  8%]
+tests/test_score001_research_score_snapshot.py::TestMissingFieldsAndNullSemantics::test_zero_is_valid_score_not_missing PASSED [  9%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_corrupted_json_only_candidate FAILED [ 10%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_symbol_mismatch_fail_closed PASSED [ 12%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_unknown_schema_version_fail_closed PASSED [ 13%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_illegal_score_fail_closed PASSED [ 15%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_negative_score_fail_closed PASSED [ 16%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_string_score_fail_closed PASSED [ 17%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_dangling_evidence_ref_fail_closed PASSED [ 19%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_illegal_tier_fail_closed PASSED [ 20%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_path_escape_evidence_fail_closed PASSED [ 21%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_dotdot_source_path_rejected PASSED [ 23%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_missing_rubric_fail_closed PASSED [ 24%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_invalid_thesis_status_fail_closed PASSED [ 26%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[action] PASSED [ 27%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[execution_action] PASSED [ 28%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[playbook_stage] PASSED [ 30%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[planned_position] PASSED [ 31%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[buy_level] PASSED [ 32%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[risk_level] PASSED [ 34%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[entry_timing] PASSED [ 35%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[portfolio_fit] PASSED [ 36%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_scores_subtable_forbidden_field_rejected PASSED [ 38%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_thesis_forbidden_field_rejected PASSED [ 39%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_thesis_breakdown_forbidden_field_rejected PASSED [ 41%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_forbidden_top_field_rejected PASSED [ 42%]
+tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_only_returns_no_data PASSED [ 43%]
+tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_ignored_when_formal_exists PASSED [ 45%]
+tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_not_counted_as_candidate FAILED [ 46%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_picks_latest_valid_before_analysis_time PASSED [ 47%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_older_analysis_time_picks_older_snapshot PASSED [ 49%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_future_snapshot_not_selected PASSED [ 50%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_analysis_time_none_uses_now PASSED [ 52%]
+tests/test_score001_research_score_snapshot.py::TestLoaderStaleness::test_stale_after_days_downgrade PASSED [ 53%]
+tests/test_score001_research_score_snapshot.py::TestLoaderStaleness::test_custom_short_stale_window PASSED [ 54%]
+tests/test_score001_research_score_snapshot.py::TestLoaderStaleness::test_does_not_override_failed_status PASSED [ 56%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_no_files_written_to_kb PASSED [ 57%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_idempotent_reads PASSED [ 58%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_missing_knowledge_root PASSED [ 60%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_missing_snapshots_root PASSED [ 61%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_no_symbol_returns_no_data PASSED [ 63%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_unknown_symbol_returns_no_data PASSED [ 64%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_symlink_escape_fail_closed PASSED [ 65%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_nested_drafts_in_symbol_dir_excluded PASSED [ 67%]
+tests/test_score001_research_score_snapshot.py::TestActionNonInfluence::test_result_has_no_action_fields PASSED [ 68%]
+tests/test_score001_research_score_snapshot.py::TestActionNonInfluence::test_extreme_high_score_still_no_action PASSED [ 69%]
+tests/test_score001_research_score_snapshot.py::TestActionNonInfluence::test_snapshot_injected_action_field_rejected PASSED [ 71%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[original_filing] PASSED [ 72%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[official_notice] PASSED [ 73%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[broker_research] PASSED [ 75%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[media] PASSED [ 76%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[user_note] PASSED [ 78%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[unknown] PASSED [ 79%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_loader_does_not_invent_new_tier PASSED [ 80%]
+tests/test_score001_research_score_snapshot.py::TestInvalidatedThesis::test_invalidated_thesis_accepted PASSED [ 82%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_result_json_serializable PASSED [ 83%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_snapshot_to_dict_roundtrip PASSED [ 84%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_has_data PASSED [ 86%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_empty_for_no_data PASSED [ 87%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_report PASSED [ 89%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_suggest_output_path PASSED [ 90%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_corrupt_falls_back_to_older PASSED [ 91%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_invalid_falls_back_to_older PASSED [ 93%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_score_summary_defaults_none PASSED [ 94%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_evidence_ref_default_tier_unknown PASSED [ 95%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_thesis_defaults PASSED [ 97%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_validation_error_carries_reason_code PASSED [ 98%]
+tests/test_score001_research_score_snapshot.py::TestSymbolNormalization::test_lowercase_exchange_suffix_reads_uppercase_snapshot_dir PASSED [100%]
+
+=================================== FAILURES ===================================
+_________ TestFailClosedValidation.test_corrupted_json_only_candidate __________
+
+self = <tests.test_score001_research_score_snapshot.TestFailClosedValidation object at 0x109f0d6a0>
+tmp_path = PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-794/test_corrupted_json_only_candi0')
+
+    def test_corrupted_json_only_candidate(self, tmp_path: Path) -> None:
+        root = build_snapshot_fixture_kb(tmp_path, include=["corrupted"])
+        result = query_research_score_snapshot(
+            str(root), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        # 损坏文件无可读候选 → NORMAL_NO_DATA；errors 记录损坏。
+>       assert result.status == STATUS_NORMAL_NO_DATA
+E       AssertionError: assert 'FAILED' == 'NORMAL_NO_DATA'
+E         
+E         - NORMAL_NO_DATA
+E         + FAILED
+
+tests/test_score001_research_score_snapshot.py:201: AssertionError
+___________ TestDraftsExclusion.test_draft_not_counted_as_candidate ____________
+
+self = <tests.test_score001_research_score_snapshot.TestDraftsExclusion object at 0x109f4c6e0>
+tmp_path = PosixPath('/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-794/test_draft_not_counted_as_cand0')
+
+    def test_draft_not_counted_as_candidate(self, tmp_path: Path) -> None:
+        # 只有草案 + 一个损坏正式文件 → 无可读正式候选。
+        root = tmp_path
+        (root / SNAPSHOTS_DIR_NAME / "603629.SH").mkdir(parents=True)
+        (root / SNAPSHOTS_DIR_NAME / "603629.SH" / "broken.json").write_text(
+            "not json", encoding="utf-8"
+        )
+        draft = _base_snapshot_dict(symbol="603629.SH")
+        _write_snapshot_file(
+            root, "603629.SH", "draft.json", draft, in_drafts=True
+        )
+        result = query_research_score_snapshot(
+            str(root), symbol="603629.SH", analysis_time=_at(2026, 7, 14)
+        )
+>       assert result.status == STATUS_NORMAL_NO_DATA
+E       AssertionError: assert 'FAILED' == 'NORMAL_NO_DATA'
+E         
+E         - NORMAL_NO_DATA
+E         + FAILED
+
+tests/test_score001_research_score_snapshot.py:426: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_corrupted_json_only_candidate
+FAILED tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_not_counted_as_candidate
+========================= 2 failed, 71 passed in 0.14s =========================
+[0m
+[0m→ [0mRead tests/test_score001_research_score_snapshot.py[90m [limit=25, offset=189][0m
+[0m→ [0mRead tests/test_score001_research_score_snapshot.py[90m [limit=25, offset=410][0m
+Two existing tests need updating — they expected `NORMAL_NO_DATA` for corrupt files on disk, which is exactly what Fix 3 changes to `FAILED`. Let me update them:
+[0m
+[0m← [0mEdit tests/test_score001_research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_score001_research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_score001_research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_score001_research_score_snapshot.py
+@@ -196,10 +196,10 @@
+     root = build_snapshot_fixture_kb(tmp_path, include=["corrupted"])
+     result = query_research_score_snapshot(
+         str(root), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+     )
+-    # 损坏文件无可读候选 → NORMAL_NO_DATA；errors 记录损坏。
+-    assert result.status == STATUS_NORMAL_NO_DATA
++    # [SCORE-001B-R1] 损坏文件在磁盘上存在但读取失败 → FAILED（非 NORMAL_NO_DATA）。
++    assert result.status == STATUS_FAILED
+     assert any("JSON" in e or "解析" in e for e in result.errors)
+ 
+ def test_symbol_mismatch_fail_closed(self, tmp_path: Path) -> None:
+     root = build_snapshot_fixture_kb(tmp_path, include=["symbol_mismatch"])
+
+[0m
+[0m← [0mEdit tests/test_score001_research_score_snapshot.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_score001_research_score_snapshot.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_score001_research_score_snapshot.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_score001_research_score_snapshot.py
+@@ -409,9 +409,9 @@
+         # 草案高分 99 没有污染结果。
+         assert result.snapshot.scores.research_evidence_confidence == 80
+ 
+     def test_draft_not_counted_as_candidate(self, tmp_path: Path) -> None:
+-        # 只有草案 + 一个损坏正式文件 → 无可读正式候选。
++        # 只有草案 + 一个损坏正式文件 → 正式文件读取失败 → FAILED。
+         root = tmp_path
+         (root / SNAPSHOTS_DIR_NAME / "603629.SH").mkdir(parents=True)
+         (root / SNAPSHOTS_DIR_NAME / "603629.SH" / "broken.json").write_text(
+             "not json", encoding="utf-8"
+@@ -422,9 +422,10 @@
+         )
+         result = query_research_score_snapshot(
+             str(root), symbol="603629.SH", analysis_time=_at(2026, 7, 14)
+         )
+-        assert result.status == STATUS_NORMAL_NO_DATA
++        # [SCORE-001B-R1] 正式文件损坏在磁盘上存在但读取失败 → FAILED。
++        assert result.status == STATUS_FAILED
+ 
+ 
+ # ── 多版本 / 时序 / 时间穿越 ─────────────────────────────────────────
+ 
+
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py tests/test_score001b_r1_snapshot_fixes.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 147 items
+
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_qualified_has_data PASSED [  0%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_stale_status_passthrough PASSED [  1%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_low_confidence_passthrough PASSED [  2%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_normal_no_data_declared PASSED [  2%]
+tests/test_score001_research_score_snapshot.py::TestFiveStatuses::test_failed_status_declared PASSED [  3%]
+tests/test_score001_research_score_snapshot.py::TestMissingFieldsAndNullSemantics::test_missing_scores_kept_as_none PASSED [  4%]
+tests/test_score001_research_score_snapshot.py::TestMissingFieldsAndNullSemantics::test_zero_is_valid_score_not_missing PASSED [  4%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_corrupted_json_only_candidate PASSED [  5%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_symbol_mismatch_fail_closed PASSED [  6%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_unknown_schema_version_fail_closed PASSED [  6%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_illegal_score_fail_closed PASSED [  7%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_negative_score_fail_closed PASSED [  8%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_string_score_fail_closed PASSED [  8%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_dangling_evidence_ref_fail_closed PASSED [  9%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_illegal_tier_fail_closed PASSED [ 10%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_path_escape_evidence_fail_closed PASSED [ 10%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_dotdot_source_path_rejected PASSED [ 11%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_missing_rubric_fail_closed PASSED [ 12%]
+tests/test_score001_research_score_snapshot.py::TestFailClosedValidation::test_invalid_thesis_status_fail_closed PASSED [ 12%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[action] PASSED [ 13%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[execution_action] PASSED [ 14%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[playbook_stage] PASSED [ 14%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[planned_position] PASSED [ 15%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[buy_level] PASSED [ 16%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[risk_level] PASSED [ 17%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[entry_timing] PASSED [ 17%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_top_level_forbidden_field_rejected[portfolio_fit] PASSED [ 18%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_scores_subtable_forbidden_field_rejected PASSED [ 19%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_thesis_forbidden_field_rejected PASSED [ 19%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_thesis_breakdown_forbidden_field_rejected PASSED [ 20%]
+tests/test_score001_research_score_snapshot.py::TestForbiddenActionFields::test_forbidden_top_field_rejected PASSED [ 21%]
+tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_only_returns_no_data PASSED [ 21%]
+tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_ignored_when_formal_exists PASSED [ 22%]
+tests/test_score001_research_score_snapshot.py::TestDraftsExclusion::test_draft_not_counted_as_candidate PASSED [ 23%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_picks_latest_valid_before_analysis_time PASSED [ 23%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_older_analysis_time_picks_older_snapshot PASSED [ 24%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_future_snapshot_not_selected PASSED [ 25%]
+tests/test_score001_research_score_snapshot.py::TestMultiVersionTimeTravel::test_analysis_time_none_uses_now PASSED [ 25%]
+tests/test_score001_research_score_snapshot.py::TestLoaderStaleness::test_stale_after_days_downgrade PASSED [ 26%]
+tests/test_score001_research_score_snapshot.py::TestLoaderStaleness::test_custom_short_stale_window PASSED [ 27%]
+tests/test_score001_research_score_snapshot.py::TestLoaderStaleness::test_does_not_override_failed_status PASSED [ 27%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_no_files_written_to_kb PASSED [ 28%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_idempotent_reads PASSED [ 29%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_missing_knowledge_root PASSED [ 29%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_missing_snapshots_root PASSED [ 30%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_no_symbol_returns_no_data PASSED [ 31%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_unknown_symbol_returns_no_data PASSED [ 31%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_symlink_escape_fail_closed PASSED [ 32%]
+tests/test_score001_research_score_snapshot.py::TestReadOnlyAndSafety::test_nested_drafts_in_symbol_dir_excluded PASSED [ 33%]
+tests/test_score001_research_score_snapshot.py::TestActionNonInfluence::test_result_has_no_action_fields PASSED [ 34%]
+tests/test_score001_research_score_snapshot.py::TestActionNonInfluence::test_extreme_high_score_still_no_action PASSED [ 34%]
+tests/test_score001_research_score_snapshot.py::TestActionNonInfluence::test_snapshot_injected_action_field_rejected PASSED [ 35%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[original_filing] PASSED [ 36%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[official_notice] PASSED [ 36%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[broker_research] PASSED [ 37%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[media] PASSED [ 38%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[user_note] PASSED [ 38%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_all_kb014_tiers_accepted[unknown] PASSED [ 39%]
+tests/test_score001_research_score_snapshot.py::TestSourceTierReuse::test_loader_does_not_invent_new_tier PASSED [ 40%]
+tests/test_score001_research_score_snapshot.py::TestInvalidatedThesis::test_invalidated_thesis_accepted PASSED [ 40%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_result_json_serializable PASSED [ 41%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_snapshot_to_dict_roundtrip PASSED [ 42%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_has_data PASSED [ 42%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_block_empty_for_no_data PASSED [ 43%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_render_report PASSED [ 44%]
+tests/test_score001_research_score_snapshot.py::TestSerializationAndRender::test_suggest_output_path PASSED [ 44%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_corrupt_falls_back_to_older PASSED [ 45%]
+tests/test_score001_research_score_snapshot.py::TestFallbackToOlderValid::test_newest_invalid_falls_back_to_older PASSED [ 46%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_score_summary_defaults_none PASSED [ 46%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_evidence_ref_default_tier_unknown PASSED [ 47%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_thesis_defaults PASSED [ 48%]
+tests/test_score001_research_score_snapshot.py::TestDataclasses::test_validation_error_carries_reason_code PASSED [ 48%]
+tests/test_score001_research_score_snapshot.py::TestSymbolNormalization::test_lowercase_exchange_suffix_reads_uppercase_snapshot_dir PASSED [ 49%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_has_data_snapshot PASSED [ 50%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_data_snapshot PASSED [ 51%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_failed_snapshot PASSED [ 51%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_low_confidence_snapshot PASSED [ 52%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_stale_snapshot PASSED [ 53%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_none_scores PASSED [ 53%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_sensitive_key_filtering PASSED [ 54%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_absolute_path_redaction PASSED [ 55%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_action_keys_leak PASSED [ 55%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_no_strong_action_verbs PASSED [ 56%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_invalid_input PASSED [ 57%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_score_change_summary PASSED [ 57%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDict::test_degradation_reasons_preserved PASSED [ 58%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_present_in_response PASSED [ 59%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_snapshot PASSED [ 59%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_disabled PASSED [ 60%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_bucket_no_action_keys PASSED [ 61%]
+tests/test_score001b_snapshot_api_adapter.py::TestKB020ResearchScoreSnapshotBucket::test_source_freshness_includes_snapshot PASSED [ 61%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_with_snapshot PASSED [ 62%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_without_snapshot PASSED [ 63%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_symbol PASSED [ 63%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_knowledge_root PASSED [ 64%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_failure_graceful PASSED [ 65%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_no_action_keys PASSED [ 65%]
+tests/test_score001b_snapshot_api_adapter.py::TestTradeFlowCandidateSnapshotEnrichment::test_enrichment_preserves_existing_fields PASSED [ 66%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_with_snapshot PASSED [ 67%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_without_snapshot PASSED [ 68%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_symbol PASSED [ 68%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_none_result_data PASSED [ 69%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_failure_graceful PASSED [ 70%]
+tests/test_score001b_snapshot_api_adapter.py::TestReportServiceSnapshotAttachment::test_attach_no_action_keys PASSED [ 70%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_has_data PASSED [ 71%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_no_data PASSED [ 72%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_multi_version PASSED [ 72%]
+tests/test_score001b_snapshot_api_adapter.py::TestSnapshotToApiDictIntegration::test_full_pipeline_drafts_excluded PASSED [ 73%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_has_data_json_serializable PASSED [ 74%]
+tests/test_score001b_snapshot_api_adapter.py::TestJsonSerializable::test_no_data_json_serializable PASSED [ 74%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_buy PASSED [ 75%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_immediate_sell PASSED [ 76%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_full_position PASSED [ 76%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_clear_position PASSED [ 77%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_all_in PASSED [ 78%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_strips_strong_buy_sell PASSED [ 78%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_directional_words PASSED [ 79%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_preserves_analytical_phrases PASSED [ 80%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_empty_input PASSED [ 80%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_none_like_input PASSED [ 81%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_no_verb_no_change PASSED [ 82%]
+tests/test_score001b_r1_snapshot_fixes.py::TestStripStrongActionVerbs::test_multiple_verbs_in_text PASSED [ 82%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_thesis_core_hypothesis_stripped PASSED [ 83%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_evidence_claim_stripped PASSED [ 84%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_warnings_stripped PASSED [ 85%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_missing_evidence_stripped PASSED [ 85%]
+tests/test_score001b_r1_snapshot_fixes.py::TestSnapshotToApiDictActionVerbStripping::test_no_action_verbs_in_full_output PASSED [ 86%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_corrupt_json_returns_failed PASSED [ 87%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_permission_denied_returns_failed PASSED [ 87%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_empty_dir_returns_normal_no_data PASSED [ 88%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_no_symbol_dir_returns_normal_no_data PASSED [ 89%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_partial_corrupt_one_valid PASSED [ 89%]
+tests/test_score001b_r1_snapshot_fixes.py::TestReadFailureSemantics::test_all_future_snapshots_returns_normal_no_data PASSED [ 90%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_uses_trade_date PASSED [ 91%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_historical_date_excludes_future PASSED [ 91%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_none_trade_date_uses_now PASSED [ 92%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_report_service_invalid_trade_date_fallback PASSED [ 93%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_uses_date_field PASSED [ 93%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_historical_date_excludes_future PASSED [ 94%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_discovered_at_field PASSED [ 95%]
+tests/test_score001b_r1_snapshot_fixes.py::TestHistoricalReportSnapshotTiming::test_tradeflow_candidate_no_date_uses_now PASSED [ 95%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_has_data PASSED [ 96%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_no_data PASSED [ 97%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_snapshot_to_api_dict_failed PASSED [ 97%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_query_with_valid_snapshot PASSED [ 98%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_report_service_backward_compat PASSED [ 99%]
+tests/test_score001b_r1_snapshot_fixes.py::TestBackwardCompatibility::test_no_action_keys_in_api_output PASSED [100%]
+
+============================= 147 passed in 1.38s ==============================
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_score002_entry_timing.py tests/test_score003_portfolio_fit.py -q 2>&1
+........................................................................ [ 43%]
+........................................................................ [ 87%]
+....................                                                     [100%]
+164 passed in 1.60s
+[0m
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && python -c "
+import py_compile
+py_compile.compile('tradingagents/dataflows/research_score_snapshot.py', doraise=True)
+py_compile.compile('api/services/report_service.py', doraise=True)
+py_compile.compile('api/services/tradeflow_service.py', doraise=True)
+print('py_compile OK')
+"
+
+py_compile OK
+[0m
+All 147 tests pass. Let me also run the SCORE-002/003 regression tests and py_compile on the modified files:
+[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && cd /Users/maybee/TradingAgents-AShare && python -m pytest tests/test_api_smoke.py -q 2>&1
+....................................................                     [100%]
+52 passed in 18.40s
+[0m
+[0m# [0mTodos
+[✓] Read SCORE-001B-R1 task details and understand the 3 requirements
+[✓] Explore existing SCORE-001B code and snapshot loader
+[✓] Fix 1: Historical reports query snapshot by trade date/analysis time
+[✓] Fix 2: Snapshot text must not leak strong action words
+[✓] Fix 3: Read failure must not masquerade as normal no-data
+[✓] Write tests for all 3 fixes
+[✓] Run tests and verify
+[•] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,66 @@
+ # 修改日志
+ 
++## 2026-07-24 | SCORE-001B-R1 快照时点、动作词与失败态补修
++
++- **任务**：SCORE-001B-R1 — 补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据（P0）
++- **状态**：✅ 实现完成；37 项 SCORE-001B-R1 测试 passed，SCORE-001/001B 回归 110 passed，API smoke 52 passed
++- **代码标注**：`# [SCORE-001B-R1]`
++
++### 改动
++
++- **`tradingagents/dataflows/research_score_snapshot.py`**（修改）
++  - **Fix 2 — 强动作词清洗**：新增 `_FORBIDDEN_ACTION_VERBS` 常量（17 个强动作词）和 `_strip_strong_action_verbs()` 函数
++    - `snapshot_to_api_dict()` 中对 `theses_summary[].core_hypothesis`、`evidence_refs_summary[].claim`、`missing_evidence`、`upgrade_conditions`、`downgrade_conditions`、`invalidation_conditions`、`warnings` 全部应用清洗
++    - 只清洗"建议立即执行"级别强动词（立即买入/满仓/清仓/梭哈等），不清洗方向性描述词（看多/看空/偏多/偏空）
++  - **Fix 3 — 读取失败语义**：`query_research_score_snapshot()` 新增 `had_candidates_on_disk` 和 `had_read_errors` 追踪
++    - 有候选文件在磁盘上但全部读取/解析失败 → `STATUS_FAILED`（原来错误返回 `STATUS_NORMAL_NO_DATA`）
++    - 目录存在但无文件 → `STATUS_NORMAL_NO_DATA`（保持不变）
++    - 未来快照全部过滤 → `STATUS_NORMAL_NO_DATA`（保持不变，文件可读）
++
++- **`api/services/report_service.py`**（修改）
++  - **Fix 1 — 历史报告快照时点**：`attach_report_research_score_snapshot()` 新增 `trade_date` 参数
++    - 历史报告按其交易日查询快照（`as_of <= trade_date`），确保不使用未来快照
++    - 新增 `_resolve_report_analysis_time()` 辅助函数：`trade_date` 格式为 `YYYY-MM-DD`，取当天 15:00 CST 作为分析时间；解析失败 fallback 到当前 UTC
++    - `create_report()` 调用处传入 `trade_date` 参数
++  - 向后兼容：旧调用方不传 `trade_date` 仍正常工作（fallback 到当前时间）
++
++- **`api/services/tradeflow_service.py`**（修改）
++  - **Fix 1 — 候选快照时点**：`_enrich_candidate_with_research_score_snapshot()` 使用候选的 `date` 或 `discovered_at` 字段查询快照
++    - 新增 `_resolve_candidate_analysis_time()` 辅助函数
++    - 候选无日期字段时 fallback 到当前 UTC（向后兼容）
++
++- **`tests/test_score001b_r1_snapshot_fixes.py`**（新增）— 37 项测试
++  - `TestStripStrongActionVerbs`（12 项）：强动作词清洗单元测试
++  - `TestSnapshotToApiDictActionVerbStripping`（5 项）：API 输出动作词清洗
++  - `TestReadFailureSemantics`（6 项）：FAILED vs NORMAL_NO_DATA 区分
++  - `TestHistoricalReportSnapshotTiming`（8 项）：历史报告/候选按日期查询
++  - `TestBackwardCompatibility`（6 项）：向后兼容
++
++- **`tests/test_score001_research_score_snapshot.py`**（修改）
++  - `test_corrupted_json_only_candidate`：断言从 `STATUS_NORMAL_NO_DATA` 改为 `STATUS_FAILED`
++  - `test_draft_not_counted_as_candidate`：断言从 `STATUS_NORMAL_NO_DATA` 改为 `STATUS_FAILED`
++
++### 设计要点
++
++- **最小改动**：3 个文件修改 + 1 个测试文件新增，不影响已有 API 契约
++- **fail-closed 一致性**：读取失败（损坏/权限）区分于"无快照"，避免运维时误判为正常
++- **方向词保留**：只清洗"建议立即执行"级动词，保留"看多/看空/偏多/偏空"等方向描述
++- **时点安全**：历史报告/候选按其日期查询快照，`as_of > trade_date` 的快照不穿越
++
++### 回归
++
++- `pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py tests/test_score001b_r1_snapshot_fixes.py -v`：**147 passed**
++- `pytest tests/test_score002_entry_timing.py tests/test_score003_portfolio_fit.py -q`：**164 passed**
++- `pytest tests/test_api_smoke.py -q`：**52 passed**
++- `py_compile` 全部修改文件通过
++
++### 约束遵守
++
++未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
++
++---
++
+ ## 2026-07-24 | FUND-005A-R1 actual model 未知态修复
+ 
+ - **任务**：FUND-005A-R1 — 补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model（P1）
+ - **状态**：✅ 实现完成；24 项 FUND-005A 测试 passed，FUND 系列回归 99 passed
+
+[0m
+[0m# [0mTodos
+[✓] Read SCORE-001B-R1 task details and understand the 3 requirements
+[✓] Explore existing SCORE-001B code and snapshot loader
+[✓] Fix 1: Historical reports query snapshot by trade date/analysis time
+[✓] Fix 2: Snapshot text must not leak strong action words
+[✓] Fix 3: Read failure must not masquerade as normal no-data
+[✓] Write tests for all 3 fixes
+[✓] Run tests and verify
+[✓] Update docs/DEVLOG.md
+[0m
+## SCORE-001B-R1 完成
+
+### 修改文件
+
+| 文件 | 操作 |
+|---|---|
+| `tradingagents/dataflows/research_score_snapshot.py` | 修改 |
+| `api/services/report_service.py` | 修改 |
+| `api/services/tradeflow_service.py` | 修改 |
+| `tests/test_score001b_r1_snapshot_fixes.py` | 新增 |
+| `tests/test_score001_research_score_snapshot.py` | 修改（2 处断言更新） |
+| `docs/DEVLOG.md` | 修改 |
+
+### 三项修复逻辑
+
+1. **快照时点**（Fix 1）：`attach_report_research_score_snapshot()` 新增 `trade_date` 参数，历史报告按交易日查询快照（`as_of <= trade_date`）；`_enrich_candidate_with_research_score_snapshot()` 使用候选的 `date`/`discovered_at` 字段。无日期时 fallback 到当前时间（向后兼容）。
+
+2. **强动作词清洗**（Fix 2）：新增 `_strip_strong_action_verbs()` 函数，覆盖 17 个"建议立即执行"级动词（立即买入/满仓/清仓/梭哈等）。`snapshot_to_api_dict()` 对所有文本字段（`core_hypothesis`/`claim`/`warnings`/`missing_evidence`/条件列表）统一清洗。方向性描述词（看多/看空/偏多/偏空）不受影响。
+
+3. **失败态区分**（Fix 3）：`query_research_score_snapshot()` 新增 `had_candidates_on_disk` + `had_read_errors` 追踪。有文件在磁盘但全部读取失败 → `FAILED`；目录空 → `NORMAL_NO_DATA`。避免运维误判。
+
+### 测试结果
+
+- **SCORE-001B-R1 专项**：37 passed
+- **SCORE-001 + SCORE-001B 回归**：110 passed
+- **SCORE-002 + SCORE-003 回归**：164 passed
+- **API smoke**：52 passed
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。

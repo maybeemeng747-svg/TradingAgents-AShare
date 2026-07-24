@@ -1,5 +1,82 @@
 # 修改日志
 
+## 2026-07-24 | SCORE-001B-R1 Codex Review 补修
+
+- **任务**：SCORE-001B-R1 Codex review 两项 P1 correctness findings
+- **状态**：✅ 修复完成
+
+### 改动
+
+- **`api/services/tradeflow_service.py`**（修改）
+  - **Fix P1 — 日期字段查找**：`_resolve_candidate_analysis_time()` 查找键从 `"date"` / `"discovered_at"` 改为 `"effective_trade_date"` / `"plan_date"` / `"observe_date"`
+    - `_row_to_candidate_item()` 暴露的是 `effective_trade_date` / `plan_date` / `observe_date`，原查找键不存在导致每次都 fallback 到 `datetime.now()`，历史候选仍可能选中未来快照
+
+- **`tradingagents/dataflows/research_score_snapshot.py`**（修改）
+  - **Fix P1 — 全文本清洗**：`snapshot_to_api_dict()` 中 `theses_summary[].topic` 和 `score_change_summary.reasons[]` 现在也经过 `_strip_strong_action_verbs()` 清洗
+    - 原实现中这两处直接透传原始文本，ZCode 若在 topic 或 reason 中使用强动作词（如 `建议买入`）会泄漏到 API 输出
+
+---
+
+## 2026-07-24 | SCORE-001B-R1 快照时点、动作词与失败态补修
+
+- **任务**：SCORE-001B-R1 — 补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据（P0）
+- **状态**：✅ 实现完成；37 项 SCORE-001B-R1 测试 passed，SCORE-001/001B 回归 110 passed，API smoke 52 passed
+- **代码标注**：`# [SCORE-001B-R1]`
+
+### 改动
+
+- **`tradingagents/dataflows/research_score_snapshot.py`**（修改）
+  - **Fix 2 — 强动作词清洗**：新增 `_FORBIDDEN_ACTION_VERBS` 常量（17 个强动作词）和 `_strip_strong_action_verbs()` 函数
+    - `snapshot_to_api_dict()` 中对 `theses_summary[].core_hypothesis`、`evidence_refs_summary[].claim`、`missing_evidence`、`upgrade_conditions`、`downgrade_conditions`、`invalidation_conditions`、`warnings` 全部应用清洗
+    - 只清洗"建议立即执行"级别强动词（立即买入/满仓/清仓/梭哈等），不清洗方向性描述词（看多/看空/偏多/偏空）
+  - **Fix 3 — 读取失败语义**：`query_research_score_snapshot()` 新增 `had_candidates_on_disk` 和 `had_read_errors` 追踪
+    - 有候选文件在磁盘上但全部读取/解析失败 → `STATUS_FAILED`（原来错误返回 `STATUS_NORMAL_NO_DATA`）
+    - 目录存在但无文件 → `STATUS_NORMAL_NO_DATA`（保持不变）
+    - 未来快照全部过滤 → `STATUS_NORMAL_NO_DATA`（保持不变，文件可读）
+
+- **`api/services/report_service.py`**（修改）
+  - **Fix 1 — 历史报告快照时点**：`attach_report_research_score_snapshot()` 新增 `trade_date` 参数
+    - 历史报告按其交易日查询快照（`as_of <= trade_date`），确保不使用未来快照
+    - 新增 `_resolve_report_analysis_time()` 辅助函数：`trade_date` 格式为 `YYYY-MM-DD`，取当天 15:00 CST 作为分析时间；解析失败 fallback 到当前 UTC
+    - `create_report()` 调用处传入 `trade_date` 参数
+  - 向后兼容：旧调用方不传 `trade_date` 仍正常工作（fallback 到当前时间）
+
+- **`api/services/tradeflow_service.py`**（修改）
+  - **Fix 1 — 候选快照时点**：`_enrich_candidate_with_research_score_snapshot()` 使用候选的 `date` 或 `discovered_at` 字段查询快照
+    - 新增 `_resolve_candidate_analysis_time()` 辅助函数
+    - 候选无日期字段时 fallback 到当前 UTC（向后兼容）
+
+- **`tests/test_score001b_r1_snapshot_fixes.py`**（新增）— 37 项测试
+  - `TestStripStrongActionVerbs`（12 项）：强动作词清洗单元测试
+  - `TestSnapshotToApiDictActionVerbStripping`（5 项）：API 输出动作词清洗
+  - `TestReadFailureSemantics`（6 项）：FAILED vs NORMAL_NO_DATA 区分
+  - `TestHistoricalReportSnapshotTiming`（8 项）：历史报告/候选按日期查询
+  - `TestBackwardCompatibility`（6 项）：向后兼容
+
+- **`tests/test_score001_research_score_snapshot.py`**（修改）
+  - `test_corrupted_json_only_candidate`：断言从 `STATUS_NORMAL_NO_DATA` 改为 `STATUS_FAILED`
+  - `test_draft_not_counted_as_candidate`：断言从 `STATUS_NORMAL_NO_DATA` 改为 `STATUS_FAILED`
+
+### 设计要点
+
+- **最小改动**：3 个文件修改 + 1 个测试文件新增，不影响已有 API 契约
+- **fail-closed 一致性**：读取失败（损坏/权限）区分于"无快照"，避免运维时误判为正常
+- **方向词保留**：只清洗"建议立即执行"级动词，保留"看多/看空/偏多/偏空"等方向描述
+- **时点安全**：历史报告/候选按其日期查询快照，`as_of > trade_date` 的快照不穿越
+
+### 回归
+
+- `pytest tests/test_score001_research_score_snapshot.py tests/test_score001b_snapshot_api_adapter.py tests/test_score001b_r1_snapshot_fixes.py -v`：**147 passed**
+- `pytest tests/test_score002_entry_timing.py tests/test_score003_portfolio_fit.py -q`：**164 passed**
+- `pytest tests/test_api_smoke.py -q`：**52 passed**
+- `py_compile` 全部修改文件通过
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-24 | FUND-005A-R1 actual model 未知态修复
 
 - **任务**：FUND-005A-R1 — 补修 `fad65d9`，运行时未返回 actual model 时必须写 `unknown`，不得伪装成 requested model（P1）

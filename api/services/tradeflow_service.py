@@ -161,6 +161,7 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
         "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
         "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+        "trade_date": _rget(row, "trade_date", ""),
         "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
         "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
         "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
@@ -446,10 +447,13 @@ def _apply_knowledge_calibration_explain(items: List[dict]) -> List[dict]:
 
 # [SCORE-002] entry_timing_adapter
 def _enrich_candidate_with_entry_timing(item: dict) -> dict:
-    """单条候选注入 entry_timing 评分卡（[SCORE-002]）。
+    """单条候选注入 entry_timing 评分卡（[SCORE-002] / [SCORE-002-R1]）。
 
     纯确定性映射，复用 TradeFlow 已有字段；只读、不调用 LLM、不改变 tier / action 门禁。
     缺数据时降级为 entry_timing=None + data_status="missing"，绝不伪造中性满分。
+
+    [SCORE-002-R1] risk_deduction_persistence — 结构化 risk_deductions 审计记录
+    随卡片一起注入，下游/DB 回读可追溯扣分路径（source_field/raw_score/applied_deduction）。
     """
     try:
         from tradingagents.tradeflow.entry_timing_score import (
@@ -471,7 +475,11 @@ def _enrich_candidate_with_entry_timing(item: dict) -> dict:
             ambush_score=item.get("ambush_score") or 0.0,
             narrative_score=item.get("narrative_score") or 0.0,
             contradiction_level=item.get("contradiction_level") or "",
-            risk_penalty=item.get("risk_penalty") or 0.0,
+            risk_penalty=(
+                item.get("risk_penalty_score")
+                if item.get("risk_penalty_score") is not None
+                else item.get("risk_penalty")
+            ) or 0.0,
             invalid_price=item.get("invalid_price"),
             risk_flags=item.get("risk_flags"),
             overheat_flags=item.get("overheat_flags"),
@@ -872,8 +880,12 @@ def _enrich_candidates_with_half_year(items: List[dict]) -> List[dict]:
 def _enrich_candidate_with_research_score_snapshot(item: dict) -> dict:
     """单条候选注入研究快照摘要（[SCORE-001B]。
 
-    失败 / 无 knowledge_root 时静默退化为 ``research_score_snapshot=None``，
+    无 knowledge_root 时退化为 ``research_score_snapshot=None``；读取或解析
+    失败时保留 status-only ``FAILED`` payload，供调用方区分故障与无数据。
     绝不阻塞候选读取主链路。只读、不调用 LLM、不改变 tier / action 门禁。
+
+    [SCORE-001B-R1] 候选有 date/discovered_at 时按其日期查询快照，
+    避免使用未来快照导致历史回放数据泄漏。
     """
     symbol = item.get("symbol") or ""
     if not symbol:
@@ -889,21 +901,48 @@ def _enrich_candidate_with_research_score_snapshot(item: dict) -> dict:
             query_research_score_snapshot as _snap_query,
             snapshot_to_api_dict as _snap_to_api,
         )
-        analysis_time = datetime.now(_tz.utc)
+        # [SCORE-001B-R1] 按候选日期查询快照。
+        analysis_time = _resolve_candidate_analysis_time(item)
         result = _snap_query(
             knowledge_root,
             symbol=symbol,
             analysis_time=analysis_time,
         )
         api_dict = _snap_to_api(result)
-        # 只有真正有快照数据时才注入；无快照保持 None。
-        if api_dict.get("snapshot") is not None:
+        # FAILED must remain visible even when no snapshot could be parsed.
+        if api_dict.get("snapshot") is not None or api_dict.get("status") == "FAILED":
             item["research_score_snapshot"] = api_dict
         else:
             item.setdefault("research_score_snapshot", None)
     except Exception:
         item.setdefault("research_score_snapshot", None)
     return item
+
+
+def _resolve_candidate_analysis_time(item: dict) -> datetime:
+    """[SCORE-001B-R1] 从候选记录解析 analysis_time。
+
+    优先使用 candidate 的日期字段（effective_trade_date / plan_date / observe_date），
+    再兼容仅有基础 trade_date 的历史记录；所有日期都缺失时才 fallback 到当前 UTC。
+    """
+    from datetime import timezone as _tz
+    for key in ("effective_trade_date", "plan_date", "observe_date", "trade_date"):
+        raw = item.get(key)
+        if raw:
+            try:
+                text = str(raw).strip()
+                if len(text) == 10:  # YYYY-MM-DD
+                    from datetime import timedelta
+                    dt = datetime.strptime(text, "%Y-%m-%d")
+                    return dt.replace(hour=15, minute=0, second=0, tzinfo=_tz(timedelta(hours=8)))
+                # ISO datetime
+                dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_tz.utc)
+                return dt
+            except (ValueError, TypeError):
+                pass
+    return datetime.now(_tz.utc)
 
 
 def _compute_action(item: dict) -> str:

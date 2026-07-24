@@ -704,9 +704,11 @@ def _build_half_year_facts_summary(
 
 
 # [SCORE-001B] research_score_snapshot_api_adapter
+# [SCORE-001B-R1] 新增 trade_date 参数，历史报告按其交易日查询快照。
 def attach_report_research_score_snapshot(
     result_data: Optional[Dict[str, Any]],
     symbol: Optional[str] = None,
+    trade_date: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Attach [SCORE-001B] research score snapshot summary to report result_data.
 
@@ -717,6 +719,10 @@ def attach_report_research_score_snapshot(
     Output keys (all backward-compatible; old reports simply get None):
       - ``research_score_snapshot``: dict with structured snapshot summary
         (status / scores / theses_summary / missing_evidence).
+
+    [SCORE-001B-R1] 参数:
+      trade_date: 报告交易日 (YYYY-MM-DD)。历史回放时用于查询快照，
+                  确保不使用未来快照。None 时 fallback 到当前时间。
     """
     if not isinstance(result_data, dict):
         return result_data
@@ -740,15 +746,20 @@ def attach_report_research_score_snapshot(
         if not knowledge_root:
             return result_data
 
+        # [SCORE-001B-R1] 按报告交易日查询快照，避免未来数据泄漏。
+        analysis_time = _resolve_report_analysis_time(trade_date)
+
         result = _snap_query(
             knowledge_root,
             symbol=resolved_symbol,
-            analysis_time=datetime.now(timezone.utc),
+            analysis_time=analysis_time,
         )
         api_dict = _snap_to_api(result)
 
-        # 只有真正有快照数据时才附加；无快照不污染 result_data。
-        if api_dict.get("snapshot") is None:
+        # FAILED is an observable data-source state even without a parsed
+        # snapshot. Preserve it so callers can distinguish read failure from
+        # normal no-data/not-queried.
+        if api_dict.get("snapshot") is None and api_dict.get("status") != "FAILED":
             return result_data
 
         enriched = dict(result_data)
@@ -757,6 +768,24 @@ def attach_report_research_score_snapshot(
     except Exception as exc:
         logger.warning("SCORE-001B research_score_snapshot attachment failed: %s", exc)
         return result_data
+
+
+def _resolve_report_analysis_time(trade_date: Optional[str]) -> datetime:
+    """[SCORE-001B-R1] 从 trade_date 解析 analysis_time。
+
+    历史报告按其交易日查询快照（as_of <= trade_date），确保不使用未来快照。
+    trade_date 格式为 YYYY-MM-DD；解析失败时 fallback 到当前 UTC 时间。
+    """
+    from datetime import datetime, timezone
+    if trade_date:
+        try:
+            # trade_date 是 YYYY-MM-DD 格式；取当天 15:00 CST (UTC+8) 作为分析时间
+            dt = datetime.strptime(trade_date, "%Y-%m-%d")
+            from datetime import timedelta
+            return dt.replace(hour=15, minute=0, second=0, tzinfo=timezone(timedelta(hours=8)))
+        except (ValueError, TypeError):
+            pass
+    return datetime.now(timezone.utc)
 
 
 def extract_structured_data(
@@ -1228,7 +1257,10 @@ def create_report(
     result_data = attach_report_half_year_facts(result_data, symbol=symbol)
     # [SCORE-001B] research_score_snapshot_api_adapter — attach snapshot summary.
     # Background evidence only — must NOT alter the strong action gate.
-    result_data = attach_report_research_score_snapshot(result_data, symbol=symbol)
+    # [SCORE-001B-R1] 传入 trade_date，历史报告按其交易日查询快照。
+    result_data = attach_report_research_score_snapshot(
+        result_data, symbol=symbol, trade_date=trade_date,
+    )
 
     now = datetime.now(timezone.utc)
     

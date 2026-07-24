@@ -111,7 +111,7 @@
 ### SCORE-001B-R1: 快照时点、动作词与失败态补修（P0）
 - **描述**：补修 `f366724`：历史报告按其 trade date/analysis time 查询快照；快照文本不得泄漏强动作词；读取失败不得伪装成正常无数据。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：in_progress — claimed SCORE-001B-R1-20260724-142121
 - **预计耗时**：35-45 分钟
 - **depends_on**：FUND-005A-R1
 - **auto_release**：true
