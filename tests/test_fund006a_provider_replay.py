@@ -284,13 +284,33 @@ class TestAxis2_PeriodFormula:
         fact_dicts = [f.to_dict() for f in all_facts]
         inputs = extract_financial_anomaly_inputs(fact_dicts)
 
-        # Should not mix FY revenue with Q3 cost
-        # Check that the grouping is by (report_date, period_scope, unit)
-        for group_key, group_values in inputs.items():
-            if group_values is None:
-                continue
-            # All values in a group should come from same date/scope/unit
-            # (this is the core FUND-004B fix)
+        # gross_margin should be computable (revenue and cost from same group)
+        assert inputs.get("gross_margin") is not None, "gross_margin should be computed from same-group facts"
+
+        # Cross-unit isolation: adding a different-unit fact should NOT affect the result
+        cross_unit_facts = fact_dicts + [
+            {"metric": "revenue", "report_date": "2025-12-31", "value": 330740.0, "unit": "万元", "period_scope": "FY_YTD", "status": "HAS_DATA"},
+        ]
+        inputs_cross = extract_financial_anomaly_inputs(cross_unit_facts)
+        # gross_margin should still be computed from the 亿元 group, not corrupted by 万元
+        assert inputs_cross.get("gross_margin") is not None
+        assert inputs_cross["gross_margin"] == pytest.approx(inputs["gross_margin"], abs=0.01), (
+            "cross-unit fact should not corrupt same-unit gross_margin"
+        )
+
+        # Cross-scope isolation: same-date/same-unit fact with DIFFERENT period_scope
+        # and an obviously wrong revenue would corrupt the margin if period_scope
+        # is dropped from the grouping key.
+        wrong_revenue = 999999.0
+        cross_scope_facts = fact_dicts + [
+            {"metric": "revenue", "report_date": "2025-12-31", "value": wrong_revenue, "unit": "元", "period_scope": "SINGLE_QUARTER", "status": "HAS_DATA"},
+        ]
+        inputs_scope = extract_financial_anomaly_inputs(cross_scope_facts)
+        assert inputs_scope.get("gross_margin") is not None
+        # FY_YTD margin must NOT be corrupted by the SINGLE_QUARTER contaminant
+        assert inputs_scope["gross_margin"] == pytest.approx(inputs["gross_margin"], abs=0.5), (
+            "cross-scope contaminating fact must not corrupt FY_YTD gross_margin"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -348,14 +368,14 @@ class TestAxis3_ClaimEvidenceBinding:
         # Report mentions a cause keyword not in the announcement
         report = "产品涨价导致收入增长。"
         claims = bind_claims(report, ctx)
-        # Should generate claims for 产品涨价
-        if claims:
-            # If claims found, they should not be officially_explained
-            # (announcement doesn't mention 产品涨价)
-            for c in claims:
-                if c.get("status") == "officially_explained":
-                    # If explained, the evidence must match
-                    pass
+        # "产品涨价" is in _CAUSE_KEYWORDS and "导致" marks it as causal
+        # but the announcement has no "产品涨价" evidence → unexplained
+        assert len(claims) > 0, "产品涨价 claim should be generated from report"
+        for c in claims:
+            assert c["status"] != "officially_explained", (
+                f"claim {c['metric']} should not be officially explained — "
+                f"announcement has no matching evidence"
+            )
 
     def test_accounting_policy_detected(self):
         """Accounting policy term '总额法' detected from announcement."""
@@ -365,11 +385,13 @@ class TestAxis3_ClaimEvidenceBinding:
         # The announcement mentions 总额法
         entries = ctx.get("entries", [])
         accounting_entries = [e for e in entries if e.get("accounting_terms")]
-        # At least one entry should mention an accounting term
-        # (may also be in cause_terms depending on parsing)
+        # At least one entry must have accounting_terms and it must include 总额法
+        assert len(accounting_entries) > 0, "announcement contains 总额法 but no accounting entries found"
+        all_acct_terms = [t for e in accounting_entries for t in e["accounting_terms"]]
+        assert "总额法" in all_acct_terms, f"总额法 not found in accounting terms: {all_acct_terms}"
 
     def test_negation_handling(self):
-        """'未采用净额法' is detected as negated."""
+        """'未采用净额法' is detected as negated — conflicts with report claiming 采用净额法."""
         from tradingagents.agents.utils.fundamental_integrity import bind_claims
 
         announcement = "公司未采用净额法确认收入，仍采用总额法。"
@@ -378,8 +400,14 @@ class TestAxis3_ClaimEvidenceBinding:
         )
         report = "公司采用净额法确认收入。"
         claims = bind_claims(report, ctx)
-        # The negation in evidence should cause conflict or unexplained
-        # (the announcement says "未采用净额法" but report says "采用净额法")
+        # The report claims "净额法" (non-negated) but evidence says "未采用净额法" (negated)
+        # → evidence_conflict (negation mismatch)
+        assert len(claims) > 0, "净额法 claim should be generated from report"
+        net_claims = [c for c in claims if c.get("metric") == "净额法"]
+        assert len(net_claims) > 0, "净额法 claim not found in claims"
+        assert net_claims[0]["status"] == "evidence_conflict", (
+            f"negated evidence should conflict with non-negated claim, got {net_claims[0]['status']}"
+        )
 
     def test_direction_conflict(self):
         """Evidence '原材料上涨' cannot support claim '原材料下降'."""
@@ -391,11 +419,17 @@ class TestAxis3_ClaimEvidenceBinding:
         assert _directions_conflict("down", "down") is False
 
     def test_synonym_normalization(self):
-        """Synonyms like '预收货款' → '预收款' are normalized."""
-        from tradingagents.agents.utils.fundamental_integrity import _SYNONYM_MAP
+        """Synonyms like '原材料采购成本下降' → '原材料下降' are normalized."""
+        from tradingagents.agents.utils.fundamental_integrity import _SYNONYM_MAP, _CAUSE_SYNONYM_MAP
 
+        # _SYNONYM_MAP maps each synonym to the group's canonical form
+        assert _SYNONYM_MAP.get("原材料采购成本下降") == "原材料下降"
+        assert _SYNONYM_MAP.get("原材料价格下降") == "原材料下降"
+        assert _SYNONYM_MAP.get("采购成本下降") == "原材料下降"
+        assert _SYNONYM_MAP.get("原材料成本下降") == "原材料下降"
         assert _SYNONYM_MAP.get("预收货款") == "预收款"
-        assert _SYNONYM_MAP.get("原材料采购成本") == "原材料" or _SYNONYM_MAP.get("原材料采购成本下降") == "原材料下降"
+        # _CAUSE_SYNONYM_MAP also maps cause synonyms
+        assert _CAUSE_SYNONYM_MAP.get("原材料采购成本下降") == "原材料下降"
 
     def test_per_occurrence_binding(self):
         """FUND-003A-B: each occurrence of a keyword gets its own binding."""
@@ -881,15 +915,28 @@ class TestFullPipelineOfflineReplay:
         assert "IDENTITY_UNVERIFIED" in codes
 
     def test_financial_facts_retained_when_narrative_rejected(self):
-        """Even when narrative is rejected, raw financial facts survive."""
+        """Rejected narrative is removed while verified facts survive the gate."""
         facts = [{"metric": "revenue", "report_date": "2025-12-31", "value": 33.074, "status": "HAS_DATA"}]
+        report_text = "原材料下降导致毛利率提升。"
         integrity = evaluate_fundamental_integrity(
             identity={}, period_facts=facts,
             explanation_context={"status": "unexplained"},
-            report_text="化工行业原料下降",
+            report_text=report_text,
         )
         assert integrity["status"] == "NEEDS_REVIEW"
-        assert facts[0]["value"] == 33.074
+        assert len(integrity["claims"]) > 0, "cause keywords in report should generate claims"
+        for c in integrity["claims"]:
+            assert c["status"] == "unexplained", f"claim {c['metric']} should be unexplained"
+
+        gated_report = build_gated_fundamentals_report(
+            original_report=report_text,
+            integrity=integrity,
+            pool={"financial_period_facts": facts},
+        )
+        assert "【保留的可验证财务事实】" in gated_report
+        assert "营业收入：33.074" in gated_report
+        assert "2025-12-31" in gated_report
+        assert report_text not in gated_report
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -910,7 +957,7 @@ class TestAdversarialCases:
         assert "IDENTITY_UNVERIFIED" in codes
 
     def test_missing_period_facts_handled(self):
-        """No financial facts → PERIOD_SCOPE_INVALID or safe handling."""
+        """No financial facts → PERIOD_SCOPE_INVALID blocker added."""
         profile = extract_profile_from_fundamentals(_AKSHARE_PROFILE_TABLE)
         identity = build_instrument_identity("603629.SH", profile, source="akshare")
         integrity = evaluate_fundamental_integrity(
@@ -918,7 +965,9 @@ class TestAdversarialCases:
             explanation_context={"status": "unexplained"},
             report_text="公司营业收入增长。",
         )
-        # Should not crash; may or may not block depending on claims
+        # Empty period_facts should trigger PERIOD_SCOPE_INVALID blocker
+        codes = {b["code"] for b in integrity["blockers"]}
+        assert PERIOD_SCOPE_INVALID in codes, f"expected PERIOD_SCOPE_INVALID in {codes}"
 
     def test_future_report_date_no_crash(self):
         """Future report date doesn't crash period scope."""
@@ -929,7 +978,7 @@ class TestAdversarialCases:
         assert len(facts) > 0
 
     def test_duplicate_report_dates(self):
-        """Duplicate report dates in provider output are handled."""
+        """Duplicate report dates in provider output are handled without crash."""
         raw = """| 报告日 | 营业总收入 |
 |---|---:|
 | 2025-03-31 | 7.0 |
@@ -937,16 +986,26 @@ class TestAdversarialCases:
 | 2025-06-30 | 15.0 |
 """
         facts = normalize_financial_markdown(raw, statement_type="income_statement", source="fixture")
-        # Should not crash; may dedupe or keep both
+        # Should not crash; at least some facts are produced
+        assert len(facts) >= 2, f"expected at least 2 facts from 3 rows, got {len(facts)}"
+        # Duplicate dates should be preserved (last-wins or deduped)
+        dates = {f.report_date for f in facts}
+        assert "2025-03-31" in dates
+        assert "2025-06-30" in dates
 
     def test_unit_mismatch_warning(self):
-        """Different units across facts should be detectable."""
+        """Different units across facts should be grouped separately."""
         facts = [
             {"metric": "revenue", "report_date": "2025-12-31", "value": 33.074, "unit": "亿元", "status": "HAS_DATA"},
             {"metric": "operating_cost", "report_date": "2025-12-31", "value": 330740.0, "unit": "万元", "status": "HAS_DATA"},
         ]
         inputs = extract_financial_anomaly_inputs(facts)
-        # Different units should be grouped separately
+        # Different units → revenue and cost are in different groups
+        # → _find_best_group({"revenue", "operating_cost"}) returns None
+        # → gross_margin must be None (not computed from cross-unit data)
+        assert inputs.get("gross_margin") is None, (
+            f"gross_margin should be None when units differ, got {inputs.get('gross_margin')}"
+        )
 
     def test_gate_no_crash_on_malformed_state(self):
         """Gate handles malformed state gracefully."""

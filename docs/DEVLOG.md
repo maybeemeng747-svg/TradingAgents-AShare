@@ -1,5 +1,73 @@
 # 修改日志
 
+## 2026-07-24 | FUND-006A-R1 第三轮人工收口
+
+- **原因**：自动链两轮修复后仍有一项 P2：叙事被拒绝、财务事实保留的测试只检查了 integrity 中间结果，没有调用最终门禁报告构造函数。
+- **修复**：`test_financial_facts_retained_when_narrative_rejected` 现在调用 `build_gated_fundamentals_report()`，同时断言可验证营业收入与报告期保留、未经支持的原叙事不进入门禁报告。
+- **验证**：FUND-006A 专项 **52 passed**；API/runtime smoke **122 passed**；`py_compile` 与 `git diff --check` 通过。
+- **审查**：隔离工作树运行 GPT-5.5/high `codex review --uncommitted`，结论为 “No actionable correctness issues were found in the current changes.”
+- **状态迁移**：`FUND-006A-R1` 标记 done；依赖任务 `FUND-007A-R1` 释放为 ready。
+- **约束**：仅修改测试与治理档案；未修改生产代码、prompts、生产数据库，未调用 live LLM。
+
+---
+
+## 2026-07-24 | FUND-006A-R1 Codex Review P2 修复
+
+- **任务**：FUND-006A-R1 — Codex review 发现 `test_mixed_cumulative_and_single_quarter_grouping` 未断言 period_scope 隔离行为
+- **状态**：✅ 修复完成；52 项 FUND-006A 测试 passed
+- **问题**：原断言仅检查 `gross_margin is not None`，当 `period_scope` 从分组键中移除时测试仍通过
+
+### 改动
+
+- **`tests/test_fund006a_provider_replay.py`**（修改）
+  - 在 `test_mixed_cumulative_and_single_quarter_grouping` 中添加同日期同单位不同 `period_scope` 的污染事实（revenue=999999.0, SINGLE_QUARTER）
+  - 断言 `gross_margin` 与未污染时一致，验证 FY_YTD 和 SINGLE_QUARTER 行不会被错误合并
+
+### 验证
+
+- 临时移除 `_group_key` 中的 `period_scope` 后测试 FAIL（margin 从 ~20.7% 变为 ~100%）
+- 恢复 `period_scope` 后测试 PASS
+
+---
+
+## 2026-07-24 | FUND-006A-R1 离线回放测试有效性补修
+
+- **任务**：FUND-006A-R1 — 修正 `3655339` 中未实际断言生产行为、断言过宽或被 fixture 自证的七类测试（P1）
+- **状态**：✅ 实现完成；52 项 FUND-006A 测试 passed，FUND 系列回归 207 passed，API smoke 122 passed
+- **代码标注**：无新增标注（收紧已有测试断言）
+
+### 改动
+
+- **`tests/test_fund006a_provider_replay.py`**（修改）
+  - **Fix 1 — `test_accounting_policy_detected`**：原测试遍历 entries 但无任何 assert；现断言 `accounting_terms` 非空且包含 "总额法"
+  - **Fix 2 — `test_negation_handling`**：原测试调用 `bind_claims()` 但无断言；现断言 "未采用净额法"（否定证据）与 "采用净额法"（非否定声明）产生 `evidence_conflict`
+  - **Fix 3 — `test_unsupported_claim_detected`**：原测试断言在 `if claims:` 条件内且循环体为 `pass`，当 `claims` 为空时测试空过；现断言 `claims` 非空且所有 claim 的 `status != "officially_explained"`
+  - **Fix 4 — `test_synonym_normalization`**：原测试检查 `预收货款 → 预收款` 和一个错误的 `原材料采购成本` 键；现测试 `_SYNONYM_MAP` 和 `_CAUSE_SYNONYM_MAP` 对 "原材料采购成本下降" → "原材料下降" 等多组同义词的规范化
+  - **Fix 5 — `test_missing_period_facts_handled`**：原测试无断言（注释 "may or may not block"）；现断言空 `period_facts` 产生 `PERIOD_SCOPE_INVALID` blocker
+  - **Fix 6 — `test_unit_mismatch_warning`**：原测试无断言；现断言不同单位（亿元 vs 万元）的 revenue 和 cost 不在同一组，`gross_margin` 为 None
+  - **Fix 7 — `test_mixed_cumulative_and_single_quarter_grouping`**：原测试循环体为 `continue` 无断言；现断言 `gross_margin` 可计算，且添加不同单位事实后不污染原结果；进一步添加同日期同单位不同 `period_scope` 的污染事实，断言 FY_YTD 毛利率不被 SINGLE_QUARTER 污染（Codex review P2 修复）
+  - **Fix 8 — `test_financial_facts_retained_when_narrative_rejected`**：原测试断言 `facts[0]["value"]`（仅验证 Python dict 未被修改）；现断言报告中的 cause 关键词产生 claims 且所有 claim 为 `unexplained`
+  - **Fix 9 — `test_duplicate_report_dates`**：原测试无断言；现断言重复日期行产生至少 2 个 facts 且日期集合正确
+
+### 设计要点
+
+- **不改生产代码**：仅收紧测试断言，不修改任何 `tradingagents/` 源文件
+- **七类覆盖**：无断言（3 项）、条件内断言（1 项）、fixture 自证（1 项）、过宽断言（2 项）、错误断言（1 项）、仅防崩溃（1 项）
+- **向后兼容**：所有 52 项测试行为不变（原有 52 passed → 仍 52 passed），仅断言更精确
+
+### 回归
+
+- `pytest tests/test_fund006a_provider_replay.py -v`：**52 passed**
+- `pytest tests/test_fund003_fund004_integrity.py tests/test_fund004a_integrity_gate.py tests/test_fund005_agent_trace.py tests/test_fund006a_provider_replay.py tests/test_fund007a_error_benchmark.py -q`：**207 passed**
+- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
+- `py_compile tests/test_fund006a_provider_replay.py` 通过
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-24 | SCORE-001B-R1 Codex Review 补修
 
 - **任务**：SCORE-001B-R1 Codex review 两项 P1 correctness findings

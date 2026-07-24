@@ -1,0 +1,316 @@
+[0m
+> build · mimo-v2.5-pro
+[0m
+[0m→ [0mRead tests/test_fund006a_provider_replay.py[90m [offset=250, limit=80][0m
+[0m✱ [0mGrep "def extract_financial_anomaly_inputs"[90m 1 match[0m
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [limit=100, offset=835][0m
+[0m→ [0mRead tests/test_fund006a_provider_replay.py[90m [limit=80, offset=1][0m
+[0m✱ [0mGrep "_INCOME_STATEMENT_RAW"[90m 9 matches[0m
+[0m→ [0mRead tests/test_fund006a_provider_replay.py[90m [limit=40, offset=176][0m
+[0m✱ [0mGrep "def derive_single_quarters"[90m 1 match[0m
+Now I understand the issue. The test at line 287-288 only asserts `gross_margin is not None`, which passes even if `period_scope` is dropped from the grouping key. I need to add a same-date/same-unit cross-scope contaminating fact that would corrupt the margin if period_scope is ignored.
+
+Let me also check what `derive_single_quarters` returns to understand the expected margin values:
+[0m
+[0m← [0mEdit tests/test_fund006a_provider_replay.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund006a_provider_replay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund006a_provider_replay.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund006a_provider_replay.py
+@@ -297,9 +297,24 @@
+         assert inputs_cross["gross_margin"] == pytest.approx(inputs["gross_margin"], abs=0.01), (
+             "cross-unit fact should not corrupt same-unit gross_margin"
+         )
+ 
++        # Cross-scope isolation: same-date/same-unit fact with DIFFERENT period_scope
++        # and an obviously wrong revenue would corrupt the margin if period_scope
++        # is dropped from the grouping key.
++        wrong_revenue = 999999.0
++        cross_scope_facts = fact_dicts + [
++            {"metric": "revenue", "report_date": "2025-12-31", "value": wrong_revenue, "unit": "亿元", "period_scope": "SINGLE_QUARTER", "status": "HAS_DATA"},
++        ]
++        inputs_scope = extract_financial_anomaly_inputs(cross_scope_facts)
++        assert inputs_scope.get("gross_margin") is not None
++        # FY_YTD margin must NOT be corrupted by the SINGLE_QUARTER contaminant
++        expected_fy_margin = (33.074 - 26.2) / 33.074 * 100
++        assert inputs_scope["gross_margin"] == pytest.approx(expected_fy_margin, abs=0.5), (
++            "cross-scope contaminating fact must not corrupt FY_YTD gross_margin"
++        )
+ 
++
+ # ═══════════════════════════════════════════════════════════════════════════════
+ # Axis 3: Claim-Evidence Binding
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+
+[0m
+Now I'll fix the test. The approach: add a same-date/same-unit cross-scope contaminating fact with an obviously wrong value that would corrupt the margin if `period_scope` is dropped from the grouping key.
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping -xvs 2>&1 | tail -30
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 1 item
+
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping PASSED
+
+============================== 1 passed in 1.22s ===============================
+[0m
+[0m→ [0mRead tradingagents/agents/utils/fundamental_integrity.py[90m [limit=10, offset=847][0m
+Let me verify the test would actually catch the regression by temporarily dropping `period_scope` from the grouping key:
+[0m
+[0m← [0mEdit tradingagents/agents/utils/fundamental_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+@@ -846,9 +846,9 @@
+ 
+ def _group_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+     return (
+         str(item.get("report_date") or ""),
+-        str(item.get("period_scope") or ""),
++        "",
+         str(item.get("unit") or "元"),
+     )
+ 
+ def _value(item: Mapping[str, Any] | None) -> float | None:
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping -xvs 2>&1 | tail -30
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 1 item
+
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping PASSED
+
+============================== 1 passed in 1.06s ===============================
+[0m
+Still passes. Let me debug to understand why:
+[0m$ [0msource .venv/bin/activate && python3 -c "
+from tradingagents.dataflows.financial_periods import derive_single_quarters, normalize_financial_markdown
+from tradingagents.agents.utils.fundamental_integrity import extract_financial_anomaly_inputs
+
+_INCOME_STATEMENT_RAW = '''| 报告日 | 营业总收入 | 营业成本 | 净利润 | 扣非净利润 |
+|---|---:|---:|---:|---:|
+| 2025-03-31 | 7.04342 | 5.62100 | 0.85200 | 0.81000 |
+| 2025-06-30 | 15.16342 | 12.00000 | 1.82000 | 1.75000 |
+| 2025-09-30 | 24.62342 | 19.50000 | 2.90000 | 2.78000 |
+| 2025-12-31 | 33.07400 | 26.20000 | 3.85000 | 3.70000 |
+'''
+
+facts = normalize_financial_markdown(_INCOME_STATEMENT_RAW, statement_type='income_statement', source='fixture')
+all_facts = facts + derive_single_quarters(facts)
+fact_dicts = [f.to_dict() for f in all_facts]
+
+# Show 2025-12-31 facts
+for f in fact_dicts:
+    if f['report_date'] == '2025-12-31' and f['metric'] in ('revenue', 'operating_cost'):
+        print(f)
+
+wrong_revenue = 999999.0
+cross_scope_facts = fact_dicts + [
+    {'metric': 'revenue', 'report_date': '2025-12-31', 'value': wrong_revenue, 'unit': '亿元', 'period_scope': 'SINGLE_QUARTER', 'status': 'HAS_DATA'},
+]
+inputs = extract_financial_anomaly_inputs(cross_scope_facts)
+print('gross_margin:', inputs.get('gross_margin'))
+print('expected:', (33.074 - 26.2) / 33.074 * 100)
+" 2>&1
+{'metric': 'revenue', 'report_date': '2025-12-31', 'period_scope': 'FY_YTD', 'value': 33.074, 'unit': '元', 'source': 'fixture', 'is_derived': False, 'formula': None, 'input_evidence_ids': ['income_statement:3:2025-12-31:revenue'], 'status': 'HAS_DATA'}
+{'metric': 'operating_cost', 'report_date': '2025-12-31', 'period_scope': 'FY_YTD', 'value': 26.2, 'unit': '元', 'source': 'fixture', 'is_derived': False, 'formula': None, 'input_evidence_ids': ['income_statement:3:2025-12-31:operating_cost'], 'status': 'HAS_DATA'}
+{'metric': 'operating_cost', 'report_date': '2025-12-31', 'period_scope': 'SINGLE_QUARTER', 'value': 6.7, 'unit': '元', 'source': 'fixture', 'is_derived': True, 'formula': 'FY_YTD-Q3_YTD', 'input_evidence_ids': ['income_statement:3:2025-12-31:operating_cost', 'income_statement:2:2025-09-30:operating_cost'], 'status': 'HAS_DATA'}
+{'metric': 'revenue', 'report_date': '2025-12-31', 'period_scope': 'SINGLE_QUARTER', 'value': 8.45058, 'unit': '元', 'source': 'fixture', 'is_derived': True, 'formula': 'FY_YTD-Q3_YTD', 'input_evidence_ids': ['income_statement:3:2025-12-31:revenue', 'income_statement:2:2025-09-30:revenue'], 'status': 'HAS_DATA'}
+gross_margin: 20.715501184534084
+expected: 20.783697163935415
+[0m
+[0m← [0mEdit tests/test_fund006a_provider_replay.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_fund006a_provider_replay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_fund006a_provider_replay.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_fund006a_provider_replay.py
+@@ -302,15 +302,14 @@
+ # and an obviously wrong revenue would corrupt the margin if period_scope
+ # is dropped from the grouping key.
+ wrong_revenue = 999999.0
+ cross_scope_facts = fact_dicts + [
+-    {"metric": "revenue", "report_date": "2025-12-31", "value": wrong_revenue, "unit": "亿元", "period_scope": "SINGLE_QUARTER", "status": "HAS_DATA"},
++    {"metric": "revenue", "report_date": "2025-12-31", "value": wrong_revenue, "unit": "元", "period_scope": "SINGLE_QUARTER", "status": "HAS_DATA"},
+ ]
+ inputs_scope = extract_financial_anomaly_inputs(cross_scope_facts)
+ assert inputs_scope.get("gross_margin") is not None
+ # FY_YTD margin must NOT be corrupted by the SINGLE_QUARTER contaminant
+-expected_fy_margin = (33.074 - 26.2) / 33.074 * 100
+-assert inputs_scope["gross_margin"] == pytest.approx(expected_fy_margin, abs=0.5), (
++assert inputs_scope["gross_margin"] == pytest.approx(inputs["gross_margin"], abs=0.5), (
+     "cross-scope contaminating fact must not corrupt FY_YTD gross_margin"
+ )
+ 
+ 
+
+[0m
+The unit is "元" not "亿元". Let me fix the contaminating fact:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping -xvs 2>&1 | tail -30
+assert inputs_cross.get("gross_margin") is not None
+        assert inputs_cross["gross_margin"] == pytest.approx(inputs["gross_margin"], abs=0.01), (
+            "cross-unit fact should not corrupt same-unit gross_margin"
+        )
+    
+        # Cross-scope isolation: same-date/same-unit fact with DIFFERENT period_scope
+        # and an obviously wrong revenue would corrupt the margin if period_scope
+        # is dropped from the grouping key.
+        wrong_revenue = 999999.0
+        cross_scope_facts = fact_dicts + [
+            {"metric": "revenue", "report_date": "2025-12-31", "value": wrong_revenue, "unit": "元", "period_scope": "SINGLE_QUARTER", "status": "HAS_DATA"},
+        ]
+        inputs_scope = extract_financial_anomaly_inputs(cross_scope_facts)
+        assert inputs_scope.get("gross_margin") is not None
+        # FY_YTD margin must NOT be corrupted by the SINGLE_QUARTER contaminant
+>       assert inputs_scope["gross_margin"] == pytest.approx(inputs["gross_margin"], abs=0.5), (
+            "cross-scope contaminating fact must not corrupt FY_YTD gross_margin"
+        )
+E       AssertionError: cross-scope contaminating fact must not corrupt FY_YTD gross_margin
+E       assert 99.99932999933 == 20.715501184534084 ± 0.5
+E         
+E         comparison failed
+E         Obtained: 99.99932999933
+E         Expected: 20.715501184534084 ± 0.5
+
+tests/test_fund006a_provider_replay.py:311: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+============================== 1 failed in 1.16s ===============================
+[0m
+Test correctly catches the regression. Now restore the production code:
+[0m← [0mEdit tradingagents/agents/utils/fundamental_integrity.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/fundamental_integrity.py
+@@ -846,9 +846,9 @@
+ 
+ def _group_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+     return (
+         str(item.get("report_date") or ""),
+-        "",
++        str(item.get("period_scope") or ""),
+         str(item.get("unit") or "元"),
+     )
+ 
+ def _value(item: Mapping[str, Any] | None) -> float | None:
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py -x --tb=short 2>&1 | tail -20
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collected 52 items
+
+tests/test_fund006a_provider_replay.py ................................. [ 63%]
+...................                                                      [100%]
+
+============================== 52 passed in 1.04s ==============================
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30][0m
+All 52 tests pass. Now update `docs/DEVLOG.md`:
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -14,9 +14,9 @@
+   - **Fix 3 — `test_unsupported_claim_detected`**：原测试断言在 `if claims:` 条件内且循环体为 `pass`，当 `claims` 为空时测试空过；现断言 `claims` 非空且所有 claim 的 `status != "officially_explained"`
+   - **Fix 4 — `test_synonym_normalization`**：原测试检查 `预收货款 → 预收款` 和一个错误的 `原材料采购成本` 键；现测试 `_SYNONYM_MAP` 和 `_CAUSE_SYNONYM_MAP` 对 "原材料采购成本下降" → "原材料下降" 等多组同义词的规范化
+   - **Fix 5 — `test_missing_period_facts_handled`**：原测试无断言（注释 "may or may not block"）；现断言空 `period_facts` 产生 `PERIOD_SCOPE_INVALID` blocker
+   - **Fix 6 — `test_unit_mismatch_warning`**：原测试无断言；现断言不同单位（亿元 vs 万元）的 revenue 和 cost 不在同一组，`gross_margin` 为 None
+-  - **Fix 7 — `test_mixed_cumulative_and_single_quarter_grouping`**：原测试循环体为 `continue` 无断言；现断言 `gross_margin` 可计算，且添加不同单位事实后不污染原结果
++  - **Fix 7 — `test_mixed_cumulative_and_single_quarter_grouping`**：原测试循环体为 `continue` 无断言；现断言 `gross_margin` 可计算，且添加不同单位事实后不污染原结果；进一步添加同日期同单位不同 `period_scope` 的污染事实，断言 FY_YTD 毛利率不被 SINGLE_QUARTER 污染（Codex review P2 修复）
+   - **Fix 8 — `test_financial_facts_retained_when_narrative_rejected`**：原测试断言 `facts[0]["value"]`（仅验证 Python dict 未被修改）；现断言报告中的 cause 关键词产生 claims 且所有 claim 为 `unexplained`
+   - **Fix 9 — `test_duplicate_report_dates`**：原测试无断言；现断言重复日期行产生至少 2 个 facts 且日期集合正确
+ 
+ ### 设计要点
+
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,25 @@
+ # 修改日志
+ 
++## 2026-07-24 | FUND-006A-R1 Codex Review P2 修复
++
++- **任务**：FUND-006A-R1 — Codex review 发现 `test_mixed_cumulative_and_single_quarter_grouping` 未断言 period_scope 隔离行为
++- **状态**：✅ 修复完成；52 项 FUND-006A 测试 passed
++- **问题**：原断言仅检查 `gross_margin is not None`，当 `period_scope` 从分组键中移除时测试仍通过
++
++### 改动
++
++- **`tests/test_fund006a_provider_replay.py`**（修改）
++  - 在 `test_mixed_cumulative_and_single_quarter_grouping` 中添加同日期同单位不同 `period_scope` 的污染事实（revenue=999999.0, SINGLE_QUARTER）
++  - 断言 `gross_margin` 与未污染时一致，验证 FY_YTD 和 SINGLE_QUARTER 行不会被错误合并
++
++### 验证
++
++- 临时移除 `_group_key` 中的 `period_scope` 后测试 FAIL（margin 从 ~20.7% 变为 ~100%）
++- 恢复 `period_scope` 后测试 PASS
++
++---
++
+ ## 2026-07-24 | FUND-006A-R1 离线回放测试有效性补修
+ 
+ - **任务**：FUND-006A-R1 — 修正 `3655339` 中未实际断言生产行为、断言过宽或被 fixture 自证的七类测试（P1）
+ - **状态**：✅ 实现完成；52 项 FUND-006A 测试 passed，FUND 系列回归 207 passed，API smoke 122 passed
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping -xvs 2>&1 | tail -15
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 1 item
+
+tests/test_fund006a_provider_replay.py::TestAxis2_PeriodFormula::test_mixed_cumulative_and_single_quarter_grouping PASSED
+
+============================== 1 passed in 1.07s ===============================
+[0m
+[0m$ [0mgit diff --stat
+docs/DEVLOG.md                         |  57 ++++++++++++++++
+ docs/TASKS.md                          |   2 +-
+ tests/test_fund006a_provider_replay.py | 116 +++++++++++++++++++++++----------
+ 3 files changed, 141 insertions(+), 34 deletions(-)
+[0m
+[0m$ [0mgit diff docs/TASKS.md
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 9d7799d..13ab12e 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -175,7 +175,7 @@
+ ### FUND-006A-R1: 离线回放测试有效性补修（P1）
+ - **描述**：修正 `3655339` 中未实际断言生产行为、断言过宽或被 fixture 自证的七类测试。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed FUND-006A-R1-20260724-182006
+ - **depends_on**：B-004-R1
+ - **auto_release**：true
+[0m
+Done. Summary of changes:
+
+**`tests/test_fund006a_provider_replay.py:296-311`** — Added cross-scope isolation assertion to `test_mixed_cumulative_and_single_quarter_grouping`:
+- Added a same-date/same-unit fact with `period_scope="SINGLE_QUARTER"` and `value=999999.0` (obviously wrong)
+- Asserts `gross_margin` remains unchanged from the uncontaminated case (~20.7%)
+- Verified: test **fails** when `period_scope` is dropped from `_group_key` (margin jumps to ~100%), **passes** with correct grouping
+
+**`docs/DEVLOG.md`** — Updated Fix 7 description and added new entry documenting the Codex review P2 fix.
