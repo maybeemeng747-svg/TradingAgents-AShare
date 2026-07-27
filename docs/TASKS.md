@@ -44,8 +44,9 @@
 14. `F-001-R1`：未持仓试错 Buy Level 上限补修（done，人工 Codex review 收口）。
 15. `PLAYBOOK-002-R1`：三笔法组合约束补修（done，Codex review 收口）。
 16. `SCORE-001-R1`：快照 loader 验收档案修正（done，第 6 轮最终复审通过）。
-17. `B-001-R1`：MiMo provider 配置与凭据路由补修（P1，ready）。
-18. 其余 review finding 进入第二批：`B-002/003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+17. `B-001-R1`：MiMo provider 配置与凭据路由补修（done，最终 Codex review 无 correctness finding）。
+18. `B-002-R1`：调度回调报告字段补修（P2，ready）。
+19. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -215,14 +216,14 @@
 ### B-001-R1: MiMo provider 配置与凭据路由补修（P1）
 - **描述**：让存储的 MiMo key、base_url、默认模型在完整图路径一致生效，目录 key scope 与实际读取保持一致。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — MiMo scope、旧 key fallback/清除、旧 OpenAI preset 与后端运行时迁移已完成；252 项组合回归、6 项前端测试与 build 通过；最终 Codex review 无 P0/P1/P2 correctness finding
 - **depends_on**：SCORE-001-R1
 - **auto_release**：true
 
 ### B-002-R1: 调度回调报告字段补修（P2）
 - **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：B-001-R1
 - **auto_release**：true
 

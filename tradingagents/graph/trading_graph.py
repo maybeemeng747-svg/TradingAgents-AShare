@@ -196,7 +196,7 @@ class TradingAgentsGraph:
             if api_key:
                 kwargs["api_key"] = api_key
 
-        elif provider == "anthropic":
+        elif provider in ("anthropic", "mimo"):
             api_key = self.config.get("api_key")
             if api_key:
                 kwargs["api_key"] = api_key

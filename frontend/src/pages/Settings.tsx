@@ -24,15 +24,22 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     { id: 'moonshot', label: 'Moonshot AI（Kimi）', provider: 'openai', baseUrl: 'https://api.moonshot.cn/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'moonshot-v1-8k', defaultDeepModel: 'moonshot-v1-32k' },
     { id: 'zhipu', label: '智谱 AI', provider: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', protocol: 'OpenAI 兼容', defaultQuickModel: 'glm-4.5-air', defaultDeepModel: 'glm-4.5' },
     { id: 'zhipu-coding', label: '智谱 Coding Plan', provider: 'openai', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', protocol: 'OpenAI 兼容', defaultQuickModel: 'glm-4.5-air', defaultDeepModel: 'glm-5-turbo' },
-    { id: 'xiaomi-mimo', label: '小米 MiMo', provider: 'openai', baseUrl: 'https://api.xiaomimimo.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'xiaomi/mimo-v2-flash', defaultDeepModel: 'xiaomi/mimo-v2-pro' },
-    { id: 'xiaomi-token-plan', label: '小米 MiMo Token Plan', provider: 'openai', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'mimo-v2.5', defaultDeepModel: 'mimo-v2.5-pro' },
+    { id: 'xiaomi-mimo', label: '小米 MiMo', provider: 'mimo', baseUrl: 'https://api.xiaomimimo.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'xiaomi/mimo-v2-flash', defaultDeepModel: 'xiaomi/mimo-v2-pro' },
+    { id: 'xiaomi-token-plan', label: '小米 MiMo Token Plan', provider: 'mimo', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'mimo-v2.5', defaultDeepModel: 'mimo-v2.5-pro' },
     { id: 'siliconflow', label: '硅基流动', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', protocol: 'OpenAI 兼容' },
     { id: 'custom-openai', label: '自定义 OpenAI 兼容', provider: 'openai', baseUrl: '', protocol: 'OpenAI 兼容', editableBaseUrl: true },
 ]
 
-function inferPreset(llmProvider: string, backendUrl: string): string {
+export function inferPreset(llmProvider: string, backendUrl: string): string {
     const normalizedProvider = (llmProvider || '').toLowerCase()
     const normalizedUrl = (backendUrl || '').replace(/\/$/, '')
+    if (normalizedProvider === 'openai') {
+        const legacyMimoPreset = PROVIDER_PRESETS.find(
+            (preset) => preset.provider === 'mimo'
+                && preset.baseUrl.replace(/\/$/, '') === normalizedUrl,
+        )
+        if (legacyMimoPreset) return legacyMimoPreset.id
+    }
     const matched = PROVIDER_PRESETS.find((preset) => {
         if (preset.provider !== normalizedProvider) return false
         if (!preset.baseUrl && preset.id !== 'custom-openai') return true
@@ -197,7 +204,13 @@ export default function Settings() {
     }
 
     useEffect(() => {
-        setHasStoredApiKey(apiKeyScopes.includes(currentApiKeyScope))
+        // [B-001-R1] Also recognize legacy openai: scoped keys for mimo providers
+        let hasKey = apiKeyScopes.includes(currentApiKeyScope)
+        if (!hasKey && currentApiKeyScope.startsWith('mimo:')) {
+            const legacyScope = 'openai:' + currentApiKeyScope.slice('mimo:'.length)
+            hasKey = apiKeyScopes.includes(legacyScope)
+        }
+        setHasStoredApiKey(hasKey)
     }, [apiKeyScopes, currentApiKeyScope])
 
     const handleCreateToken = async (e: React.FormEvent) => {

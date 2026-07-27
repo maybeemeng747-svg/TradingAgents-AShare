@@ -1325,6 +1325,11 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
     if filtered_request_overrides:
         config = _deep_merge(config, filtered_request_overrides)
 
+    config["llm_provider"] = auth_service.canonicalize_llm_provider(
+        config.get("llm_provider"),
+        config.get("backend_url"),
+    )
+
     # ── Intelligent fallback between models ──
     # If one is provided but the other is missing (even after env var merge), cross-fill.
     quick = config.get("quick_think_llm")
@@ -4280,6 +4285,11 @@ def _build_pending_runtime_config(
         value = getattr(updates, key, None)
         if value is not None:
             config[key] = value
+
+    config["llm_provider"] = auth_service.canonicalize_llm_provider(
+        config.get("llm_provider"),
+        config.get("backend_url"),
+    )
 
     quick = config.get("quick_think_llm")
     deep = config.get("deep_think_llm")

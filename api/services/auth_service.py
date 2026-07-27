@@ -20,6 +20,23 @@ from api.database import EmailVerificationCodeDB, UserDB, UserLLMConfigDB, UserL
 
 ALGORITHM = "HS256"
 
+_MIMO_BACKEND_URLS = {
+    "https://api.xiaomimimo.com/v1",
+    "https://token-plan-cn.xiaomimimo.com/v1",
+}
+
+
+def canonicalize_llm_provider(
+    llm_provider: Optional[str],
+    backend_url: Optional[str],
+) -> str:
+    """Map legacy OpenAI-compatible MiMo configs to the native provider."""
+    provider = (llm_provider or "openai").strip().lower() or "openai"
+    normalized_url = (backend_url or "").strip().rstrip("/")
+    if provider == "openai" and normalized_url in _MIMO_BACKEND_URLS:
+        return "mimo"
+    return provider
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -282,8 +299,13 @@ def has_user_provider_keys(db: Session, user_id: str) -> bool:
 
 
 def get_user_provider_api_key(db: Session, user_id: str, llm_provider: Optional[str], backend_url: Optional[str]) -> Optional[str]:
-    key_scope = normalize_provider_key_scope(llm_provider, backend_url)
+    canonical_provider = canonicalize_llm_provider(llm_provider, backend_url)
+    key_scope = normalize_provider_key_scope(canonical_provider, backend_url)
     row = get_user_provider_key(db, user_id, key_scope)
+    if not row and key_scope.startswith("mimo:"):
+        # [B-001-R1] Backward compat: keys stored under openai: scope before provider change
+        fallback_scope = "openai:" + key_scope[len("mimo:"):]
+        row = get_user_provider_key(db, user_id, fallback_scope)
     if not row:
         return None
     return decrypt_secret_with_fallback(row.api_key_encrypted)
@@ -296,7 +318,8 @@ def upsert_user_provider_api_key(
     backend_url: Optional[str],
     api_key: str,
 ) -> UserLLMProviderKeyDB:
-    key_scope = normalize_provider_key_scope(llm_provider, backend_url)
+    canonical_provider = canonicalize_llm_provider(llm_provider, backend_url)
+    key_scope = normalize_provider_key_scope(canonical_provider, backend_url)
     row = get_user_provider_key(db, user_id, key_scope)
     now = _utcnow()
     if not row:
@@ -321,11 +344,19 @@ def clear_user_provider_api_key(
     llm_provider: Optional[str],
     backend_url: Optional[str],
 ) -> None:
-    key_scope = normalize_provider_key_scope(llm_provider, backend_url)
+    canonical_provider = canonicalize_llm_provider(llm_provider, backend_url)
+    key_scope = normalize_provider_key_scope(canonical_provider, backend_url)
     row = get_user_provider_key(db, user_id, key_scope)
     if row:
         db.delete(row)
         db.commit()
+    # [B-001-R1] Also clear legacy openai: scoped key used as fallback for mimo providers
+    if key_scope.startswith("mimo:"):
+        fallback_scope = "openai:" + key_scope[len("mimo:"):]
+        legacy_row = get_user_provider_key(db, user_id, fallback_scope)
+        if legacy_row:
+            db.delete(legacy_row)
+            db.commit()
 
 
 def upsert_user_llm_config(

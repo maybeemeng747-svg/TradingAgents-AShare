@@ -1,5 +1,124 @@
 # 修改日志
 
+## 2026-07-27 | C-003-R1 复审补修 — 混合退出/做空文本不可绕过清洗
+
+- **问题**：纯多头退出词的早退保护会被混合句误用；例如“建议减仓，禁止空头加仓”因含“减仓”而整句跳过清洗，导致“空头加仓”泄漏到 A 股报告。
+- **修复**：只有在文本不含任何做空 pattern 时才允许合法退出词早退；混合句继续逐项清洗，同时保留“减仓”等合法风险动作。
+- **测试**：与 B-001-R1、MiMo、API/runtime 回归合计 **252 passed**。
+- **状态**：Codex review 发现的 P1 已补修；最终复审无 P0/P1/P2 correctness finding。
+
+---
+
+## 2026-07-27 | B-001-R1 最终复审收口 — 旧 MiMo preset 自动迁移
+
+- **问题**：旧用户配置仍保存为 `llm_provider=openai` 加 MiMo 官方 URL；MiMo preset 改用 `provider=mimo` 后，设置页会把旧配置误判为自定义 OpenAI，后续保存仍绕过 MiMo 路由。
+- **修复**：
+  - `inferPreset()` 在普通 provider 匹配前识别两个 MiMo 官方 URL，将旧 OpenAI 配置映射到 `xiaomi-mimo` 或 `xiaomi-token-plan`；其他 OpenAI-compatible URL 保持 `custom-openai`。
+  - 后端运行时配置统一将 `provider=openai + MiMo 官方 URL` 规范化为 `provider=mimo`，覆盖分析、scheduler、warmup 和 API token 路径，不依赖用户先打开设置页保存。
+- **测试**：
+  - `pytest tests/test_b001r1_mimo_config_routing.py tests/test_mimo_client.py tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short`：**198 passed**
+  - `npx vitest run src/pages/Settings.test.ts`：**6 passed**
+  - `npm run build`：通过
+  - Python `py_compile` 与 `git diff --check`：通过
+- **状态**：✅ 最终 Codex review 明确无 P0/P1/P2 correctness finding；B-001-R1 已收口为 done，B-002-R1 已释放为 ready。
+- **审核证据**：`docs/reviews/B-001-R1-20260727-final.txt`，并同步归档到本次 task run。
+- **约束**：未调用 live LLM、未写生产数据库、未修改 prompts。
+
+---
+
+## 2026-07-26 | B-001-R1 Codex Review Fix — legacy MiMo key 清除与设置页识别
+
+- **任务**：B-001-R1 Codex 复审 findings 修复
+- **状态**：✅ 修复完成；24 项 B-001-R1 测试 passed
+
+### Codex Review Findings
+
+- **P1**：`clear_user_provider_api_key()` 仅删除当前 `mimo:<url>` scope，遗留的 `openai:<url>` 旧 scope 在回退逻辑下仍可被读取，导致用户清除密钥后分析仍能使用旧 key。
+- **P2**：Settings.tsx 用 `apiKeyScopes.includes(currentApiKeyScope)` 判断是否有已存 key，但 `currentApiKeyScope` 为 `mimo:<url>` 而旧 key 存储在 `openai:<url>`，设置页显示无已存密钥，阻碍正常密钥管理。
+
+### 改动
+
+- **`api/services/auth_service.py`**（修改）
+  - `clear_user_provider_api_key()` 新增：当 `key_scope` 以 `"mimo:"` 开头时，同时删除对应的 `"openai:"` 旧 scope 行
+  - 确保用户清除 MiMo 密钥时，回退路径的旧 key 也被一并清除
+
+- **`frontend/src/pages/Settings.tsx`**（修改）
+  - `useEffect` 中判断 `hasStoredApiKey` 时，当 `currentApiKeyScope` 以 `"mimo:"` 开头，同时检查 `"openai:"` 前缀的旧 scope
+  - 确保已迁移的 MiMo 用户在设置页能看到已存密钥状态
+
+### 测试
+
+- `pytest tests/test_b001r1_mimo_config_routing.py -q`：**24 passed**
+- `py_compile` 全部修改文件通过
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
+## 2026-07-26 | B-001-R1 MiMo provider 配置与凭据路由补修
+
+- **任务**：B-001-R1 — 让存储的 MiMo key、base_url、默认模型在完整图路径一致生效，目录 key scope 与实际读取保持一致（P1）
+- **状态**：✅ 实现完成；24 项 B-001-R1 测试 passed，45 项 MiMo 客户端回归 passed，122 项 API smoke passed
+- **代码标注**：`# [B-001-R1]`
+
+### 问题分析
+
+B-001 将 model_catalog 中 MiMo entries 的 `provider` 从 `"openai"` 改为 `"mimo"`，但遗留了三处不一致：
+
+1. **Graph 路径 api_key 缺失**：`trading_graph._get_provider_kwargs()` 没有 `"mimo"` 分支，config 中的 `api_key` 不会传入 `create_llm_client` kwargs。`MiMoClient.get_llm()` 只能从环境变量 `TA_API_KEY` 读取，per-user 数据库中的 key 无法到达图路径。
+2. **Key scope 不匹配**：前端 Settings.tsx 两个 MiMo presets 仍用 `provider: 'openai'`，计算出的 key scope 为 `openai:https://...`；后端用 `provider: 'mimo'` 计算出 `mimo:https://...`。两者不一致导致前端无法识别已存储的 key。
+3. **目录 key_scope 过期**：`model_catalog.py` 中 MiMo entries 的 `key_scope` 仍为 `"openai:..."` 前缀，与实际运行时 `normalize_provider_key_scope("mimo", url)` 产出的 `"mimo:..."` 不一致。
+
+### 改动
+
+- **`frontend/src/pages/Settings.tsx`**（修改）
+  - `xiaomi-mimo` preset `provider` 从 `'openai'` 改为 `'mimo'`
+  - `xiaomi-token-plan` preset `provider` 从 `'openai'` 改为 `'mimo'`
+  - 修复后前端 `providerKeyScope()` 计算出 `mimo:https://...`，与后端一致
+
+- **`tradingagents/graph/trading_graph.py`**（修改）
+  - `_get_provider_kwargs()` 中 `elif provider == "anthropic":` 改为 `elif provider in ("anthropic", "mimo"):`
+  - MiMo provider 现在也从 config 传递 `api_key` 到 `create_llm_client` kwargs
+
+- **`api/services/auth_service.py`**（修改）
+  - `get_user_provider_api_key()` 新增 `mimo:` → `openai:` scope 回退
+  - 当 `mimo:` scope 未找到 key 且 scope 以 `"mimo:"` 开头时，尝试 `"openai:"` 前缀的旧 scope
+  - 保持向后兼容：旧 key（存储在 `openai:` scope 下）仍可被找到
+
+- **`tradingagents/llm_clients/model_catalog.py`**（修改）
+  - `xiaomi-mimo` 的 `key_scope` 从 `"openai:https://api.xiaomimimo.com/v1"` 改为 `"mimo:https://api.xiaomimimo.com/v1"`
+  - `xiaomi-token-plan` 的 `key_scope` 从 `"openai:https://token-plan-cn.xiaomimimo.com/v1"` 改为 `"mimo:https://token-plan-cn.xiaomimimo.com/v1"`
+
+- **`tests/test_b001r1_mimo_config_routing.py`**（新增）— 24 项测试
+  - `TestGraphProviderKwargsMiMo`（6 项）：mimo/openai/anthropic/google provider 的 api_key 传递
+  - `TestNormalizeProviderKeyScopeMiMo`（5 项）：mimo scope 生成与差异性
+  - `TestGetUserProviderApiKeyMiMoFallback`（4 项）：mimo→openai scope 回退、主 scope 命中、双 scope 未命中、非 mimo 无回退
+  - `TestModelCatalogMiMoKeyScope`（5 项）：catalog key_scope 前缀、provider 一致性、scope 与 normalize 公式匹配
+  - `TestMiMoClientKwargsForwarding`（4 项）：kwargs api_key 优先级、env fallback、base_url 传递
+
+### 设计要点
+
+- **四文件最小改动**：每个文件只改必要的行，不改变任何逻辑分支或数据流
+- **向后兼容**：`get_user_provider_api_key` 的 scope 回退确保旧 key 不丢失
+- **三端一致**：前端 scope 计算、后端 key 查找、model_catalog 文档现在统一使用 `mimo:` 前缀
+
+### 回归
+
+- `pytest tests/test_b001r1_mimo_config_routing.py -v`：**24 passed**
+- `pytest tests/test_mimo_client.py -v`：**45 passed**
+- `pytest tests/test_fund005_agent_trace.py tests/test_mimo_client.py tests/test_b001r1_mimo_config_routing.py -q`：**93 passed**
+- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q`：**122 passed**
+- `py_compile` 全部修改文件通过
+- `git diff --check` 通过
+
+### 约束遵守
+
+未修改 prompts/、未调用 live LLM、未写生产数据库、未提交 commit。
+
+---
+
 ## 2026-07-24 | SCORE-001-R1 验收档案一致性收口
 
 - **问题 1**：TASKS/DEVLOG 把 `87dcd44 + 24881f6` 写成当前分支实现提交，但两者均不是 `HEAD` 的祖先，无法从当前发布链复现。
