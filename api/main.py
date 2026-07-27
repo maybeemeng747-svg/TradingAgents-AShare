@@ -299,7 +299,6 @@ async def lifespan(app: FastAPI):
     _log("Database initialized.")
     try:
         from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
-        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
         _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
         _log("TradeFlow DB schema migrated.")
     except Exception as _tf_exc:
