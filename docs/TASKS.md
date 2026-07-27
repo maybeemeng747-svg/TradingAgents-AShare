@@ -619,7 +619,7 @@
 175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，done，SCORE-002-20260723-023857）。
 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
-178. `SCORE-004`：八类硬性否决统一门禁（P0，blocked-auto，依赖 SCORE-002/SCORE-003）。
+178. `SCORE-004`：八类硬性否决统一门禁（P0，ready — 依赖 SCORE-002/SCORE-003/D-002/D-003/PLAYBOOK-001 全部 done）。
 179. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
 180. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human，依赖 SCORE-005 与 ZCode 正式发布的真实快照）。
 181. `FUND-001`：标的身份与公司画像硬门禁（P0，blocked-review，第一版待 FUND-001A 补修）。
@@ -5725,7 +5725,7 @@
 ### KB-019: Tree Work 研报增量摄取清单与重复导入预检（P2）
 - **描述**：面向半年报集中披露期，把 `inbox/raw/wiki` 的新增、已消化、重复、缺字段和待更新资料整理为可回查的增量摄取清单，避免同一研报重复消化或遗漏。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — commit 1273118（67 tests passed，ZCode dry-run 验证幂等，真实知识库 total=327/new=9/duplicate=8/needs_metadata=283/stale=27/conflict=0）
 - **前置条件**：KB-005、KB-010、KB-012 完成。
 - **执行约束**：
   - 只读 `~/Documents/knowledge/`，不得移动、改写或删除 Tree Work 文件。
@@ -6256,7 +6256,7 @@
 ### SCORE-004: 八类硬性否决统一门禁（P0）
 - **描述**：把研究证据、TradeFlow 时机、账户适配和既有强动作门禁汇总成单一 `vetoes` 裁决层；评分再高也不得绕过否决项。
 - **优先级**：P0
-- **状态**：blocked-auto — 等待 SCORE-002/SCORE-003
+- **状态**：ready — 所有依赖已完成（SCORE-002 done, SCORE-003 done, D-002 done, D-003 done, PLAYBOOK-001 done）
 - **前置条件**：SCORE-002、SCORE-003、D-002、D-003、PLAYBOOK-001 完成。
 - **depends_on**：SCORE-002, SCORE-003, D-002, D-003, PLAYBOOK-001
 - **auto_release**：true
@@ -6784,18 +6784,22 @@ Phase 3（优化期）：C-006 + C-008
 ## D. 修正评分与强动作门禁（2026-05-13 新增）
 
 ### D-001: 修正数据完整度评分 ✅ 已完成（含真证据修复）
+- **状态**：done
 - **描述**：risk_manager.py 从 state 传入全部 8 项数据源；evidence 不再因报告存在就标 HAS_DATA，需匹配具体原始字段
 - **验证方式**：只有 4 个基础报告时 source_coverage=50%；纯文本报告无 OHLC 表格时 evidence 不虚高
 
 ### D-002: 强结论证据门禁 ✅ 已完成（含真降级修复）
+- **状态**：done
 - **描述**：新增 source_coverage/evidence_coverage 双维度评分；get_strong_action_gate 检查 7 项条件；gate 未通过时真正移除/替换强动作文本
 - **验证方式**：coverage<70 时强动作被替换为中性表达，原关键词不再出现在最终报告
 
 ### D-003: Risk Level / Buy Level 双等级输出 ✅ 已完成（含真信号修复）
+- **状态**：done
 - **描述**：Risk Level 0-4 + Buy Level 0-4；从报告文本提取 14 项交易信号传入计算；持仓未知时 gate 语义修正
 - **验证方式**：Level 4 需全部条件满足；持仓未知+无强动作时 gate 通过
 
 ### D-004: Opportunity Score 机会评分 ✅ 已完成（含真信号修复）
+- **状态**：done
 - **描述**：5 维加权 Opportunity Score 0-100；从报告文本提取趋势/资金共振/催化/盈亏比/入场质量信号传入计算
 - **验证方式**：Opportunity Score=100 但 coverage<70 时 Buy Level 仍受限；正向信号文本下 Score 明显高于默认值
 
