@@ -124,6 +124,13 @@ class TestFilterShortStrategy:
         assert "看空" in result["text"]
         assert result["filtered"] is False
 
+    def test_mixed_long_exit_does_not_mask_short_position_increase(self):
+        text = "建议减仓，禁止空头加仓"
+        result = filter_short_strategy(text, can_short=False)
+        assert "建议减仓" in result["text"]
+        assert "空头加仓" not in result["text"]
+        assert result["filtered"] is True
+
 
 # ═══════════════════════════════════════════════════════════════
 # 3. Research Manager integration

@@ -228,6 +228,53 @@ _SHORT_SELLING_PATTERNS_CN = [
     (r'平空', '平仓离场'),
     (r'做空仓位', '空仓观望'),
 ]
+
+# [C-003-R1] Explicit whitelist of legitimate long-side exit vocabulary.
+# These must NEVER be stripped — they are risk-reduction actions for an
+# existing long position, not short-selling. This list makes the protection
+# explicit rather than relying solely on patterns not matching by coincidence.
+_LEGIT_SELL_EXIT_KEYWORDS = frozenset({
+    # Chinese
+    "卖出", "减仓", "清仓", "止盈", "止损", "退出", "离场", "减持股",
+    # English (case-insensitive comparison)
+    "sell", "exit", "reduce", "trim",
+})
+
+
+def _is_legit_sell_exit_phrase(text: str) -> bool:
+    """[C-003-R1] Check if text is a legitimate long-side exit action.
+
+    Returns True only when the text contains a legit sell/exit keyword AND
+    does NOT contain any short-selling-specific compound. This guards against
+    overly broad future patterns误杀合法建议.
+
+    Note: English legit words use word-boundary matching to avoid false
+    positives (e.g. "sell" in "short selling" must NOT be treated as legit).
+    """
+    text_stripped = text.strip()
+    text_lower = text_stripped.lower()
+
+    # Chinese: substring match is safe because Chinese keywords are distinct
+    cn_legit = ("卖出", "减仓", "清仓", "止盈", "止损", "退出", "离场", "减持股")
+    has_cn_legit = any(kw in text_stripped for kw in cn_legit)
+
+    # English: word-boundary match to avoid "sell" matching inside "short selling"
+    has_en_legit = bool(re.search(r'\b(sell|exit|reduce|trim)\b', text_lower))
+
+    if not has_cn_legit and not has_en_legit:
+        return False
+
+    # If a shorting compound is present, it takes priority
+    shorting_compounds = ("融券卖出", "空头开仓", "试空", "平空", "加空",
+                          "做空", "开空仓", "反手做空", "逢高做空")
+    if any(sc in text_stripped for sc in shorting_compounds):
+        return False
+    # English shorting phrases (case-insensitive)
+    en_shorting = re.search(r'\bshort\b', text_lower)
+    if en_shorting:
+        return False
+
+    return True
 # [C-003-R1] English patterns evaluated with re.IGNORECASE.
 _SHORT_SELLING_PATTERNS_EN = [
     (r'short\s*position', '回避'),
@@ -816,10 +863,29 @@ def _sanitize_short_selling_text(text: str) -> tuple:
     uppercase LLM action tokens like "OPEN SHORT" / "Short Selling" are
     caught.
 
+    [C-003-R1] Legitimate long-side exit vocabulary (卖出/减仓/止损/SELL/EXIT)
+    is explicitly protected by ``_LEGIT_SELL_EXIT_KEYWORDS`` — even if a future
+    pattern is overly broad, ``_is_legit_sell_exit_phrase`` ensures these are
+    never stripped.
+
     Returns (sanitized_text, list_of_changes)
     """
     changes = []
     result = text
+
+    # [C-003-R1] Pure long-side exits need no rewriting. Mixed text must still
+    # pass through the short-selling patterns so a valid "减仓" cannot mask
+    # a later "空头加仓" instruction in the same response.
+    has_short_pattern = any(
+        re.search(pattern, text)
+        for pattern, _ in _SHORT_SELLING_PATTERNS_CN
+    ) or any(
+        re.search(pattern, text, re.IGNORECASE)
+        for pattern, _ in _SHORT_SELLING_PATTERNS_EN
+    )
+    if _is_legit_sell_exit_phrase(text.strip()) and not has_short_pattern:
+        return result, changes
+
     # [C-003-R1] Chinese patterns: literal match.
     for pattern, replacement in _SHORT_SELLING_PATTERNS_CN:
         matches = list(re.finditer(pattern, result))
