@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import threading
@@ -370,7 +371,10 @@ class CnAkshareProvider(BaseMarketDataProvider):
     def _fetch_realtime_row_unlocked(self, symbol: str) -> pd.DataFrame:
         # [G-005] realtime_ohlcv_patch: keep old Xueqiu path as last-resort fallback
         ak = self._ak()
-        spot = ak.stock_individual_spot_xq(symbol=self._xq_symbol(symbol))
+        spot = ak.stock_individual_spot_xq(
+            symbol=self._xq_symbol(symbol),
+            token=os.getenv("XQ_A_TOKEN"),
+        )
         if spot is None or spot.empty:
             return pd.DataFrame()
         if not {"item", "value"}.issubset(set(spot.columns)):
@@ -946,7 +950,9 @@ class CnAkshareProvider(BaseMarketDataProvider):
                     f"cn_akshare is temporarily unavailable for global news: {exc}"
                 ) from exc
 
-    def get_insider_transactions(self, symbol: str) -> str:
+    def get_insider_transactions(
+        self, symbol: str, curr_date: str | None = None
+    ) -> str:
         ak = self._ak()
         code = self._normalize_symbol(symbol)
         errors = []
@@ -965,8 +971,13 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
         try:
             # 退化为最近相关新闻，至少保证接口有可用输出
-            end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+            end_dt = (
+                datetime.strptime(curr_date, "%Y-%m-%d")
+                if curr_date
+                else datetime.now()
+            )
+            end_date = end_dt.strftime("%Y-%m-%d")
+            start_date = (end_dt - timedelta(days=14)).strftime("%Y-%m-%d")
             news = self.get_news(symbol, start_date, end_date)
             return (
                 f"## Insider Transactions for {symbol}\n\n"
@@ -1143,9 +1154,23 @@ class CnAkshareProvider(BaseMarketDataProvider):
         except (ValueError, TypeError):
             return None
 
+    @staticmethod
+    def _fund_flow_sort_value(value) -> float:
+        """Normalize mixed Chinese money strings to a comparable sorting value."""
+        if value is None or pd.isna(value):
+            return float("-inf")
+        text = str(value).replace(",", "").strip()
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not match:
+            return float("-inf")
+        amount = float(match.group())
+        if "亿" in text:
+            amount *= 10000
+        return amount
+
     def get_board_fund_flow(self) -> str:
         """获取行业板块资金流向排名，主接口失败时尝试 AKShare fallback。"""
-        # Primary: stock_board_industry_fund_flow_em
+        # Primary: stock_fund_flow_industry
         result = self._board_fund_flow_primary()
         if not ("获取失败" in result or "不可用" in result):
             return result
@@ -1168,16 +1193,32 @@ class CnAkshareProvider(BaseMarketDataProvider):
         return f"板块资金流向数据获取失败（主接口和 fallback 均不可用）：{result}"
 
     def _board_fund_flow_primary(self) -> str:
-        """Primary board fund flow via stock_board_industry_fund_flow_em."""
+        """Primary board fund flow via stock_fund_flow_industry."""
         try:
             ak = self._ak()
             with AKSHARE_CALL_LOCK:
-                df = ak.stock_board_industry_fund_flow_em(symbol="今日")
+                df = ak.stock_fund_flow_industry(symbol="即时")
             if df is None or df.empty:
                 return "今日板块资金流向数据暂不可用。"
-            sort_col = "今日主力净流入-净额"
-            if sort_col in df.columns:
-                df_sorted = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            sort_col = next(
+                (
+                    column
+                    for column in ("净额", "今日主力净流入-净额", "主力净流入")
+                    if column in df.columns
+                ),
+                None,
+            )
+            if sort_col:
+                df_sorted = (
+                    df.assign(
+                        _normalized_net=df[sort_col].map(
+                            self._fund_flow_sort_value
+                        )
+                    )
+                    .sort_values("_normalized_net", ascending=False)
+                    .drop(columns=["_normalized_net"])
+                    .reset_index(drop=True)
+                )
             else:
                 df_sorted = df.reset_index(drop=True)
             df_sorted.insert(0, "排名", range(1, len(df_sorted) + 1))
@@ -1219,11 +1260,29 @@ class CnAkshareProvider(BaseMarketDataProvider):
         try:
             ak = self._ak()
             code = self._normalize_symbol(symbol)
+            query_date = date.replace("-", "")
             with AKSHARE_CALL_LOCK:
-                df = ak.stock_lhb_detail_em(symbol=code, start_date=date, end_date=date)
+                df = ak.stock_lhb_detail_em(
+                    start_date=query_date,
+                    end_date=query_date,
+                )
             if df is None or df.empty:
                 return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
-            return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+            code_col = next(
+                (column for column in ("代码", "证券代码", "股票代码") if column in df.columns),
+                None,
+            )
+            if code_col is None:
+                return (
+                    f"{symbol} [G-007] LHB_FAILED: 龙虎榜返回缺少证券代码列，"
+                    f"无法校验个股归属（columns={list(df.columns)}）。"
+                )
+            matched = df[
+                df[code_col].astype(str).str.strip().str.zfill(6) == code
+            ]
+            if matched.empty:
+                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+            return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{matched.head(20).to_string(index=False)}"
         except Exception as exc:
             return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
 

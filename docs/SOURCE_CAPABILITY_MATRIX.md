@@ -5,7 +5,7 @@
 - 代码目录：`tradingagents/dataflows/source_capability_matrix.py`
 - 数据源目录：`tradingagents/dataflows/source_catalog.py`
 - API 目录：`GET /v1/config/source-capability-matrix`
-- 矩阵版本：`2026-06-27`
+- 矩阵版本：`2026-07-27`
 - data_type 数量：`16`
 
 ## 矩阵总览
@@ -14,7 +14,7 @@
 |-----------|--------|----------------|------------------|-----------------|-----------|------|---------|--------------|
 | `ohlcv` | K 线 / 历史行情 | cn_akshare | `stock_zh_a_hist` | cn_astock | `daily` | 元/股, 股 | `medium` | 6 |
 | `fund_flow` | 个股资金流 | cn_akshare | `stock_individual_fund_flow` | cn_astock | `daily` | 万元 | `high` | 2 |
-| `board_fund_flow` | 板块资金流 | cn_akshare | `stock_board_industry_fund_flow_em` | cn_astock | `daily` | 万元 | `medium` | 3 |
+| `board_fund_flow` | 板块资金流 | cn_akshare | `stock_fund_flow_industry` | cn_astock | `daily` | 亿元 | `medium` | 3 |
 | `lhb` | 龙虎榜 | cn_akshare | `stock_lhb_detail_em` | cn_astock | `daily` | 万元 | `high` | 2 |
 | `margin_trading` | 融资融券 | cn_akshare | `stock_margin_underlying_info_szse` | cn_astock | `daily` | 万元/股 | `medium` | 2 |
 | `notice` | 公司公告 | cn_astock | `cninfo.com.cn/hisAnnouncement` | cn_akshare | `daily` | 条 | `low` | 2 |
@@ -57,14 +57,14 @@
 
 ### `board_fund_flow` — 板块资金流
 
-- **首选源**：`cn_akshare` / `stock_board_industry_fund_flow_em`
+- **首选源**：`cn_akshare` / `stock_fund_flow_industry`
 - **Fallback 链**：cn_akshare → cn_akshare → cn_astock
 - **实时性**：`daily`
-- **单位**：万元
-- **字段**：板块名称, 今日主力净流入-净额
+- **单位**：亿元
+- **字段**：行业, 行业指数, 流入资金, 流出资金, 净额
 - **已知限制**：限流风险：中（建议带缓存与退避）
 - **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）
-- **备注**：AKShare/东财行业板块资金流
+- **备注**：AKShare/同花顺行业板块资金流
 
 ### `lhb` — 龙虎榜
 

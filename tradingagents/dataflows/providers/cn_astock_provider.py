@@ -807,7 +807,9 @@ class CnAstockProvider(BaseMarketDataProvider):
 
     # ── Insider transactions ──
 
-    def get_insider_transactions(self, symbol: str) -> str:
+    def get_insider_transactions(
+        self, symbol: str, curr_date: str | None = None
+    ) -> str:
         """东财 datacenter — 股东持股变动 (RPT_INSIDER_SHAREHOLDERS)."""
         code = _extract_code(symbol)
         try:

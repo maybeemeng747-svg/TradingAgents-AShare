@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from dotenv import load_dotenv
+from tradingagents.dataflows.network_timeout import install_default_network_timeout
 
 load_dotenv()
 
@@ -544,6 +545,13 @@ def _recover_stale_tasks():
 async def _startup():
     """Initialize DB, pre-load caches, recover stale tasks, then run the loop."""
     global _semaphore, _executor
+
+    network_timeout = float(os.getenv("TA_SOCKET_DEFAULT_TIMEOUT", "60"))
+    install_default_network_timeout(network_timeout)
+    _log(
+        "[Scheduler] Default socket and requests timeout set to "
+        f"{network_timeout:g}s."
+    )
 
     # Each scheduled `_run_job` fans out many `asyncio.to_thread` calls (DB
     # writes, akshare data collection, LLM extraction). The CPython default

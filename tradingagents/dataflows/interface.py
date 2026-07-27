@@ -90,6 +90,7 @@ _FAILURE_RESULT_PATTERNS = (
     "TimeoutError",
     "ConnectTimeout",
     "ReadTimeout",
+    "LHB_FAILED",
 )
 
 
@@ -162,6 +163,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     fallback_vendors = _resolve_vendor_chain(method, vendor_config)
     args_summary = _summarize_args(args, kwargs)
     last_exc = None
+    last_structured_failure = None
     _trace(
         f"method={method} {args_summary} category={category} "
         f"configured='{vendor_config}' chain={fallback_vendors}"
@@ -181,6 +183,12 @@ def route_to_vendor(method: str, *args, **kwargs):
         try:
             result = impl_func(*args, **kwargs)
             if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                if (
+                    method == "get_lhb_detail"
+                    and isinstance(result, str)
+                    and "[G-007] LHB_FAILED" in result
+                ):
+                    last_structured_failure = result
                 _trace(
                     f"method={method} {args_summary} vendor={vendor} status=fallback "
                     f"reason=failure-string-detected"
@@ -206,6 +214,13 @@ def route_to_vendor(method: str, *args, **kwargs):
                 f"reason={type(exc).__name__}: {exc}"
             )
             continue
+
+    if last_structured_failure is not None:
+        _trace(
+            f"method={method} {args_summary} status=failed "
+            f"reason=structured-provider-failure"
+        )
+        return last_structured_failure
 
     _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
     if last_exc is not None:

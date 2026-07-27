@@ -280,15 +280,15 @@ def _build_catalog() -> None:
 
     # ── 板块资金流 ──────────────────────────────────────────────────────
     _register(
-        "cn_akshare", "stock_board_industry_fund_flow_em",
+        "cn_akshare", "stock_fund_flow_industry",
         DataType.BOARD_FUND_FLOW,
-        fields=["板块名称", "今日主力净流入-净额"],
-        unit="万元",
+        fields=["行业", "行业指数", "流入资金", "流出资金", "净额"],
+        unit="亿元",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
         fallback_priority=1,
         is_primary=True,
-        notes="AKShare/东财行业板块资金流",
+        notes="AKShare/同花顺行业板块资金流",
     )
     _register(
         "cn_akshare", "stock_sector_fund_flow_rank",

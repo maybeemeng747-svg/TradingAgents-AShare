@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import os
 import threading
 import time
 import pandas as pd
@@ -52,6 +53,7 @@ INDICATORS = [
 ]
 SHORT_DAYS = 14
 LONG_DAYS = 90
+FETCH_LOCK_TIMEOUT = float(os.getenv("TA_DATA_FETCH_LOCK_TIMEOUT", "360"))
 
 import numpy as np
 
@@ -422,7 +424,10 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "fund_flow_board": (get_board_fund_flow, {}),
         "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
         "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": False}),
-        "insider_transactions": (get_insider_transactions, {"ticker": ticker}),
+        "insider_transactions": (
+            get_insider_transactions,
+            {"ticker": ticker, "curr_date": trade_date},
+        ),
         "zt_pool": (get_zt_pool, {"date": trade_date}),
         "hot_stocks": (get_hot_stocks_xq, {}),
         "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
@@ -460,9 +465,13 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
     results: Dict[str, Any] = {}
     fetch_start = time.time()
-    # 减少并发池大小，避免被反爬
+    # Provider calls remain joined here. A process-wide socket timeout bounds
+    # ordinary network stalls without abandoning live worker threads.
     with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
-        future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+        future_to_key = {
+            executor.submit(_safe, tool, payload): key
+            for key, (tool, payload) in tasks.items()
+        }
         for future in future_to_key:
             results[future_to_key[future]] = future.result()
 
@@ -623,10 +632,17 @@ class DataCollector:
         """
         key = make_cache_key(ticker, trade_date)
         key_lock = self._get_key_lock(key)
-        with key_lock:
+        if not key_lock.acquire(timeout=FETCH_LOCK_TIMEOUT):
+            raise TimeoutError(
+                f"等待 {key} 数据抓取锁超时（>{FETCH_LOCK_TIMEOUT:g}s），"
+                "可能存在卡死的数据源任务"
+            )
+        try:
             if key not in self._cache:
                 self._cache[key] = _fetch_all(ticker, trade_date)
-        return self._cache[key]
+            return self._cache[key]
+        finally:
+            key_lock.release()
 
     def get(self, ticker: str, trade_date: str) -> Optional[Dict[str, Any]]:
         """Retrieve cached pool, or None if not collected yet."""

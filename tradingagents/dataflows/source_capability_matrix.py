@@ -50,7 +50,7 @@ from .source_catalog import (
 )
 
 
-SOURCE_CAPABILITY_MATRIX_VERSION = "2026-06-27"
+SOURCE_CAPABILITY_MATRIX_VERSION = "2026-07-27"
 
 
 # ── 新鲜度语义说明 ────────────────────────────────────────────────────
@@ -201,7 +201,7 @@ def get_source_capability_matrix(
 
     返回结构：
         {
-            "version": "2026-06-27",
+            "version": "2026-07-27",
             "items": [ ... matrix entry ... ],
             "freshness_legend": {freshness_value: 说明},
             "rate_limit_legend": {risk_value: 说明},

@@ -33,7 +33,7 @@ load_dotenv()
 
 from fastapi import FastAPI, File, Form, HTTPException, Depends, Query, Request, UploadFile, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.orm import Session
@@ -71,6 +71,7 @@ _shared_data_collector = DataCollector()
 from tradingagents.dataflows.trade_calendar import cn_today_str
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.network_timeout import install_default_network_timeout
 from tradingagents.graph.intent_parser import parse_intent as _parse_intent
 from tradingagents.agents.utils.context_utils import USER_CONTEXT_KEYS, normalize_user_context
 from tradingagents.agents.utils.agent_states import current_tracker_var
@@ -254,6 +255,12 @@ async def _run_manual_trigger(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources on startup and cleanup on shutdown."""
+    network_timeout = float(os.getenv("TA_SOCKET_DEFAULT_TIMEOUT", "60"))
+    install_default_network_timeout(network_timeout)
+    _log(
+        "Default socket and requests timeout set to "
+        f"{network_timeout:g}s."
+    )
     # Raise the AnyIO thread limiter ceiling so frequent sync endpoints
     # (tracking-board polling, /v1/jobs/{id} polling, akshare-backed
     # market endpoints) cannot starve each other when the event loop is
@@ -273,6 +280,7 @@ async def lifespan(app: FastAPI):
     # default is `min(32, cpu_count + 4)`, which is too small when many
     # `_run_job_inner` coroutines fan out concurrent `to_thread` calls for
     # DB writes, LLM extraction, and akshare data collection.
+    global _default_executor
     new_default_executor: Optional[ThreadPoolExecutor] = None
     try:
         loop = asyncio.get_running_loop()
@@ -282,6 +290,7 @@ async def lifespan(app: FastAPI):
             thread_name_prefix="ta-asyncio",
         )
         loop.set_default_executor(new_default_executor)
+        _default_executor = new_default_executor
         _log(f"Default asyncio executor set to {executor_workers} workers.")
     except Exception as exc:
         _log(f"Could not configure default asyncio executor: {exc}")
@@ -379,6 +388,7 @@ app.add_middleware(
 )
 
 _executor = ThreadPoolExecutor(max_workers=int(os.getenv("TA_MAX_WORKERS", "2")))
+_default_executor: Optional[ThreadPoolExecutor] = None
 
 # ── Singleton job store (in-memory or Redis depending on REDIS_URL) ─────────
 _job_store_instance: Optional[Any] = None
@@ -2926,8 +2936,19 @@ async def _stream_job_events(job_id: str):
 
 
 @app.get("/healthz")
-def healthz() -> Dict[str, str]:
-    return {"status": "ok"}
+async def healthz():
+    """Report process health and detect a starved asyncio executor."""
+    payload: Dict[str, Any] = {"status": "ok"}
+    if _default_executor is not None:
+        payload["executor_queued"] = _default_executor._work_queue.qsize()
+        payload["executor_threads"] = len(_default_executor._threads)
+    try:
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(loop.run_in_executor(None, int), timeout=5)
+    except asyncio.TimeoutError:
+        payload["status"] = "thread_pool_starved"
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 # [DATA-026] db_hygiene_check — read-only DB test pollution + scheduler filter health.

@@ -17,6 +17,7 @@ WAIT_REASON_CONFLICT = "CONFLICT"
 WAIT_REASON_NO_TRIGGER = "NO_TRIGGER"
 WAIT_REASON_RISK_FIRST = "RISK_FIRST"
 WAIT_REASON_NORMAL_NO_DATA = "NORMAL_NO_DATA"
+WAIT_REASON_ACTION_NOT_APPLICABLE = "ACTION_NOT_APPLICABLE"
 
 WAIT_REASON_LABELS: dict[str, str] = {
     WAIT_REASON_DATA_MISSING: "关键数据缺口",
@@ -25,6 +26,7 @@ WAIT_REASON_LABELS: dict[str, str] = {
     WAIT_REASON_NO_TRIGGER: "等待触发价",
     WAIT_REASON_RISK_FIRST: "风险优先",
     WAIT_REASON_NORMAL_NO_DATA: "数据正常·暂无触发",
+    WAIT_REASON_ACTION_NOT_APPLICABLE: "持仓动作不适用",
 }
 
 # Blocker keys whose failure genuinely blocks a directional verdict, vs. aux
@@ -171,6 +173,164 @@ _DECISION_MAP = {
     "看空": "SELL",
 }
 
+_NEGATION_PATTERNS = (
+    r"不(?:建议|宜|应|要|能|可|考虑|允许|支持)",
+    r"无需",
+    r"别",
+    r"切勿",
+    r"勿",
+    r"避免",
+    r"谨防",
+    r"暂不",
+    r"回避",
+    r"禁止",
+)
+
+
+def _negation_scope_prefix(prefix_window: str) -> str:
+    """Return the active semantic prefix, treating list commas conservatively."""
+    prefix = re.split(
+        r"(?:但是|不过|然而|而是|但)|[\n，。；;！？!?]",
+        prefix_window,
+    )[-1]
+    if "、" in prefix:
+        before, after = prefix.rsplit("、", 1)
+        has_prior_negation = re.search(
+            r"(?:回避|避免|谨防|禁止|切勿|勿|别|无需|暂不|"
+            r"不(?:建议|宜|应|要|能|可|考虑|允许|支持))[^、]*$",
+            before,
+        )
+        starts_new_instruction = re.match(
+            r"\s*(?:(?:仍|继续|转为|改为)\s*)?"
+            r"(?:谨慎看多|谨慎看空|谨慎$|看多|看空|偏多|偏空|中性|观望|等待|"
+            r"回避|避免|禁止|切勿|勿|别|无需|暂不|建议|可以|可|应该|应|"
+            r"考虑|回调后|反弹后|企稳后|突破后|确认后|条件建仓|条件买入|"
+            r"低吸|逢低布局|减仓|卖出|清仓|止损|建仓|买入)",
+            after,
+        )
+        # Only an explicit new instruction ends the earlier negation. A list of
+        # conditions such as "不建议在业绩披露、资金改善前建仓" stays one clause.
+        if has_prior_negation and starts_new_instruction:
+            return after
+    return prefix
+
+
+def _iter_keyword_occurrences(snippet: str, keyword: str):
+    """Yield semantic keyword occurrences without matching inside ASCII words."""
+    if keyword.isascii():
+        # BUY/SELL are action tokens only when they stand alone. Without the
+        # bounded match, prose such as "buyback" or "sell-side rating" can
+        # override a structured VERDICT.
+        pattern = re.compile(
+            rf"(?<![A-Z0-9_-]){re.escape(keyword.upper())}(?![A-Z0-9_-])"
+        )
+        for match in pattern.finditer(snippet.upper()):
+            yield match.start(), match.end()
+        return
+
+    start = 0
+    while True:
+        index = snippet.find(keyword, start)
+        if index == -1:
+            return
+        yield index, index + len(keyword)
+        start = index + 1
+
+
+def _keyword_negation_states(snippet: str, keywords: list[str]):
+    """Yield whether each keyword occurrence is negated by its local clause."""
+    snippet_upper = snippet.upper()
+    for keyword in keywords:
+        key_upper = keyword.upper()
+        for index, end in _iter_keyword_occurrences(snippet_upper, key_upper):
+            prefix_window = snippet_upper[:index]
+            # Contrastive conjunctions start a new semantic clause even when
+            # the model omits punctuation: "不建议买入但仍看多".
+            prefix = _negation_scope_prefix(prefix_window)
+            suffix = snippet_upper[end:]
+            rejected_after_keyword = bool(
+                re.match(
+                    r"^[^，、。；;！？!?\n]{0,8}"
+                    r"(?:不成立|未成立|难成立|无法成立|已?失效|已?证伪|被否定|不可持续)",
+                    suffix,
+                )
+            )
+            negated = rejected_after_keyword or prefix.endswith(("不", "非")) or any(
+                re.search(
+                    rf"{pattern}[^，。；;！？!?\n]*$",
+                    prefix,
+                )
+                for pattern in _NEGATION_PATTERNS
+            )
+            yield negated
+
+
+def _has_non_negated_keyword(snippet: str, keywords: list[str]) -> bool:
+    """Return True when a keyword is present without a nearby negation marker."""
+    return any(not negated for negated in _keyword_negation_states(snippet, keywords))
+
+
+def _has_negated_keyword(snippet: str, keywords: list[str]) -> bool:
+    """Return True when a keyword is explicitly negated in its local clause."""
+    return any(_keyword_negation_states(snippet, keywords))
+
+
+def _has_non_negated_action_keyword(snippet: str, keywords: list[str]) -> bool:
+    """Match executable actions while excluding noun phrases such as 卖出压力."""
+    snippet_upper = snippet.upper()
+    noun_suffix = re.compile(
+        r"^(?:压力|盘|信号|金额|数据|意愿|力量|成交|占比|行为|记录|"
+        r"交易|计划|公告|传闻|风险|预期|价格|价位|成本|区间|条件|"
+        r"机会|时机|潮)"
+    )
+    action_context = re.compile(
+        r"(?:建议|应当|应该|需|需要|可|可以|考虑|立即|择机|分批|执行|"
+        r"继续|维持|转为|改为|"
+        r"触发|当前)[^，、。；;！？!?\n]{0,16}$"
+    )
+    timing_context = re.compile(r"[^，、。；;！？!?\n]{0,16}(?:后|时|则|再)\s*$")
+    generic_actions = {"买入", "卖出", "减持", "减仓", "清仓", "空仓", "退出"}
+
+    for keyword in keywords:
+        key_upper = keyword.upper()
+        states = iter(_keyword_negation_states(snippet, [keyword]))
+        for index, end in _iter_keyword_occurrences(snippet_upper, key_upper):
+            negated = next(states, True)
+            suffix = snippet[end:].lstrip()
+            prefix = re.split(
+                r"(?:但是|不过|然而|而是|但)|[\n，、。；;！？!?]",
+                snippet[:index],
+            )[-1].strip()
+            is_ascii_action = keyword.isascii()
+            is_compound_action = keyword not in generic_actions
+            if (
+                not negated
+                and not noun_suffix.match(suffix)
+                and (
+                    not prefix
+                    or is_ascii_action
+                    or is_compound_action
+                    or action_context.search(prefix)
+                    or timing_context.search(prefix)
+                )
+            ):
+                return True
+    return False
+
+
+def _has_explicit_avoidance_action(snippet: str) -> bool:
+    """Recognize advice to avoid the instrument, not prose about avoiding risk."""
+    return bool(
+        re.search(
+            r"(?:建议|应当|应该|需|需要|继续|维持|选择|当前建议)"
+            r"[^，、。；;！？!?\n]{0,8}回避"
+            r"(?:\s*(?:该股|标的|个股|股票|参与|介入|买入))?"
+            r"(?=[，、。；;！？!?\n]|$)",
+            snippet,
+            re.IGNORECASE,
+        )
+    )
+
 
 def _parse_research_direction_from_verdict(text: str) -> str | None:
     verdict_scope = re.split(r"\n\s*#{1,6}\s*执行质检\b", text, maxsplit=1)[0]
@@ -186,16 +346,22 @@ def _parse_research_direction_from_verdict(text: str) -> str | None:
 
 
 def _classify_research_direction(snippet: str) -> str | None:
-    snippet_upper = snippet.upper()
-    negated = bool(re.search(r"不(?:建议|宜|应|要|能|可)\s*", snippet))
-    sell_kw = ["SELL", "卖出", "减持", "清仓", "空仓", "回避", "看空", "偏空"]
-    buy_kw = ["BUY", "买入", "增持", "做多", "看多", "偏多", "谨慎看多", "有条件建仓", "条件建仓", "建仓"]
+    sell_action_kw = ["SELL", "卖出", "减持", "减仓", "清仓", "空仓"]
+    sell_direction_kw = ["回避", "看空", "偏空"]
+    buy_action_kw = ["BUY", "买入", "增持", "做多", "有条件建仓", "条件建仓", "建仓"]
+    buy_direction_kw = ["看多", "偏多", "谨慎看多"]
     hold_kw = ["HOLD", "观望", "持有", "中性"]
-    if any(k in snippet_upper for k in sell_kw):
+    if _has_explicit_avoidance_action(snippet):
         return "偏空"
-    if any(k in snippet_upper for k in buy_kw):
-        return "中性" if negated else "偏多"
-    if any(k in snippet_upper for k in hold_kw):
+    if _has_non_negated_keyword(snippet, buy_direction_kw):
+        return "偏多"
+    if _has_non_negated_action_keyword(snippet, buy_action_kw):
+        return "偏多"
+    if _has_non_negated_keyword(snippet, sell_direction_kw):
+        return "偏空"
+    if _has_non_negated_action_keyword(snippet, sell_action_kw):
+        return "偏空"
+    if _has_non_negated_keyword(snippet, hold_kw):
         return "中性"
     return None
 
@@ -239,6 +405,142 @@ def _infer_research_direction(text: str) -> str:
         return rd
 
     return "中性"
+
+
+def _latest_explicit_recommendation(text: str) -> str | None:
+    """Return the highest-priority recommendation before execution QA.
+
+    Final verdict/recommendation fields are execution instructions. Broad
+    ``方向`` and ``核心定性`` fields are only fallbacks; a later diagnostic
+    direction must not override an earlier explicit "do not buy/sell" action.
+    """
+    stripped = re.split(
+        r"\n\s*#{1,6}\s*执行质检\b",
+        _strip_system_overrides(text),
+        maxsplit=1,
+    )[0]
+    decision_patterns = [
+        r"最终裁决[:：]\s*([^\n*]+)",
+        r"风控委员会最终裁决[:：]\s*([^\n*]+)",
+        r"最终建议[:：]\s*([^\n*]+)",
+    ]
+    direction_patterns = [
+        r"方向[:：]\s*([^\n*]+)",
+        r"核心定性[:：]\s*([^\n*]+)",
+    ]
+    for patterns in (decision_patterns, direction_patterns):
+        matches = [
+            match
+            for pattern in patterns
+            for match in re.finditer(pattern, stripped, re.IGNORECASE)
+        ]
+        if matches:
+            return max(matches, key=lambda match: match.start()).group(1).strip()
+    return None
+
+
+def _infer_explicit_sell_action(
+    text: str,
+    *,
+    has_position: Optional[bool],
+) -> str | None:
+    """Extract an explicit reduce/exit instruction without changing research direction."""
+    snippet = _latest_explicit_recommendation(text)
+    if not snippet:
+        return None
+    exit_keywords = ["SELL", "卖出", "清仓", "空仓", "退出", "止损离场"]
+    reduce_keywords = ["减持", "减仓"]
+
+    if _has_explicit_avoidance_action(snippet):
+        return "REDUCE" if has_position is True else "WAIT"
+    if _has_non_negated_action_keyword(snippet, exit_keywords):
+        return "EXIT" if has_position is True else "WAIT"
+    if _has_non_negated_action_keyword(snippet, reduce_keywords):
+        return "REDUCE" if has_position is True else "WAIT"
+    return None
+
+
+def _infer_explicit_hold_action(
+    text: str,
+    *,
+    has_position: Optional[bool],
+) -> str | None:
+    """Honor an explicit instruction not to buy or sell.
+
+    Research direction can remain bullish or bearish, but a latest explicit
+    negation must prevent the structured execution layer from reconstructing
+    ENTER/REDUCE/EXIT from that direction.
+    """
+    snippet = _latest_explicit_recommendation(text)
+    if not snippet:
+        return None
+
+    buy_action_keywords = [
+        "BUY",
+        "买入",
+        "增持",
+        "做多",
+        "有条件建仓",
+        "条件建仓",
+        "建仓",
+    ]
+    sell_action_keywords = [
+        "SELL",
+        "卖出",
+        "减持",
+        "减仓",
+        "清仓",
+        "空仓",
+        "退出",
+        "止损离场",
+    ]
+    action_keywords = buy_action_keywords + sell_action_keywords
+
+    # A later executable instruction such as "不建议追高，回调后条件建仓"
+    # takes precedence over the earlier caveat.
+    if _has_non_negated_action_keyword(snippet, action_keywords):
+        return None
+    if _has_negated_keyword(snippet, action_keywords):
+        return "HOLD" if has_position is True else "WAIT"
+    return None
+
+
+def _infer_explicit_legacy_override(
+    text: str,
+    *,
+    has_position: Optional[bool],
+) -> str | None:
+    """Map explicit execution advice before consulting research-direction VERDICT."""
+    snippet = _latest_explicit_recommendation(text)
+    if not snippet:
+        return None
+
+    sell_action_keywords = [
+        "SELL",
+        "卖出",
+        "减持",
+        "减仓",
+        "清仓",
+        "空仓",
+        "退出",
+        "止损离场",
+    ]
+    buy_action_keywords = ["BUY", "买入", "增持", "做多", "有条件建仓", "条件建仓", "建仓"]
+    sell_direction_keywords = ["回避", "看空", "偏空"]
+
+    if _has_explicit_avoidance_action(snippet):
+        return "HOLD" if has_position is False else "SELL"
+    if _has_non_negated_action_keyword(snippet, sell_action_keywords):
+        return "HOLD" if has_position is False else "SELL"
+    if _has_non_negated_action_keyword(snippet, buy_action_keywords):
+        return "BUY"
+    if _has_negated_keyword(snippet, buy_action_keywords):
+        if _has_non_negated_keyword(snippet, sell_direction_keywords):
+            return "SELL"
+        return "HOLD"
+    if _has_negated_keyword(snippet, sell_action_keywords):
+        return "HOLD"
+    return None
 
 
 def _is_data_insufficient(text: str) -> bool:
@@ -450,27 +752,31 @@ def _extract_decision_keyword(text: str, *, has_position: bool | None = None) ->
 
     def classify(snippet: str) -> str | None:
         snippet_upper = snippet.upper()
-        sell_keywords = [
+        sell_action_keywords = [
             "SELL",
             "卖出",
             "减持",
             "清仓",
             "空仓",
+        ]
+        sell_direction_keywords = [
             "回避",
             "看空",
             "偏空",
         ]
-        buy_keywords = [
+        buy_action_keywords = [
             "BUY",
             "买入",
             "增持",
             "做多",
-            "看多",
-            "偏多",
-            "谨慎看多",
             "有条件建仓",
             "条件建仓",
             "建仓",
+        ]
+        buy_direction_keywords = [
+            "看多",
+            "偏多",
+            "谨慎看多",
         ]
         hold_keywords = [
             "HOLD",
@@ -479,13 +785,39 @@ def _extract_decision_keyword(text: str, *, has_position: bool | None = None) ->
             "中性",
         ]
 
-        if any(k in snippet_upper for k in buy_keywords):
-            return "BUY"
-        if any(k in snippet_upper for k in sell_keywords):
+        # Explicit execution actions take precedence over contextual direction.
+        # Example: "长期看多，但当前建议减持" must remain a sell action.
+        if _has_non_negated_action_keyword(snippet_upper, sell_action_keywords):
             return "SELL"
-        if any(k in snippet_upper for k in hold_keywords):
+        # A later explicit entry condition overrides an earlier anti-chase
+        # caveat: "不建议追高买入，回调后条件建仓".
+        if _has_non_negated_action_keyword(snippet_upper, buy_action_keywords):
+            return "BUY"
+        # A negated entry action is an explicit instruction not to enter. Keep
+        # bullish research context separate and map the execution decision to HOLD,
+        # unless the same clause explicitly says to avoid the instrument.
+        if _has_negated_keyword(snippet_upper, buy_action_keywords):
+            if _has_non_negated_keyword(snippet_upper, sell_direction_keywords):
+                return "SELL"
+            return "HOLD"
+        # "不建议卖出/不宜减持" is an explicit hold-style instruction. A
+        # separate non-negated buy action above may still override it.
+        if _has_negated_keyword(snippet_upper, sell_action_keywords):
+            return "HOLD"
+        if _has_non_negated_keyword(snippet_upper, buy_direction_keywords):
+            return "BUY"
+        if _has_non_negated_keyword(snippet_upper, sell_direction_keywords):
+            return "SELL"
+        if _has_non_negated_keyword(snippet_upper, hold_keywords):
             return "HOLD"
         return None
+
+    explicit_override = _infer_explicit_legacy_override(
+        text,
+        has_position=has_position,
+    )
+    if explicit_override:
+        return explicit_override
 
     verdict_decision = parse_verdict_direction(text)
     if verdict_decision:
@@ -547,6 +879,24 @@ def _extract_decision_semantics(
         gate_blocked=gate_blocked,
         data_insufficient=data_insufficient,
     )
+    explicit_sell_action = None
+    explicit_hold_action = None
+    explicit_recommendation = _latest_explicit_recommendation(text) or ""
+    explicit_avoidance = _has_explicit_avoidance_action(explicit_recommendation)
+    if not gate_blocked and not data_insufficient:
+        explicit_sell_action = _infer_explicit_sell_action(
+            text,
+            has_position=has_position,
+        )
+        if explicit_sell_action:
+            execution_action = explicit_sell_action
+        else:
+            explicit_hold_action = _infer_explicit_hold_action(
+                text,
+                has_position=has_position,
+            )
+            if explicit_hold_action:
+                execution_action = explicit_hold_action
 
     action_label = _derive_action_label(
         has_position=has_position,
@@ -555,11 +905,30 @@ def _extract_decision_semantics(
         trigger_price=trigger_price,
         invalid_price=invalid_price,
     )
+    if explicit_sell_action == "WAIT":
+        if explicit_avoidance:
+            action_label = "回避"
+        elif research_direction in ("偏多", "看多"):
+            action_label = "观望"
+    if explicit_hold_action:
+        action_label = "持有" if execution_action == "HOLD" else "观望"
 
     if data_insufficient and execution_action == "WAIT" and research_direction == "中性":
         action_label = "数据不足观察"
 
     decision = _DECISION_MAP.get(research_direction, "HOLD")
+    if execution_action in ("REDUCE", "EXIT"):
+        decision = "SELL"
+    elif explicit_hold_action:
+        decision = "HOLD"
+    elif explicit_sell_action == "WAIT":
+        # Avoidance is a directional risk verdict even when there is no
+        # position to sell. Pure holding-only actions remain non-applicable.
+        decision = (
+            "SELL"
+            if explicit_avoidance or has_position is not False
+            else "HOLD"
+        )
     if gate_blocked:
         decision = "HOLD"
 
@@ -576,6 +945,16 @@ def _extract_decision_semantics(
         data_blockers=data_blockers,
         has_conflict=has_conflict,
     )
+    if explicit_sell_action == "WAIT":
+        wait_reason_codes = [
+            code for code in wait_reason_codes
+            if code != WAIT_REASON_NO_TRIGGER
+        ]
+        if explicit_avoidance:
+            if WAIT_REASON_RISK_FIRST not in wait_reason_codes:
+                wait_reason_codes.append(WAIT_REASON_RISK_FIRST)
+        elif WAIT_REASON_ACTION_NOT_APPLICABLE not in wait_reason_codes:
+            wait_reason_codes.append(WAIT_REASON_ACTION_NOT_APPLICABLE)
 
     return DecisionSemantics(
         research_direction=research_direction,

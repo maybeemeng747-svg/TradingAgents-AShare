@@ -32,6 +32,7 @@ from api.services import report_service
 from tradingagents.graph.signal_processing import (
     DecisionSemantics,
     WAIT_REASON_CONFLICT,
+    WAIT_REASON_ACTION_NOT_APPLICABLE,
     WAIT_REASON_DATA_MISSING,
     WAIT_REASON_GATE_BLOCKED,
     WAIT_REASON_LABELS,
@@ -214,6 +215,7 @@ def test_all_reason_codes_have_labels():
         WAIT_REASON_NO_TRIGGER,
         WAIT_REASON_RISK_FIRST,
         WAIT_REASON_NORMAL_NO_DATA,
+        WAIT_REASON_ACTION_NOT_APPLICABLE,
     }
     assert set(WAIT_REASON_LABELS.keys()) >= expected
     for code in expected:
