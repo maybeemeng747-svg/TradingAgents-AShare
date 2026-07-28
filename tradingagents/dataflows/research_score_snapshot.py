@@ -1,10 +1,15 @@
 # [SCORE-001] research_score_snapshot_contract
-"""只读 ``research_score_snapshot`` v1.1.0 loader / provider（SCORE-001）。
+"""只读 ``research_score_snapshot`` v1.1.0 / v1.2.0 loader / provider（SCORE-001）。
 
 在 KB-001 / KB-014 之上，本模块为 TA 侧提供对 ZCode 发布的
 ``research_score_snapshot`` 的**只读**读取与校验能力。本模块**不**重新计算
 知识库分数，**不**接受知识库给出的交易动作，**不**新增 API / 数据库列 /
 TradeFlow 字段；这些接线由后续 SCORE-001B / SCORE-002~005 承担。
+
+[SCORE-001C] v1.2.0 支持：
+  - schema_version 白名单：1.1.0 + 1.2.0
+  - 0-100 浮点分（v1.2 scorer 输出如 93.0/32.4）
+  - evidence_refs 新增 source_entity / dimension_tags 字段（可选）
 
 设计约束（对应任务 SCORE-001 执行约束）：
   - **只读知识库**：仅用 ``open(..., "r", encoding="utf-8")`` 与 ``Path.iterdir``，
@@ -65,9 +70,10 @@ VENDOR = "zcode_research_scorer"
 TASK_CODE = "SCORE-001"
 
 # [SCORE-001] research_score_snapshot_contract
-SCHEMA_VERSION = "1.1.0"
+# [SCORE-001C] 支持 v1.1.0 和 v1.2.0（v1.2 新增 source_entity/dimension_tags/浮点分）
+SCHEMA_VERSION = "1.2.0"
 #: 本 loader 支持消费的 schema_version 白名单（未知版本 fail closed）。
-SUPPORTED_SCHEMA_VERSIONS: Tuple[str, ...] = ("1.1.0",)
+SUPPORTED_SCHEMA_VERSIONS: Tuple[str, ...] = ("1.1.0", "1.2.0")
 
 #: 知识库内快照根目录名（ZCode 发布产物所在）。
 SNAPSHOTS_DIR_NAME = "research_score_snapshots"
@@ -145,8 +151,9 @@ _ISO_DT_RE = re.compile(
 class ScoreSummary:
     """两项核心分数（缺失为 ``None``，绝不用 0 冒充）。"""
 
-    research_evidence_confidence: Optional[int] = None
-    thesis_quality: Optional[int] = None
+    # [SCORE-001C] 支持 0-100 浮点分（v1.2 scorer 输出浮点）
+    research_evidence_confidence: Optional[float] = None
+    thesis_quality: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -201,6 +208,9 @@ class EvidenceRef:
     source_path: str = ""
     source_type: str = ""
     source_quality_tier: str = "unknown"
+    # [SCORE-001C] v1.2 新增字段（v1.1 快照中可为 None）
+    source_entity: Optional[str] = None
+    dimension_tags: Optional[List[str]] = None
     report_date: Optional[str] = None
     financial_period: Optional[str] = None
     locator: Optional[str] = None
@@ -213,6 +223,8 @@ class EvidenceRef:
             "source_path": self.source_path,
             "source_type": self.source_type,
             "source_quality_tier": self.source_quality_tier,
+            "source_entity": self.source_entity,
+            "dimension_tags": list(self.dimension_tags) if self.dimension_tags else None,
             "report_date": self.report_date,
             "financial_period": self.financial_period,
             "locator": self.locator,
@@ -483,8 +495,11 @@ def _check_forbidden_fields(data: Dict[str, Any]) -> None:
                     )
 
 
-def _validate_score_value(name: str, value: Any) -> Optional[int]:
-    """校验单项分数：缺失返回 None；非整数/越界 raise。"""
+def _validate_score_value(name: str, value: Any) -> Optional[float]:
+    """校验单项分数：缺失返回 None；非数值/越界 raise。
+
+    [SCORE-001C] 支持 0-100 浮点分（v1.2 scorer 输出如 93.0/32.4）。
+    """
     if value is None:
         return None
     # 显式拒绝字符串 "0" 冒充——必须是数值。
@@ -493,15 +508,8 @@ def _validate_score_value(name: str, value: Any) -> Optional[int]:
             "ILLEGAL_SCORE",
             f"scores.{name} 非数值: {value!r}",
         )
-    if isinstance(value, float):
-        if not value.is_integer():
-            raise SnapshotValidationError(
-                "ILLEGAL_SCORE",
-                f"scores.{name} 非整数: {value!r}",
-            )
-        value = int(value)
-    else:
-        value = int(value)
+    # [SCORE-001C] 接受浮点分，不再要求整数
+    value = float(value)
     if value < _SCORE_MIN or value > _SCORE_MAX:
         raise SnapshotValidationError(
             "ILLEGAL_SCORE",
@@ -717,6 +725,12 @@ def _validate_snapshot_dict(
                 source_path=source_path,
                 source_type=_safe_str(item.get("source_type")),
                 source_quality_tier=tier,
+                # [SCORE-001C] v1.2 新增字段（v1.1 快照中不存则 None）
+                source_entity=_safe_str(item.get("source_entity")) or None,
+                dimension_tags=[
+                    _safe_str(t) for t in (item.get("dimension_tags") or [])
+                    if _safe_str(t)
+                ] or None,
                 report_date=_safe_str(item.get("report_date")) or None,
                 financial_period=_safe_str(item.get("financial_period")) or None,
                 locator=_safe_str(item.get("locator")) or None,

@@ -109,7 +109,7 @@ class TestFiveStatuses:
         assert result.snapshot.symbol == "605589.SH"
         assert result.snapshot.scores.research_evidence_confidence == 82
         assert result.snapshot.scores.thesis_quality == 78
-        assert result.schema_version == SCHEMA_VERSION
+        assert result.schema_version in SUPPORTED_SCHEMA_VERSIONS
         assert result.snapshot_id == "605589.SH-20260713-r1"
 
     def test_stale_status_passthrough(self, tmp_path: Path) -> None:
@@ -835,3 +835,123 @@ class TestSymbolNormalization:
         )
         assert result.status == STATUS_HAS_DATA
         assert result.snapshot.symbol == "605589.SH"
+
+
+class TestScore001Cv12Support:
+    """[SCORE-001C] v1.2.0 快照（浮点分 + source_entity + dimension_tags）loader 支持。"""
+
+    def _v12_snapshot_dict(self) -> dict:
+        """构造一份合法的 v1.2.0 快照（浮点分 + 新字段）。"""
+        d = _base_snapshot_dict()
+        d["schema_version"] = "1.2.0"
+        d["scores"] = {
+            "research_evidence_confidence": 93.0,
+            "thesis_quality": 32.4,
+        }
+        d["evidence_refs"] = [
+            {
+                "evidence_id": "ev-001",
+                "claim": "营收同比增长50%",
+                "claim_type": "financial_fact",
+                "source_path": "wiki/investment/test.md",
+                "source_type": "broker_report",
+                "source_quality_tier": "original_filing",
+                "source_entity": "交易所公告",
+                "dimension_tags": ["revenue_profit_delivery", "financial_quality"],
+                "report_date": "2026-07-01",
+                "financial_period": "2026H1",
+                "locator": "p12",
+            },
+        ]
+        d["theses"] = [
+            {
+                "thesis_id": "t1",
+                "symbol": "605589.SH",
+                "as_of": "2026-07-13",
+                "topic": "业绩拐点",
+                "direction": "bullish",
+                "status": "active",
+                "core_hypothesis": "营收增长驱动估值修复",
+                "supporting_evidence_ids": ["ev-001"],
+                "counter_evidence_ids": [],
+                "missing_evidence": [],
+                "upgrade_conditions": [],
+                "downgrade_conditions": [],
+                "invalidation_conditions": [],
+            },
+        ]
+        return d
+
+    def test_v12_schema_accepted(self, tmp_path: Path) -> None:
+        """v1.2.0 快照应被接受，不返回 UNKNOWN_SCHEMA_VERSION。"""
+        _write_snapshot_file(tmp_path, "605589.SH", "v12.json", self._v12_snapshot_dict())
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_HAS_DATA
+        assert result.schema_version == "1.2.0"
+
+    def test_v12_float_scores_accepted(self, tmp_path: Path) -> None:
+        """浮点分（93.0 / 32.4）应被正确读取，不报 ILLEGAL_SCORE。"""
+        _write_snapshot_file(tmp_path, "605589.SH", "v12.json", self._v12_snapshot_dict())
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_HAS_DATA
+        assert result.snapshot.scores.research_evidence_confidence == 93.0
+        assert result.snapshot.scores.thesis_quality == 32.4
+
+    def test_v12_source_entity_read(self, tmp_path: Path) -> None:
+        """source_entity 字段应被正确读取。"""
+        _write_snapshot_file(tmp_path, "605589.SH", "v12.json", self._v12_snapshot_dict())
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_HAS_DATA
+        ev = result.snapshot.evidence_refs[0]
+        assert ev.source_entity == "交易所公告"
+
+    def test_v12_dimension_tags_read(self, tmp_path: Path) -> None:
+        """dimension_tags 字段应被正确读取。"""
+        _write_snapshot_file(tmp_path, "605589.SH", "v12.json", self._v12_snapshot_dict())
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_HAS_DATA
+        ev = result.snapshot.evidence_refs[0]
+        assert ev.dimension_tags == ["revenue_profit_delivery", "financial_quality"]
+
+    def test_v11_still_accepted(self, tmp_path: Path) -> None:
+        """v1.1.0 快照仍应被接受（向后兼容）。"""
+        _write_snapshot_file(tmp_path, "605589.SH", "v11.json", _base_snapshot_dict())
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_HAS_DATA
+        assert result.schema_version == "1.1.0"
+
+    def test_v12_without_optional_fields(self, tmp_path: Path) -> None:
+        """v1.2.0 快照没有 source_entity/dimension_tags 时不应崩溃。"""
+        d = self._v12_snapshot_dict()
+        for ev in d["evidence_refs"]:
+            ev.pop("source_entity", None)
+            ev.pop("dimension_tags", None)
+        _write_snapshot_file(tmp_path, "605589.SH", "v12_min.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_HAS_DATA
+        ev = result.snapshot.evidence_refs[0]
+        assert ev.source_entity is None
+        assert ev.dimension_tags is None
+
+    def test_unknown_version_still_rejected(self, tmp_path: Path) -> None:
+        """v9.9.9 仍应被拒绝。"""
+        d = self._v12_snapshot_dict()
+        d["schema_version"] = "9.9.9"
+        _write_snapshot_file(tmp_path, "605589.SH", "bad.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_FAILED
+        assert "UNKNOWN_SCHEMA_VERSION" in result.degradation_reasons
