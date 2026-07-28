@@ -896,14 +896,45 @@ def extract_financial_anomaly_inputs(
                 return group
         return None
 
+    def _find_year_over_year_group(
+        required_metrics: set[str],
+        current_date: str,
+        current_scope: str,
+        current_unit: str,
+    ) -> dict[str, Mapping[str, Any]] | None:
+        """Return the exact prior-year comparable group or fail closed.
+
+        Interim income statements are cumulative.  Comparing 2026 Q1 with
+        2025 FY (or H1 with Q1) creates a plausible-looking but meaningless
+        growth rate, so growth metrics never fall back to the nearest period
+        or cross units.
+        """
+        try:
+            current_year = int(current_date[:4])
+            comparable_date = f"{current_year - 1}{current_date[4:]}"
+        except (TypeError, ValueError):
+            return None
+        for key in sorted_keys:
+            if (
+                key[0] != comparable_date
+                or key[1] != current_scope
+                or key[2] != current_unit
+            ):
+                continue
+            group = groups[key]
+            if all(metric in group for metric in required_metrics):
+                return group
+        return None
+
     # --- Income group: gross_margin from same-date/same-scope revenue + cost ---
     income_group = _find_best_group({"revenue", "operating_cost"})
     if income_group:
         revenue = _value(income_group["revenue"])
         cost = _value(income_group["operating_cost"])
         income_date = str(income_group["revenue"].get("report_date") or "")
+        income_scope = str(income_group["revenue"].get("period_scope") or "")
     else:
-        revenue, cost, income_date = None, None, ""
+        revenue, cost, income_date, income_scope = None, None, "", ""
 
     gross_margin = (
         (revenue - cost) / revenue * 100
@@ -1008,14 +1039,60 @@ def extract_financial_anomaly_inputs(
 
     roe_prev = _find_prev_roe_pair(roe_date) if roe_date else None
 
-    # --- Phase 2: Revenue / cost growth from current vs prior income group ---
+    # --- Phase 2: per-metric growth from exact prior-year comparable groups ---
     def _growth_rate(current: float | None, prior: float | None) -> float | None:
         if current is not None and prior is not None and prior != 0:
             return (current - prior) / abs(prior) * 100
         return None
 
+    revenue_group = _find_best_group({"revenue"})
+    if revenue_group:
+        current_revenue = _value(revenue_group["revenue"])
+        revenue_date = str(revenue_group["revenue"].get("report_date") or "")
+        revenue_scope = str(revenue_group["revenue"].get("period_scope") or "")
+        revenue_unit = str(revenue_group["revenue"].get("unit") or "元")
+    else:
+        current_revenue, revenue_date, revenue_scope, revenue_unit = None, "", "", ""
+
+    yoy_revenue_group = _find_year_over_year_group(
+        {"revenue"}, revenue_date, revenue_scope, revenue_unit
+    )
+    yoy_revenue = (
+        _value(yoy_revenue_group["revenue"]) if yoy_revenue_group else None
+    )
+    # Preserve the existing sequential-period anomaly signals, while exposing
+    # explicit YoY fields for report cards.  The UI must never label a
+    # sequential cumulative comparison as "同比".
     revenue_growth = _growth_rate(revenue, prior_revenue)
     operating_cost_growth = _growth_rate(cost, prior_cost)
+    revenue_growth_yoy = _growth_rate(current_revenue, yoy_revenue)
+
+    net_profit_yoy_group = _find_best_group({"net_profit"})
+    if net_profit_yoy_group:
+        current_net_profit = _value(net_profit_yoy_group["net_profit"])
+        net_profit_date = str(
+            net_profit_yoy_group["net_profit"].get("report_date") or ""
+        )
+        net_profit_scope = str(
+            net_profit_yoy_group["net_profit"].get("period_scope") or ""
+        )
+        net_profit_unit = str(
+            net_profit_yoy_group["net_profit"].get("unit") or "元"
+        )
+    else:
+        current_net_profit, net_profit_date, net_profit_scope, net_profit_unit = (
+            None,
+            "",
+            "",
+            "",
+        )
+    yoy_profit_group = _find_year_over_year_group(
+        {"net_profit"}, net_profit_date, net_profit_scope, net_profit_unit
+    )
+    prior_net_profit = (
+        _value(yoy_profit_group["net_profit"]) if yoy_profit_group else None
+    )
+    net_profit_growth_yoy = _growth_rate(current_net_profit, prior_net_profit)
 
     # --- Phase 2: AR / inventory growth from current vs prior group ---
     ar_group = _find_best_group({"accounts_receivable"})
@@ -1053,9 +1130,14 @@ def extract_financial_anomaly_inputs(
         "roe": roe,
         "roe_prev": roe_prev,
         "revenue_growth": revenue_growth,
+        "revenue_growth_yoy": revenue_growth_yoy,
+        "net_profit_growth_yoy": net_profit_growth_yoy,
         "operating_cost_growth": operating_cost_growth,
         "accounts_receivable_growth": accounts_receivable_growth,
         "inventory_growth": inventory_growth,
+        "total_assets": _to_yi(
+            balance_group.get("total_assets") if balance_group else None
+        ),
     }
 
 

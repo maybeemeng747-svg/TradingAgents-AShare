@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import json
 import os
 import threading
 import time
@@ -14,6 +15,7 @@ import logging
 
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
+    get_realtime_quotes,
     get_indicators,
     get_fundamentals,
     get_balance_sheet,
@@ -30,6 +32,8 @@ from tradingagents.agents.utils.agent_utils import (
     get_announcements,
     get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
     get_ratings,  # [DATA-012A] rating_data_collector_wiring
+    get_research_report,  # [DATA-011A] research_report_collector_wiring
+    get_buybacks,  # [DATA-013A] buyback_collector_wiring
 )
 from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
 from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
@@ -64,6 +68,7 @@ _logger = logging.getLogger(__name__)
 
 _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "stock_data": "ohlcv",
+    "realtime_quote": "realtime_quotes",
     "news": "news",
     "global_news": "global_news",
     "fund_flow_board": "board_fund_flow",
@@ -80,7 +85,9 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "indicators": "ohlcv",
     "vpa_indicators": "ohlcv",
     "announcements": "notice",
+    "research_report": "report",
     "ratings": "rating",  # [DATA-012A] rating_data_collector_wiring
+    "buybacks": "buyback",
 }
 
 
@@ -303,6 +310,16 @@ def make_cache_key(ticker: str, trade_date: str) -> str:
     return f"{ticker}_{trade_date}"
 
 
+def _should_fetch_realtime_quote(
+    trade_date: str,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Only attach a realtime quote to an analysis for the same calendar day."""
+    current = now or datetime.now()
+    return trade_date == current.strftime("%Y-%m-%d")
+
+
 def _safe(tool, payload: dict) -> Any:
     start_t = time.time()
     try:
@@ -433,7 +450,12 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
         "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
         "ratings": (get_ratings, {"symbol": ticker}),  # [DATA-012A] rating_data_collector_wiring
+        "research_report": (get_research_report, {"symbol": ticker}),
+        "buybacks": (get_buybacks, {"symbol": ticker}),
     }
+    is_current_trade_date = _should_fetch_realtime_quote(trade_date)
+    if is_current_trade_date:
+        tasks["realtime_quote"] = (get_realtime_quotes, {"symbols": [ticker]})
 
     # [HK-001] hk_market_boundary: 港股只走 yfinance 轻量行情/新闻/财报，
     # 禁用 A 股特有的资金流/龙虎榜/涨停池/融资融券/评级/公告/热门股门禁，
@@ -443,6 +465,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     hk_skipped_keys: tuple[str, ...] = ()
     if is_hk_market:
         hk_skipped_keys = (
+            "realtime_quote",
             "fund_flow_board",
             "fund_flow_individual",
             "lhb",
@@ -451,6 +474,8 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
             "announcements",
             "margin_trading",
             "ratings",
+            "research_report",
+            "buybacks",
         )
         for skip_key in hk_skipped_keys:
             tasks.pop(skip_key, None)
@@ -489,6 +514,15 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
                 "as_of": trade_date,
             }
         results["_hk_light_mode"] = True  # [HK-001] hk_market_boundary
+    elif not is_current_trade_date:
+        results["realtime_quote"] = {
+            "status": "SKIPPED",
+            "raw": "",
+            "vendor": "skipped",
+            "reason": "historical analysis does not use current realtime quotes",
+            "field": "realtime_quote",
+            "as_of": trade_date,
+        }
 
     # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
     # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
@@ -696,12 +730,35 @@ class DataCollector:
             val = raw_value.strip()
             if not val:
                 return "NOT_QUERIED"
+            if val.startswith(("{", "[")):
+                try:
+                    structured = json.loads(val)
+                except (TypeError, ValueError):
+                    structured = None
+                if structured == {} or structured == []:
+                    return "NORMAL_NO_DATA"
             if "RATINGS_NORMAL_NO_DATA" in val or "无分析师评级" in val:
                 return "NORMAL_NO_DATA"
             if "RATINGS_FAILED" in val:
                 return "FAILED"
             if "RATINGS_HAS_DATA" in val:
                 return "HAS_DATA"
+            if "REPORT_NORMAL_NO_DATA" in val:
+                return "NORMAL_NO_DATA"
+            if "REPORT_FAILED" in val:
+                return "FAILED"
+            if "REPORT_HAS_DATA" in val:
+                return "HAS_DATA"
+            if "BUYBACK_NORMAL_NO_DATA" in val:
+                return "NORMAL_NO_DATA"
+            if "BUYBACK_FAILED" in val:
+                return "FAILED"
+            if "BUYBACK_HAS_DATA" in val:
+                return "HAS_DATA"
+            if "FUND_FLOW_AGGREGATE_HAS_DATA" in val:
+                return "HAS_DATA"
+            if "FUND_FLOW_FAILED" in val:
+                return "FAILED"
             if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
                 return "NOT_QUERIED"
             if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
@@ -744,7 +801,7 @@ class DataCollector:
         now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
         data_source_keys = [
-            "stock_data", "news", "global_news",
+            "stock_data", "realtime_quote", "news", "global_news",
             "fund_flow_board", "fund_flow_individual", "lhb",
             "fundamentals", "balance_sheet", "cashflow", "income_statement",
             "company_profile",  # [FUND-001] instrument_identity_gate
@@ -754,6 +811,7 @@ class DataCollector:
             "margin_trading",  # [DATA-010] margin_trading_raw_evidence
             "research_report",  # [DATA-011] research_report_raw_evidence
             "ratings",  # [DATA-012A] rating_data_collector_wiring
+            "buybacks",  # [DATA-013A] buyback_collector_wiring
         ]
 
         raw_evidence: Dict[str, Any] = {}
@@ -766,9 +824,18 @@ class DataCollector:
                 identity = pool.get("instrument_identity") or {}
                 status = str(identity.get("status") or status)
 
+            non_provider_status = status in {
+                "NOT_QUERIED",
+                "SKIPPED",
+                "NOT_AVAILABLE",
+            }
+            has_current_provider_result = status in {
+                "HAS_DATA",
+                "NORMAL_NO_DATA",
+            }
             entry: Dict[str, Any] = {
                 "status": status,
-                "vendor": "akshare",
+                "vendor": "" if status == "FAILED" else "akshare",
                 "endpoint": "",  # [DATA-004] raw_evidence_contract
                 "fallback_from": None,  # [DATA-004] raw_evidence_contract
                 "source_url": None,  # [DATA-004] raw_evidence_contract
@@ -780,11 +847,18 @@ class DataCollector:
                 "error": None,
                 "is_realtime_patched": False,
             }
+            if non_provider_status and isinstance(raw_value, dict):
+                entry["vendor"] = str(raw_value.get("vendor") or "skipped")
+                entry["as_of"] = str(raw_value.get("as_of") or trade_date)
+                entry["error"] = raw_value.get("reason") or raw_value.get("error")
 
             data_type = _resolve_data_type_for_key(key)  # [DATA-004]
 
             if key == "stock_data" and isinstance(raw_value, str):
-                actual_vendor = get_last_hit_vendor("get_stock_data")
+                actual_vendor = (
+                    get_last_hit_vendor("get_stock_data")
+                    if has_current_provider_result else None
+                )
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
                 if "is_realtime_patched=True" in raw_value:
@@ -806,49 +880,98 @@ class DataCollector:
                                 entry["adjustment"] = parts[1].strip().split("\n")[0].strip()
 
             if key == "fund_flow_individual":
-                entry["unit"] = "万元"
+                is_aggregate_fallback = (
+                    isinstance(raw_value, str)
+                    and "FUND_FLOW_AGGREGATE_HAS_DATA" in raw_value
+                )
+                entry["unit"] = (
+                    "接口原始金额（万元/亿元文本）"
+                    if is_aggregate_fallback else "万元"
+                )
                 entry["source_type"] = "individual_fund_flow"
-                entry["unit_verified"] = entry["unit"] is not None
-                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+                entry["unit_verified"] = not is_aggregate_fallback
+                if is_aggregate_fallback:
+                    entry["granularity"] = "aggregate_current_and_5d"
+                actual_vendor = (
+                    get_last_hit_vendor("get_individual_fund_flow")
+                    if has_current_provider_result else None
+                )  # [DATA-P0-603629]
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "fund_flow_board":
                 entry["source_type"] = "board_fund_flow"
-                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+                actual_vendor = (
+                    get_last_hit_vendor("get_board_fund_flow")
+                    if has_current_provider_result else None
+                )  # [DATA-P0-603629]
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "lhb":
                 entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
                 entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
-                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+                actual_vendor = (
+                    get_last_hit_vendor("get_lhb_detail")
+                    if has_current_provider_result else None
+                )  # [DATA-P0-603629]
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key in ("stock_data",):
                 entry["unit"] = "股"
+            elif key == "realtime_quote":
+                actual_vendor = (
+                    get_last_hit_vendor("get_realtime_quotes")
+                    if has_current_provider_result else None
+                )
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                entry["unit"] = "结构化行情"
             elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
-                actual_vendor = get_last_hit_vendor("get_announcements")
+                actual_vendor = (
+                    get_last_hit_vendor("get_announcements")
+                    if has_current_provider_result else None
+                )
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
-                actual_vendor = get_last_hit_vendor("get_margin_trading")
+                actual_vendor = (
+                    get_last_hit_vendor("get_margin_trading")
+                    if has_current_provider_result else None
+                )
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "research_report":  # [DATA-011] research_report_raw_evidence
-                actual_vendor = get_last_hit_vendor("get_research_report")
+                actual_vendor = (
+                    get_last_hit_vendor("get_research_report")
+                    if has_current_provider_result else None
+                )
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
+                entry["unit"] = "条"
             elif key == "ratings":  # [DATA-012A] rating_data_collector_wiring
-                actual_vendor = get_last_hit_vendor("get_ratings")
+                actual_vendor = (
+                    get_last_hit_vendor("get_ratings")
+                    if has_current_provider_result else None
+                )
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
+                entry["unit"] = "条"
+            elif key == "buybacks":  # [DATA-013A] buyback_collector_wiring
+                actual_vendor = (
+                    get_last_hit_vendor("get_buybacks")
+                    if has_current_provider_result else None
+                )
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                entry["unit"] = "接口原始金额"
 
             # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
-            entry["endpoint"] = _resolve_endpoint_for_vendor(
-                entry["vendor"], data_type
-            )
-            entry["fallback_from"] = _resolve_fallback_for_vendor(
-                entry["vendor"], data_type
-            )
+            if has_current_provider_result:
+                entry["endpoint"] = _resolve_endpoint_for_vendor(
+                    entry["vendor"], data_type
+                )
+                entry["fallback_from"] = _resolve_fallback_for_vendor(
+                    entry["vendor"], data_type
+                )
 
             if status == "FAILED" and isinstance(raw_value, str):
                 entry["error"] = raw_value[:200]
@@ -872,6 +995,7 @@ class DataCollector:
                 "query_mode": entry.get("query_mode", None),
                 "adjustment": entry.get("adjustment", None),  # [DATA-P0-603629] astock_source_fallback
                 "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
+                "granularity": entry.get("granularity", None),
             }
 
         # [FUND-001/FUND-002] These are deterministic sidecars, not provider

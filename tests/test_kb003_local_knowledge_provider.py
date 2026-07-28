@@ -43,6 +43,7 @@ from tradingagents.dataflows.local_knowledge_provider import (
     _theme_matches,
     _tags_match,
     build_raw_evidence_entry,
+    compute_local_knowledge_score,
     query_failed_entry,
     query_local_knowledge,
     render_local_knowledge_block,
@@ -231,6 +232,33 @@ _BARE_PAGE = """# 某投资想法
 """
 
 
+_PEER_COMPANY_PAGE = """---
+title: 安集科技-先进制程材料验证
+created: 2026-07-01
+updated: 2026-07-20
+sources: [某券商研报]
+tags: [半导体材料]
+symbols: ["688019.SH 安集科技", "002409.SZ 雅克科技"]
+themes: [半导体材料]
+report_type: 公司点评
+evidence_level: A
+valid_until: 2099-12-31
+source_quality: 高
+stale_risk: 低
+---
+
+# 安集科技
+
+## 一句话总结
+
+安集科技先进制程材料验证加速。
+
+## 风险提示
+
+- 安集科技客户验证不及预期
+"""
+
+
 @pytest.fixture()
 def fixture_kb(tmp_path: Path) -> Path:
     """构造一棵 mini Tree Work 知识库（只在 tmp_path 下，绝不触碰真实知识库）。"""
@@ -241,6 +269,7 @@ def fixture_kb(tmp_path: Path) -> Path:
     _write(inv / "Dell-FQ127-待补充.md", _TODO_PAGE)
     _write(inv / "某周期股-已过期.md", _STALE_ONLY_PAGE)
     _write(inv / "某投资想法.md", _BARE_PAGE)
+    _write(inv / "安集科技-先进制程材料验证.md", _PEER_COMPANY_PAGE)
     return tmp_path
 
 
@@ -354,6 +383,29 @@ class TestQueryStatusMachine:
         result = query_local_knowledge(str(fixture_kb), name="华勤技术")
         assert result.status == STATUS_HAS_DATA
         assert any("华勤" in m.title for m in result.matched_pages)
+
+    def test_peer_company_mention_is_not_target_company_evidence(
+        self, fixture_kb: Path
+    ):
+        result = query_local_knowledge(str(fixture_kb), symbol="002409.SZ")
+        assert len(result.matched_pages) == 1
+        match = result.matched_pages[0]
+        assert match.title.startswith("安集科技")
+        assert match.evidence_scope == "peer_background"
+        assert result.status == STATUS_NORMAL_NO_DATA
+        assert result.summary[0].startswith("[行业/同业背景，不是目标公司事实]")
+
+        block = render_local_knowledge_block(result)
+        assert "未命中目标公司直接研究页" in block
+        assert "行业/同行背景（非目标公司事实）" in block
+        assert "证据范围：`peer_background`" in block
+
+        score = compute_local_knowledge_score(result)
+        assert score["knowledge_hit_count"] == 1
+        assert score["fresh_hit_count"] == 0
+        assert score["local_knowledge_score"] == 0.0
+        assert score["has_hit"] is False
+        assert score["matched_pages_brief"][0]["evidence_scope"] == "peer_background"
 
     def test_theme_match_hits_score_table(self, fixture_kb: Path):
         result = query_local_knowledge(

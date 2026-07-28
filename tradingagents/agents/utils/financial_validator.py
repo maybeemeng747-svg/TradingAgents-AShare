@@ -29,6 +29,12 @@ def check_financial_anomalies(
     operating_cost_growth: Optional[float] = None,
     accounts_receivable_growth: Optional[float] = None,
     inventory_growth: Optional[float] = None,
+    # Deterministic report-card fields.  They currently do not add anomaly
+    # rules, but remain accepted because callers pass the normalized input
+    # dictionary as a whole.
+    revenue_growth_yoy: Optional[float] = None,
+    net_profit_growth_yoy: Optional[float] = None,
+    total_assets: Optional[float] = None,
 ) -> dict:
     """
     检测财报数据异常。

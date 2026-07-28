@@ -192,6 +192,138 @@ def _raw_evidence_for_data_blockers(result_data: Optional[Dict[str, Any]]) -> Op
     return None
 
 
+def build_verified_financial_key_metrics(
+    result_data: Optional[Dict[str, Any]],
+    fallback_metrics: Optional[List[dict]] = None,
+) -> List[dict]:
+    """Build report-card metrics only from deterministic normalized facts.
+
+    The LLM extractor is retained as a fallback for legacy reports, but once
+    ``financial_period_facts`` exist it must not reinterpret scientific
+    notation or invent units.  Missing comparable periods stay explicitly
+    missing.
+    """
+    raw_evidence = _raw_evidence_for_data_blockers(result_data)
+    fact_entry = raw_evidence.get("financial_period_facts") if raw_evidence else None
+    facts = fact_entry.get("raw") if isinstance(fact_entry, dict) else None
+    if not isinstance(facts, list) or not facts:
+        return list(fallback_metrics or [])
+
+    from tradingagents.agents.utils.fundamental_integrity import (
+        extract_financial_anomaly_inputs,
+    )
+
+    values = extract_financial_anomaly_inputs(facts)
+
+    def _latest_fact(metric: str) -> Optional[Dict[str, Any]]:
+        candidates = [
+            fact
+            for fact in facts
+            if isinstance(fact, dict)
+            and fact.get("metric") == metric
+            and isinstance(fact.get("value"), (int, float))
+            and fact.get("status", "HAS_DATA") == "HAS_DATA"
+        ]
+        return max(
+            candidates,
+            key=lambda fact: str(fact.get("report_date") or ""),
+            default=None,
+        )
+
+    def _fact_to_yi(fact: Optional[Dict[str, Any]]) -> Optional[float]:
+        if not fact:
+            return None
+        value = float(fact["value"])
+        unit = str(fact.get("unit") or "元")
+        if unit in {"亿", "亿元"}:
+            return value
+        if unit in {"万", "万元"}:
+            return value / 10000
+        if unit == "元":
+            return value / 100000000
+        return None
+
+    def _percent_status(value: Optional[float], *, good: float, bad: float) -> str:
+        if value is None:
+            return "bad"
+        if value > good:
+            return "good"
+        if value < bad:
+            return "bad"
+        return "neutral"
+
+    def _metric(
+        name: str,
+        value: Optional[float],
+        *,
+        unit: str,
+        status: str,
+        decimals: int = 1,
+    ) -> dict:
+        rendered = "数据缺失" if value is None else f"{value:.{decimals}f}{unit}"
+        return {"name": name, "value": rendered, "status": status}
+
+    debt_ratio = values.get("debt_ratio")
+    operating_cashflow = values.get("operating_cashflow")
+    if operating_cashflow is None:
+        operating_cashflow = _fact_to_yi(_latest_fact("operating_cashflow"))
+    revenue_growth = values.get("revenue_growth_yoy")
+    net_profit_growth = values.get("net_profit_growth_yoy")
+    roe = values.get("roe")
+    total_assets = values.get("total_assets")
+    if total_assets is None:
+        total_assets = _fact_to_yi(_latest_fact("total_assets"))
+
+    return [
+        _metric(
+            "资产负债率",
+            debt_ratio,
+            unit="%",
+            status=(
+                "bad" if debt_ratio is not None and debt_ratio > 70
+                else "good" if debt_ratio is not None and debt_ratio < 40
+                else "neutral" if debt_ratio is not None
+                else "bad"
+            ),
+        ),
+        _metric(
+            "经营现金流净额",
+            operating_cashflow,
+            unit="亿元",
+            status=(
+                "good" if operating_cashflow is not None and operating_cashflow > 0
+                else "bad"
+            ),
+            decimals=2,
+        ),
+        _metric(
+            "营收增速（同比）",
+            revenue_growth,
+            unit="%",
+            status=_percent_status(revenue_growth, good=20, bad=5),
+        ),
+        _metric(
+            "净利润增速（同比）",
+            net_profit_growth,
+            unit="%",
+            status=_percent_status(net_profit_growth, good=20, bad=5),
+        ),
+        _metric(
+            "ROE（报告期）",
+            roe,
+            unit="%",
+            status=_percent_status(roe, good=15, bad=8),
+        ),
+        _metric(
+            "总资产",
+            total_assets,
+            unit="亿元",
+            status="neutral" if total_assets is not None else "bad",
+            decimals=2,
+        ),
+    ]
+
+
 def attach_report_playbook_contract(
     result_data: Optional[Dict[str, Any]],
     *,
@@ -1235,6 +1367,10 @@ def create_report(
         playbook_contract=playbook_contract,
     )
     result_data = attach_report_data_blockers(result_data)
+    key_metrics = build_verified_financial_key_metrics(result_data, key_metrics)
+    if isinstance(result_data, dict):
+        result_data = dict(result_data)
+        result_data["verified_financial_key_metrics"] = list(key_metrics)
     resolved = resolve_report_fields(
         result_data=result_data,
         confidence_override=confidence_override,

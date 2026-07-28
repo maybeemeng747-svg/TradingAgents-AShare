@@ -1597,29 +1597,70 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
             elif src.strip():
                 volume = EvidenceStatus.FIELD_MISSING
 
-    # 3. Turnover rate — check raw_evidence realtime quote data
+    raw_quote_entry = raw.get("realtime_quote")
+    quote_struct_status = _structured_evidence_status(raw_quote_entry)
+    raw_quote = _unwrap_raw(raw_quote_entry)
+
+    def _quote_has_field(field_name: str) -> bool:
+        quote_payload = raw_quote
+        if isinstance(quote_payload, str):
+            try:
+                import json
+                quote_payload = json.loads(quote_payload)
+            except (TypeError, ValueError):
+                return field_name in quote_payload
+        if not isinstance(quote_payload, dict):
+            return False
+        return any(
+            isinstance(quote, dict) and quote.get(field_name) is not None
+            for quote in quote_payload.values()
+        )
+
+    # 3. Turnover rate — prefer structured realtime quote evidence
     # [DATA-P0-603629] astock_source_fallback: cn_astock now provides turnover_rate in realtime
-    turnover_rate = EvidenceStatus.NOT_AVAILABLE
+    turnover_rate = EvidenceStatus.NOT_QUERIED
     raw_news_val = _unwrap_raw(raw.get("news"))
     raw_stock_data_val = _unwrap_raw(raw.get("stock_data"))
-    if volume_price:
+    if _quote_has_field("turnover_rate"):
+        turnover_rate = EvidenceStatus.HAS_DATA
+    elif quote_struct_status == EvidenceStatus.QUERY_FAILED:
+        turnover_rate = EvidenceStatus.QUERY_FAILED
+    elif quote_struct_status == EvidenceStatus.HAS_DATA:
+        turnover_rate = EvidenceStatus.FIELD_MISSING
+    elif volume_price:
         if re.search(_TURNOVER_PATTERN, volume_price, re.IGNORECASE):
             turnover_rate = EvidenceStatus.HAS_DATA
         elif volume_price.strip():
             turnover_rate = EvidenceStatus.FIELD_MISSING
     elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "turnover_rate" in raw_stock_data_val:
         turnover_rate = EvidenceStatus.HAS_DATA
+    elif quote_struct_status in {
+        EvidenceStatus.NORMAL_NO_DATA,
+        EvidenceStatus.SKIPPED,
+    }:
+        turnover_rate = quote_struct_status
 
     # 4. Volume ratio — check raw_evidence realtime quote data
     # [DATA-P0-603629] astock_source_fallback: cn_astock now provides volume_ratio in realtime
     volume_ratio = EvidenceStatus.NOT_QUERIED
-    if volume_price:
+    if _quote_has_field("volume_ratio"):
+        volume_ratio = EvidenceStatus.HAS_DATA
+    elif quote_struct_status == EvidenceStatus.QUERY_FAILED:
+        volume_ratio = EvidenceStatus.QUERY_FAILED
+    elif quote_struct_status == EvidenceStatus.HAS_DATA:
+        volume_ratio = EvidenceStatus.FIELD_MISSING
+    elif volume_price:
         if re.search(_VOLUME_RATIO_PATTERN, volume_price, re.IGNORECASE):
             volume_ratio = EvidenceStatus.HAS_DATA
         elif volume_price.strip():
             volume_ratio = EvidenceStatus.FIELD_MISSING
     elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "volume_ratio" in raw_stock_data_val:
         volume_ratio = EvidenceStatus.HAS_DATA
+    elif quote_struct_status in {
+        EvidenceStatus.NORMAL_NO_DATA,
+        EvidenceStatus.SKIPPED,
+    }:
+        volume_ratio = quote_struct_status
 
     # 5. Individual fund flow — check fund_flow_individual
     individual_fund_flow = EvidenceStatus.NOT_QUERIED

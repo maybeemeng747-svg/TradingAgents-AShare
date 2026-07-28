@@ -385,16 +385,16 @@ def _build_catalog() -> None:
 
     # ── 研报 / 评级 ────────────────────────────────────────────────────
     _register(
-        "cn_akshare", "stock_institute_recommend",
+        "cn_akshare", "stock_research_report_em",
         DataType.REPORT,
-        fields=["日期", "研究机构", "评级", "标题", "目标价"],
+        fields=["日期", "机构", "东财评级", "报告名称", "盈利预测", "报告PDF链接"],
         unit="条",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
         fallback_priority=1,
         is_primary=True,
-        known_gaps=["AKShare 研报接口字段覆盖不稳定"],
-        notes="AKShare 券商研报/评级推荐接口",
+        known_gaps=["仅为研报元数据/观点源，不替代公告和财报原文"],
+        notes="AKShare 东方财富个股研报元数据与 PDF 链接",
     )
     _register(
         "cn_astock", "reportapi.eastmoney.com/report/list",
@@ -603,15 +603,15 @@ def _build_catalog() -> None:
     # ── 回购 ──────────────────────────────────────────────────────────
     # [DATA-013] buyback_raw_evidence
     _register(
-        "cn_akshare", "stock_repurchase",
+        "cn_akshare", "stock_repurchase_em",
         DataType.BUYBACK,
-        fields=["公告日期", "回购金额", "回购数量", "回购进度", "回购目的"],
-        unit="万元",
+        fields=["股票代码", "最新公告日期", "已回购金额", "已回购股份数量", "实施进度"],
+        unit="元/股",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
         fallback_priority=1,
         is_primary=True,
-        notes="AKShare 个股回购计划/进展",
+        notes="AKShare 全市场回购表，provider 按股票代码严格过滤",
     )
     _register(
         "cn_astock", "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK",

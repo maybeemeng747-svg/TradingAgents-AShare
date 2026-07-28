@@ -443,6 +443,33 @@ class TestProviderResearchReport:
             result = provider.get_research_report("600519.SH")
             assert "REPORT_FAILED" in result
 
+    def test_akshare_uses_real_research_report_schema(self):
+        import pandas as pd
+        from unittest.mock import patch
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        df = pd.DataFrame(
+            {
+                "日期": ["2026-06-29"],
+                "机构": ["华鑫证券"],
+                "东财评级": ["买入"],
+                "报告名称": ["公司动态研究报告"],
+                "报告PDF链接": ["https://example.test/report.pdf"],
+            }
+        )
+        with patch.object(provider, "_ak") as mock_ak:
+            mock_ak.return_value.stock_research_report_em.return_value = df
+            result = provider.get_research_report("002409.SZ")
+
+        mock_ak.return_value.stock_research_report_em.assert_called_once_with(
+            symbol="002409"
+        )
+        assert "REPORT_HAS_DATA" in result
+        assert "华鑫证券" in result
+        assert "公司动态研究报告" in result
+        assert "https://example.test/report.pdf" in result
+
     def test_astock_failure_returns_report_failed(self):
         from unittest.mock import patch, MagicMock
         from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider

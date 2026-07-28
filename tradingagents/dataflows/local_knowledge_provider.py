@@ -114,6 +114,10 @@ _MAX_RISK_ENTRIES = 5
 _MAX_SOURCE_ENTRIES = 5
 _MAX_MATCHED_PAGES = 5
 
+SCOPE_TARGET_COMPANY = "target_company"
+SCOPE_PEER_BACKGROUND = "peer_background"
+SCOPE_THEMATIC_BACKGROUND = "thematic_background"
+
 
 # ── 数据类 ────────────────────────────────────────────────────────────
 
@@ -141,6 +145,7 @@ class LocalKnowledgeMatch:
     is_to_be_supplemented: bool = False
     matched_by: List[str] = field(default_factory=list)
     confidence: str = "low"
+    evidence_scope: str = SCOPE_TARGET_COMPANY
     # [KB-014] citation_policy — 来源可信度分层
     # 默认 1.0（中性）保持向后兼容：直接构造 LocalKnowledgeMatch 的旧调用方
     # 不会被意外降权；只有经过 _build_match / 缓存路径的真实命中才会写入
@@ -166,6 +171,7 @@ class LocalKnowledgeMatch:
             "is_to_be_supplemented": self.is_to_be_supplemented,
             "matched_by": list(self.matched_by),
             "confidence": self.confidence,
+            "evidence_scope": self.evidence_scope,
             # KB-014 来源可信度分层
             "source_quality_tier": self.source_quality_tier,
             "citation_confidence_weight": self.citation_confidence_weight,
@@ -190,6 +196,9 @@ class LocalKnowledgeMatch:
             is_to_be_supplemented=bool(data.get("is_to_be_supplemented") or False),
             matched_by=list(data.get("matched_by") or []),
             confidence=str(data.get("confidence") or "low"),
+            evidence_scope=str(
+                data.get("evidence_scope") or SCOPE_TARGET_COMPANY
+            ),
             # KB-014 来源可信度分层
             source_quality_tier=str(data.get("source_quality_tier") or TIER_UNKNOWN),
             citation_confidence_weight=float(
@@ -557,6 +566,9 @@ def _build_match(
     page_audit: Any,
     frontmatter: Dict[str, Any],
     matched_by: List[str],
+    *,
+    query_symbol: Optional[str] = None,
+    query_name: Optional[str] = None,
 ) -> LocalKnowledgeMatch:
     """从已审计的页面构造一条 LocalKnowledgeMatch（只读，不输出原文）。"""
     text = _read_text_safe(abs_path)
@@ -595,6 +607,14 @@ def _build_match(
         is_to_be_supplemented=is_todo,
     )
     adjusted_confidence = apply_tier_to_confidence(confidence, citation)
+    evidence_scope = _infer_evidence_scope(
+        title=page_audit.title or abs_path.stem,
+        page_type=page_audit.page_type,
+        symbols=symbols,
+        matched_by=matched_by,
+        query_symbol=query_symbol,
+        query_name=query_name,
+    )
 
     return LocalKnowledgeMatch(
         rel_path=rel_path,
@@ -613,10 +633,54 @@ def _build_match(
         is_to_be_supplemented=is_todo,
         matched_by=matched_by,
         confidence=adjusted_confidence,
+        evidence_scope=evidence_scope,
         # KB-014 来源可信度分层
         source_quality_tier=citation.tier,
         citation_confidence_weight=tier_weight,
     )
+
+
+def _infer_evidence_scope(
+    *,
+    title: str,
+    page_type: str,
+    symbols: List[str],
+    matched_by: List[str],
+    query_symbol: Optional[str],
+    query_name: Optional[str],
+) -> str:
+    """Separate target-company evidence from peer/theme mentions.
+
+    A page can legitimately list the queried symbol while primarily analysing
+    another company.  Such a hit is useful background, but it must never be
+    rendered as a fact about the target company.
+    """
+    if query_name and _name_matches(query_name, title, title):
+        return SCOPE_TARGET_COMPANY
+    if query_symbol:
+        query_bare = _SUFFIX_RE.sub("", query_symbol.strip()).strip()
+        if query_bare and query_bare in title:
+            return SCOPE_TARGET_COMPANY
+        target_entry_index = next(
+            (
+                index
+                for index, entry in enumerate(symbols)
+                if _symbol_matches(query_symbol, [entry])
+            ),
+            None,
+        )
+        if target_entry_index is not None:
+            _bare, target_name = _split_symbol_entry(symbols[target_entry_index])
+            if target_name and target_name.lower() in title.lower():
+                return SCOPE_TARGET_COMPANY
+            if len(symbols) == 1 or (
+                target_entry_index == 0 and page_type == "company"
+            ):
+                return SCOPE_TARGET_COMPANY
+            return SCOPE_PEER_BACKGROUND
+    if "symbol" in matched_by:
+        return SCOPE_PEER_BACKGROUND
+    return SCOPE_THEMATIC_BACKGROUND
 
 
 def _page_matches(
@@ -656,7 +720,7 @@ def _page_matches(
     return matched
 
 
-def _rank_key(match: LocalKnowledgeMatch) -> Tuple[int, int, int, str]:
+def _rank_key(match: LocalKnowledgeMatch) -> Tuple[int, int, int, int, str]:
     """排序键：(evidence_bucket, page_type_rank, readiness_rank, rel_path)。
 
     weak/stale/low 命中仍保留，但必须在截断前排到 fresh 可信命中之后，
@@ -676,7 +740,8 @@ def _rank_key(match: LocalKnowledgeMatch) -> Tuple[int, int, int, str]:
     ):
         evidence_bucket = 1
         readiness_rank = max(readiness_rank, 2)
-    return (evidence_bucket, type_rank, readiness_rank, match.rel_path)
+    scope_rank = 0 if match.evidence_scope == SCOPE_TARGET_COMPANY else 1
+    return (scope_rank, evidence_bucket, type_rank, readiness_rank, match.rel_path)
 
 
 # ── 主查询逻辑 ────────────────────────────────────────────────────────
@@ -787,7 +852,15 @@ def query_local_knowledge(
         if not matched_by:
             continue
         try:
-            match = _build_match(rel, md, page_audit, frontmatter, matched_by)
+            match = _build_match(
+                rel,
+                md,
+                page_audit,
+                frontmatter,
+                matched_by,
+                query_symbol=symbol,
+                query_name=name,
+            )
         except Exception as exc:  # pragma: no cover
             result.errors.append(f"{rel}: 构造命中失败 {exc!r}")
             continue
@@ -798,11 +871,18 @@ def query_local_knowledge(
     if len(result.matched_pages) > max_pages:
         result.matched_pages = result.matched_pages[:max_pages]
 
-    _aggregate_result(result)
+    _aggregate_result(
+        result,
+        require_target_company=bool(symbol or name),
+    )
     return result
 
 
-def _aggregate_result(result: LocalKnowledgeQueryResult) -> None:
+def _aggregate_result(
+    result: LocalKnowledgeQueryResult,
+    *,
+    require_target_company: bool = False,
+) -> None:
     """根据命中页聚合 symbols/themes/summary/risks/sources/updated_at/status/confidence。"""
     matches = result.matched_pages
     if not matches:
@@ -823,11 +903,22 @@ def _aggregate_result(result: LocalKnowledgeQueryResult) -> None:
         for t in m.themes:
             if t not in themes_seen:
                 themes_seen.append(t)
-        if m.summary and m.summary not in summary_entries:
-            summary_entries.append(m.summary)
+        if m.summary:
+            summary = (
+                m.summary
+                if m.evidence_scope == SCOPE_TARGET_COMPANY
+                else f"[行业/同业背景，不是目标公司事实] {m.title}: {m.summary}"
+            )
+            if summary not in summary_entries:
+                summary_entries.append(summary)
         for r in m.risks:
-            if r not in risk_seen:
-                risk_seen.append(r)
+            risk = (
+                r
+                if m.evidence_scope == SCOPE_TARGET_COMPANY
+                else f"[行业/同业背景] {r}"
+            )
+            if risk not in risk_seen:
+                risk_seen.append(risk)
         for src in m.sources:
             if src not in sources_seen:
                 sources_seen.append(src)
@@ -842,6 +933,20 @@ def _aggregate_result(result: LocalKnowledgeQueryResult) -> None:
     upd_list = [m.updated_at for m in matches if m.updated_at]
     result.updated_at = max(upd_list) if upd_list else None
 
+    status_matches = matches
+    if require_target_company:
+        status_matches = [
+            match
+            for match in matches
+            if match.evidence_scope == SCOPE_TARGET_COMPANY
+        ]
+        if not status_matches:
+            # Peer/theme pages remain visible as explicitly labelled background,
+            # but they are not evidence that the queried company has data.
+            result.status = STATUS_NORMAL_NO_DATA
+            result.confidence = "low"
+            return
+
     # 状态机：是否有非 stale/low/weak 命中？
     has_fresh = any(
         not (
@@ -850,19 +955,19 @@ def _aggregate_result(result: LocalKnowledgeQueryResult) -> None:
             or m.is_to_be_supplemented
             or _is_weak_citation_match(m)
         )
-        for m in matches
+        for m in status_matches
     )
     has_only_stale = all(
         m.is_stale
         and not m.is_low_confidence
         and not m.is_to_be_supplemented
         and not _is_weak_citation_match(m)
-        for m in matches
+        for m in status_matches
     )
     has_only_low = all(
         (m.is_low_confidence or m.is_to_be_supplemented or _is_weak_citation_match(m))
         and not m.is_stale
-        for m in matches
+        for m in status_matches
     )
 
     if has_fresh:
@@ -872,7 +977,7 @@ def _aggregate_result(result: LocalKnowledgeQueryResult) -> None:
         # medium/low（broker/media/user_note/unknown）。此处需正确识别"最高命中"
         # 而不被 for...else 误判为 low。
         best = "low"
-        for m in matches:
+        for m in status_matches:
             if m.confidence == "high":
                 best = "high"
                 break
@@ -908,17 +1013,28 @@ def render_local_knowledge_block(result: LocalKnowledgeQueryResult) -> str:
 
     最多 3 条摘要 + 风险 + 原页面路径。不输出长篇原文。
 
-    状态为 NORMAL_NO_DATA / FAILED 时返回空字符串，让上层可以选择隐藏区块。
+    FAILED 或完全没有命中的 NORMAL_NO_DATA 返回空字符串。仅命中同行/主题
+    背景时保留区块，但明确声明它不是目标公司证据。
     """
     if not isinstance(result, LocalKnowledgeQueryResult):
         return ""
-    if result.status in (STATUS_NORMAL_NO_DATA, STATUS_FAILED):
+    if result.status == STATUS_FAILED:
+        return ""
+    if result.status == STATUS_NORMAL_NO_DATA and not result.matched_pages:
         return ""
 
     lines: List[str] = []
     lines.append("### 本地知识补充")
     lines.append("")
-    status_label = _STATUS_LABELS.get(result.status, result.status)
+    has_target_matches = any(
+        match.evidence_scope == SCOPE_TARGET_COMPANY
+        for match in result.matched_pages
+    )
+    status_label = (
+        "仅命中行业/同业背景，未命中目标公司直接证据"
+        if result.matched_pages and not has_target_matches
+        else _STATUS_LABELS.get(result.status, result.status)
+    )
     lines.append(
         f"> 来源：Tree Work `wiki/investment`（vendor=tree_work_wiki）— "
         f"{status_label}；本地知识仅作背景/观点源，不替代行情、公告、财务、资金流。"
@@ -926,8 +1042,37 @@ def render_local_knowledge_block(result: LocalKnowledgeQueryResult) -> str:
     lines.append("")
 
     if result.matched_pages:
-        # 摘要（最多 3 条）
-        for idx, m in enumerate(result.matched_pages[:_MAX_SUMMARY_ENTRIES], 1):
+        target_matches = [
+            match for match in result.matched_pages
+            if match.evidence_scope == SCOPE_TARGET_COMPANY
+        ]
+        background_matches = [
+            match for match in result.matched_pages
+            if match.evidence_scope != SCOPE_TARGET_COMPANY
+        ]
+        display_matches = (
+            target_matches + background_matches
+        )[:_MAX_SUMMARY_ENTRIES]
+
+        if target_matches:
+            lines.append("**目标公司直接证据：**")
+            lines.append("")
+        else:
+            lines.append(
+                "> 未命中目标公司直接研究页；以下内容仅为行业/同行背景，"
+                "不得作为目标公司自身事实、评分或交易依据。"
+            )
+            lines.append("")
+
+        background_header_written = False
+        for idx, m in enumerate(display_matches, 1):
+            if (
+                m.evidence_scope != SCOPE_TARGET_COMPANY
+                and not background_header_written
+            ):
+                lines.append("**行业/同行背景（非目标公司事实）：**")
+                lines.append("")
+                background_header_written = True
             confidence_tag = _confidence_tag(m)
             stale_tag = " · STALE" if m.is_stale else ""
             low_tag = " · LOW_CONFIDENCE" if m.is_low_confidence else ""
@@ -938,7 +1083,12 @@ def render_local_knowledge_block(result: LocalKnowledgeQueryResult) -> str:
             lines.append(f"**{idx}. {m.title}**{tag_suffix}")
             lines.append("")
             if m.summary:
-                lines.append(f"- 摘要：{m.summary}")
+                prefix = (
+                    ""
+                    if m.evidence_scope == SCOPE_TARGET_COMPANY
+                    else "背景材料："
+                )
+                lines.append(f"- 摘要：{prefix}{m.summary}")
             else:
                 lines.append("- 摘要：（页面未提供一句话总结）")
             if m.symbols:
@@ -946,6 +1096,7 @@ def render_local_knowledge_block(result: LocalKnowledgeQueryResult) -> str:
             if m.themes:
                 lines.append(f"- 主题：{', '.join(m.themes[:5])}")
             lines.append(f"- 原页面：`{m.rel_path}`")
+            lines.append(f"- 证据范围：`{m.evidence_scope}`")
             lines.append("")
 
         # 风险聚合
@@ -1089,13 +1240,19 @@ def _is_weak_citation_match(match: LocalKnowledgeMatch) -> bool:
     return isinstance(weight, (int, float)) and float(weight) < 1.0
 
 
-def _page_score(match: LocalKnowledgeMatch) -> float:
+def _page_score(
+    match: LocalKnowledgeMatch,
+    *,
+    target_company_only: bool = True,
+) -> float:
     """单页命中分：fresh + confidence 决定，过期/低置信/待补充一律 0。
 
     [KB-014] citation_policy — 再乘以 ``citation_confidence_weight`` 软调节，
     让券商观点贡献低于公告/财报原文；media/user_note/unknown 等弱来源
     保留在命中列表，但不进入 fresh hit / 正向命中分。
     """
+    if target_company_only and match.evidence_scope != SCOPE_TARGET_COMPANY:
+        return 0.0
     if match.is_stale or match.is_low_confidence or match.is_to_be_supplemented:
         return 0.0
     if _is_weak_citation_match(match):
@@ -1178,9 +1335,18 @@ def compute_local_knowledge_score(
     weak_source_count = 0
     total_score = 0.0
     briefs: List[Dict[str, Any]] = []
+    target_company_only = bool(
+        result.query.get("symbol") or result.query.get("name")
+    )
     for m in matched:
         is_weak_source = _is_weak_citation_match(m)
-        if m.is_stale and not (
+        is_target_evidence = (
+            not target_company_only
+            or m.evidence_scope == SCOPE_TARGET_COMPANY
+        )
+        if not is_target_evidence:
+            pass
+        elif m.is_stale and not (
             m.is_low_confidence or m.is_to_be_supplemented or is_weak_source
         ):
             stale_count += 1
@@ -1190,7 +1356,10 @@ def compute_local_knowledge_score(
                 weak_source_count += 1
         else:
             fresh_count += 1
-        total_score += _page_score(m)
+        total_score += _page_score(
+            m,
+            target_company_only=target_company_only,
+        )
         briefs.append({
             "rel_path": m.rel_path,
             "title": m.title,
@@ -1204,6 +1373,7 @@ def compute_local_knowledge_score(
             "is_weak_source": is_weak_source,
             "summary_snippet": (m.summary or "")[:_SUMMARY_MAX_CHARS],
             "matched_by": list(m.matched_by),
+            "evidence_scope": m.evidence_scope,
             # [KB-014] citation_policy — 透传来源层级
             "source_quality_tier": m.source_quality_tier,
             "citation_confidence_weight": m.citation_confidence_weight,

@@ -1249,3 +1249,36 @@ def test_fund004b_invest_finance_cashflow_still_independent():
     # invest and finance are independent — each found from their own group
     assert inputs["total_invest_cashflow"] is not None
     assert inputs["total_finance_cashflow"] is not None
+
+
+def test_yoy_revenue_does_not_require_operating_cost():
+    facts = [
+        {"metric": "revenue", "report_date": "2026-03-31", "period_scope": "Q1_YTD",
+         "value": 200.0, "unit": "元", "status": "HAS_DATA"},
+        {"metric": "revenue", "report_date": "2025-03-31", "period_scope": "Q1_YTD",
+         "value": 100.0, "unit": "元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["revenue_growth_yoy"] == pytest.approx(100.0)
+
+
+def test_yoy_net_profit_does_not_require_revenue_or_cost():
+    facts = [
+        {"metric": "net_profit", "report_date": "2026-03-31", "period_scope": "Q1_YTD",
+         "value": 150.0, "unit": "元", "status": "HAS_DATA"},
+        {"metric": "net_profit", "report_date": "2025-03-31", "period_scope": "Q1_YTD",
+         "value": 100.0, "unit": "元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["net_profit_growth_yoy"] == pytest.approx(50.0)
+
+
+def test_yoy_growth_does_not_compare_different_units():
+    facts = [
+        {"metric": "revenue", "report_date": "2026-03-31", "period_scope": "Q1_YTD",
+         "value": 2.0, "unit": "亿元", "status": "HAS_DATA"},
+        {"metric": "revenue", "report_date": "2025-03-31", "period_scope": "Q1_YTD",
+         "value": 10000.0, "unit": "万元", "status": "HAS_DATA"},
+    ]
+    inputs = extract_financial_anomaly_inputs(facts)
+    assert inputs["revenue_growth_yoy"] is None

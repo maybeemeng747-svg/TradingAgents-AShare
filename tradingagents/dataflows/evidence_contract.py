@@ -124,6 +124,7 @@ class EvidenceContract:
 
 _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "stock_data": "ohlcv",
+    "realtime_quote": "realtime_quotes",
     "news": "news",
     "global_news": "global_news",
     "fund_flow_board": "board_fund_flow",

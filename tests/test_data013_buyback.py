@@ -83,7 +83,7 @@ class TestSourceCatalogBuyback:
 
     def test_buyback_primary_endpoint(self):
         primary = get_primary_source(DataType.BUYBACK)
-        assert primary.endpoint == "stock_repurchase"
+        assert primary.endpoint == "stock_repurchase_em"
 
     def test_catalog_validation_passes(self):
         issues = validate_catalog()
@@ -312,10 +312,15 @@ class TestProviderBuyback:
 
     @patch("tradingagents.dataflows.providers.cn_akshare_provider.CnAkshareProvider._ak")
     def test_akshare_buyback_no_data(self, mock_ak):
+        import pandas as pd
         from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
         provider = CnAkshareProvider()
-        mock_ak.return_value.stock_repurchase_em.return_value = None
+        mock_ak.return_value.stock_repurchase_em.return_value = pd.DataFrame({
+            "股票代码": ["000001"],
+            "实施进度": ["实施中"],
+        })
         result = provider.get_buybacks("600519.SH")
+        mock_ak.return_value.stock_repurchase_em.assert_called_once_with()
         assert "BUYBACK_NORMAL_NO_DATA" in result
 
     @patch("tradingagents.dataflows.providers.cn_akshare_provider.CnAkshareProvider._ak")
@@ -324,15 +329,96 @@ class TestProviderBuyback:
         from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
         provider = CnAkshareProvider()
         df = pd.DataFrame({
-            "公告日期": ["2026-05-15"],
-            "回购金额": ["50000万"],
-            "回购数量": ["2500000股"],
-            "回购进度": ["实施中"],
-            "回购目的": ["股权激励"],
+            "股票代码": ["600519", "000001"],
+            "最新公告日期": ["2026-05-15", "2026-05-14"],
+            "已回购金额": [500000000, 100000000],
+            "已回购股份数量": [2500000, 1000000],
+            "实施进度": ["实施中", "完成"],
+            "回购目的": ["股权激励", "市值管理"],
         })
         mock_ak.return_value.stock_repurchase_em.return_value = df
         result = provider.get_buybacks("600519.SH")
+        mock_ak.return_value.stock_repurchase_em.assert_called_once_with()
         assert "BUYBACK_HAS_DATA" in result
+        assert "500000000" in result
+        assert "100000000" not in result
+
+    @patch("tradingagents.dataflows.providers.cn_akshare_provider.CnAkshareProvider._ak")
+    def test_akshare_buyback_plan_uses_planned_ranges_before_execution(self, mock_ak):
+        import pandas as pd
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        mock_ak.return_value.stock_repurchase_em.return_value = pd.DataFrame({
+            "股票代码": ["002409"],
+            "最新公告日期": ["2026-07-28"],
+            "已回购金额": [float("nan")],
+            "已回购股份数量": [float("nan")],
+            "计划回购金额区间-下限": [100000000],
+            "计划回购金额区间-上限": [200000000],
+            "计划回购数量区间-下限": [500000],
+            "计划回购数量区间-上限": [1000000],
+            "实施进度": ["董事会预案"],
+        })
+
+        result = provider.get_buybacks("002409.SZ")
+
+        assert "BUYBACK_HAS_DATA" in result
+        assert "金额: 100000000 - 200000000" in result
+        assert "数量: 500000 - 1000000" in result
+        assert "进度: 董事会预案" in result
+
+    @patch("tradingagents.dataflows.providers.cn_akshare_provider.CnAkshareProvider._ak")
+    def test_akshare_buyback_preserves_numeric_leading_zero_code(self, mock_ak):
+        import pandas as pd
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        mock_ak.return_value.stock_repurchase_em.return_value = pd.DataFrame({
+            "股票代码": [2409],
+            "最新公告日期": ["2026-07-01"],
+            "已回购金额": [200000000],
+            "实施进度": ["实施中"],
+        })
+        result = provider.get_buybacks("002409.SZ")
+        assert "BUYBACK_HAS_DATA" in result
+        assert "200000000" in result
+
+    @patch("tradingagents.dataflows.providers.cn_akshare_provider.CnAkshareProvider._ak")
+    def test_akshare_buyback_missing_code_is_failed(self, mock_ak):
+        import pandas as pd
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        mock_ak.return_value.stock_repurchase_em.return_value = pd.DataFrame({
+            "最新公告日期": ["2026-05-15"],
+            "实施进度": ["实施中"],
+        })
+        result = provider.get_buybacks("600519.SH")
+        assert "BUYBACK_FAILED" in result
+        assert "缺少股票代码字段" in result
+
+        from tradingagents.dataflows.interface import _is_failure_result
+
+        assert _is_failure_result(result) is True
+
+    @patch("tradingagents.dataflows.providers.cn_akshare_provider.CnAkshareProvider._ak")
+    def test_akshare_buyback_all_market_table_is_cached(self, mock_ak):
+        import pandas as pd
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        mock_ak.return_value.stock_repurchase_em.return_value = pd.DataFrame({
+            "股票代码": ["600519", "000001"],
+            "实施进度": ["实施中", "完成"],
+        })
+
+        first = provider.get_buybacks("600519.SH")
+        second = provider.get_buybacks("000001.SZ")
+
+        assert "BUYBACK_HAS_DATA" in first
+        assert "BUYBACK_HAS_DATA" in second
+        mock_ak.return_value.stock_repurchase_em.assert_called_once_with()
 
     @patch("tradingagents.dataflows.providers.cn_astock_provider._eastmoney_datacenter")
     def test_astock_buyback_no_data(self, mock_dc):

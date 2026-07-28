@@ -20,3 +20,11 @@ def get_stock_data(
         str: A formatted dataframe containing the stock price data for the specified ticker symbol in the specified date range.
     """
     return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+
+
+@tool
+def get_realtime_quotes(
+    symbols: Annotated[list[str], "股票代码列表，如 ['600519.SH']"],
+) -> str:
+    """获取实时行情补充字段，包括换手率、量比和涨跌幅。"""
+    return route_to_vendor("get_realtime_quotes", symbols)

@@ -646,9 +646,30 @@ class CnAstockProvider(BaseMarketDataProvider):
             if not items:
                 return f"No income statement data found for {ticker}"
             df = pd.DataFrame(items)
-            non_nan = [c for c in df.columns if df[c].notna().any()]
-            if non_nan:
-                df = df[non_nan]
+            priority_cols = [
+                "report_date",
+                "报告日",
+                "营业总收入",
+                "营业收入",
+                "营业总成本",
+                "营业成本",
+                "营业利润",
+                "利润总额",
+                "所得税费用",
+                "净利润",
+                "归属于母公司股东的净利润",
+                "归属于母公司所有者的净利润",
+                "扣除非经常性损益后的净利润",
+                "基本每股收益",
+                "稀释每股收益",
+            ]
+            selected = [column for column in priority_cols if column in df.columns]
+            if len(selected) >= 4:
+                df = df[selected]
+            else:
+                non_nan = [c for c in df.columns if df[c].notna().any()]
+                if non_nan:
+                    df = df[non_nan]
             return (
                 f"## Income Statement ({ticker})\n\n"
                 + self._shrink_table(df, max_rows=12, max_cols=20).to_markdown(index=False)

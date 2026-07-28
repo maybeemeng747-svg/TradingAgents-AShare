@@ -64,3 +64,19 @@ def get_ratings(
 ) -> str:
     """获取个股分析师评级数据，包括机构评级、目标价、评级变动等。symbol 格式如 600519.SH。"""
     return route_to_vendor("get_ratings", symbol)
+
+
+@tool  # [DATA-011A] research_report_collector_wiring
+def get_research_report(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股券商研报摘要与评级记录。"""
+    return route_to_vendor("get_research_report", symbol)
+
+
+@tool  # [DATA-013A] buyback_collector_wiring
+def get_buybacks(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股回购计划、金额和实施进度。"""
+    return route_to_vendor("get_buybacks", symbol)

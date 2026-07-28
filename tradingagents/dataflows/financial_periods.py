@@ -25,13 +25,27 @@ _DATE_RE = re.compile(r"(20\d{2})[-/]?(\d{2})[-/]?(\d{2})")
 _METRIC_ALIASES = {
     "revenue": ("营业总收入", "营业收入", "营收"),
     "operating_cost": ("营业成本",),
-    "net_profit": ("归属于母公司股东的净利润", "归母净利润", "净利润"),
+    "net_profit": (
+        "归属于母公司股东的净利润",
+        "归属于母公司所有者的净利润",
+        "归母净利润",
+        "净利润",
+    ),
     "deducted_net_profit": ("扣除非经常性损益后的净利润", "扣非净利润"),
     "operating_cashflow": ("经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"),
     "investing_cashflow": ("投资活动产生的现金流量净额",),
     "financing_cashflow": ("筹资活动产生的现金流量净额",),
     "total_assets": ("资产总计", "总资产"),
     "total_liabilities": ("负债合计", "总负债"),
+    "total_equity": (
+        "归属于母公司股东权益合计",
+        "归属于母公司所有者权益合计",
+        "所有者权益合计",
+        "股东权益合计",
+        "净资产",
+    ),
+    "accounts_receivable": ("应收账款",),
+    "inventory": ("存货",),
 }
 
 
@@ -228,9 +242,13 @@ def _record_date(record: Mapping[str, Any]) -> str | None:
 
 
 def _record_value(record: Mapping[str, Any], aliases: tuple[str, ...]) -> Any:
-    for key, value in record.items():
-        if any(alias == str(key).strip() for alias in aliases):
-            return value
+    # Alias order is semantic priority. Income statements commonly expose
+    # both plain and parent-company profit, and column order must not decide
+    # which accounting concept becomes the canonical net-profit fact.
+    for alias in aliases:
+        for key, value in record.items():
+            if alias == str(key).strip():
+                return value
     return _NO_VALUE
 
 
@@ -242,7 +260,14 @@ def _to_number(value: Any) -> float | None:
     text = str(value).replace(",", "").strip()
     if not text or text.lower() in {"nan", "none", "-", "--"}:
         return None
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    # Provider Markdown frequently renders large financial values in scientific
+    # notation (for example ``1.7654e+10``).  Dropping the exponent silently
+    # turns 17.654 billion yuan into 1.7654 yuan, corrupting every downstream
+    # ratio.  Parse the complete numeric token or fail closed.
+    match = re.search(
+        r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?",
+        text,
+    )
     return float(match.group(0)) if match else None
 
 

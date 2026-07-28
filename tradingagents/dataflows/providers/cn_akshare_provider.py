@@ -4,6 +4,7 @@ import time
 import threading
 import contextvars
 from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
 from stockstats import wrap
@@ -39,6 +40,21 @@ def reset_scheduled_task_context(token: contextvars.Token) -> None:
 import logging as _logging
 
 _lock_logger = _logging.getLogger(__name__)
+
+
+def _format_value_range(lower: Any, upper: Any) -> str:
+    """Render an optional numeric range without leaking pandas NaN values."""
+    lower_valid = pd.notna(lower)
+    upper_valid = pd.notna(upper)
+    if lower_valid and upper_valid:
+        if lower == upper:
+            return str(lower)
+        return f"{lower} - {upper}"
+    if lower_valid:
+        return str(lower)
+    if upper_valid:
+        return str(upper)
+    return ""
 
 
 class _AkshareLock:
@@ -785,6 +801,9 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 if "现金流量" in report_name:
                     df = self._select_cashflow_cols(df)
                     return self._shrink_table(df, max_rows=12, max_cols=20).to_markdown(index=False)
+                if "利润表" in report_name:
+                    df = self._select_income_statement_cols(df)
+                    return self._shrink_table(df, max_rows=12, max_cols=20).to_markdown(index=False)
                 # 其他报表：剔除全 NaN 列，减少噪音
                 non_nan_cols = [c for c in df.columns if df[c].notna().any()]
                 if non_nan_cols and len(non_nan_cols) < len(df.columns):
@@ -823,6 +842,35 @@ class CnAkshareProvider(BaseMarketDataProvider):
         if len(selected) >= 6:
             return df[selected]
         non_nan_cols = [c for c in df.columns if df[c].notna().any()]
+        return df[non_nan_cols] if non_nan_cols else df
+
+    @staticmethod
+    def _select_income_statement_cols(df: pd.DataFrame) -> pd.DataFrame:
+        """Keep the fields required by deterministic profitability checks.
+
+        Taking the first N columns of Sina's wide table can omit net profit,
+        leaving revenue growth, profit growth and ROE permanently unavailable.
+        """
+        priority_cols = [
+            "报告日",
+            "营业总收入",
+            "营业收入",
+            "营业总成本",
+            "营业成本",
+            "营业利润",
+            "利润总额",
+            "所得税费用",
+            "净利润",
+            "归属于母公司股东的净利润",
+            "归属于母公司所有者的净利润",
+            "扣除非经常性损益后的净利润",
+            "基本每股收益",
+            "稀释每股收益",
+        ]
+        selected = [column for column in priority_cols if column in df.columns]
+        if len(selected) >= 4:
+            return df[selected]
+        non_nan_cols = [column for column in df.columns if df[column].notna().any()]
         return df[non_nan_cols] if non_nan_cols else df
 
     def get_balance_sheet(
@@ -994,6 +1042,12 @@ class CnAkshareProvider(BaseMarketDataProvider):
     _spot_cache: "pd.DataFrame | None" = None
     _spot_cache_ts: float = 0.0
     _SPOT_CACHE_TTL: float = 8.0  # seconds
+    _fund_flow_rank_cache: dict[str, tuple[float, "pd.DataFrame"]] = {}
+    _FUND_FLOW_RANK_CACHE_TTL: float = 60.0
+    _buyback_cache: "pd.DataFrame | None" = None
+    _buyback_cache_ts: float = 0.0
+    _buyback_cache_source: Any = None
+    _BUYBACK_CACHE_TTL: float = 300.0
 
     def get_realtime_quotes(self, symbols: list[str]) -> str:
         """Fetch real-time A-share quotes. Tries Eastmoney first, falls back to Sina."""
@@ -1022,7 +1076,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         try:
             result = self._fetch_quotes_sina(code_to_original)
             if result and result != "{}":
-                return result
+                return self._enrich_realtime_quotes(result, symbols)
         except Exception as exc:
             logger.debug("[realtime-quotes] Sina failed, falling back to Eastmoney: %s", exc)
 
@@ -1048,8 +1102,67 @@ class CnAkshareProvider(BaseMarketDataProvider):
             CnAkshareProvider._spot_cache_ts = now
 
         if df is not None and not df.empty:
-            return self._build_quotes_from_em(df, code_to_original)
+            return self._enrich_realtime_quotes(
+                self._build_quotes_from_em(df, code_to_original),
+                symbols,
+            )
         return json.dumps({})
+
+    @staticmethod
+    def _enrich_realtime_quotes(raw_json: str, symbols: list[str]) -> str:
+        """Fill turnover/volume-ratio gaps from Tencent without replacing price.
+
+        Sina is intentionally kept as the fast price source.  A successful
+        but partial Sina response previously stopped the vendor chain before
+        Tencent could provide turnover fields.
+        """
+        import json
+
+        try:
+            primary = json.loads(raw_json or "{}")
+        except (TypeError, ValueError):
+            return raw_json
+        if not isinstance(primary, dict) or not primary:
+            return raw_json
+        if all(
+            isinstance(item, dict)
+            and item.get("turnover_rate") is not None
+            and item.get("volume_ratio") is not None
+            for item in primary.values()
+        ):
+            return raw_json
+
+        try:
+            from .cn_astock_provider import CnAstockProvider
+
+            fallback = json.loads(CnAstockProvider().get_realtime_quotes(symbols))
+        except Exception:
+            return raw_json
+        if not isinstance(fallback, dict):
+            return raw_json
+
+        enrichment_fields = (
+            "turnover_rate",
+            "volume_ratio",
+            "limit_up",
+            "limit_down",
+            "market_cap",
+            "pe_ttm",
+            "pe_static",
+            "pb",
+        )
+        for symbol, quote in primary.items():
+            extra = fallback.get(symbol)
+            if not isinstance(quote, dict) or not isinstance(extra, dict):
+                continue
+            enriched = False
+            for field in enrichment_fields:
+                if quote.get(field) is None and extra.get(field) is not None:
+                    quote[field] = extra[field]
+                    enriched = True
+            if enriched:
+                quote["source"] = f"{quote.get('source', 'primary')}+tencent"
+        return json.dumps(primary, ensure_ascii=False)
 
     def _build_quotes_from_em(self, df: "pd.DataFrame", code_to_original: dict[str, str]) -> str:
         import json
@@ -1230,6 +1343,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
     def get_individual_fund_flow(self, symbol: str) -> str:
         """获取个股近期主力资金净流向。"""
+        primary_error = ""
         try:
             ak = self._ak()
             code = self._normalize_symbol(symbol)
@@ -1238,11 +1352,73 @@ class CnAkshareProvider(BaseMarketDataProvider):
             with AKSHARE_CALL_LOCK:
                 df = ak.stock_individual_fund_flow(stock=code, market=market)
             if df is None or df.empty:
-                return f"{symbol} 近期主力资金流向数据暂不可用。"
-            df_recent = df.tail(20)
-            return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
+                primary_error = "Eastmoney daily endpoint returned no rows"
+            else:
+                df_recent = df.tail(20)
+                return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
         except Exception as exc:
-            return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
+            primary_error = f"{type(exc).__name__}: {exc}"
+
+        fallback = self._individual_fund_flow_ths(symbol)
+        if fallback:
+            return (
+                f"{symbol} [DATA-024] FUND_FLOW_AGGREGATE_HAS_DATA: "
+                "同花顺独立 fallback（当日和5日汇总，非逐日20日序列；"
+                "金额保留接口原始单位，禁止据此声称连续逐日流入/流出）。\n"
+                f"{fallback}"
+            )
+        return (
+            f"{symbol} [DATA-024] FUND_FLOW_FAILED: 个股资金流向数据获取失败；"
+            f"Eastmoney={primary_error or 'unknown'}；THS fallback 无可用记录。"
+        )
+
+    @classmethod
+    def _fund_flow_rank_frame(cls, ak: Any, indicator: str) -> "pd.DataFrame":
+        now = time.time()
+        cached = cls._fund_flow_rank_cache.get(indicator)
+        if cached and now - cached[0] < cls._FUND_FLOW_RANK_CACHE_TTL:
+            return cached[1]
+        with AKSHARE_CALL_LOCK:
+            frame = ak.stock_fund_flow_individual(symbol=indicator)
+        if frame is not None and not frame.empty:
+            cls._fund_flow_rank_cache[indicator] = (now, frame)
+        return frame
+
+    def _individual_fund_flow_ths(self, symbol: str) -> str:
+        """Return THS aggregate rows as an independent, lower-fidelity fallback."""
+        try:
+            ak = self._ak()
+            code = self._normalize_symbol(symbol)
+            sections: list[str] = []
+            for indicator in ("即时", "5日排行"):
+                frame = self._fund_flow_rank_frame(ak, indicator)
+                if frame is None or frame.empty:
+                    continue
+                code_col = next(
+                    (
+                        column
+                        for column in ("股票代码", "代码", "证券代码")
+                        if column in frame.columns
+                    ),
+                    None,
+                )
+                if code_col is None:
+                    continue
+                normalized_codes = (
+                    frame[code_col]
+                    .astype(str)
+                    .str.extract(r"(\d{1,6})", expand=False)
+                    .str.zfill(6)
+                )
+                matched = frame[normalized_codes == code]
+                if matched.empty:
+                    continue
+                sections.append(
+                    f"【{indicator}】\n{matched.head(1).to_string(index=False)}"
+                )
+            return "\n".join(sections)
+        except Exception:
+            return ""
 
     def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
         """获取龙虎榜数据。
@@ -1351,21 +1527,24 @@ class CnAkshareProvider(BaseMarketDataProvider):
         try:
             ak = self._ak()
             with AKSHARE_CALL_LOCK:
-                df = ak.stock_institute_recommend(symbol=code)
+                df = ak.stock_research_report_em(symbol=code)
             if df is None or df.empty:
-                return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: 该股无券商研报或评级数据。"
-            lines = [f"{symbol} [DATA-011] REPORT_HAS_DATA: 券商研报/评级数据（AKShare stock_institute_recommend）："]
+                return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: 该股无券商研报数据。"
+            lines = [
+                f"{symbol} [DATA-011] REPORT_HAS_DATA: "
+                "券商研报元数据（AKShare stock_research_report_em，仅作观点/预期源）："
+            ]
             for _, row in df.head(15).iterrows():
                 date_val = row.get("日期", row.get("date", ""))
-                org = row.get("研究机构", row.get("org", ""))
-                rating = row.get("评级", row.get("rating", ""))
-                title = row.get("标题", row.get("title", ""))
-                target_price = row.get("目标价", row.get("target_price", ""))
+                org = row.get("机构", row.get("研究机构", row.get("org", "")))
+                rating = row.get("东财评级", row.get("评级", row.get("rating", "")))
+                title = row.get("报告名称", row.get("标题", row.get("title", "")))
+                pdf_url = row.get("报告PDF链接", "")
                 line = f"- {date_val} | {org} | {rating}"
                 if title:
                     line += f" | {str(title)[:60]}"
-                if target_price:
-                    line += f" | 目标价: {target_price}"
+                if pdf_url:
+                    line += f" | PDF: {pdf_url}"
                 lines.append(line)
             return "\n".join(lines)
         except AttributeError:
@@ -1406,25 +1585,62 @@ class CnAkshareProvider(BaseMarketDataProvider):
         code = self._normalize_symbol(symbol)
         try:
             ak = self._ak()
-            with AKSHARE_CALL_LOCK:
-                df = ak.stock_repurchase_em(symbol=code)
+            df = self._buyback_frame(ak)
             if df is None or df.empty:
+                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
+            code_col = next(
+                (col for col in ("股票代码", "证券代码", "代码") if col in df.columns),
+                None,
+            )
+            if not code_col:
+                return (
+                    f"{symbol} [DATA-013] BUYBACK_FAILED: "
+                    "回购数据缺少股票代码字段，无法校验目标公司。"
+                )
+            normalized_codes = (
+                df[code_col]
+                .astype(str)
+                .str.extract(r"(\d{1,6})", expand=False)
+                .str.zfill(6)
+            )
+            df = df.loc[normalized_codes.eq(code)]
+            if df.empty:
                 return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
             lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（AKShare stock_repurchase_em）："]
             for _, row in df.head(15).iterrows():
-                date_val = row.get("公告日期", row.get("date", ""))
-                amount = row.get("回购金额", row.get("amount", ""))
-                volume = row.get("回购数量", row.get("volume", ""))
-                progress = row.get("回购进度", row.get("progress", ""))
+                date_val = row.get("最新公告日期", row.get("公告日期", row.get("date", "")))
+                executed_amount = row.get("已回购金额")
+                executed_volume = row.get("已回购股份数量")
+                amount = (
+                    executed_amount
+                    if pd.notna(executed_amount)
+                    else _format_value_range(
+                        row.get("计划回购金额区间-下限"),
+                        row.get("计划回购金额区间-上限"),
+                    )
+                )
+                volume = (
+                    executed_volume
+                    if pd.notna(executed_volume)
+                    else _format_value_range(
+                        row.get("计划回购数量区间-下限"),
+                        row.get("计划回购数量区间-上限"),
+                    )
+                )
+                if not amount:
+                    amount = row.get("回购金额", row.get("amount", ""))
+                if not volume:
+                    volume = row.get("回购数量", row.get("volume", ""))
+                progress = row.get("实施进度", row.get("回购进度", row.get("progress", "")))
                 purpose = row.get("回购目的", row.get("purpose", ""))
                 line = f"- {date_val}"
-                if amount:
+                if amount is not None and str(amount) != "nan":
                     line += f" | 金额: {amount}"
-                if volume:
+                if volume is not None and str(volume) != "nan":
                     line += f" | 数量: {volume}"
-                if progress:
+                if progress is not None and str(progress) != "nan":
                     line += f" | 进度: {progress}"
-                if purpose:
+                if purpose is not None and str(purpose) != "nan":
                     line += f" | 目的: {str(purpose)[:40]}"
                 lines.append(line)
             return "\n".join(lines)
@@ -1432,3 +1648,27 @@ class CnAkshareProvider(BaseMarketDataProvider):
             return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: AKShare 回购接口不可用。"
         except Exception as exc:
             return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败：{type(exc).__name__}: {exc}"
+
+    @classmethod
+    def _buyback_frame(cls, ak: Any) -> "pd.DataFrame":
+        """Return the all-market buyback table with a short process-local TTL."""
+        now = time.time()
+        if (
+            cls._buyback_cache is not None
+            and cls._buyback_cache_source is ak
+            and now - cls._buyback_cache_ts < cls._BUYBACK_CACHE_TTL
+        ):
+            return cls._buyback_cache
+        with AKSHARE_CALL_LOCK:
+            now = time.time()
+            if (
+                cls._buyback_cache is not None
+                and cls._buyback_cache_source is ak
+                and now - cls._buyback_cache_ts < cls._BUYBACK_CACHE_TTL
+            ):
+                return cls._buyback_cache
+            frame = ak.stock_repurchase_em()
+            cls._buyback_cache = frame
+            cls._buyback_cache_ts = now
+            cls._buyback_cache_source = ak
+            return frame

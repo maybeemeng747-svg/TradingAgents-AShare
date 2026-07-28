@@ -101,6 +101,7 @@ from tradingagents.dataflows.local_knowledge_provider import (
     _extract_risk_items,
     _extract_section_text,
     _extract_sources,
+    _infer_evidence_scope,
     _MAX_MATCHED_PAGES,
     _MAX_RISK_ENTRIES,
     _MAX_SOURCE_ENTRIES,
@@ -676,6 +677,9 @@ def get_or_build_cache(
 def _cached_page_to_match(
     page: CachedPageData,
     matched_by: List[str],
+    *,
+    query_symbol: Optional[str] = None,
+    query_name: Optional[str] = None,
 ) -> LocalKnowledgeMatch:
     """把缓存页面数据转为 :class:`LocalKnowledgeMatch`（口径与 KB-003 一致）。
 
@@ -721,6 +725,14 @@ def _cached_page_to_match(
         is_to_be_supplemented=is_todo,
     )
     adjusted_confidence = apply_tier_to_confidence(confidence, citation)
+    evidence_scope = _infer_evidence_scope(
+        title=page.title,
+        page_type=page.page_type,
+        symbols=list(page.symbols),
+        matched_by=matched_by,
+        query_symbol=query_symbol,
+        query_name=query_name,
+    )
 
     return LocalKnowledgeMatch(
         rel_path=page.rel_path,
@@ -739,6 +751,7 @@ def _cached_page_to_match(
         is_to_be_supplemented=is_todo,
         matched_by=list(matched_by),
         confidence=adjusted_confidence,
+        evidence_scope=evidence_scope,
         # KB-014 来源可信度分层
         source_quality_tier=citation.tier,
         citation_confidence_weight=tier_weight,
@@ -848,13 +861,23 @@ def query_local_knowledge_cached(
         )
         if not matched_by:
             continue
-        result.matched_pages.append(_cached_page_to_match(page, matched_by))
+        result.matched_pages.append(
+            _cached_page_to_match(
+                page,
+                matched_by,
+                query_symbol=symbol,
+                query_name=name,
+            )
+        )
 
     result.matched_pages.sort(key=_rank_key)
     if len(result.matched_pages) > max_pages:
         result.matched_pages = result.matched_pages[:max_pages]
 
-    _aggregate_result(result)
+    _aggregate_result(
+        result,
+        require_target_company=bool(symbol or name),
+    )
     return result
 
 

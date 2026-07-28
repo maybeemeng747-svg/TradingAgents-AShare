@@ -626,15 +626,14 @@ class TestCapabilityMatrixSupplement:
 # ── DATA-011 integration boundary ──────────────────────────────────────
 
 class TestData011IntegrationBoundary:
-    """DATA-025 不改变 DATA-011 raw_evidence 与强动作门禁."""
+    """DATA-025 的实盘源复用于 DATA-011，状态语义与门禁保持不变."""
 
-    def test_data011_research_report_method_unchanged(self):
-        """DATA-011 仍使用 stock_institute_recommend, 不被 DATA-025 替换."""
+    def test_data011_uses_live_smoke_verified_method(self):
+        """DATA-011 使用 DATA-025 已验证的东方财富个股研报接口."""
         from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
         provider = CnAkshareProvider()
         assert hasattr(provider, "get_research_report")
-        # DATA-025 用的是不同方法 (stock_research_report_em)
-        assert AKSHARE_REPORT_METHOD != "stock_institute_recommend"
+        assert AKSHARE_REPORT_METHOD == "stock_research_report_em"
 
     def test_data011_evidence_contract_unchanged(self):
         from tradingagents.dataflows.evidence_contract import (

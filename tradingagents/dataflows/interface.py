@@ -91,6 +91,22 @@ _FAILURE_RESULT_PATTERNS = (
     "ConnectTimeout",
     "ReadTimeout",
     "LHB_FAILED",
+    "BUYBACK_FAILED",
+    "REPORT_FAILED",
+    "RATINGS_FAILED",
+    "FUND_FLOW_FAILED",
+)
+
+_STRUCTURED_FAILURE_MARKERS = (
+    "[G-007] LHB_FAILED",
+    "[DATA-011] REPORT_FAILED",
+    "[DATA-012] RATINGS_FAILED",
+    "[DATA-013] BUYBACK_FAILED",
+    "[DATA-024] FUND_FLOW_FAILED",
+)
+
+_DEGRADED_RESULT_MARKERS = (
+    "[DATA-024] FUND_FLOW_AGGREGATE_HAS_DATA",
 )
 
 
@@ -98,6 +114,12 @@ def _is_failure_result(result) -> bool:
     if not isinstance(result, str):
         return False
     return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+def _is_degraded_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(marker in result for marker in _DEGRADED_RESULT_MARKERS)
 
 
 _TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
@@ -164,6 +186,8 @@ def route_to_vendor(method: str, *args, **kwargs):
     args_summary = _summarize_args(args, kwargs)
     last_exc = None
     last_structured_failure = None
+    degraded_result = None
+    degraded_vendor = None
     _trace(
         f"method={method} {args_summary} category={category} "
         f"configured='{vendor_config}' chain={fallback_vendors}"
@@ -183,15 +207,22 @@ def route_to_vendor(method: str, *args, **kwargs):
         try:
             result = impl_func(*args, **kwargs)
             if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
-                if (
-                    method == "get_lhb_detail"
-                    and isinstance(result, str)
-                    and "[G-007] LHB_FAILED" in result
+                if isinstance(result, str) and any(
+                    marker in result for marker in _STRUCTURED_FAILURE_MARKERS
                 ):
                     last_structured_failure = result
                 _trace(
                     f"method={method} {args_summary} vendor={vendor} status=fallback "
                     f"reason=failure-string-detected"
+                )
+                continue
+            if _is_degraded_result(result):
+                if degraded_result is None:
+                    degraded_result = result
+                    degraded_vendor = vendor
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    "reason=degraded-result"
                 )
                 continue
             _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
@@ -214,6 +245,14 @@ def route_to_vendor(method: str, *args, **kwargs):
                 f"reason={type(exc).__name__}: {exc}"
             )
             continue
+
+    if degraded_result is not None:
+        _last_hit_vendor[method] = degraded_vendor
+        _trace(
+            f"method={method} {args_summary} vendor={degraded_vendor} "
+            "status=degraded-hit"
+        )
+        return degraded_result
 
     if last_structured_failure is not None:
         _trace(

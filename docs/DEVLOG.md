@@ -15304,3 +15304,23 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - Related regression validation: 208 tests passed; shell syntax and `git diff --check`
   passed; real 002409 v1.2 snapshot replay returned `HAS_DATA` with 77.0/3.77
   and preserved `source_entity` / `dimension_tags`.
+
+## 2026-07-28 | 002409 report evidence and knowledge-scope correction
+
+- Added deterministic financial key metrics from normalized period facts,
+  including scientific-notation preservation, same-period YoY comparisons,
+  ROE, total assets and explicit `亿元` display units.
+- Wired realtime quotes, broker research reports and buyback records into the
+  collector. Realtime quotes now enrich the primary price with turnover and
+  volume-ratio fields, while empty quote payloads fail closed as no data.
+- Added an independent, explicitly lower-fidelity THS aggregate fallback for
+  individual fund flow. It preserves leading-zero A-share codes and never
+  presents aggregate rankings as a daily fund-flow sequence.
+- Updated research-report and buyback adapters to match current AKShare API
+  signatures and live table schemas. A live 002409 check returned broker-report
+  data and a valid `NORMAL_NO_DATA` buyback result.
+- Classified local knowledge as target-company, peer or thematic evidence.
+  Peer/thematic context remains visible with a warning but contributes zero
+  target-company knowledge score, zero fresh hits and `has_hit=false`.
+- Codex review found three P2 edge cases (peer-only scoring, leading-zero
+  fallback matching and empty quote status); all were fixed before closeout.

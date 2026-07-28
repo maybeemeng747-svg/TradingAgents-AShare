@@ -114,6 +114,49 @@ class TestRouteToVendorFallback:
                 with pytest.raises(RuntimeError, match="No available vendor"):
                     route_to_vendor("get_individual_fund_flow", "603629.SH")
 
+    @pytest.mark.parametrize(
+        ("method", "marker"),
+        [
+            ("get_individual_fund_flow", "[DATA-024] FUND_FLOW_FAILED"),
+            ("get_research_report", "[DATA-011] REPORT_FAILED"),
+            ("get_ratings", "[DATA-012] RATINGS_FAILED"),
+            ("get_buybacks", "[DATA-013] BUYBACK_FAILED"),
+        ],
+    )
+    def test_all_provider_structured_failures_preserve_last_marker(
+        self, method, marker
+    ):
+        first = MagicMock(is_placeholder=False)
+        second = MagicMock(is_placeholder=False)
+        setattr(
+            first,
+            method,
+            MagicMock(return_value=f"002409.SZ {marker}: primary unavailable"),
+        )
+        setattr(
+            second,
+            method,
+            MagicMock(return_value=f"002409.SZ {marker}: fallback unavailable"),
+        )
+        mock_reg = MagicMock()
+        mock_reg.get = lambda name: {
+            "cn_akshare": first,
+            "cn_astock": second,
+        }.get(name)
+        mock_reg.list_names = MagicMock(
+            return_value=["cn_akshare", "cn_astock"]
+        )
+
+        with patch("tradingagents.dataflows.interface._registry", mock_reg):
+            with patch(
+                "tradingagents.dataflows.interface.get_vendor",
+                return_value="cn_akshare",
+            ):
+                result = route_to_vendor(method, "002409.SZ")
+
+        assert marker in result
+        assert "fallback unavailable" in result
+
     def test_first_vendor_succeeds_no_fallback(self):
         """When first vendor returns valid data, no fallback occurs."""
         akshare_result = "603629.SH 近20日主力资金净流向：\ndata here"
@@ -134,6 +177,73 @@ class TestRouteToVendorFallback:
         assert result == akshare_result
         assert get_last_hit_vendor("get_individual_fund_flow") == "cn_akshare"
         mock_astock.get_individual_fund_flow.assert_not_called()
+
+    def test_full_series_fallback_beats_aggregate_result(self):
+        """A lower-fidelity aggregate hit must not mask a later daily series."""
+        aggregate_result = (
+            "002409.SZ [DATA-024] FUND_FLOW_AGGREGATE_HAS_DATA: "
+            "同花顺当日和5日汇总"
+        )
+        full_series_result = (
+            "002409.SZ 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+            "2026-07-28 | 123.45"
+        )
+        mock_akshare = self._make_mock_provider(return_value=aggregate_result)
+        mock_astock = self._make_mock_provider(return_value=full_series_result)
+        mock_reg = MagicMock()
+        mock_reg.get = lambda name: {
+            "cn_akshare": mock_akshare,
+            "cn_astock": mock_astock,
+        }.get(name)
+        mock_reg.list_names = MagicMock(
+            return_value=["cn_akshare", "cn_astock"]
+        )
+
+        with patch("tradingagents.dataflows.interface._registry", mock_reg):
+            with patch(
+                "tradingagents.dataflows.interface.get_vendor",
+                return_value="cn_akshare",
+            ):
+                result = route_to_vendor(
+                    "get_individual_fund_flow", "002409.SZ"
+                )
+
+        assert result == full_series_result
+        assert get_last_hit_vendor("get_individual_fund_flow") == "cn_astock"
+
+    def test_aggregate_result_is_used_after_full_series_fallback_fails(self):
+        """The aggregate result remains available when all richer sources fail."""
+        aggregate_result = (
+            "002409.SZ [DATA-024] FUND_FLOW_AGGREGATE_HAS_DATA: "
+            "同花顺当日和5日汇总"
+        )
+        mock_akshare = self._make_mock_provider(return_value=aggregate_result)
+        mock_astock = self._make_mock_provider(
+            return_value=(
+                "002409.SZ [DATA-024] FUND_FLOW_FAILED: "
+                "Eastmoney push2his unavailable"
+            )
+        )
+        mock_reg = MagicMock()
+        mock_reg.get = lambda name: {
+            "cn_akshare": mock_akshare,
+            "cn_astock": mock_astock,
+        }.get(name)
+        mock_reg.list_names = MagicMock(
+            return_value=["cn_akshare", "cn_astock"]
+        )
+
+        with patch("tradingagents.dataflows.interface._registry", mock_reg):
+            with patch(
+                "tradingagents.dataflows.interface.get_vendor",
+                return_value="cn_akshare",
+            ):
+                result = route_to_vendor(
+                    "get_individual_fund_flow", "002409.SZ"
+                )
+
+        assert result == aggregate_result
+        assert get_last_hit_vendor("get_individual_fund_flow") == "cn_akshare"
 
     def test_exception_triggers_fallback(self):
         """When provider raises exception, fallback continues."""
