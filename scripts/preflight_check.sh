@@ -71,6 +71,13 @@ section "Git 状态"
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "DETACHED")
 log "分支: $BRANCH"
 
+# [SCORE-001C] 工作树冻结门禁：禁止在 codex/score-contract-v1.1 上运行自动开发
+if [ "$BRANCH" = "codex/score-contract-v1.1" ]; then
+    echo -e "  ${RED}[FROZEN]${NC} codex/score-contract-v1.1 工作树已冻结（落后主分支，禁止新开发）"
+    echo -e "  请在主分支 local/tradingagents-custom 上运行自动开发"
+    exit 2
+fi
+
 REMOTE=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo "无远端跟踪")
 log "远端: $REMOTE"
 
