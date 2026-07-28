@@ -70,6 +70,15 @@ done
 
 cd "$REPO_DIR"
 
+# [AUTO-WORKTREE-GUARD] Fail before lock recovery or task mutation when this
+# script is launched from a secondary/stale worktree.
+PRIMARY_WORKTREE_GUARD="$SCRIPT_DIR/primary_worktree_guard.sh"
+if [ ! -x "$PRIMARY_WORKTREE_GUARD" ]; then
+    echo "[AUTO] Primary-worktree guard missing or not executable" >&2
+    exit 2
+fi
+"$PRIMARY_WORKTREE_GUARD" "$REPO_DIR"
+
 # --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'

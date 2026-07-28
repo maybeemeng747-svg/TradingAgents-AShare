@@ -901,6 +901,20 @@ class TestScore001Cv12Support:
         assert result.snapshot.scores.research_evidence_confidence == 93.0
         assert result.snapshot.scores.thesis_quality == 32.4
 
+    @pytest.mark.parametrize("invalid_score", [float("nan"), float("inf"), float("-inf")])
+    def test_v12_non_finite_scores_rejected(
+        self, tmp_path: Path, invalid_score: float
+    ) -> None:
+        """NaN/Infinity must not bypass the numeric range gate."""
+        d = self._v12_snapshot_dict()
+        d["scores"]["research_evidence_confidence"] = invalid_score
+        _write_snapshot_file(tmp_path, "605589.SH", "bad_score.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_FAILED
+        assert "ILLEGAL_SCORE" in result.degradation_reasons
+
     def test_v12_source_entity_read(self, tmp_path: Path) -> None:
         """source_entity 字段应被正确读取。"""
         _write_snapshot_file(tmp_path, "605589.SH", "v12.json", self._v12_snapshot_dict())
@@ -921,6 +935,42 @@ class TestScore001Cv12Support:
         ev = result.snapshot.evidence_refs[0]
         assert ev.dimension_tags == ["revenue_profit_delivery", "financial_quality"]
 
+    @pytest.mark.parametrize(
+        "bad_tags",
+        [
+            "financial_quality",
+            ["financial_quality", "financial_quality"],
+            ["unknown_dimension"],
+            ["financial_quality", 123],
+        ],
+    )
+    def test_v12_invalid_dimension_tags_rejected(
+        self, tmp_path: Path, bad_tags: object
+    ) -> None:
+        """Malformed or unknown dimension tags must fail closed."""
+        d = self._v12_snapshot_dict()
+        d["evidence_refs"][0]["dimension_tags"] = bad_tags
+        _write_snapshot_file(tmp_path, "605589.SH", "bad_tags.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_FAILED
+        assert "CORRUPTED" in result.degradation_reasons
+
+    @pytest.mark.parametrize("bad_entity", [{"name": "broker"}, "", 123])
+    def test_v12_invalid_source_entity_rejected(
+        self, tmp_path: Path, bad_entity: object
+    ) -> None:
+        """source_entity must remain a non-empty string or null."""
+        d = self._v12_snapshot_dict()
+        d["evidence_refs"][0]["source_entity"] = bad_entity
+        _write_snapshot_file(tmp_path, "605589.SH", "bad_entity.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_FAILED
+        assert "CORRUPTED" in result.degradation_reasons
+
     def test_v11_still_accepted(self, tmp_path: Path) -> None:
         """v1.1.0 快照仍应被接受（向后兼容）。"""
         _write_snapshot_file(tmp_path, "605589.SH", "v11.json", _base_snapshot_dict())
@@ -929,6 +979,34 @@ class TestScore001Cv12Support:
         )
         assert result.status == STATUS_HAS_DATA
         assert result.schema_version == "1.1.0"
+
+    def test_v11_rejects_v12_only_evidence_fields(self, tmp_path: Path) -> None:
+        """A v1.1 declaration must not silently consume v1.2-only fields."""
+        d = _base_snapshot_dict()
+        d["evidence_refs"][0]["source_entity"] = "交易所公告"
+        _write_snapshot_file(tmp_path, "605589.SH", "mixed_version.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_FAILED
+        assert "CORRUPTED" in result.degradation_reasons
+
+    def test_v11_rejects_v12_field_after_output_limit(self, tmp_path: Path) -> None:
+        """Entry 31+ must be validated even though the returned list is capped."""
+        d = _base_snapshot_dict()
+        base_ref = d["evidence_refs"][0]
+        d["evidence_refs"] = [
+            {**base_ref, "evidence_id": f"ev-{index:03d}"}
+            for index in range(31)
+        ]
+        d["evidence_refs"][30]["dimension_tags"] = ["financial_quality"]
+        d["theses"][0]["supporting_evidence_ids"] = ["ev-000"]
+        _write_snapshot_file(tmp_path, "605589.SH", "hidden_mixed_version.json", d)
+        result = query_research_score_snapshot(
+            str(tmp_path), symbol="605589.SH", analysis_time=_at(2026, 7, 14)
+        )
+        assert result.status == STATUS_FAILED
+        assert "CORRUPTED" in result.degradation_reasons
 
     def test_v12_without_optional_fields(self, tmp_path: Path) -> None:
         """v1.2.0 快照没有 source_entity/dimension_tags 时不应崩溃。"""

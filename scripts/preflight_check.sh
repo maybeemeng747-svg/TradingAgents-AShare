@@ -21,6 +21,13 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
+PRIMARY_WORKTREE_GUARD="$REPO_DIR/scripts/primary_worktree_guard.sh"
+if [ ! -x "$PRIMARY_WORKTREE_GUARD" ]; then
+    echo "[FROZEN] 主工作树门禁缺失或不可执行，禁止自动开发" >&2
+    exit 2
+fi
+"$PRIMARY_WORKTREE_GUARD" "$REPO_DIR"
+
 SKIP_TESTS=false
 QUIET=false
 # [AUTO-005] db_hygiene_preflight
@@ -70,13 +77,6 @@ section "Git 状态"
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "DETACHED")
 log "分支: $BRANCH"
-
-# [SCORE-001C] 工作树冻结门禁：禁止在 codex/score-contract-v1.1 上运行自动开发
-if [ "$BRANCH" = "codex/score-contract-v1.1" ]; then
-    echo -e "  ${RED}[FROZEN]${NC} codex/score-contract-v1.1 工作树已冻结（落后主分支，禁止新开发）"
-    echo -e "  请在主分支 local/tradingagents-custom 上运行自动开发"
-    exit 2
-fi
 
 REMOTE=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo "无远端跟踪")
 log "远端: $REMOTE"

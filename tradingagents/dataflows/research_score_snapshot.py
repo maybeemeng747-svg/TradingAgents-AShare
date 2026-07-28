@@ -51,6 +51,7 @@ TradeFlow 字段；这些接线由后续 SCORE-001B / SCORE-002~005 承担。
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -134,6 +135,18 @@ _MAX_THESES = 8
 _MAX_EVIDENCE_REFS = 30
 _MAX_REASONS = 10
 _MAX_WARNINGS = 10
+
+# v1.2.0 ``evidence_refs.dimension_tags`` enum. Keep this consumer-side
+# allow-list aligned with the published knowledge-base schema.
+VALID_DIMENSION_TAGS: Tuple[str, ...] = (
+    "industry_necessity",
+    "technology_barrier",
+    "customer_order_mass",
+    "revenue_profit_delivery",
+    "competition_substitution",
+    "financial_quality",
+    "growth_valuation_match",
+)
 
 # 日期/时间正则。
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -224,7 +237,11 @@ class EvidenceRef:
             "source_type": self.source_type,
             "source_quality_tier": self.source_quality_tier,
             "source_entity": self.source_entity,
-            "dimension_tags": list(self.dimension_tags) if self.dimension_tags else None,
+            "dimension_tags": (
+                list(self.dimension_tags)
+                if self.dimension_tags is not None
+                else None
+            ),
             "report_date": self.report_date,
             "financial_period": self.financial_period,
             "locator": self.locator,
@@ -510,12 +527,63 @@ def _validate_score_value(name: str, value: Any) -> Optional[float]:
         )
     # [SCORE-001C] 接受浮点分，不再要求整数
     value = float(value)
+    if not math.isfinite(value):
+        raise SnapshotValidationError(
+            "ILLEGAL_SCORE",
+            f"scores.{name} 不是有限数值: {value!r}",
+        )
     if value < _SCORE_MIN or value > _SCORE_MAX:
         raise SnapshotValidationError(
             "ILLEGAL_SCORE",
             f"scores.{name} 越界 ({value} 不在 [{_SCORE_MIN},{_SCORE_MAX}])",
         )
     return value
+
+
+def _validate_source_entity(value: Any) -> Optional[str]:
+    """Validate optional v1.2 source identity without coercing objects."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SnapshotValidationError(
+            "CORRUPTED",
+            "evidence_ref source_entity 必须是非空字符串或 null",
+        )
+    return value.strip()
+
+
+def _validate_dimension_tags(value: Any) -> Optional[List[str]]:
+    """Validate optional v1.2 dimension tags against the published enum."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise SnapshotValidationError(
+            "CORRUPTED",
+            "evidence_ref dimension_tags 必须是字符串数组或 null",
+        )
+
+    tags: List[str] = []
+    seen = set()
+    for tag in value:
+        if not isinstance(tag, str) or not tag.strip():
+            raise SnapshotValidationError(
+                "CORRUPTED",
+                "evidence_ref dimension_tags 只能包含非空字符串",
+            )
+        normalized = tag.strip()
+        if normalized not in VALID_DIMENSION_TAGS:
+            raise SnapshotValidationError(
+                "CORRUPTED",
+                f"evidence_ref dimension_tag 非法: {normalized!r}",
+            )
+        if normalized in seen:
+            raise SnapshotValidationError(
+                "CORRUPTED",
+                f"evidence_ref dimension_tags 重复: {normalized!r}",
+            )
+        seen.add(normalized)
+        tags.append(normalized)
+    return tags
 
 
 def _validate_thesis_evidence_closure(
@@ -697,12 +765,20 @@ def _validate_snapshot_dict(
     refs_raw = data.get("evidence_refs")
     if not isinstance(refs_raw, list):
         refs_raw = []
-    if len(refs_raw) > _MAX_EVIDENCE_REFS:
-        refs_raw = refs_raw[:_MAX_EVIDENCE_REFS]
     evidence_refs: List[EvidenceRef] = []
-    for item in refs_raw:
+    for index, item in enumerate(refs_raw):
         if not isinstance(item, dict):
-            continue
+            raise SnapshotValidationError(
+                "CORRUPTED",
+                f"evidence_ref[{index}] 必须是对象",
+            )
+        if schema_version == "1.1.0" and (
+            "source_entity" in item or "dimension_tags" in item
+        ):
+            raise SnapshotValidationError(
+                "CORRUPTED",
+                "v1.1.0 evidence_ref 不允许携带 v1.2.0 字段",
+            )
         tier = _safe_str(item.get("source_quality_tier")) or "unknown"
         if tier not in SOURCE_QUALITY_TIERS:
             raise SnapshotValidationError(
@@ -717,6 +793,12 @@ def _validate_snapshot_dict(
                 "PATH_ESCAPE",
                 f"evidence_ref source_path 非法绝对/逃逸路径: {source_path!r}",
             )
+        source_entity = _validate_source_entity(item.get("source_entity"))
+        dimension_tags = _validate_dimension_tags(item.get("dimension_tags"))
+        # Validate every raw entry, including entries beyond the bounded
+        # response payload. Only the returned summary is truncated.
+        if index >= _MAX_EVIDENCE_REFS:
+            continue
         evidence_refs.append(
             EvidenceRef(
                 evidence_id=_safe_str(item.get("evidence_id")),
@@ -726,11 +808,8 @@ def _validate_snapshot_dict(
                 source_type=_safe_str(item.get("source_type")),
                 source_quality_tier=tier,
                 # [SCORE-001C] v1.2 新增字段（v1.1 快照中不存则 None）
-                source_entity=_safe_str(item.get("source_entity")) or None,
-                dimension_tags=[
-                    _safe_str(t) for t in (item.get("dimension_tags") or [])
-                    if _safe_str(t)
-                ] or None,
+                source_entity=source_entity,
+                dimension_tags=dimension_tags,
                 report_date=_safe_str(item.get("report_date")) or None,
                 financial_period=_safe_str(item.get("financial_period")) or None,
                 locator=_safe_str(item.get("locator")) or None,

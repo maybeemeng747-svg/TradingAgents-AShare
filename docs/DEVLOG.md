@@ -15287,3 +15287,20 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/F-001-R1-20260724-190003/
+
+## 2026-07-28 | SCORE-001C-R1 contract and worktree guard hardening
+
+- Rejected non-finite research scores (`NaN` / positive or negative infinity)
+  before they can bypass the 0-100 range gate.
+- Enforced the published v1.2 evidence contract for `source_entity` and
+  `dimension_tags`, including type, enum and uniqueness checks; v1.1 snapshots
+  may omit these fields but cannot silently carry v1.2-only fields.
+- Added `scripts/primary_worktree_guard.sh` and wired both preflight and
+  auto-dev entrypoints to it. The guard derives Git's primary worktree instead
+  of relying on a branch name.
+- Installed a machine-local freeze shim in the historical
+  `codex/score-contract-v1.1` worktree without touching its business changes;
+  direct preflight and auto-dev calls now both exit 2 before mutation.
+- Related regression validation: 208 tests passed; shell syntax and `git diff --check`
+  passed; real 002409 v1.2 snapshot replay returned `HAS_DATA` with 77.0/3.77
+  and preserved `source_entity` / `dimension_tags`.

@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-23
+> 最后更新：2026-07-28
 
 ---
 
@@ -22,7 +22,7 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-24）
+### 当前执行队列（2026-07-28）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -45,8 +45,9 @@
 15. `PLAYBOOK-002-R1`：三笔法组合约束补修（done，Codex review 收口）。
 16. `SCORE-001-R1`：快照 loader 验收档案修正（done，第 6 轮最终复审通过）。
 17. `B-001-R1`：MiMo provider 配置与凭据路由补修（done，最终 Codex review 无 correctness finding）。
-18. `B-002-R1`：调度回调报告字段补修（P2，ready）。
-19. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+18. `SCORE-001C-R1`：v1.2 快照消费与主工作树门禁补修（done，本轮人工开发与对抗验收）。
+19. `B-002-R1`：调度回调报告字段补修（P2，ready）。
+20. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -212,6 +213,17 @@
 - **状态**：done — 可达实现提交、旧 run 状态和独立 R1 运行档案已校准；94 tests passed，第 6 轮最终复审通过
 - **depends_on**：PLAYBOOK-002-R1
 - **auto_release**：true
+
+### SCORE-001C-R1: v1.2 快照消费与主工作树门禁补修（P1）
+- **描述**：补齐 v1.2 浮点分与证据字段的 fail-closed 校验，并把自动开发限制在 Git 主工作树，避免冻结工作树继续领取任务。
+- **优先级**：P1
+- **状态**：done — 非有限分数、非法 `source_entity/dimension_tags` 与混合 schema 均被拒绝；主/次工作树真实回放通过
+- **depends_on**：SCORE-001-R1
+- **auto_release**：false
+- **验收方式**：
+  - v1.1/v1.2 合法快照和真实 002409 v1.2 快照可读。
+  - NaN/Infinity、字符串标签、未知/重复标签、非法来源实体与 v1.1 混入 v1.2 字段全部 fail closed。
+  - 主工作树门禁返回 0；次工作树即使改分支名也返回 2；preflight 与 auto-dev 两个入口均调用共享门禁。
 
 ### B-001-R1: MiMo provider 配置与凭据路由补修（P1）
 - **描述**：让存储的 MiMo key、base_url、默认模型在完整图路径一致生效，目录 key scope 与实际读取保持一致。

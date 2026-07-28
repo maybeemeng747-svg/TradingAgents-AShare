@@ -36,6 +36,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT_SCRIPT = REPO_ROOT / "scripts" / "preflight_check.sh"
 AUTO_DEV_SCRIPT = REPO_ROOT / "scripts" / "auto_dev_loop.sh"
+PRIMARY_WORKTREE_GUARD = REPO_ROOT / "scripts" / "primary_worktree_guard.sh"
 SUMMARIZE_SCRIPT = REPO_ROOT / "scripts" / "summarize_auto_dev_runs.py"
 HYGIENE_CLI = REPO_ROOT / "scripts" / "run_db_hygiene_check.py"
 
@@ -407,6 +408,52 @@ def bash_env(tmp_path: Path, monkeypatch):
 class TestPreflightAcceptance:
     """AUTO-005 acceptance: preflight behaviour against fixture DBs."""
 
+    @staticmethod
+    def _make_primary_preflight_repo(tmp_path: Path) -> Path:
+        """Build a disposable primary worktree for preflight subprocess tests.
+
+        The production guard intentionally blocks linked worktrees, including
+        Codex review worktrees.  Acceptance tests therefore run the real
+        scripts from a fresh single-worktree repository instead of weakening
+        the guard with a test bypass.
+        """
+        repo = tmp_path / "preflight-repo"
+        scripts_dir = repo / "scripts"
+        docs_dir = repo / "docs"
+        scripts_dir.mkdir(parents=True)
+        docs_dir.mkdir()
+        for source in (
+            PREFLIGHT_SCRIPT,
+            PRIMARY_WORKTREE_GUARD,
+            REPO_ROOT / "scripts" / "run_db_hygiene_check.py",
+        ):
+            target = scripts_dir / source.name
+            shutil.copy2(source, target)
+            target.chmod(target.stat().st_mode | 0o111)
+        project_venv = REPO_ROOT / ".venv"
+        if project_venv.is_dir():
+            (repo / ".venv").symlink_to(project_venv, target_is_directory=True)
+        (docs_dir / "TASKS.md").write_text("# Tasks\n", encoding="utf-8")
+        (docs_dir / "DEVLOG.md").write_text("# Devlog\n", encoding="utf-8")
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@t.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        return repo
+
     @pytest.mark.parametrize("create_fn", ["polluted", "clean"])
     def test_preflight_db_hygiene_section_status(self, tmp_path: Path, create_fn: str):
         db = tmp_path / "fixture.db"
@@ -417,14 +464,16 @@ class TestPreflightAcceptance:
 
         env = dict(os.environ)
         env["DATABASE_URL"] = f"sqlite:///{db}"
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        repo = self._make_primary_preflight_repo(tmp_path)
 
         # Run preflight with --skip-tests so only static + hygiene checks fire.
         # The fresh python subprocess reads DATABASE_URL at module load time,
         # so the fixture DB is honoured.
         result = subprocess.run(
-            ["bash", str(PREFLIGHT_SCRIPT), "--skip-tests"],
+            ["bash", "scripts/preflight_check.sh", "--skip-tests"],
             env=env,
-            cwd=str(REPO_ROOT),
+            cwd=repo,
             capture_output=True,
             text=True,
             timeout=60,
@@ -461,12 +510,19 @@ class TestPreflightAcceptance:
         _create_polluted_db(db)
         env = dict(os.environ)
         env["DATABASE_URL"] = f"sqlite:///{db}"
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        repo = self._make_primary_preflight_repo(tmp_path)
 
         # Run WITHOUT --quiet so the skip log line is visible.
         result = subprocess.run(
-            ["bash", str(PREFLIGHT_SCRIPT), "--skip-tests", "--skip-db-hygiene"],
+            [
+                "bash",
+                "scripts/preflight_check.sh",
+                "--skip-tests",
+                "--skip-db-hygiene",
+            ],
             env=env,
-            cwd=str(REPO_ROOT),
+            cwd=repo,
             capture_output=True,
             text=True,
             timeout=60,
@@ -603,6 +659,10 @@ class TestAutoDevLoopDryRunAcceptance:
         shutil.copy2(AUTO_DEV_SCRIPT, repo / "scripts" / "auto_dev_loop.sh")
         # Also copy preflight so auto_dev_loop can invoke it
         shutil.copy2(PREFLIGHT_SCRIPT, repo / "scripts" / "preflight_check.sh")
+        shutil.copy2(
+            PRIMARY_WORKTREE_GUARD,
+            repo / "scripts" / "primary_worktree_guard.sh",
+        )
 
         tasks = """# Tasks
 
