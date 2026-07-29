@@ -381,6 +381,7 @@ def assess_confidence(
     analyst_agreement_level: Optional[float] = None,
     event_risk_active: bool = False,
     evidence_coverage: Optional[int] = None,  # [DATA-P0-603629] astock_source_fallback
+    fundamental_integrity_valid: bool = True,
 ) -> ConfidenceLevel:
     """
     评估置信度。
@@ -392,6 +393,8 @@ def assess_confidence(
         event_risk_active: 是否有事件风险激活
         evidence_coverage: 原始证据覆盖度 (0-100)。
             当 < 70% 时，confidence 不得为 HIGH。
+        fundamental_integrity_valid: 基本面语义门禁是否通过。
+            未通过时，中线报告置信度不得为 HIGH。
     """
     base_score = data_completeness
 
@@ -408,6 +411,9 @@ def assess_confidence(
     if evidence_coverage is not None and evidence_coverage < 70:
         base_score = min(base_score, 65)
 
+    if not fundamental_integrity_valid:
+        base_score = min(base_score, 65)
+
     if base_score >= 70:
         return ConfidenceLevel.HIGH
     elif base_score >= 40:
@@ -419,6 +425,7 @@ def assess_confidence(
 def generate_readiness_score(
     data_completeness: int,
     confidence: ConfidenceLevel,
+    blockers: Optional[list[str]] = None,
 ) -> dict:
     """
     生成执行就绪度评分。
@@ -452,6 +459,7 @@ def generate_readiness_score(
         "data_completeness": data_completeness,
         "confidence": confidence.value,
         "summary": summary,
+        "blockers": list(blockers or []),
     }
 
 
@@ -1114,6 +1122,7 @@ def format_execution_block(
     # G-001: optional dual-horizon conflict signals
     short_bullish: bool | None = None,
     medium_bullish: bool | None = None,
+    fundamental_integrity_valid: bool = True,
 ) -> str:
     """格式化报告末尾的「执行等级与证据门禁」结构化区块。
 
@@ -1233,7 +1242,9 @@ def format_execution_block(
     # 中线逻辑层
     lines.append("")
     lines.append("#### 中线逻辑层")
-    if evidence_coverage >= 70:
+    if not fundamental_integrity_valid:
+        lines.append("- ⚠️ 基本面语义门禁未通过，中线判断仅供人工复核")
+    elif evidence_coverage >= 70:
         lines.append("- 数据支撑充分，中线判断可信")
     else:
         lines.append("- ⚠️ 数据完整度不足，中线判断仅供参考")
@@ -1256,7 +1267,12 @@ def format_execution_block(
 
 def format_readiness_score(score: dict) -> str:
     """格式化 readiness score 为报告文本"""
-    actions = get_allowed_actions(score['data_completeness'])
+    action_completeness = score["data_completeness"]
+    if score["confidence"] == ConfidenceLevel.MEDIUM.value:
+        action_completeness = min(action_completeness, 74)
+    elif score["confidence"] == ConfidenceLevel.LOW.value:
+        action_completeness = min(action_completeness, 49)
+    actions = get_allowed_actions(action_completeness)
     result = (
         f"\n\n📋 [C-008] 执行就绪度评分\n"
         f"- 数据完整度：{score['data_completeness']}%\n"
@@ -1266,6 +1282,9 @@ def format_readiness_score(score: dict) -> str:
         f"- 禁止动作：{', '.join(actions['forbidden']) if actions['forbidden'] else '无'}\n"
         f"- 总结：{score['summary']}"
     )
+    blockers = score.get("blockers") or []
+    if blockers:
+        result += "\n- 置信度降级原因：" + "、".join(blockers)
     if actions['forbidden']:
         result += f"\n\n⚠️ {actions['message']}"
     result += _format_version_block()
@@ -1330,9 +1349,23 @@ _SANITIZE_EVENT_RISK_BUY = [
     (r'建议买入', '等待风险解除'),
     (r'建议入场', '等待风险解除'),
     (r'积极建仓', '等待风险解除'),
+    (r'(?:建议|可以|考虑|执行|开始|建立|进行)(?:条件)?试(?:探)?仓', '等待风险解除'),
+    (r'条件试(?:探)?仓', '等待风险解除'),
+    (r'试探性轻仓(?:策略)?', '等待风险解除'),
+    (r'(?:轻仓|小仓位)试(?:多|错)', '等待风险解除'),
     (r'(?i)\bSTRONG_BUY\b', 'WAIT'),
     (r'(?i)\bBUY\b', 'WAIT'),
     (r'(?i)\bENTER\b', 'WAIT'),
+]
+_SANITIZE_FUNDAMENTAL_VETO_BUY = [
+    (pattern, "等待基本面证据复核")
+    for pattern, _replacement in _SANITIZE_EVENT_RISK_BUY
+] + [
+    (r'买入(?!价|价格|条件|区间|触发|信号|点)', "等待基本面证据复核"),
+    (r'建仓(?!价|价格|条件|区间|计划|触发|信号|点)', "等待基本面证据复核"),
+    (r'入场(?!价|价格|条件|区间|计划|触发|信号|点)', "等待基本面证据复核"),
+    (r'加仓(?!价|价格|条件|区间|计划|触发|信号|点)', "等待基本面证据复核"),
+    (r'追涨|低吸|逢低吸纳|试多', "等待基本面证据复核"),
 ]
 _SANITIZE_NO_POSITION = [
     # ── [P0-2] Replace action suggestions but preserve field names ──
@@ -1393,12 +1426,44 @@ _SANITIZE_NO_POSITION = [
 ]
 
 _SYSTEM_BLOCK_MARKERS = [
+    "📋 [C-008] 执行就绪度评分",
     "📊 数据源可用性：",
     "--- 报告质量评分 ---",
     "### 执行等级与证据门禁",
     "🚨 [C-007] 事件风控警告",
     "⚠️ [D-002]",
 ]
+
+_NEGATIVE_ACTION_CONTEXT = re.compile(
+    r"(?:禁止|不得|不应|不建议|不可|不能|避免|无需|勿|严禁|不宜|"
+    r"无(?:明确)?(?:买入|建仓|入场|加仓|追涨|低吸|试多))"
+)
+
+
+def _sanitize_fundamental_entry_actions(
+    text: str,
+) -> tuple[str, list[str]]:
+    """Downgrade positive entry clauses without corrupting guardrail text."""
+    changes: list[str] = []
+    sanitized_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if re.search(r"禁止动作\s*[:：]", line):
+            sanitized_lines.append(line)
+            continue
+        parts = re.split(r"([。！？；;，,])", line)
+        for index in range(0, len(parts), 2):
+            clause = parts[index]
+            if not clause or _NEGATIVE_ACTION_CONTEXT.search(clause):
+                continue
+            for pattern, replacement in _SANITIZE_FUNDAMENTAL_VETO_BUY:
+                if re.search(pattern, clause):
+                    clause = re.sub(pattern, replacement, clause)
+                    changes.append(
+                        f"基本面门禁买入动作已降级为「{replacement}」"
+                    )
+            parts[index] = clause
+        sanitized_lines.append("".join(parts))
+    return "".join(sanitized_lines), changes
 
 
 def _split_llm_body_and_system_blocks(text: str) -> tuple:
@@ -1457,11 +1522,15 @@ def sanitize_forbidden_strong_actions(
                 if matches:
                     changes.append(f"事件风险买入动作已降级为「{replacement}」")
                     body = re.sub(pattern, replacement, body)
-        event_risk_buy_only = (
-            "event_risk_block_open" in failures
-            and not any(reason != "event_risk_block_open" for reason in failures)
+        if "fundamental_semantic_gate" in failures:
+            body, fundamental_changes = _sanitize_fundamental_entry_actions(body)
+            changes.extend(fundamental_changes)
+        buy_only_failures = {"event_risk_block_open", "fundamental_semantic_gate"}
+        entry_veto_only = (
+            bool(failures)
+            and all(reason in buy_only_failures for reason in failures)
         )
-        if not event_risk_buy_only:
+        if not entry_veto_only:
             for pattern, replacement in _SANITIZE_STRONG_SELL:
                 matches = list(re.finditer(pattern, body))
                 if matches:
@@ -1587,7 +1656,9 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 2. Volume — derived from stock_data
     volume = EvidenceStatus.NOT_QUERIED
-    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+    if stock_struct_status and stock_struct_status != EvidenceStatus.HAS_DATA:
+        volume = stock_struct_status
+    elif raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
         volume = EvidenceStatus.HAS_DATA
     else:
         src = market or volume_price
@@ -2393,16 +2464,24 @@ def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> d
             return "NORMAL_NO_DATA"
         return "HAS_DATA" if val else "NOT_QUERIED"
 
-    individual_status = _status_from_g006(raw.get("fund_flow_individual"))
+    individual_entry = raw.get("fund_flow_individual")
+    individual_status = _status_from_g006(individual_entry)
     individual_unit_verified = False
     if individual_status:
-        structured = raw.get("fund_flow_individual")
+        structured = individual_entry
         individual_unit_verified = structured.get("unit_verified", False) is True
     else:
-        raw_ff = _unwrap_legacy(raw.get("fund_flow_individual"))
+        raw_ff = _unwrap_legacy(individual_entry)
         individual_status = _status_from_text(raw_ff)
-        if individual_status == "HAS_DATA":
-            individual_unit_verified = True
+        if individual_status == "HAS_DATA" and isinstance(raw_ff, str):
+            individual_unit_verified = bool(
+                re.search(
+                    r"单位\s*[:：]\s*(?:人民币)?(?:元|万元|亿元)\b|"
+                    r"(?:主力)?(?:净流入|净流出|净额|超大单|大单)"
+                    r"[^\n，。；]{0,12}[-+]?\d+(?:\.\d+)?\s*(?:万|亿)?元",
+                    raw_ff,
+                )
+            )
 
     board_status = _status_from_g006(raw.get("fund_flow_board"))
     if not board_status:
@@ -2417,6 +2496,8 @@ def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> d
     strong_evidence_allowed = (
         individual_status == "HAS_DATA" and individual_unit_verified
     )
+    unit_gate_applicable = individual_status not in {"NOT_AVAILABLE", "SKIPPED"}
+    unit_gate_passed = not unit_gate_applicable or strong_evidence_allowed
 
     conflict_parts = []
     if individual_status == "FAILED":
@@ -2434,6 +2515,8 @@ def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> d
         "board_status": board_status,
         "news_reported_fund_flow": news_reported_fund_flow,
         "strong_evidence_allowed": strong_evidence_allowed,
+        "unit_gate_applicable": unit_gate_applicable,
+        "unit_gate_passed": unit_gate_passed,
         "unit_verified": individual_unit_verified,
         "not_mixed": True,
         "conflict_summary": conflict_summary,

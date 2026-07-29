@@ -45,6 +45,7 @@ from tradingagents.agents.utils.readiness_score import (
     sanitize_forbidden_strong_actions,
     infer_evidence_statuses,
     extract_execution_signals,
+    build_fund_flow_provenance,
     _split_llm_body_and_system_blocks,
     ConfidenceLevel,
     validate_stock_name,
@@ -190,7 +191,11 @@ def create_risk_manager(llm, memory):
         # 等参数（它们恒为 None/False），导致门禁永不触发。现改用
         # check_event_risk_from_state，从已采集的 raw_evidence / 公告 / 新闻
         # 自动提取解禁比例、停复牌、并购事件，并回传 data_status。
-        raw_evidence = state.get("metadata", {}).get("raw_evidence") or {}
+        raw_evidence = (
+            state.get("metadata", {}).get("raw_evidence")
+            or state.get("raw_evidence")
+            or {}
+        )
         event_risk_info = check_event_risk_from_state(stock_code, state=state)
         if event_risk_info["has_risk"]:
             final_response += format_event_risk_warning(event_risk_info)
@@ -276,7 +281,11 @@ def create_risk_manager(llm, memory):
 
         evidence_statuses = infer_evidence_statuses(
             reports_dict,
-            raw_evidence=state.get("metadata", {}).get("raw_evidence"),
+            raw_evidence=raw_evidence,
+        )
+        fund_flow_provenance = build_fund_flow_provenance(
+            raw_evidence,
+            reports_dict,
         )
 
         evidence_coverage = calculate_evidence_coverage(
@@ -295,8 +304,17 @@ def create_risk_manager(llm, memory):
             data_completeness,
             event_risk_active=event_risk_info["has_risk"],
             evidence_coverage=evidence_coverage,  # [DATA-P0-603629] astock_source_fallback
+            fundamental_integrity_valid=fundamental_integrity["is_valid"],
         )
-        readiness = generate_readiness_score(data_completeness, confidence)
+        readiness = generate_readiness_score(
+            data_completeness,
+            confidence,
+            blockers=(
+                []
+                if fundamental_integrity["is_valid"]
+                else ["fundamental_semantic_gate"]
+            ),
+        )
         final_response += format_readiness_score(readiness)
 
         data_sources = [
@@ -313,7 +331,7 @@ def create_risk_manager(llm, memory):
         # [DATA-P0-603629] astock_source_fallback: use raw_evidence status
         # for data source availability display, not just report text existence.
         # [DATA-004] raw_evidence_contract: enhanced with vendor/endpoint/fallback info
-        _raw_ev = state.get("metadata", {}).get("raw_evidence") or {}
+        _raw_ev = raw_evidence
         _status_overrides = {}
         _contract_overrides = {}
         for _ev_key, _label in [
@@ -376,6 +394,8 @@ def create_risk_manager(llm, memory):
         gate = get_strong_action_gate(
             source_coverage=source_coverage,
             evidence_coverage=evidence_coverage,
+            fund_flow_unit_verified=fund_flow_provenance["unit_gate_passed"],
+            fund_flow_not_mixed=fund_flow_provenance["not_mixed"],
             position_status=position_status,
             contains_strong_action=contains_strong,
             no_execution_field_conflict=signals["no_execution_conflict"],
@@ -422,6 +442,13 @@ def create_risk_manager(llm, memory):
             event_risk_active=event_risk_info["has_risk"],
             event_risk_level=event_risk_info.get("risk_level", "none"),
         )
+        if not fundamental_integrity["is_valid"]:
+            buy_result["level"] = 0
+            integrity_note = "基本面语义门禁未通过，Buy Level 强制为 0（禁止新增/加仓）"
+            existing_note = buy_result.get("note", "")
+            buy_result["note"] = "；".join(
+                part for part in (existing_note, integrity_note) if part
+            )
 
         opp_score = calculate_opportunity_score(
             trend_confirmed=signals["trend_confirmed"],
@@ -521,6 +548,7 @@ def create_risk_manager(llm, memory):
             analysis_intent=state.get("analysis_intent", "watch"),
             position_context=state.get("position_context", {}),
             horizon=state.get("horizon", "short"),
+            fundamental_integrity_valid=fundamental_integrity["is_valid"],
         )
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
@@ -573,6 +601,7 @@ def create_risk_manager(llm, memory):
             # [Fix-2]
             "valuation_mismatch": valuation_check["mismatch"],
             "fundamental_integrity": fundamental_integrity,
+            "fund_flow_provenance": fund_flow_provenance,
             "financial_anomaly_inputs": extract_financial_anomaly_inputs(period_facts),
         }
 

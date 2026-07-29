@@ -87,7 +87,10 @@ class TestFundFlowProvenance:
 
     def test_legacy_format_individual_has_data(self):
         raw = {
-            "fund_flow_individual": "600584.SH 近20日主力资金净流向：\n日期 净流入\n2026-05-26 12345",
+            "fund_flow_individual": (
+                "600584.SH 近20日主力资金净流向（单位：元）：\n"
+                "日期 净流入\n2026-05-26 12345"
+            ),
         }
         result = build_fund_flow_provenance(raw, {})
         assert result["individual_status"] == "HAS_DATA"
@@ -266,6 +269,67 @@ class TestLHBProvenance:
 # ── Gate integration ────────────────────────────────────────────────────
 
 class TestGateIntegration:
+
+    def test_risk_manager_wires_structured_fund_flow_into_gate(self):
+        import inspect
+
+        from tradingagents.agents.managers.risk_manager import create_risk_manager
+
+        source = inspect.getsource(create_risk_manager)
+        assert "build_fund_flow_provenance(" in source
+        assert (
+            'fund_flow_unit_verified=fund_flow_provenance["unit_gate_passed"]'
+            in source
+        )
+        assert 'fund_flow_not_mixed=fund_flow_provenance["not_mixed"]' in source
+        assert 'or state.get("raw_evidence")' in source
+
+    def test_report_text_never_promotes_to_strong_fund_flow_evidence(self):
+        provenance = build_fund_flow_provenance(
+            {},
+            {
+                "smart_money_report": (
+                    "个股近5日主力资金净流向（单位：元）："
+                    "2026-07-28 主力净流入 12000000 元"
+                )
+            },
+        )
+
+        assert provenance["individual_status"] == "NOT_QUERIED"
+        assert provenance["unit_verified"] is False
+        assert provenance["strong_evidence_allowed"] is False
+
+    def test_not_available_fund_flow_skips_ashare_only_unit_gate(self):
+        provenance = build_fund_flow_provenance(
+            {
+                "fund_flow_individual": {
+                    "status": "NOT_AVAILABLE",
+                    "raw": "",
+                    "vendor": "skipped",
+                    "reason": "HK market not supported for A-share-only data source",
+                }
+            },
+            {},
+        )
+
+        assert provenance["strong_evidence_allowed"] is False
+        assert provenance["unit_gate_applicable"] is False
+        assert provenance["unit_gate_passed"] is True
+
+    def test_report_text_without_unit_fails_closed(self):
+        provenance = build_fund_flow_provenance(
+            {},
+            {
+                "smart_money_report": (
+                    "个股近5日主力资金净流向：连续三日呈现净流入，"
+                    "但原始报告没有提供可校验的金额单位；当前价约12元"
+                )
+            },
+        )
+
+        assert provenance["individual_status"] == "NOT_QUERIED"
+        assert provenance["unit_verified"] is False
+        assert provenance["strong_evidence_allowed"] is False
 
     def test_fund_flow_failed_news_mentions_blocks_gate(self):
         fund_prov = build_fund_flow_provenance(

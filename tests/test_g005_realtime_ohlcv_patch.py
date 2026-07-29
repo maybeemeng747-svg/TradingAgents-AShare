@@ -71,7 +71,8 @@ class TestG005RealtimeOHLCVPatch:
         )
 
         with patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_today_str", return_value="2026-05-26"), \
-             patch("tradingagents.dataflows.providers.cn_akshare_provider.is_cn_trading_day", return_value=True):
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.is_cn_trading_day", return_value=True), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_market_phase", return_value="post_close"):
             result = provider._maybe_append_realtime_row(
                 "600584.SH", hist_df, "2026-05-26", assume_locked=True
             )
@@ -120,6 +121,39 @@ class TestG005RealtimeOHLCVPatch:
         attrs = getattr(result, "attrs", {})
         assert attrs.get("_realtime_patch_status") in ("FAILED", "STALE")
 
+    def test_eastmoney_fallback_reuses_existing_provider_lock(self):
+        """The post-close fallback must not re-enter AKSHARE_CALL_LOCK."""
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        em_df = pd.DataFrame(
+            [{
+                "代码": "600584",
+                "最新价": 88.19,
+                "今开": 85.0,
+                "最高": 89.0,
+                "最低": 84.5,
+                "成交量": 50000,
+                "成交额": 4400000,
+            }]
+        )
+        fake_ak = MagicMock()
+        fake_ak.stock_zh_a_spot_em.return_value = em_df
+
+        with patch.object(provider, "_fetch_quotes_sina", return_value="{}"), \
+             patch.object(provider, "_ak", return_value=fake_ak), \
+             patch(
+                 "tradingagents.dataflows.providers.cn_akshare_provider.AKSHARE_CALL_LOCK"
+             ) as lock:
+            result, info = provider._fetch_realtime_ohlcv_from_quotes(
+                "600584.SH",
+                assume_locked=True,
+            )
+
+        lock.__enter__.assert_not_called()
+        assert not result.empty
+        assert info["status"] == "HAS_DATA"
+
     def test_format_header_includes_patch_info(self):
         """_format_ak_hist header includes realtime patch metadata."""
         from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
@@ -152,6 +186,85 @@ class TestG005RealtimeOHLCVPatch:
 
         assert len(result) == 1
         assert not getattr(result, "attrs", {}).get("_realtime_patched", False)
+
+    @pytest.mark.parametrize("phase", ["in_session", "lunch_break"])
+    def test_no_daily_bar_patch_before_market_close(self, phase):
+        """Partial intraday quotes must not become completed daily candles."""
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        hist_df = _make_hist_df(["2026-05-25"], [80.17])
+
+        with patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_today_str", return_value="2026-05-26"), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.is_cn_trading_day", return_value=True), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_market_phase", return_value=phase), \
+             patch.object(provider, "_fetch_realtime_ohlcv_from_quotes") as fetch_quote:
+            result = provider._maybe_append_realtime_row(
+                "600584.SH", hist_df, "2026-05-26", assume_locked=True
+            )
+
+        assert len(result) == 1
+        assert result.attrs["_current_day_status"] == "PARTIAL_INTRADAY"
+        assert result.attrs["_realtime_patch_status"] == "SKIPPED_NOT_FINAL"
+        fetch_quote.assert_not_called()
+
+    def test_provider_partial_today_row_is_removed_before_close(self):
+        """Even a historical endpoint's current-day row is incomplete intraday."""
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        hist_df = _make_hist_df(
+            ["2026-05-25", "2026-05-26"],
+            [80.17, 79.0],
+            volumes=[150000, 5000],
+        )
+
+        with patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_today_str", return_value="2026-05-26"), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.is_cn_trading_day", return_value=True), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_market_phase", return_value="in_session"):
+            result = provider._maybe_append_realtime_row(
+                "600584.SH", hist_df, "2026-05-26", assume_locked=True
+            )
+
+        assert len(result) == 1
+        assert result.iloc[-1]["Date"] == pd.Timestamp("2026-05-25")
+        assert result.attrs["_current_day_status"] == "PARTIAL_INTRADAY"
+
+    def test_format_header_marks_partial_intraday_exclusion(self):
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        df = _make_hist_df(["2026-05-25"], [80.17])
+        df.attrs["_current_day_status"] = "PARTIAL_INTRADAY"
+
+        output = provider._format_ak_hist(
+            df, "600584.SH", "2026-05-20", "2026-05-26"
+        )
+
+        assert "current_day_status=PARTIAL_INTRADAY" in output
+        assert "action=excluded_from_daily_ohlcv" in output
+
+    def test_format_empty_intraday_range_preserves_partial_status(self):
+        """A today-only query must explain why its sole partial bar was removed."""
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+        provider = CnAkshareProvider()
+        df = _make_hist_df(["2026-05-26"], [79.0], volumes=[5000])
+
+        with patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_today_str", return_value="2026-05-26"), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.is_cn_trading_day", return_value=True), \
+             patch("tradingagents.dataflows.providers.cn_akshare_provider.cn_market_phase", return_value="in_session"):
+            completed = provider._maybe_append_realtime_row(
+                "600584.SH", df, "2026-05-26", assume_locked=True
+            )
+
+        assert completed.empty
+        output = provider._format_ak_hist(
+            completed, "600584.SH", "2026-05-26", "2026-05-26"
+        )
+        assert "current_day_status=PARTIAL_INTRADAY" in output
+        assert "action=excluded_from_daily_ohlcv" in output
+        assert "No data found for symbol '600584.SH'" in output
 
     def test_volume_unit_normalization(self):
         """Sina returns volume in shares; if ratio to hist median > 100, divide by 100."""

@@ -117,6 +117,99 @@ def test_fund_flow_uses_independent_ths_fallback():
     assert "雅克科技" in text
 
 
+def test_akshare_primary_fund_flow_declares_yuan_unit():
+    from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+    provider = CnAkshareProvider()
+    fake_ak = MagicMock()
+    fake_ak.stock_individual_fund_flow.return_value = pd.DataFrame(
+        {
+            "日期": ["2026-07-28"],
+            "主力净流入-净额": [-667867936.0],
+        }
+    )
+
+    with patch.object(provider, "_ak", return_value=fake_ak):
+        text = provider.get_individual_fund_flow("002409.SZ")
+
+    assert "单位：元" in text
+    assert "-667867936" in text
+
+
+def test_fund_flow_contract_uses_explicit_unit_marker():
+    collector = DataCollector()
+    collector._cache["002409.SZ_2026-07-28"] = {
+        "fund_flow_individual": (
+            "002409.SZ 近20日主力资金净流向"
+            "（AKShare stock_individual_fund_flow，单位：元）：\n"
+            "2026-07-28 -667867936.0"
+        )
+    }
+
+    with patch(
+        "tradingagents.graph.data_collector.get_last_hit_vendor",
+        return_value="cn_akshare",
+    ):
+        evidence = collector.build_raw_evidence("002409.SZ", "2026-07-28")
+
+    assert evidence["fund_flow_individual"]["unit"] == "元"
+    assert evidence["fund_flow_individual"]["unit_verified"] is True
+
+
+def test_fund_flow_contract_without_unit_marker_fails_closed():
+    collector = DataCollector()
+    collector._cache["002409.SZ_2026-07-28"] = {
+        "fund_flow_individual": (
+            "002409.SZ 近20日主力资金净流向：\n"
+            "2026-07-28 -667867936.0"
+        )
+    }
+
+    evidence = collector.build_raw_evidence("002409.SZ", "2026-07-28")
+
+    assert evidence["fund_flow_individual"]["unit"] is None
+    assert evidence["fund_flow_individual"]["unit_verified"] is False
+
+
+def test_stock_data_contract_exposes_partial_intraday_status():
+    collector = DataCollector()
+    collector._cache["002409.SZ_2026-07-29"] = {
+        "stock_data": (
+            "# Stock data for 002409.SZ from 2026-07-01 to 2026-07-29\n"
+            "# [INTRADAY-DAYBAR] current_day_status=PARTIAL_INTRADAY, "
+            "action=excluded_from_daily_ohlcv\n\n"
+            "Date,Open,High,Low,Close,Volume\n"
+            "2026-07-28,160,170,155,166,100000"
+        )
+    }
+
+    evidence = collector.build_raw_evidence("002409.SZ", "2026-07-29")
+
+    assert evidence["stock_data"]["current_day_status"] == "PARTIAL_INTRADAY"
+    assert evidence["stock_data"]["is_realtime_patched"] is False
+
+
+def test_empty_partial_intraday_stock_data_is_not_counted_as_available():
+    collector = DataCollector()
+    collector._cache["002409.SZ_2026-07-29"] = {
+        "stock_data": (
+            "# [INTRADAY-DAYBAR] current_day_status=PARTIAL_INTRADAY, "
+            "action=excluded_from_daily_ohlcv\n"
+            "No data found for symbol '002409.SZ' between "
+            "2026-07-29 and 2026-07-29"
+        )
+    }
+
+    evidence = collector.build_raw_evidence("002409.SZ", "2026-07-29")
+
+    assert evidence["stock_data"]["status"] == "NORMAL_NO_DATA"
+    assert evidence["stock_data"]["record_count"] == 0
+    assert evidence["stock_data"]["current_day_status"] == "PARTIAL_INTRADAY"
+    statuses = infer_evidence_statuses({}, evidence)
+    assert statuses["ohlcv_5d"] == EvidenceStatus.NORMAL_NO_DATA
+    assert statuses["volume"] == EvidenceStatus.NORMAL_NO_DATA
+
+
 def test_fund_flow_ths_fallback_preserves_leading_zero_codes():
     from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
 

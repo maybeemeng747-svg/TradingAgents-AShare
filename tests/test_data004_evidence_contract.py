@@ -21,7 +21,11 @@ def _make_pool(**overrides):
         "news": "Some news data for testing",
         "global_news": "Global news content",
         "fund_flow_board": "Board fund flow data",
-        "fund_flow_individual": "Individual fund flow data",
+        "fund_flow_individual": (
+            "600584.SH 近20日主力资金净流向"
+            "（Eastmoney push2his，单位：万元）：\n"
+            "2026-05-25 | 100.00"
+        ),
         "lhb": "LHB data",
         "fundamentals": "Fundamental analysis data",
         "balance_sheet": "Balance sheet data",
@@ -62,6 +66,7 @@ class TestEvidenceContract:
         assert c.source_url is None
         assert c.error is None
         assert c.is_realtime_patched is False
+        assert c.current_day_status is None
         assert c.source_type is None
         assert c.unit_verified is None
         assert c.query_mode is None

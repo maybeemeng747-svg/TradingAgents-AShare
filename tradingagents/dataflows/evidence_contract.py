@@ -49,6 +49,7 @@ class EvidenceContract:
     error: Optional[str] = None
 
     is_realtime_patched: bool = False
+    current_day_status: Optional[str] = None
     source_type: Optional[str] = None
     unit_verified: Optional[bool] = None
     query_mode: Optional[str] = None
@@ -70,6 +71,7 @@ class EvidenceContract:
             "source_url": self.source_url,
             "error": self.error,
             "is_realtime_patched": self.is_realtime_patched,
+            "current_day_status": self.current_day_status,
             "source_type": self.source_type,
             "unit_verified": self.unit_verified,
             "query_mode": self.query_mode,
@@ -93,6 +95,7 @@ class EvidenceContract:
             source_url=data.get("source_url"),
             error=data.get("error"),
             is_realtime_patched=data.get("is_realtime_patched", False),
+            current_day_status=data.get("current_day_status"),
             source_type=data.get("source_type"),
             unit_verified=data.get("unit_verified"),
             query_mode=data.get("query_mode"),

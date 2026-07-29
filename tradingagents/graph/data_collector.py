@@ -846,6 +846,7 @@ class DataCollector:
                 "unit": None,
                 "error": None,
                 "is_realtime_patched": False,
+                "current_day_status": None,
             }
             if non_provider_status and isinstance(raw_value, dict):
                 entry["vendor"] = str(raw_value.get("vendor") or "skipped")
@@ -855,6 +856,14 @@ class DataCollector:
             data_type = _resolve_data_type_for_key(key)  # [DATA-004]
 
             if key == "stock_data" and isinstance(raw_value, str):
+                partial_without_completed_bar = (
+                    "[INTRADAY-DAYBAR]" in raw_value
+                    and "action=excluded_from_daily_ohlcv" in raw_value
+                    and "No data found for symbol" in raw_value
+                )
+                if partial_without_completed_bar:
+                    entry["status"] = "NORMAL_NO_DATA"
+                    entry["record_count"] = 0
                 actual_vendor = (
                     get_last_hit_vendor("get_stock_data")
                     if has_current_provider_result else None
@@ -872,6 +881,17 @@ class DataCollector:
                             parts = line.split("quote_time=")
                             if len(parts) > 1:
                                 entry["as_of"] = parts[1].strip()
+                if "[INTRADAY-DAYBAR]" in raw_value:
+                    for line in raw_value.split("\n"):
+                        if (
+                            "[INTRADAY-DAYBAR]" in line
+                            and "current_day_status=" in line
+                        ):
+                            entry["current_day_status"] = (
+                                line.split("current_day_status=", 1)[1]
+                                .split(",", 1)[0]
+                                .strip()
+                            )
                 if "adjustment=" in raw_value:  # [DATA-P0-603629] astock_source_fallback
                     for line in raw_value.split("\n"):
                         if "adjustment=" in line and "[DATA-P0-603629]" in line:
@@ -884,12 +904,26 @@ class DataCollector:
                     isinstance(raw_value, str)
                     and "FUND_FLOW_AGGREGATE_HAS_DATA" in raw_value
                 )
-                entry["unit"] = (
-                    "接口原始金额（万元/亿元文本）"
-                    if is_aggregate_fallback else "万元"
-                )
+                raw_text = raw_value if isinstance(raw_value, str) else ""
+                if is_aggregate_fallback:
+                    entry["unit"] = "接口原始金额（万元/亿元文本）"
+                    entry["unit_verified"] = False
+                elif any(
+                    marker in raw_text
+                    for marker in ("单位：万元", "单位:万元", "（万元）", "(万元)")
+                ):
+                    entry["unit"] = "万元"
+                    entry["unit_verified"] = True
+                elif any(
+                    marker in raw_text
+                    for marker in ("单位：元", "单位:元", "（元）", "(元)")
+                ):
+                    entry["unit"] = "元"
+                    entry["unit_verified"] = True
+                else:
+                    entry["unit"] = None
+                    entry["unit_verified"] = False
                 entry["source_type"] = "individual_fund_flow"
-                entry["unit_verified"] = not is_aggregate_fallback
                 if is_aggregate_fallback:
                     entry["granularity"] = "aggregate_current_and_5d"
                 actual_vendor = (
@@ -990,6 +1024,7 @@ class DataCollector:
                 "fallback_from": entry["fallback_from"],  # [DATA-004]
                 "source_url": entry["source_url"],  # [DATA-004]
                 "is_realtime_patched": entry["is_realtime_patched"],
+                "current_day_status": entry.get("current_day_status"),
                 "source_type": entry.get("source_type"),
                 "unit_verified": entry.get("unit_verified", None),
                 "query_mode": entry.get("query_mode", None),

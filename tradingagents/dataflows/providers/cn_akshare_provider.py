@@ -257,8 +257,18 @@ class CnAkshareProvider(BaseMarketDataProvider):
         return out
 
     def _format_ak_hist(self, df: pd.DataFrame, symbol: str, start: str, end: str) -> str:
+        patch_info = getattr(df, "attrs", {}) or {}
+        current_day_status = patch_info.get("_current_day_status")
         if df is None or df.empty:
-            return f"No data found for symbol '{symbol}' between {start} and {end}"
+            no_data = f"No data found for symbol '{symbol}' between {start} and {end}"
+            if not current_day_status:
+                return no_data
+            return (
+                "# [INTRADAY-DAYBAR] "
+                f"current_day_status={current_day_status}, "
+                "action=excluded_from_daily_ohlcv\n"
+                f"{no_data}"
+            )
         out = self._normalize_hist_df(df)
         out["Dividends"] = 0.0
         out["Stock Splits"] = 0.0
@@ -269,7 +279,12 @@ class CnAkshareProvider(BaseMarketDataProvider):
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         header += f"# [DATA-P0-603629] adjustment=前复权(qfq)\n"  # [DATA-P0-603629] astock_source_fallback
         # [G-005] realtime_ohlcv_patch: record patch info in header
-        patch_info = getattr(df, "attrs", {}) or {}
+        if current_day_status:
+            header += (
+                "# [INTRADAY-DAYBAR] "
+                f"current_day_status={current_day_status}, "
+                "action=excluded_from_daily_ohlcv\n"
+            )
         if patch_info.get("_realtime_patched"):
             info = patch_info.get("_realtime_patch_info", {})
             header += f"# [G-005] is_realtime_patched=True, source={info.get('source')}, quote_time={info.get('quote_time')}\n"
@@ -416,7 +431,12 @@ class CnAkshareProvider(BaseMarketDataProvider):
             return self._fetch_realtime_row_unlocked(symbol)
 
     # [G-005] realtime_ohlcv_patch
-    def _fetch_realtime_ohlcv_from_quotes(self, symbol: str) -> tuple[pd.DataFrame, dict]:
+    def _fetch_realtime_ohlcv_from_quotes(
+        self,
+        symbol: str,
+        *,
+        assume_locked: bool = False,
+    ) -> tuple[pd.DataFrame, dict]:
         """Fetch today's OHLCV from get_realtime_quotes (Sina/Eastmoney).
 
         Returns (DataFrame with one row, info_dict) or (empty DataFrame, info_dict).
@@ -442,9 +462,13 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
         if not data or upper_symbol not in data:
             try:
-                with AKSHARE_CALL_LOCK:
+                if assume_locked:
                     ak = self._ak()
                     em_df = ak.stock_zh_a_spot_em()
+                else:
+                    with AKSHARE_CALL_LOCK:
+                        ak = self._ak()
+                        em_df = ak.stock_zh_a_spot_em()
                 if em_df is not None and not em_df.empty:
                     raw_json = self._build_quotes_from_em(em_df, {code: upper_symbol})
                     data = _json.loads(raw_json)
@@ -512,17 +536,35 @@ class CnAkshareProvider(BaseMarketDataProvider):
             if not is_cn_trading_day(today.strftime("%Y-%m-%d")):
                 return hist_df
 
+            phase = cn_market_phase()
+            if phase != "post_close":
+                # A provider may expose today's still-forming row before the
+                # close. Daily indicators must only consume completed bars;
+                # realtime price/turnover remain available through the
+                # independent realtime_quote evidence channel.
+                completed = hist_df.copy()
+                completed.attrs.update(getattr(hist_df, "attrs", {}) or {})
+                if not completed.empty and "Date" in completed.columns:
+                    dates = pd.to_datetime(completed["Date"], errors="coerce")
+                    completed = completed.loc[dates.dt.normalize() != today].copy()
+                completed.attrs["_current_day_status"] = (
+                    "PARTIAL_INTRADAY"
+                    if phase in ("in_session", "lunch_break")
+                    else "NOT_FINAL"
+                )
+                completed.attrs["_realtime_patch_status"] = "SKIPPED_NOT_FINAL"
+                return completed
+
             has_today = False
             if not hist_df.empty:
                 has_today = (pd.to_datetime(hist_df["Date"]).dt.normalize() == today).any()
             if has_today:
                 return hist_df
 
-            phase = cn_market_phase()
-            if phase in ("pre_open", "closed"):
-                return hist_df
-
-            rt, info = self._fetch_realtime_ohlcv_from_quotes(symbol)
+            rt, info = self._fetch_realtime_ohlcv_from_quotes(
+                symbol,
+                assume_locked=assume_locked,
+            )
 
             if rt.empty:
                 _lock_logger.warning(
@@ -1355,7 +1397,11 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 primary_error = "Eastmoney daily endpoint returned no rows"
             else:
                 df_recent = df.tail(20)
-                return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
+                return (
+                    f"{symbol} 近20日主力资金净流向"
+                    "（AKShare stock_individual_fund_flow，单位：元）：\n"
+                    f"{df_recent.to_string(index=False)}"
+                )
         except Exception as exc:
             primary_error = f"{type(exc).__name__}: {exc}"
 

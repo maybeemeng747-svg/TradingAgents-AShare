@@ -17,6 +17,7 @@ from tradingagents.agents.utils.readiness_score import (
     calculate_buy_level,
     calculate_opportunity_score,
     format_execution_block,
+    format_readiness_score,
     sanitize_forbidden_strong_actions,
     infer_evidence_statuses,
     extract_execution_signals,
@@ -468,6 +469,107 @@ def test_format_execution_block_with_failures():
     assert "Strong Action Gate：未通过" in block
     assert "source_coverage=60% < 70%" in block
     assert "持仓状态未知" in block
+
+
+def test_fundamental_integrity_gate_caps_confidence_at_medium():
+    conf = assess_confidence(
+        data_completeness=95,
+        evidence_coverage=95,
+        fundamental_integrity_valid=False,
+    )
+
+    assert conf == ConfidenceLevel.MEDIUM
+
+
+def test_readiness_blocker_downgrades_action_policy():
+    score = generate_readiness_score(
+        87,
+        ConfidenceLevel.MEDIUM,
+        blockers=["fundamental_semantic_gate"],
+    )
+
+    block = format_readiness_score(score)
+
+    assert "数据完整度：87%" in block
+    assert "置信度：中" in block
+    assert "中等质量报告" in block
+    assert "禁止动作：加仓, 追涨" in block
+    assert "置信度降级原因：fundamental_semantic_gate" in block
+
+
+def test_execution_block_marks_fundamental_review_state():
+    block = format_execution_block(
+        source_coverage=87,
+        evidence_coverage=94,
+        confidence="中",
+        opportunity_score=60,
+        risk_level=1,
+        buy_level=1,
+        strong_action_gate={
+            "passed": False,
+            "failures": ["fundamental_semantic_gate"],
+        },
+        fundamental_integrity_valid=False,
+    )
+
+    assert "基本面语义门禁未通过，中线判断仅供人工复核" in block
+    assert "数据支撑充分，中线判断可信" not in block
+
+
+def test_fundamental_veto_removes_ordinary_entry_but_preserves_exit():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "建议买入并建立试探仓，条件试仓或采用试探性轻仓策略；"
+        "也不能逢低买入或低吸建仓；已有持仓可减仓退出。",
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="has_position",
+        buy_level=0,
+        risk_level=2,
+    )
+
+    assert "建议买入" not in sanitized
+    assert "建立试探仓" not in sanitized
+    assert "条件试仓" not in sanitized
+    assert "试探性轻仓" not in sanitized
+    assert "不能逢低买入或低吸建仓" in sanitized
+    assert "等待基本面证据复核" in sanitized
+    assert "减仓退出" in sanitized
+    assert changes
+
+
+def test_fundamental_veto_preserves_negative_guardrail_text():
+    guardrail = (
+        "📋 执行就绪度评分\n"
+        "- 禁止动作：买入, 加仓, 追涨\n"
+        "- 总结：禁止买入/加仓/追涨。建议继续观察。"
+    )
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        guardrail,
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    assert "禁止动作：买入, 加仓, 追涨" in sanitized
+    assert "禁止买入/加仓/追涨" in sanitized
+    assert "禁止等待基本面证据复核" not in sanitized
+    assert not changes
+
+
+def test_fundamental_veto_only_rewrites_positive_clause_on_mixed_line():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "禁止追涨，但可以轻仓试多。",
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    assert "禁止追涨" in sanitized
+    assert "轻仓试多" not in sanitized
+    assert "等待基本面证据复核" in sanitized
+    assert changes
 
 
 # ══════════════════════════════════════════════════════════════════════════════
