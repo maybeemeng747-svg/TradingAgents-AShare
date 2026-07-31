@@ -996,16 +996,32 @@ def extract_financial_anomaly_inputs(
     invest_group = _find_best_group({"investing_cashflow"})
     finance_group = _find_best_group({"financing_cashflow"})
 
-    # --- Phase 2: ROE from net_profit (income) + total_equity (balance) ---
-    # These live in different period_scope groups, so we match by report_date.
-    equity_items: list[Mapping[str, Any]] = []
+    # --- Phase 2: ROE from attributable net profit + matching equity ---
+    # Prefer parent equity because net_profit is attributable to the parent.
+    # Fall back to total equity only when parent equity is unavailable.
+    parent_equity_items: list[Mapping[str, Any]] = []
+    total_equity_items: list[Mapping[str, Any]] = []
     for item in facts or []:
-        if str(item.get("metric") or "") == "total_equity" and item.get("value") is not None:
-            equity_items.append(item)
-    equity_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
+        metric = str(item.get("metric") or "")
+        if item.get("value") is None:
+            continue
+        if metric == "parent_equity":
+            parent_equity_items.append(item)
+        elif metric == "total_equity":
+            total_equity_items.append(item)
+    parent_equity_items.sort(
+        key=lambda x: str(x.get("report_date") or ""), reverse=True
+    )
+    total_equity_items.sort(
+        key=lambda x: str(x.get("report_date") or ""), reverse=True
+    )
 
     equity_by_date: dict[str, float] = {}
-    for item in equity_items:
+    for item in parent_equity_items:
+        d = str(item.get("report_date") or "")
+        if d and d not in equity_by_date:
+            equity_by_date[d] = _value(item) or 0.0
+    for item in total_equity_items:
         d = str(item.get("report_date") or "")
         if d and d not in equity_by_date:
             equity_by_date[d] = _value(item) or 0.0
@@ -1017,7 +1033,7 @@ def extract_financial_anomaly_inputs(
     profit_items.sort(key=lambda x: str(x.get("report_date") or ""), reverse=True)
 
     def _find_roe_pair() -> tuple[float | None, str]:
-        """Find latest (net_profit, total_equity) sharing the same report_date."""
+        """Find latest attributable-profit/equity pair on the same report date."""
         for pi in profit_items:
             pd = str(pi.get("report_date") or "")
             if pd and pd in equity_by_date:
