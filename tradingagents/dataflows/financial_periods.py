@@ -38,14 +38,16 @@ _METRIC_ALIASES = {
     "total_assets": ("资产总计", "总资产"),
     "total_liabilities": ("负债合计", "总负债"),
     "total_equity": (
-        "归属于母公司股东权益合计",
-        "归属于母公司所有者权益合计",
         "所有者权益合计",
         "股东权益合计",
-        "净资产",
+    ),
+    "parent_equity": (
+        "归属于母公司股东权益合计",
+        "归属于母公司所有者权益合计",
     ),
     "accounts_receivable": ("应收账款",),
     "inventory": ("存货",),
+    "fixed_assets": ("固定资产", "固定资产净额"),
 }
 
 
@@ -61,6 +63,8 @@ class FinancialFact:
     formula: str | None = None
     input_evidence_ids: tuple[str, ...] = ()
     status: str = "HAS_DATA"
+    disclosure_date: str | None = None
+    disclosure_date_inferred: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +78,8 @@ class FinancialFact:
             "formula": self.formula,
             "input_evidence_ids": list(self.input_evidence_ids),
             "status": self.status,
+            "disclosure_date": self.disclosure_date,
+            "disclosure_date_inferred": self.disclosure_date_inferred,
         }
 
 
@@ -92,12 +98,28 @@ def period_scope_for_date(report_date: str, statement_type: str) -> str | None:
     }.get(month_day)
 
 
+def conservative_disclosure_date(report_date: str) -> str | None:
+    """Return a no-lookahead availability date when a source omits notice date."""
+    match = _DATE_RE.search(str(report_date or ""))
+    if not match:
+        return None
+    year = int(match.group(1))
+    month_day = f"{match.group(2)}{match.group(3)}"
+    return {
+        "0331": f"{year}-04-30",
+        "0630": f"{year}-08-31",
+        "0930": f"{year}-10-31",
+        "1231": f"{year + 1}-04-30",
+    }.get(month_day)
+
+
 def normalize_financial_records(
     records: Iterable[Mapping[str, Any]],
     *,
     statement_type: str,
     source: str,
     unit: str = "元",
+    observed_at: str | None = None,
 ) -> list[FinancialFact]:
     """Normalize provider records whose columns include a report-date field."""
     facts: list[FinancialFact] = []
@@ -106,6 +128,13 @@ def normalize_financial_records(
         scope = period_scope_for_date(report_date or "", statement_type)
         if not report_date or not scope:
             continue
+        disclosure_date = _record_disclosure_date(record)
+        disclosure_date_inferred = disclosure_date is None
+        if disclosure_date_inferred:
+            # Current provider payloads may contain later restatements of an
+            # older period. Without a real notice date, the only defensible
+            # availability date is when this exact payload was observed.
+            disclosure_date = observed_at
         for metric, aliases in _METRIC_ALIASES.items():
             raw_value = _record_value(record, aliases)
             if raw_value is _NO_VALUE:
@@ -121,6 +150,8 @@ def normalize_financial_records(
                     source=source,
                     input_evidence_ids=(f"{statement_type}:{index}:{report_date}:{metric}",),
                     status="HAS_DATA" if value is not None else FIELD_MISSING,
+                    disclosure_date=disclosure_date,
+                    disclosure_date_inferred=disclosure_date_inferred,
                 )
             )
     return facts
@@ -163,6 +194,14 @@ def derive_single_quarters(facts: Iterable[FinancialFact]) -> list[FinancialFact
                             formula=f"{current_scope}-{previous_scope}",
                             input_evidence_ids=current.input_evidence_ids,
                             status=FIELD_MISSING,
+                            disclosure_date=_latest_date(
+                                current.disclosure_date,
+                                previous.disclosure_date if previous else None,
+                            ),
+                            disclosure_date_inferred=_latest_disclosure_is_inferred(
+                                current,
+                                previous,
+                            ),
                         )
                     )
                     continue
@@ -177,15 +216,32 @@ def derive_single_quarters(facts: Iterable[FinancialFact]) -> list[FinancialFact
                         is_derived=True,
                         formula=f"{current_scope}-{previous_scope}",
                         input_evidence_ids=current.input_evidence_ids + previous.input_evidence_ids,
+                        disclosure_date=_latest_date(
+                            current.disclosure_date,
+                            previous.disclosure_date,
+                        ),
+                        disclosure_date_inferred=_latest_disclosure_is_inferred(
+                            current,
+                            previous,
+                        ),
                     )
                 )
     return sorted(derived, key=lambda item: (item.metric, item.report_date))
 
 
-def normalize_financial_markdown(raw: Any, *, statement_type: str, source: str) -> list[FinancialFact]:
+def normalize_financial_markdown(
+    raw: Any,
+    *,
+    statement_type: str,
+    source: str,
+    observed_at: str | None = None,
+) -> list[FinancialFact]:
     """Parse the provider's Markdown table without changing its raw payload."""
     return normalize_financial_records(
-        _markdown_records(raw), statement_type=statement_type, source=source
+        _markdown_records(raw),
+        statement_type=statement_type,
+        source=source,
+        observed_at=observed_at,
     )
 
 
@@ -239,6 +295,42 @@ def _record_date(record: Mapping[str, Any]) -> str | None:
             if match:
                 return "-".join(match.groups())
     return None
+
+
+def _record_disclosure_date(record: Mapping[str, Any]) -> str | None:
+    for key, value in record.items():
+        if str(key).strip() not in {
+            "公告日期",
+            "披露日期",
+            "来源公告日期",
+            "notice_date",
+            "disclosure_date",
+        }:
+            continue
+        match = _DATE_RE.search(str(value or ""))
+        if match:
+            return "-".join(match.groups())
+    return None
+
+
+def _latest_date(*values: str | None) -> str | None:
+    available = [value for value in values if value]
+    return max(available) if available else None
+
+
+def _latest_disclosure_is_inferred(
+    *facts: FinancialFact | None,
+) -> bool:
+    available = [
+        fact for fact in facts if fact is not None and fact.disclosure_date
+    ]
+    if not available:
+        return True
+    latest = max(str(fact.disclosure_date) for fact in available)
+    return any(
+        fact.disclosure_date == latest and fact.disclosure_date_inferred
+        for fact in available
+    )
 
 
 def _record_value(record: Mapping[str, Any], aliases: tuple[str, ...]) -> Any:
