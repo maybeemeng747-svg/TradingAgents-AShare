@@ -381,6 +381,36 @@ class TestPhase2Extraction:
         # net_profit=2000, equity=4000 -> ROE = 50%
         assert inputs["roe"] == 50.0
 
+    def test_roe_prefers_parent_equity_for_attributable_profit(self):
+        facts = self._facts_with_equity(equity=5000.0)
+        facts.append(
+            {
+                "metric": "parent_equity",
+                "report_date": "2025-12-31",
+                "period_scope": "POINT_IN_TIME",
+                "value": 4000.0,
+                "unit": "万元",
+                "status": "HAS_DATA",
+            }
+        )
+        inputs = extract_financial_anomaly_inputs(facts)
+        # Attributable net_profit=2000 must pair with parent_equity=4000.
+        assert inputs["roe"] == 50.0
+
+    def test_roe_uses_parent_equity_without_total_equity(self):
+        facts = _base_facts() + [
+            {
+                "metric": "parent_equity",
+                "report_date": "2025-12-31",
+                "period_scope": "POINT_IN_TIME",
+                "value": 4000.0,
+                "unit": "万元",
+                "status": "HAS_DATA",
+            }
+        ]
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["roe"] == 50.0
+
     def test_roe_none_when_no_equity(self):
         facts = _base_facts()
         inputs = extract_financial_anomaly_inputs(facts)
