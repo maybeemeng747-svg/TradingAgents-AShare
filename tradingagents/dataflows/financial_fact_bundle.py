@@ -747,6 +747,7 @@ def build_financial_fact_bundle(
         "symbol": canonical_symbol,
         "as_of": as_of,
         "generated_at": collection_time,
+        "observed_at": collection_date,
         "status": status,
         "identity": identity,
         "providers": [capture.to_dict() for capture in captures],

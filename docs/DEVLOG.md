@@ -28,6 +28,10 @@
 - 东方财富每条返回记录必须带有并匹配请求证券代码，畸形记录或混入其他发行人时
   整次查询失败；身份共识也会保留任一供应商返回的 `IDENTITY_CONFLICT`，不允许
   后续同名结果把真实冲突覆盖掉。
+- 正式导出目标只允许跨源验证通过的 bundle 占用；单源、空数据、冲突以及供应商
+  或单张报表失败均写入带时间戳的 retryable 审计旁路文件，保留失败证据的同时不
+  阻塞后续验证成功的重试；同一时间戳的重复或并发失败会追加顺序号，确保每次
+  审计尝试均不可变且不丢失。
 - 验证：FUND、财务事实与财务异常聚焦回归 **414 passed**；Python `py_compile` 与
   `git diff --check` 通过。未调用 LLM、未写生产数据库、未修改 prompts。
 
@@ -15357,3 +15361,20 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
   target-company knowledge score, zero fresh hits and `has_hit=false`.
 - Codex review found three P2 edge cases (peer-only scoring, leading-zero
   fallback matching and empty quote status); all were fixed before closeout.
+
+## 2026-07-31 | Financial-fact degraded audit contract
+
+- Financial-fact export now writes an immutable bundle for verified,
+  single-source, no-data and conflict outcomes instead of withholding the
+  artifact whenever cross-source verification is unavailable.
+- Every degraded outcome, including single-source, no-data, conflict and
+  partial provider query failures, uses a timestamped sibling audit path,
+  leaving the requested destination free for a verified retry.
+- The command still exits non-zero for a degraded result, and now reports an
+  explicit `verified` flag so downstream consumers cannot confuse audit
+  persistence with verification.
+- Bundles now carry the actual observation date used by inferred availability
+  logic, allowing the knowledge scorer to prevent look-ahead leakage.
+- Focused regression: 346 tests passed across the exporter, bundle,
+  Eastmoney provider, period normalization, evidence contract and readiness
+  suites.

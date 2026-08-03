@@ -9,6 +9,7 @@ import pytest
 
 from scripts.export_financial_fact_bundle import (
     _is_verified_export,
+    _persist_export_bundle,
     _publish_verified_bundle,
     _write_json_immutable,
 )
@@ -657,14 +658,202 @@ def test_export_success_requires_verified_cross_source_fact(bundle, expected):
     assert _is_verified_export(bundle) is expected
 
 
-def test_unverified_export_does_not_claim_immutable_output_path(tmp_path):
+def test_unverified_export_preserves_audit_bundle_without_claiming_verification(
+    tmp_path,
+):
     output = tmp_path / "failed-bundle.json"
     bundle = {
         "status": SINGLE_SOURCE,
+        "generated_at": "2026-07-31T12:00:00+08:00",
         "summary": {"verified_cross_source": 0},
     }
     assert _publish_verified_bundle(output, bundle) is False
     assert not output.exists()
+    audit_output = tmp_path / "failed-bundle.retryable-202607311200000800.json"
+    assert json.loads(audit_output.read_text(encoding="utf-8")) == bundle
+
+
+def test_query_failure_uses_separate_attempt_path_and_keeps_target_retryable(
+    tmp_path,
+):
+    output = tmp_path / "bundle.json"
+    failed = {
+        "status": QUERY_FAILED,
+        "generated_at": "2026-07-31T12:00:00+08:00",
+        "summary": {"verified_cross_source": 0},
+    }
+    verified, actual_output = _persist_export_bundle(output, failed)
+    assert verified is False
+    assert actual_output != output
+    assert actual_output.is_file()
+    assert not output.exists()
+
+    recovered = {
+        "status": HAS_DATA,
+        "generated_at": "2026-07-31T12:05:00+08:00",
+        "summary": {"verified_cross_source": 1},
+    }
+    verified, actual_output = _persist_export_bundle(output, recovered)
+    assert verified is True
+    assert actual_output == output
+    assert output.is_file()
+
+
+def test_partial_provider_failure_also_keeps_target_retryable(tmp_path):
+    output = tmp_path / "bundle.json"
+    partial = {
+        "status": SINGLE_SOURCE,
+        "generated_at": "2026-07-31T12:00:00+08:00",
+        "summary": {"verified_cross_source": 0},
+        "providers": [
+            {"provider": "healthy", "status": HAS_DATA},
+            {"provider": "offline", "status": QUERY_FAILED},
+        ],
+    }
+    verified, actual_output = _persist_export_bundle(output, partial)
+    assert verified is False
+    assert actual_output != output
+    assert actual_output.is_file()
+    assert not output.exists()
+
+    recovered = {
+        "status": HAS_DATA,
+        "generated_at": "2026-07-31T12:05:00+08:00",
+        "summary": {"verified_cross_source": 1},
+        "providers": [
+            {"provider": "healthy", "status": HAS_DATA},
+            {"provider": "recovered", "status": HAS_DATA},
+        ],
+    }
+    verified, actual_output = _persist_export_bundle(output, recovered)
+    assert verified is True
+    assert actual_output == output
+
+
+def test_nested_statement_failure_keeps_target_retryable(tmp_path):
+    output = tmp_path / "bundle.json"
+    partial = {
+        "status": HAS_DATA,
+        "generated_at": "2026-07-31T12:00:00+08:00",
+        "summary": {"verified_cross_source": 1},
+        "providers": [
+            {
+                "provider": "partial",
+                "status": HAS_DATA,
+                "statements": {
+                    "income_statement": {"status": HAS_DATA},
+                    "cashflow": {"status": QUERY_FAILED},
+                },
+            }
+        ],
+    }
+    verified, actual_output = _persist_export_bundle(output, partial)
+    assert verified is False
+    assert actual_output != output
+    assert actual_output.is_file()
+    assert not output.exists()
+
+
+def test_repeated_degraded_attempts_with_same_timestamp_are_both_preserved(tmp_path):
+    output = tmp_path / "bundle.json"
+    first = {
+        "status": QUERY_FAILED,
+        "generated_at": "2026-07-31T12:00:00+08:00",
+        "summary": {"verified_cross_source": 0},
+        "attempt": "first",
+    }
+    second = {**first, "attempt": "second"}
+
+    first_verified, first_path = _persist_export_bundle(output, first)
+    second_verified, second_path = _persist_export_bundle(output, second)
+
+    assert first_verified is False
+    assert second_verified is False
+    assert first_path != second_path
+    assert first_path.name == "bundle.retryable-202607311200000800.json"
+    assert second_path.name == "bundle.retryable-202607311200000800-01.json"
+    assert json.loads(first_path.read_text(encoding="utf-8")) == first
+    assert json.loads(second_path.read_text(encoding="utf-8")) == second
+    assert not output.exists()
+
+
+def test_concurrent_degraded_attempts_with_same_timestamp_are_both_preserved(
+    tmp_path,
+):
+    output = tmp_path / "bundle.json"
+    barrier = threading.Barrier(2)
+
+    def persist(attempt):
+        bundle = {
+            "status": QUERY_FAILED,
+            "generated_at": "2026-07-31T12:00:00+08:00",
+            "summary": {"verified_cross_source": 0},
+            "attempt": attempt,
+        }
+        barrier.wait()
+        return _persist_export_bundle(output, bundle)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(persist, ("first", "second")))
+
+    assert all(verified is False for verified, _path in results)
+    paths = {path for _verified, path in results}
+    assert len(paths) == 2
+    assert {path.name for path in paths} == {
+        "bundle.retryable-202607311200000800.json",
+        "bundle.retryable-202607311200000800-01.json",
+    }
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["attempt"] for path in paths
+    } == {"first", "second"}
+    assert not output.exists()
+
+
+def test_retryable_writer_does_not_loop_on_invalid_parent_path(tmp_path):
+    invalid_parent = tmp_path / "not-a-directory"
+    invalid_parent.write_text("occupied by a file", encoding="utf-8")
+    bundle = {
+        "status": QUERY_FAILED,
+        "generated_at": "2026-07-31T12:00:00+08:00",
+        "summary": {"verified_cross_source": 0},
+    }
+
+    with pytest.raises(FileExistsError):
+        _persist_export_bundle(invalid_parent / "bundle.json", bundle)
+
+
+def test_dangling_symlink_occupies_retryable_slot_without_losing_attempt(tmp_path):
+    output = tmp_path / "bundle.json"
+    occupied = tmp_path / "bundle.retryable-202607311200000800.json"
+    occupied.symlink_to(tmp_path / "missing-target")
+    bundle = {
+        "status": QUERY_FAILED,
+        "generated_at": "2026-07-31T12:00:00+08:00",
+        "summary": {"verified_cross_source": 0},
+    }
+
+    verified, actual_path = _persist_export_bundle(output, bundle)
+
+    assert verified is False
+    assert occupied.is_symlink()
+    assert actual_path.name == "bundle.retryable-202607311200000800-01.json"
+    assert json.loads(actual_path.read_text(encoding="utf-8")) == bundle
+    assert not output.exists()
+
+
+def test_bundle_records_observation_date():
+    provider = FakeProvider(
+        "cn_astock",
+        profile=PROFILE,
+    )
+    result = build_financial_fact_bundle(
+        symbol="600487.SH",
+        as_of="2026-07-30",
+        providers=[provider],
+        generated_at="2026-07-30T12:00:00+08:00",
+        observed_at="2026-07-30",
+    )
+    assert result["observed_at"] == "2026-07-30"
 
 
 def test_immutable_writer_is_atomic_under_concurrent_creation(tmp_path):
