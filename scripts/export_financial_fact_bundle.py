@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from tradingagents.dataflows.financial_fact_bundle import (
     DEFAULT_PROVIDER_NAMES,
     HAS_DATA,
+    QUERY_FAILED,
     build_financial_fact_bundle,
 )
 from tradingagents.dataflows.providers import build_default_registry
@@ -59,14 +60,78 @@ def _is_verified_export(bundle: dict[str, object]) -> bool:
         bundle.get("status") == HAS_DATA
         and isinstance(summary, dict)
         and summary.get("verified_cross_source", 0) > 0
+        and not _contains_query_failure(bundle.get("providers"))
     )
 
 
+def _contains_query_failure(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("status") == QUERY_FAILED:
+            return True
+        return any(_contains_query_failure(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_query_failure(item) for item in value)
+    return False
+
+
+def _retryable_failure_output(path: Path, bundle: dict[str, object]) -> Path:
+    generated_at = str(bundle.get("generated_at") or "unknown")
+    token = "".join(character for character in generated_at if character.isdigit())
+    suffix = path.suffix or ".json"
+    stem = path.name[: -len(suffix)] if path.name.endswith(suffix) else path.name
+    return path.with_name(f"{stem}.retryable-{token or 'unknown'}{suffix}")
+
+
+def _write_retryable_audit(path: Path, bundle: dict[str, object]) -> Path:
+    """Write every degraded attempt without overwriting an earlier audit."""
+    candidate = _retryable_failure_output(path, bundle)
+    suffix = candidate.suffix or ".json"
+    stem = (
+        candidate.name[: -len(suffix)]
+        if candidate.name.endswith(suffix)
+        else candidate.name
+    )
+    attempt = 0
+    while True:
+        actual_path = (
+            candidate
+            if attempt == 0
+            else candidate.with_name(f"{stem}-{attempt:02d}{suffix}")
+        )
+        try:
+            _write_json_immutable(actual_path, bundle)
+            return actual_path
+        except FileExistsError:
+            if not os.path.lexists(actual_path):
+                raise
+            attempt += 1
+
+
+def _persist_export_bundle(
+    path: Path,
+    bundle: dict[str, object],
+) -> tuple[bool, Path]:
+    """Persist the immutable audit bundle and report whether it is verified.
+
+    Degraded results are still valuable audit evidence.  The exit status and
+    return value distinguish them from a verified export; withholding the file
+    would make downstream low-confidence handling impossible.  Every
+    non-verified result uses a separate attempt path so it cannot occupy the
+    destination reserved for a later verified bundle.
+    """
+    verified = _is_verified_export(bundle)
+    if verified:
+        actual_path = path
+        _write_json_immutable(actual_path, bundle)
+    else:
+        actual_path = _write_retryable_audit(path, bundle)
+    return verified, actual_path
+
+
 def _publish_verified_bundle(path: Path, bundle: dict[str, object]) -> bool:
-    if not _is_verified_export(bundle):
-        return False
-    _write_json_immutable(path, bundle)
-    return True
+    """Backward-compatible boolean wrapper used by existing callers/tests."""
+    verified, _actual_path = _persist_export_bundle(path, bundle)
+    return verified
 
 
 def main() -> int:
@@ -103,20 +168,21 @@ def main() -> int:
             as_of=args.as_of,
             providers=providers,
         )
-        published = _publish_verified_bundle(args.output, bundle)
+        verified, actual_output = _persist_export_bundle(args.output, bundle)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     print(
         json.dumps(
             {
                 "status": bundle["status"],
-                "output": str(args.output) if published else None,
+                "output": str(actual_output),
+                "verified": verified,
                 "summary": bundle["summary"],
             },
             ensure_ascii=False,
         )
     )
-    return 0 if published else 2
+    return 0 if verified else 2
 
 
 if __name__ == "__main__":
