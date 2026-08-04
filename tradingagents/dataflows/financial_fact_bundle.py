@@ -35,13 +35,18 @@ VERIFIED_CROSS_SOURCE = "VERIFIED_CROSS_SOURCE"
 SINGLE_SOURCE = "SINGLE_SOURCE"
 CONFLICT = "CONFLICT"
 
-DEFAULT_PROVIDER_NAMES = ("cn_astock", "cn_eastmoney_financial")
+DEFAULT_PROVIDER_NAMES = (
+    "cn_astock",
+    "cn_eastmoney_financial",
+    "cn_cninfo_identity",
+)
 _DEFAULT_FINANCIAL_SOURCE_IDS = {
     # Both adapters currently read Sina's CompanyFinanceService for the three
     # statements. They are separate code paths, not independent data sources.
     "cn_akshare": "sina_finance",
     "cn_astock": "sina_finance",
     "cn_eastmoney_financial": "eastmoney_datacenter",
+    "cn_cninfo_identity": "cninfo_identity_only",
     "yfinance": "yahoo_finance",
     "alpha_vantage": "alpha_vantage",
 }
@@ -49,6 +54,7 @@ _DEFAULT_IDENTITY_SOURCE_IDS = {
     "cn_akshare": "eastmoney",
     "cn_astock": "eastmoney",
     "cn_eastmoney_financial": "eastmoney",
+    "cn_cninfo_identity": "cninfo",
     "yfinance": "yahoo_finance",
     "alpha_vantage": "alpha_vantage",
 }
@@ -187,21 +193,79 @@ def _financial_source_id(provider: FinancialProvider) -> str:
     return _DEFAULT_FINANCIAL_SOURCE_IDS.get(provider.name, provider.name)
 
 
+def _identity_profile_and_source_ids(
+    provider: FinancialProvider,
+    fundamentals: str | None,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    merged_profile = extract_profile_from_fundamentals(fundamentals)
+    explicit = getattr(provider, "identity_source_id", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return merged_profile, (explicit.strip(),)
+    if isinstance(explicit, (list, tuple, set)):
+        values = tuple(sorted({str(value).strip() for value in explicit if str(value).strip()}))
+        if values:
+            return merged_profile, values
+    if provider.name in {"cn_akshare", "cn_astock"} and isinstance(
+        fundamentals, str
+    ):
+        # A provider may concatenate primary and fallback profile sections.
+        # Attribute exactly one lineage to the resulting merged identity: a
+        # single adapter response is never independent cross-source evidence.
+        section_pattern = re.compile(
+            r"(?m)^### Company Profile(?: \((?P<label>[^)]+)\))?\s*$"
+        )
+        usable_profiles: list[tuple[str, dict[str, str]]] = []
+        matches = list(section_pattern.finditer(fundamentals))
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(fundamentals)
+            section = fundamentals[match.start():end]
+            profile = extract_profile_from_fundamentals(section)
+            has_code = bool(re.search(r"(?<!\d)\d{6}(?!\d)", profile.get("symbol", "")))
+            if not has_code or not profile.get("security_name"):
+                continue
+            label = (match.group("label") or "").strip()
+            if label == "巨潮资讯":
+                usable_profiles.append(("cninfo", profile))
+            elif label == "东财" or (not label and provider.name == "cn_akshare"):
+                usable_profiles.append(("eastmoney", profile))
+
+        # Prefer the adapter's primary source. A valid fallback is used only
+        # when the primary section did not independently bind code and name.
+        for preferred in ("eastmoney", "cninfo"):
+            for source_id, profile in usable_profiles:
+                if source_id == preferred:
+                    return profile, (source_id,)
+    return merged_profile, (
+        _DEFAULT_IDENTITY_SOURCE_IDS.get(provider.name, provider.name),
+    )
+
+
+def _profile_section_symbols(fundamentals: str | None) -> tuple[str, ...]:
+    """Return issuer codes explicitly bound by individual profile sections."""
+    if not isinstance(fundamentals, str):
+        return ()
+    section_pattern = re.compile(
+        r"(?m)^### Company Profile(?: \((?P<label>[^)]+)\))?\s*$"
+    )
+    matches = list(section_pattern.finditer(fundamentals))
+    symbols: set[str] = set()
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(fundamentals)
+        section = fundamentals[match.start():end]
+        profile = extract_profile_from_fundamentals(section)
+        symbol_match = re.search(r"(?<!\d)(\d{6})(?!\d)", profile.get("symbol", ""))
+        if symbol_match:
+            symbols.add(symbol_match.group(1))
+    return tuple(sorted(symbols))
+
+
 def _identity_source_ids(
     provider: FinancialProvider,
     fundamentals: str | None,
 ) -> tuple[str, ...]:
-    explicit = getattr(provider, "identity_source_id", None)
-    if isinstance(explicit, str) and explicit.strip():
-        return (explicit.strip(),)
-    if isinstance(explicit, (list, tuple, set)):
-        values = tuple(sorted({str(value).strip() for value in explicit if str(value).strip()}))
-        if values:
-            return values
-    if provider.name == "cn_akshare" and isinstance(fundamentals, str):
-        if "Company Profile (巨潮资讯)" in fundamentals and "Company Profile\n" not in fundamentals:
-            return ("cninfo",)
-    return (_DEFAULT_IDENTITY_SOURCE_IDS.get(provider.name, provider.name),)
+    """Compatibility helper exposing the selected identity lineage."""
+    _profile, source_ids = _identity_profile_and_source_ids(provider, fundamentals)
+    return source_ids
 
 
 def _statement_capture(
@@ -291,6 +355,7 @@ def capture_provider(
 ) -> ProviderCapture:
     identity_error: str | None = None
     fundamentals: str | None = None
+    identity_source_ids = _identity_source_ids(provider, fundamentals)
     historical_live_capture = date.fromisoformat(as_of) < date.fromisoformat(
         observed_at
     )
@@ -307,13 +372,30 @@ def capture_provider(
     else:
         try:
             fundamentals = provider.get_fundamentals(symbol, curr_date=as_of)
-            profile = extract_profile_from_fundamentals(fundamentals)
-            identity_payload = build_instrument_identity(
-                symbol,
-                profile,
-                source=provider.name,
-                as_of=as_of,
-            ).to_dict()
+            profile, identity_source_ids = _identity_profile_and_source_ids(
+                provider, fundamentals
+            )
+            requested_code = symbol.split(".", 1)[0]
+            section_symbols = _profile_section_symbols(fundamentals)
+            mismatched_symbols = tuple(
+                code for code in section_symbols if code != requested_code
+            )
+            if mismatched_symbols and len(section_symbols) > 1:
+                identity_payload = {
+                    "status": IDENTITY_CONFLICT,
+                    "symbol": symbol.strip().upper(),
+                    "source": provider.name,
+                    "as_of": as_of,
+                    "conflict_reason": "profile_sections_symbol_mismatch",
+                    "source_symbols": list(section_symbols),
+                }
+            else:
+                identity_payload = build_instrument_identity(
+                    symbol,
+                    profile,
+                    source=provider.name,
+                    as_of=as_of,
+                ).to_dict()
         except Exception as exc:
             identity_error = _exception_message(exc)
             identity_payload = {
@@ -354,6 +436,8 @@ def capture_provider(
         status = CONFLICT
     elif has_statement:
         status = HAS_DATA
+    elif identity_payload.get("status") == QUERY_FAILED:
+        status = QUERY_FAILED
     elif has_statement_failure:
         status = QUERY_FAILED
     else:
@@ -361,7 +445,7 @@ def capture_provider(
     return ProviderCapture(
         provider=provider.name,
         source_id=_financial_source_id(provider),
-        identity_source_ids=_identity_source_ids(provider, fundamentals),
+        identity_source_ids=identity_source_ids,
         status=status,
         identity=identity_payload,
         statements=statements,
