@@ -15378,3 +15378,18 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - Focused regression: 346 tests passed across the exporter, bundle,
   Eastmoney provider, period normalization, evidence contract and readiness
   suites.
+
+## 2026-08-04 | Independent issuer identity for financial-fact export
+
+- Added an identity-only CNInfo provider to the default financial-fact export
+  set so issuer code/name verification no longer depends on two adapters backed
+  by the same upstream profile source.
+- Made mixed primary/fallback profile responses contribute exactly one identity
+  lineage, and required every attributed section to provide both a returned
+  six-digit code and security name.
+- CNInfo responses that omit the returned A-share code now fail closed instead
+  of substituting the requested symbol.
+- A live 600487.SH replay returned `HAS_DATA`, verified issuer identity from
+  `cninfo` and `eastmoney`, 92 cross-source financial facts and zero conflicts.
+- Focused identity and financial-contract regression: 296 tests passed; static
+  compilation and `git diff --check` passed.

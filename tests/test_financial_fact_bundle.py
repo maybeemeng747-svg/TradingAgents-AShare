@@ -14,14 +14,118 @@ from scripts.export_financial_fact_bundle import (
     _write_json_immutable,
 )
 from tradingagents.dataflows.financial_fact_bundle import (
+    DEFAULT_PROVIDER_NAMES,
     CONFLICT,
     HAS_DATA,
     NORMAL_NO_DATA,
     QUERY_FAILED,
     SINGLE_SOURCE,
     VERIFIED_CROSS_SOURCE,
+    _identity_source_ids,
     build_financial_fact_bundle,
 )
+
+
+def test_default_providers_include_independent_identity_source():
+    assert DEFAULT_PROVIDER_NAMES == (
+        "cn_astock",
+        "cn_eastmoney_financial",
+        "cn_cninfo_identity",
+    )
+
+
+def test_astock_cninfo_fallback_is_not_relabelled_as_eastmoney():
+    provider = Mock(name="provider")
+    provider.name = "cn_astock"
+    provider.identity_source_id = None
+    fundamentals = """\
+### Company Profile (巨潮资讯)
+| item | value |
+|---|---|
+| 股票简称 | 亨通光电 |
+| 股票代码 | 600487 |
+"""
+
+    assert _identity_source_ids(provider, fundamentals) == ("cninfo",)
+
+
+def test_astock_uses_only_primary_identity_lineage_when_both_profiles_exist():
+    provider = Mock(name="provider")
+    provider.name = "cn_astock"
+    provider.identity_source_id = None
+    fundamentals = """\
+### Company Profile (东财)
+- **股票简称**: 亨通光电
+- **股票代码**: 600487
+
+### Company Profile (巨潮资讯)
+- **股票简称**: 亨通光电
+- **股票代码**: 600487
+"""
+
+    assert _identity_source_ids(provider, fundamentals) == ("eastmoney",)
+
+
+def test_astock_ignores_profile_header_without_usable_identity():
+    provider = Mock(name="provider")
+    provider.name = "cn_astock"
+    provider.identity_source_id = None
+    fundamentals = """\
+### Company Profile (东财)
+- **总市值(元)**: 1000000000
+
+### Company Profile (巨潮资讯)
+- **股票简称**: 亨通光电
+- **股票代码**: 600487
+"""
+
+    assert _identity_source_ids(provider, fundamentals) == ("cninfo",)
+
+
+def test_astock_identity_fields_come_from_selected_primary_section():
+    eastmoney = """\
+### Company Profile (东财)
+- **代码**: 600487
+- **名称**: 错误简称
+
+### Company Profile (巨潮资讯)
+- **股票代码**: 600487
+- **股票简称**: 亨通光电
+"""
+    standalone_cninfo = """\
+### Company Profile (巨潮资讯)
+| item | value |
+|---|---|
+| 股票代码 | 600487 |
+| 股票简称 | 亨通光电 |
+"""
+    astock = FakeProvider("cn_astock", profile=eastmoney)
+    astock.identity_source_id = None
+    result = _bundle(
+        astock,
+        FakeProvider(
+            "cn_cninfo_identity",
+            profile=standalone_cninfo,
+            identity_source_id="cninfo",
+        ),
+    )
+
+    assert result["status"] == CONFLICT
+    assert result["identity"]["status"] == CONFLICT
+
+
+def test_identity_only_query_failure_is_not_normal_no_data():
+    provider = FakeProvider(
+        "cn_cninfo_identity",
+        statement_sentinel="No income statement data from identity-only provider",
+        identity_source_id="cninfo",
+    )
+    provider.get_fundamentals = Mock(side_effect=ConnectionError("down"))
+
+    result = _bundle(provider)
+
+    assert result["status"] == QUERY_FAILED
+    assert result["providers"][0]["status"] == QUERY_FAILED
 
 
 PROFILE = """\
@@ -283,6 +387,38 @@ def test_provider_symbol_mismatch_blocks_even_when_other_provider_is_valid():
     assert result["identity"]["status"] == CONFLICT
     assert result["identity"]["reasons"] == ["profile_symbol_mismatch"]
     assert result["providers"][1]["status"] == CONFLICT
+
+
+def test_embedded_fallback_symbol_mismatch_blocks_verified_export():
+    mixed_profile = """### Company Profile (东财)
+- **代码**: 600487
+- **名称**: 亨通光电
+- **行业**: 通信
+- **主营业务**: 光通信
+
+### Company Profile (巨潮资讯)
+- **股票代码**: 000001
+- **身份冲突**: requested=600487, returned=000001
+"""
+    mixed = FakeProvider(
+        "cn_astock",
+        profile=mixed_profile,
+        source_id="sina_finance",
+    )
+    mixed.identity_source_id = None
+    result = _bundle(
+        mixed,
+        FakeProvider(
+            "independent",
+            identity_source_id="independent_identity",
+            source_id="independent_financial",
+        ),
+    )
+
+    assert result["status"] == CONFLICT
+    assert result["identity"]["status"] == CONFLICT
+    assert result["identity"]["reasons"] == ["profile_sections_symbol_mismatch"]
+    assert _is_verified_export(result) is False
 
 
 def test_all_provider_identity_conflicts_remain_explicit():
@@ -645,7 +781,22 @@ def test_bundle_preserves_provider_notice_date_from_rendered_markdown():
 @pytest.mark.parametrize(
     ("bundle", "expected"),
     [
-        ({"status": HAS_DATA, "summary": {"verified_cross_source": 1}}, True),
+        (
+            {
+                "status": HAS_DATA,
+                "identity": {"status": VERIFIED_CROSS_SOURCE},
+                "summary": {"verified_cross_source": 1},
+            },
+            True,
+        ),
+        (
+            {
+                "status": HAS_DATA,
+                "identity": {"status": SINGLE_SOURCE},
+                "summary": {"verified_cross_source": 1},
+            },
+            False,
+        ),
         ({"status": HAS_DATA, "summary": {"verified_cross_source": 0}}, False),
         ({"status": SINGLE_SOURCE, "summary": {"verified_cross_source": 0}}, False),
         (
@@ -690,6 +841,7 @@ def test_query_failure_uses_separate_attempt_path_and_keeps_target_retryable(
 
     recovered = {
         "status": HAS_DATA,
+        "identity": {"status": VERIFIED_CROSS_SOURCE},
         "generated_at": "2026-07-31T12:05:00+08:00",
         "summary": {"verified_cross_source": 1},
     }
@@ -718,6 +870,7 @@ def test_partial_provider_failure_also_keeps_target_retryable(tmp_path):
 
     recovered = {
         "status": HAS_DATA,
+        "identity": {"status": VERIFIED_CROSS_SOURCE},
         "generated_at": "2026-07-31T12:05:00+08:00",
         "summary": {"verified_cross_source": 1},
         "providers": [

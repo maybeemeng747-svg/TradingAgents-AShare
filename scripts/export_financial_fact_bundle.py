@@ -19,11 +19,15 @@ from tradingagents.dataflows.financial_fact_bundle import (
     DEFAULT_PROVIDER_NAMES,
     HAS_DATA,
     QUERY_FAILED,
+    VERIFIED_CROSS_SOURCE,
     build_financial_fact_bundle,
 )
 from tradingagents.dataflows.providers import build_default_registry
 from tradingagents.dataflows.providers.cn_eastmoney_financial_provider import (
     CnEastmoneyFinancialProvider,
+)
+from tradingagents.dataflows.providers.cn_cninfo_identity_provider import (
+    CninfoIdentityProvider,
 )
 
 
@@ -56,10 +60,13 @@ def _write_json_immutable(path: Path, payload: object) -> None:
 
 def _is_verified_export(bundle: dict[str, object]) -> bool:
     summary = bundle.get("summary")
+    identity = bundle.get("identity")
     return bool(
         bundle.get("status") == HAS_DATA
         and isinstance(summary, dict)
         and summary.get("verified_cross_source", 0) > 0
+        and isinstance(identity, dict)
+        and identity.get("status") == VERIFIED_CROSS_SOURCE
         and not _contains_query_failure(bundle.get("providers"))
     )
 
@@ -141,7 +148,10 @@ def main() -> int:
     parser.add_argument(
         "--providers",
         default=",".join(DEFAULT_PROVIDER_NAMES),
-        help="Comma-separated provider names; default: cn_astock,cn_eastmoney_financial",
+        help=(
+            "Comma-separated provider names; default: "
+            "cn_astock,cn_eastmoney_financial,cn_cninfo_identity"
+        ),
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -151,11 +161,12 @@ def main() -> int:
     for name in (part.strip() for part in args.providers.split(",")):
         if not name:
             continue
-        provider = (
-            CnEastmoneyFinancialProvider()
-            if name == "cn_eastmoney_financial"
-            else registry.get(name)
-        )
+        if name == "cn_eastmoney_financial":
+            provider = CnEastmoneyFinancialProvider()
+        elif name == "cn_cninfo_identity":
+            provider = CninfoIdentityProvider()
+        else:
+            provider = registry.get(name)
         if provider is None:
             parser.error(f"unknown provider: {name}")
         providers.append(provider)
