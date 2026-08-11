@@ -15333,3 +15333,200 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/SCORE-004-20260728-190004/
+
+## 2026-08-11 | Report decision text and audit-detail cleanup
+
+- Audited the three latest completed reports and confirmed that repeated
+  C-001/D-002 text came from backend action sanitizers, not duplicate frontend
+  rendering. Some descriptive risk text and future holding plans were also
+  being rewritten as current actions.
+- Scoped fundamental/no-position sanitation to explicit recommendations,
+  executable phrases and standalone action labels, including Markdown labels,
+  copular headings, embedded conclusions, modifier-prefixed actions and
+  slash-delimited decisions. Explicit classification enums remain intact.
+- System-generated C-001, C-005, C-006 and fundamental-integrity blocks are
+  protected from later passes through a caller-supplied trusted offset and an
+  application-emitted hidden delimiter. Marker headings emitted by the model
+  are not trusted and cannot bypass sanitation or UI boundary detection.
+- Deduplicated D-002 change entries while retaining the complete gate-failure
+  list and the fail-closed final action behavior.
+- Split the final-decision body from appended system diagnostics in the report
+  viewer. The decision remains visible by default; the complete audit trail is
+  preserved under a collapsed `系统审计详情` section, including the generated
+  execution-quality block.
+- Added Python and frontend regressions for action enums, future risk nouns,
+  system-block preservation, audit deduplication and diagnostic splitting.
+- Final adversarial reviews found and fixed fail-closed boundaries: buy-only
+  fundamental/event/valuation vetoes preserve independently authorized holder
+  de-risking, while Level 0-3 cannot retain an unsupported forced exit;
+  first-person instructions and executable actions after causal prose cannot
+  bypass entry or no-position sanitation. Application-generated execution
+  summaries are excluded from research-direction parsing, and opinion-form
+  actions such as `我认为买入` / `我的观点是减仓` are sanitized as executable
+  recommendations rather than left visible on blocked paths. Conditional
+  subject actions are covered as well; explicit action enums remain readable
+  but no longer affect semantic inference. The visible summary is extracted
+  only from the trusted diagnostic region, and completed report text wins over
+  mixed dual-horizon streaming buffers when applying its stored offset.
+- A final adversarial pass also closed modifier-separated instructions such as
+  `建议谨慎买入` / `应趁机清仓`, made the application-generated execution
+  action authoritative for structured decision fields, and selected the last
+  generated summary so copied or historical headings cannot displace it.
+- The closeout review preserved the authorized no-position conditional-entry
+  path (`Buy Level 2` + trigger + passed gate), excluded suffix-style
+  `Buy/Sell/Hold 三分类标签` documentation from semantic inference, and made
+  wait-reason metadata honor the gate state in the last generated summary.
+- A second closeout pass separated target prices from executable triggers,
+  required an actual conditional-entry quality mode before emitting `ENTER`,
+  emitted deterministic `HOLD` for low-risk held positions, and anchored
+  generated action parsing to the application diagnostics delimiter instead
+  of model-spoofable headings.
+- The final adversarial pass required explicit positive entry intent, a real
+  trigger and a stop-loss before a no-position report can emit `ENTER`.
+  Watch-only price conditions now remain `WAIT`; generic conditional buy
+  directives are sanitized when an entry gate fails, and modifier/subject
+  forms of holder-only actions are removed from no-position reports without
+  rewriting research questions or hypothetical future holding plans.
+  Final-decision entry vetoes override earlier analyst buy plans, ordinary user
+  constraints remain context rather than fabricated violations, and explicit
+  English `BUY`/`ENTER` actions retain the same entry-intent contract. Entry
+  intent now follows the last explicit opening directive: institutional or
+  completed-purchase facts contribute no intent, a later conditional entry can
+  follow a current-observe statement, and API-visible no-buy constraints still
+  block entry. Corporate/shareholder/fund-flow purchase facts are also kept
+  intact by the report sanitizer.
+- The independent closeout review then found four remaining natural-language
+  boundaries. Supported API hard constraints (`不融资` / `不加杠杆` / `不追高`
+  / `只做T+1` / `不能补仓` / `不接受隔夜`) are now checked against the actual
+  plan before `ENTER`; catalyst-based recommendations are no longer mistaken
+  for completed third-party purchases; linked forms such as `以买入为主` and
+  `建议以减仓为主` are sanitized; and a future directive remains parseable
+  after a genuine third-party or completed-purchase fact.
+- A second independent pass closed the final execution-boundary regressions:
+  direct `不买入` / `不要买入` and a later `WAIT` / `HOLD` verdict now override
+  earlier entry prose; generic conditional forms such as `若回调则择机买入`
+  cannot bypass a failed fundamental gate; no-buy constraints do not block a
+  legitimate held-position `HOLD`; and merely discussing financing, leverage
+  or overnight risk is not treated as an API-constraint violation. Research
+  questions, approval rules and hypothetical future holding plans remain
+  readable, while their executable counterparts still fail closed. Negated
+  entry text also no longer creates a fabricated long-plan stop-loss conflict.
+- A third independent pass narrowed the non-executable discussion exception to
+  genuine questions and explicitly deferred/approval-gated plans. Resolved
+  uncertainty can no longer preserve a buy recommendation through a failed
+  gate. Entry synonyms now share one execution-intent vocabulary, while
+  analytical facts such as broker buy-rating counts and buy-side turnover
+  remain unchanged. User constraints that have no deterministic validator now
+  fail closed instead of allowing an authoritative `ENTER` that may violate
+  the account mandate.
+- The final independent review also closed four execution-safety boundaries:
+  evaluative/opinion entry recommendations such as `值得买入` and
+  `最终意见：买入` are sanitized on a failed entry gate; ordinary wording
+  such as `可用融资资金买入` is recognized as leverage use; an A-share entry
+  cannot claim to satisfy `不接受隔夜` through an impossible same-day exit;
+  and sell-side constraints only block an actual exit directive, not a valid
+  held-position `HOLD`.
+- A subsequent adversarial pass made the right-most instruction authoritative
+  when an entry and `HOLD/WAIT` share a clause, included
+  `current_position_pct` in sell-side constraint enforcement, and rejected
+  percentage risk limits such as `止损：2%` as executable stop prices.
+- The commit-gate review then found three authoritative-action regressions.
+  Bare conditional entries such as `若站稳则买入` now retain entry intent;
+  conditional sell/stop clauses are checked against exit-side user constraints;
+  and Risk Level 4 ignores the irrelevant missing-future-stop-price warning.
+  A final independent review closed four more execution boundaries: explicit
+  bearish/exit verdicts now veto stale upstream entry plans; MA periods cannot
+  become trigger prices; timed catalyst recommendations are no longer masked as
+  third-party purchases; and Risk Level 4 ignores entry-side blockers while an
+  explicit sell/exit prohibition still forces manual review.
+- The final independent review closed five additional parser boundaries:
+  percentage stops in conditional clauses are no longer treated as absolute
+  prices; analytical metric prefixes remain readable while appended entry
+  recommendations are still sanitized; a future post-entry protective stop no
+  longer cancels valid entry intent; bare `站稳后买入` conditions are classified
+  as conditional execution; and `今日买入` remains an instruction unless the
+  text contains independent completion evidence.
+- The final commit-gate pass made standard `最终交易建议：观望/等待` wording
+  authoritative over stale upstream entry prose, rejected non-positive or
+  non-protective stop prices, preserved unknown account constraints as manual
+  review blockers for Risk Level 4, and allowed a later conditional entry to
+  supersede an earlier negated chase-buy recommendation in the same clause.
+- The last adversarial review separated a genuinely conditional entry from an
+  immediate buy followed only by a future protective stop. An authorized
+  entry range now satisfies the execution-trigger contract without inventing a
+  scalar trigger price. Location-qualified directives using `主张`, `宜`,
+  `适宜`, `倾向于` or `后续宜` are also sanitized on blocked entry and
+  no-position exit paths.
+- The final independent review closed seven natural-language edge cases before
+  commit: standalone `观望` / `HOLD` verdicts now override stale upstream entry
+  plans; modal negations such as `不考虑买入` / `不准备清仓` remain authoritative;
+  non-trading participation in shareholder meetings or earnings calls cannot
+  create entry intent; bare `若站稳即买入` wording remains a valid conditional
+  entry; and post-entry protective stops stay visible for no-position plans.
+- The commit-gate review then closed four final fail-closed boundaries: plans
+  explicitly deferred until a gate is resolved are still sanitized while that
+  gate is closed; directives issued by the system or trader cannot bypass the
+  action filter; labeled fields retain their labels when the action is
+  downgraded; and full-width percentages / percentage-point stops cannot be
+  mistaken for absolute stop prices and authorize an entry.
+- A fresh independent review then closed three remaining directive boundaries:
+  hypothetical purchases by companies, shareholders or market funds no longer
+  fabricate a user conditional-entry intent; explicit verdict/timing forms such
+  as `最终买入`, `明日买入` and `由观望转为买入` cannot bypass a closed entry
+  gate; and impossible no-position instructions such as `最终清仓`, `明日卖出`
+  or `转为减仓` are downgraded without rewriting analytical fields such as
+  `买入评级`, `买入信号`, `止损价` or `减仓条件`.
+- The commit-gate adversarial review found seven more action-authority edges.
+  Confirmed generic execution blockers (for example an account freeze or an
+  unavailable order channel) now stop Risk Level 4 instead of being mistaken
+  for entry-only constraints. Final-decision field invalidations clear stale
+  upstream trigger/range/stop values. Qualified participation in earnings
+  calls, shareholder meetings and other non-trading activities cannot create
+  entry intent. An explicit entry range is treated as a conditional contract;
+  analytical prefaces no longer suppress a real recommendation; documentation
+  enums cannot override the preceding directive; and quantity-prefixed exits
+  are removed from no-position reports without restoring broad noun rewriting.
+- Validation: 2569 extended backend regressions and all 143 frontend tests
+  passed after the final review fixes;
+  frontend production build, Python compilation and `git diff --check` passed.
+  The extended backend selection had one unrelated stale graph-factory fixture
+  failure: `test_graph_setup_wires_market_analyst_without_name_errors` does not
+  provide the existing `create_fundamentals_integrity_gate` factory.
+  A repository-wide run also exposed 8 pre-existing auto-dev fixture failures
+  caused by missing `primary_worktree_guard.sh` in copied temporary repos;
+  one environment-dependent Tushare configuration test also failed. Those
+  unrelated tests were not changed in this report patch.
+- Final post-review validation: 668 focused action/gate tests passed; the
+  expanded backend selection finished with 2667 passed and the same unrelated
+  stale graph-factory fixture failure. Frontend and static checks were rerun
+  after the final parser changes.
+- The final commit review closed three remaining P1 authority gaps: a
+  text-derived holding in `position_context` now reaches the quality check even
+  without numeric shares; a mixed hard-constraint blocker such as `不融资；禁止清仓`
+  can no longer be discarded as entry-only; and all explicit decision labels
+  (`交易建议` / `操作建议` / `交易员动作` / `决策` / `动作` / `当前操作`)
+  honor a later `HOLD` veto over an earlier conditional entry. Focused
+  action/gate coverage increased to 676 passing tests.
+### 2026-08-12 - 报告去噪独立 review 补修
+
+- 收紧“讨论是否入场”和“未来持仓计划”的保护范围，避免同句后续的当前买卖动作绕过门禁。
+- 将“系统指令”纳入可执行动作标签，并识别“即/即可/就/便”式条件入场表达。
+- 增加上述对抗性句式的回归测试，保持字段名与真正假设性计划不被误改。
+- 后续独立 review 继续补齐动作权威边界：`并非建议买入` 等系词否定不再被反转成入场，`最终意见` / `风控结论` / `系统指令` 的 WAIT/HOLD 可覆盖旧入场计划。
+- 补充嵌入式动作句式清理（如“交易方向定为买入”“下一步选卖出”），同时保护“买入回报”“买入订单”“买入评级机构”等分析名词不被改写。
+### 2026-08-12 - 报告去噪 review 最终边界补修
+
+- 补齐“因此我会买入/所以我们将清仓”等带主语、情态词的因果动作清洗，避免门禁失败或未持仓时仍残留可执行指令。
+- 多值止损解析拒绝百分比候选；入场区间使用归一化下界校验止损，并阻断零宽区间。
+- 最终决策明确撤销或待定止损时，API 不再回退展示上游旧止损价。
+- 新增针对上述 P1/P2 边界的回归测试。
+- 同句元讨论仅移除问题片段，不再吞掉后续最终 WAIT；持仓状态下的最终止损同样覆盖上游，并以最后一次字段声明为准。
+- 最终 `暂不操作` / `保持空仓` / `不交易` 现在拥有入场否决权，不再被上游条件买入计划反向覆盖。
+- 员工持股计划、高管和董监高的增持安排按第三方事实处理，不再生成用户侧 `ENTER`。
+- 已成交买卖订单继续作为审计事实保留；英文 `not applicable` / `cancelled` / `withdrawn` 止损声明会清除上游旧止损价。
+- 已持仓场景的 Risk Level 2/3 风控动作不再被“禁止买入”等仅针对入场的阻断项误伤；真正的退出/通用阻断仍保持 fail-closed。
+- 较早的“止损待定”不再覆盖后文明确的条件止损；员工、高管和董监高增持披露在清洗阶段继续作为第三方事实保留。
+- 最终独立 review 继续修正 4 个动作权威问题：低 Risk Level 的明确退出建议不再反写成 HOLD；Level 4 只豁免系统自身的精确止损校验，不会绕过用户止损约束；`禁止增持/做多` 归入买入侧，不再误拦紧急退出；模型自写 `执行质检` 标题不能隐藏后续止损取消。
+- 同时收紧语义解析信任边界：只有带应用分隔符且结构完整的系统审计尾部才会从决策语义中排除；旧报告的历史结论行仍被过滤，但模型标题后的真正最终 WAIT/不买入结论继续生效。
+- 最终独立 review 的最后两项补修：报告字段恢复只信任 metadata 中的 `system_diagnostics_offset`，历史 C-005 报告复制的审计标记不能再污染当前字段；退出动作按最后一条明确指令裁决，最终 HOLD 可覆盖前文减仓，而后文真实退出仍然生效。
+- 最终验证：899 项后端动作/门禁回归、143 项前端测试通过；前端生产构建、Python 编译和 `git diff --check` 在提交前复核。最终一次 `codex review --uncommitted` 因账户额度耗尽未能启动，未将其记作通过；此前独立 review 的全部 P0/P1/P2 correctness findings 已逐项修复并由新增对抗测试覆盖。

@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAnalysisStore } from '@/stores/analysisStore'
 import type { ReportDetail } from '@/types'
-import { sanitizeReportMarkdown } from '@/utils/reportText'
+import { sanitizeReportMarkdown, selectReportTextForDiagnostics, splitReportSystemDiagnostics } from '@/utils/reportText'
 import { deriveKnowledgeEvidenceCard } from '@/utils/knowledgeContract'
 import ResearchEvidenceCenter from '@/components/ResearchEvidenceCenter'
 
@@ -54,12 +54,31 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
     const [expandedSections, setExpandedSections] = useState<string[]>([])
     const isHistorical = !!reportData
 
-    const getSectionContent = (key: string): string => {
+    const getRawSectionContent = (key: string): string => {
         if (isHistorical) {
-            return sanitizeReportMarkdown((reportData?.[key as keyof ReportDetail] as string | undefined) || '')
+            return (reportData?.[key as keyof ReportDetail] as string | undefined) || ''
         }
         const s = streamingSections[key]
-        return sanitizeReportMarkdown(s?.displayed || (report?.[key as keyof typeof report] as string | undefined) || '')
+        const completed = (report?.[key as keyof typeof report] as string | undefined) || ''
+        if (key === 'final_trade_decision') {
+            const rawOffset = report?.metadata?.system_diagnostics_offset
+            return selectReportTextForDiagnostics(
+                s?.displayed,
+                completed,
+                typeof rawOffset === 'number' ? rawOffset : undefined,
+            )
+        }
+        return s?.displayed || completed
+    }
+
+    const getSectionParts = (key: string) => {
+        const content = getRawSectionContent(key)
+        const metadata = isHistorical ? reportData?.result_data?.metadata : report?.metadata
+        const rawOffset = metadata?.system_diagnostics_offset
+        const trustedOffset = typeof rawOffset === 'number' ? rawOffset : undefined
+        return key === 'final_trade_decision'
+            ? splitReportSystemDiagnostics(content, trustedOffset)
+            : { main: sanitizeReportMarkdown(content), diagnostics: '' }
     }
 
     const getSectionState = (key: string) => {
@@ -132,8 +151,8 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
                 </div>
                 <div className="space-y-3">
                     {REPORT_SECTIONS.map((section) => {
-                        const content = getSectionContent(section.key)
-                        if (!content) return null
+                        const { main: content, diagnostics } = getSectionParts(section.key)
+                        if (!content && !diagnostics) return null
                         const isExpanded = expandedSections.includes(section.key)
                         return (
                             <div key={section.key} className="border border-slate-200 dark:border-slate-700 rounded-2xl overflow-hidden bg-white dark:bg-slate-900/40">
@@ -153,6 +172,16 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
                                         <div className="prose dark:prose-invert prose-sm md:prose-base max-w-none">
                                             <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{content}</ReactMarkdown>
                                         </div>
+                                        {diagnostics && (
+                                            <details className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-700">
+                                                <summary className="cursor-pointer text-sm font-medium text-slate-600 dark:text-slate-300">
+                                                    系统审计详情
+                                                </summary>
+                                                <div className="prose dark:prose-invert prose-sm max-w-none mt-3 text-slate-600 dark:text-slate-400">
+                                                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{diagnostics}</ReactMarkdown>
+                                                </div>
+                                            </details>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -329,7 +358,8 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
 
     // ── Live mode: single-section viewer ─────────────────────────────────────
     const activeMeta = activeSection ? REPORT_SECTIONS.find(s => s.key === activeSection) : null
-    const activeContent = activeSection ? getSectionContent(activeSection) : ''
+    const activeParts = activeSection ? getSectionParts(activeSection) : { main: '', diagnostics: '' }
+    const activeContent = activeParts.main
     const { isStreaming: activeStreaming } = activeSection ? getSectionState(activeSection) : { isStreaming: false }
 
     return (
@@ -399,6 +429,18 @@ export default function ReportViewer({ reportData, activeSection }: ReportViewer
                                         <Loader2 className="w-4 h-4 animate-spin mr-2" />
                                         正在生成报告...
                                     </div>
+                                )}
+                                {activeParts.diagnostics && (
+                                    <details className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-700">
+                                        <summary className="cursor-pointer text-sm font-medium text-slate-600 dark:text-slate-300">
+                                            系统审计详情
+                                        </summary>
+                                        <div className="prose dark:prose-invert prose-sm max-w-none mt-3 text-slate-600 dark:text-slate-400">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                                                {activeParts.diagnostics}
+                                            </ReactMarkdown>
+                                        </div>
+                                    </details>
                                 )}
                             </div>
                         </div>

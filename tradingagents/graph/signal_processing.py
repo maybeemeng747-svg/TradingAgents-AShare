@@ -333,7 +333,7 @@ def _has_explicit_avoidance_action(snippet: str) -> bool:
 
 
 def _parse_research_direction_from_verdict(text: str) -> str | None:
-    verdict_scope = re.split(r"\n\s*#{1,6}\s*执行质检\b", text, maxsplit=1)[0]
+    verdict_scope = _semantic_model_scope(text)
     matches = list(re.finditer(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", verdict_scope, re.IGNORECASE | re.DOTALL))
     if not matches:
         return None
@@ -367,7 +367,59 @@ def _classify_research_direction(snippet: str) -> str | None:
 
 
 def _strip_system_overrides(text: str) -> str:
-    return re.sub(r"⚠?\s*\[C-\d+\].*", "", text)
+    stripped = re.sub(r"⚠?\s*\[C-\d+\].*", "", text)
+    # Explicit enum documentation is useful to readers but is not a directional
+    # signal. Keep it in the report while excluding it from semantic parsing.
+    return re.sub(
+        r"(?im)(?:"
+        r"(?:^\s*[-*]\s*)?\*{0,2}"
+        r"(?:分类标签|动作枚举|决策枚举|可选动作|动作集合|动作标签)\s*"
+        r"(?:[:：]\s*\*{0,2}|\*{0,2}\s*[:：]\s*\*{0,2})"
+        r"(?:BUY\s*[/／]\s*SELL\s*[/／]\s*HOLD|"
+        r"ENTER\s*[/／]\s*WAIT\s*[/／]\s*HOLD\s*[/／]\s*REDUCE\s*[/／]\s*EXIT)"
+        r"\*{0,2}"
+        r"|"
+        r"(?:BUY\s*[/／]\s*SELL\s*[/／]\s*HOLD|"
+        r"ENTER\s*[/／]\s*WAIT\s*[/／]\s*HOLD\s*[/／]\s*REDUCE\s*[/／]\s*EXIT)"
+        r"\s*(?:三分类标签|分类标签|动作枚举|决策枚举|可选动作|动作集合|动作标签)"
+        r")",
+        "",
+        stripped,
+    )
+
+
+def _semantic_model_scope(text: str) -> str:
+    """Exclude only a validated application diagnostics tail from semantics."""
+    source = text or ""
+    trusted_tail_removed = False
+    marker_matches = list(
+        re.finditer(re.escape(_APPLICATION_DIAGNOSTICS_MARKER), source)
+    )
+    for marker in reversed(marker_matches):
+        tail = source[marker.end():]
+        quality = re.search(r"(?m)^#{1,6}\s*执行质检\s*$", tail)
+        summary = re.search(r"(?m)^#{1,6}\s*系统执行结论\s*$", tail)
+        if quality and summary and quality.start() < summary.start():
+            source = source[:marker.start()]
+            trusted_tail_removed = True
+            break
+    if not trusted_tail_removed:
+        # Legacy reports may append history after an untrusted quality heading.
+        # Remove only the known generated/history lines; keep later model-authored
+        # final recommendations so a heading cannot hide a WAIT/no-buy veto.
+        has_quality_heading = bool(
+            re.search(r"(?m)^#{1,6}\s*执行质检\s*$", source)
+        )
+        if has_quality_heading:
+            source = re.sub(
+                r"(?ms)^#{1,6}\s*系统执行结论\s*$.*\Z",
+                "",
+                source,
+            )
+            source = re.sub(r"(?m)^\s*[-*]\s*系统动作[：:].*$", "", source)
+        source = re.sub(r"(?m)^\s*上一版结论[：:].*$", "", source)
+        source = re.sub(r"(?m)^.*\[C-005\].*$", "", source)
+    return _strip_system_overrides(source)
 
 
 def _infer_research_direction(text: str) -> str:
@@ -375,13 +427,10 @@ def _infer_research_direction(text: str) -> str:
     if rd:
         return rd
 
-    stripped = re.split(
-        r"\n\s*#{1,6}\s*执行质检\b",
-        _strip_system_overrides(text),
-        maxsplit=1,
-    )[0]
+    stripped = _semantic_model_scope(text)
 
     explicit_patterns = [
+        r"系统动作[:：]\s*([^\n*]+)",
         r"最终裁决[:：]\s*([^\n*]+)",
         r"风控委员会最终裁决[:：]\s*([^\n*]+)",
         r"最终建议[:：]\s*([^\n*]+)",
@@ -414,11 +463,7 @@ def _latest_explicit_recommendation(text: str) -> str | None:
     ``方向`` and ``核心定性`` fields are only fallbacks; a later diagnostic
     direction must not override an earlier explicit "do not buy/sell" action.
     """
-    stripped = re.split(
-        r"\n\s*#{1,6}\s*执行质检\b",
-        _strip_system_overrides(text),
-        maxsplit=1,
-    )[0]
+    stripped = _semantic_model_scope(text)
     decision_patterns = [
         r"最终裁决[:：]\s*([^\n*]+)",
         r"风控委员会最终裁决[:：]\s*([^\n*]+)",
@@ -676,8 +721,101 @@ class SignalProcessor:
         return "HOLD"
 
 
+_APPLICATION_DIAGNOSTICS_MARKER = "<!-- TA_SYSTEM_DIAGNOSTICS_START -->"
+
+
+def _extract_generated_execution_block(text: str) -> str | None:
+    """Return the last application-owned summary block.
+
+    Headings alone are model-authored text and are never a trust boundary. The
+    risk manager appends the diagnostics marker after the model body; using the
+    last marker also prevents a copied marker earlier in that body from winning.
+    """
+    marker_matches = list(re.finditer(re.escape(_APPLICATION_DIAGNOSTICS_MARKER), text))
+    for marker in reversed(marker_matches):
+        trusted = text[marker.end():]
+        quality_matches = list(
+            re.finditer(r"(?m)^#{1,6}\s*执行质检\s*$", trusted)
+        )
+        summary_matches = list(
+            re.finditer(r"(?m)^#{1,6}\s*系统执行结论\s*$", trusted)
+        )
+        if not quality_matches or not summary_matches:
+            continue
+
+        summary = summary_matches[-1]
+        if not any(match.start() < summary.start() for match in quality_matches):
+            continue
+
+        tail = trusted[summary.end():]
+        next_heading = re.search(r"(?m)^#{1,6}\s+", tail)
+        return tail[:next_heading.start()] if next_heading else tail
+    return None
+
+
+def _extract_generated_execution_action(text: str) -> tuple[str, str] | None:
+    """Read the last application-owned execution summary after quality checks.
+
+    A model may emit a similarly named heading in its own body.  The backend
+    summary is distinguishable because it is appended after ``执行质检`` and is
+    the last such heading in the report.
+    """
+    block = _extract_generated_execution_block(text)
+    if block is None:
+        return None
+    action_match = re.search(r"(?m)^\s*-\s*系统动作[：:]\s*(.+?)\s*$", block)
+    if not action_match:
+        return None
+
+    label = action_match.group(1).strip()
+    upper = label.upper()
+    if "立即清仓" in label:
+        return "EXIT", "立即清仓"
+    if "触发止损" in label:
+        return "EXIT", "触发止损"
+    if "条件减仓" in label:
+        return "REDUCE", "条件减仓"
+    if "条件入场" in label or "条件建仓" in label:
+        return "ENTER", "条件入场"
+    if upper.startswith("ENTER") or label in {"入场", "建仓", "买入"}:
+        return "ENTER", "入场"
+    if upper.startswith("EXIT") or label in {"清仓", "卖出"}:
+        return "EXIT", "条件清仓"
+    if upper.startswith("REDUCE") or label in {"减仓", "止盈"}:
+        return "REDUCE", "条件减仓"
+    if upper.startswith("HOLD") or label == "持有":
+        return "HOLD", "持有"
+    if upper.startswith("WAIT") or any(
+        phrase in label for phrase in ("观察", "观望", "等待触发", "人工复核")
+    ):
+        if "人工复核" in label:
+            return "WAIT", "等待人工复核"
+        if "等待触发" in label:
+            return "WAIT", "等待触发"
+        return "WAIT", "观望"
+    return None
+
+
+def _extract_generated_gate_state(text: str) -> bool | None:
+    """Return the gate state from the last application-owned summary."""
+    block = _extract_generated_execution_block(text)
+    if block is None:
+        return None
+    match = re.search(
+        r"(?im)^\s*-\s*(?:强动作门禁|Strong Action Gate)[：:]\s*(通过|未通过)\s*$",
+        block,
+    )
+    if not match:
+        return None
+    return match.group(1) == "通过"
+
+
 def _has_gate_failure(text: str) -> bool:
     """Check for actual execution-layer gate failures only (no position check)."""
+    generated_gate_state = _extract_generated_gate_state(text)
+    if generated_gate_state is not None:
+        return not generated_gate_state
+
     if re.search(r"Strong Action Gate[：:]\s*未通过", text, re.IGNORECASE):
         return True
 
@@ -719,10 +857,20 @@ def _execution_layer_overrides_hold(text: str, *, has_position: bool | None = No
 
 def _extract_decision_keyword(text: str, *, has_position: bool | None = None) -> str | None:
     """Rule-based decision extraction to keep UI consistent with final decision text."""
+    generated_action = _extract_generated_execution_action(text)
+    if generated_action:
+        action, _label = generated_action
+        if action == "ENTER":
+            return "BUY"
+        if action in {"REDUCE", "EXIT"}:
+            return "SELL"
+        return "HOLD"
+
     if _execution_layer_overrides_hold(text, has_position=has_position):
         return "HOLD"
 
-    upper = text.upper()
+    semantic_text = _semantic_model_scope(text)
+    upper = semantic_text.upper()
 
     def parse_verdict_direction(raw_text: str) -> str | None:
         match = re.search(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", raw_text, re.IGNORECASE | re.DOTALL)
@@ -819,11 +967,12 @@ def _extract_decision_keyword(text: str, *, has_position: bool | None = None) ->
     if explicit_override:
         return explicit_override
 
-    verdict_decision = parse_verdict_direction(text)
+    verdict_decision = parse_verdict_direction(semantic_text)
     if verdict_decision:
         return verdict_decision
 
     explicit_patterns = [
+        r"系统动作[:：]\s*([^\n*]+)",
         r"最终裁决[:：]\s*([^\n*]+)",
         r"风控委员会最终裁决[:：]\s*([^\n*]+)",
         r"最终建议[:：]\s*([^\n*]+)",
@@ -831,13 +980,13 @@ def _extract_decision_keyword(text: str, *, has_position: bool | None = None) ->
         r"核心定性[:：]\s*([^\n*]+)",
     ]
     for pattern in explicit_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, semantic_text, re.IGNORECASE)
         if match:
             decision = classify(match.group(1).strip())
             if decision:
                 return decision
 
-    headline = "\n".join(text.splitlines()[:20])
+    headline = "\n".join(semantic_text.splitlines()[:20])
     decision = classify(headline)
     if decision:
         return decision
@@ -867,6 +1016,7 @@ def _extract_decision_semantics(
       - wait_reason_codes: [REPORT-UX-003] explainable codes when WAIT
     """
     research_direction = _infer_research_direction(text)
+    generated_action = _extract_generated_execution_action(text)
     gate_blocked = _has_gate_failure(text)
     data_insufficient = _is_data_insufficient(text)
     has_conflict = _text_has_conflict(text)
@@ -898,6 +1048,9 @@ def _extract_decision_semantics(
             if explicit_hold_action:
                 execution_action = explicit_hold_action
 
+    if generated_action:
+        execution_action = generated_action[0]
+
     action_label = _derive_action_label(
         has_position=has_position,
         research_direction=research_direction,
@@ -912,8 +1065,15 @@ def _extract_decision_semantics(
             action_label = "观望"
     if explicit_hold_action:
         action_label = "持有" if execution_action == "HOLD" else "观望"
+    if generated_action:
+        action_label = generated_action[1]
 
-    if data_insufficient and execution_action == "WAIT" and research_direction == "中性":
+    if (
+        not generated_action
+        and data_insufficient
+        and execution_action == "WAIT"
+        and research_direction == "中性"
+    ):
         action_label = "数据不足观察"
 
     decision = _DECISION_MAP.get(research_direction, "HOLD")
@@ -929,7 +1089,15 @@ def _extract_decision_semantics(
             if explicit_avoidance or has_position is not False
             else "HOLD"
         )
-    if gate_blocked:
+    if generated_action:
+        decision = {
+            "ENTER": "BUY",
+            "REDUCE": "SELL",
+            "EXIT": "SELL",
+            "HOLD": "HOLD",
+            "WAIT": "HOLD",
+        }[execution_action]
+    elif gate_blocked:
         decision = "HOLD"
 
     # [REPORT-UX-003] wait_reason_codes — decompose the WAIT verdict so the UI

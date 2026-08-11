@@ -355,6 +355,7 @@ export interface AnalysisReport {
     research_direction?: string
     execution_action?: string
     action_label?: string
+    metadata?: Record<string, unknown>
     data_blockers?: DataBlocker[]
     data_blocker_summary?: DataBlockerSummary
     // [REPORT-UX-003] wait_reason_codes

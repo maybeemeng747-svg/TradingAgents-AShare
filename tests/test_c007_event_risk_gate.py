@@ -920,7 +920,7 @@ class TestBuyLevelEventRiskDowngrade:
         )
         assert "C-007-R1" in result["note"]
 
-    def test_event_risk_gate_sanitizes_buy_but_preserves_exit(self):
+    def test_event_risk_gate_sanitizes_buy_and_unsupported_forced_exit(self):
         from tradingagents.agents.utils.readiness_score import (
             sanitize_forbidden_strong_actions,
         )
@@ -942,8 +942,10 @@ class TestBuyLevelEventRiskDowngrade:
             "建议建仓", "建议买入", "建议入场", "积极建仓", "BUY", "ENTER",
         ):
             assert forbidden not in sanitized
-        assert "立即清仓" in sanitized
+        assert "立即清仓" not in sanitized
+        assert "等待触发条件，暂不执行强清仓" in sanitized
         assert any("买入动作" in change for change in changes)
+        assert any("强卖出动作" in change for change in changes)
 
     def test_event_risk_warning_is_not_rewritten_by_sanitizer(self):
         from tradingagents.agents.utils.readiness_score import (

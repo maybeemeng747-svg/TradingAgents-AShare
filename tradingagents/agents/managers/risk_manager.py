@@ -2,6 +2,7 @@ import asyncio
 import time
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
@@ -54,7 +55,6 @@ from tradingagents.agents.utils.readiness_score import (
     infer_evidence_statuses,
     extract_execution_signals,
     build_fund_flow_provenance,
-    _split_llm_body_and_system_blocks,
     ConfidenceLevel,
     validate_stock_name,
     check_valuation_mismatch,
@@ -62,6 +62,128 @@ from tradingagents.agents.utils.readiness_score import (
     # [C-003-R1] streaming short-selling sanitizer
     ShortSellingStreamFilter,
 )
+
+
+def _format_visible_execution_summary(
+    *,
+    trade_quality_check: dict,
+    gate: dict,
+    position_status: str,
+    buy_level: int,
+    risk_level: int,
+) -> str:
+    """Keep the authoritative action visible while detailed audit stays folded."""
+    failures = set(gate.get("failures") or [])
+    buy_only_failures = {
+        "event_risk_block_open",
+        "fundamental_semantic_gate",
+        "估值基准价不可用(valuation_price_unavailable)",
+    }
+    entry_veto_only = bool(failures) and failures <= buy_only_failures
+    quality_blockers = list(trade_quality_check.get("do_not_trade_if") or [])
+    # Risk Level 4 means the exit condition has already fired. Ignore only
+    # blockers proven to concern a future entry; generic confirmed execution
+    # failures (account frozen, order channel unavailable, lock-up period, etc.)
+    # must remain fail-closed.
+    entry_only_blocker = re.compile(
+        r"(?:禁止|不得|不能|不可|暂不|不要|不建议|不允许|无法自动验证)"
+        r".{0,16}(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|做多|"
+        r"追高|追涨|融资|杠杆)"
+        r"|(?:不融资|不加杠杆|不追高|做多方案|入场方案|新增仓位)"
+    )
+    exit_side_blocker = re.compile(
+        r"(?:禁止|不得|不能|不可|暂不|不要|不建议|不允许)"
+        r".{0,16}(?:卖出|减仓|清仓|止损|退出|止盈)"
+        r"|(?:禁止卖出|不得减仓|不能清仓|暂不止损)"
+    )
+    user_constraints = [
+        str(item) for item in (trade_quality_check.get("user_constraints") or [])
+    ]
+    exit_constraint_active = any(
+        exit_side_blocker.search(item) for item in user_constraints
+    )
+
+    def is_entry_only_blocker(blocker: object) -> bool:
+        text = str(blocker)
+        if exit_side_blocker.search(text):
+            return False
+        prefix = "交易计划违反用户硬约束："
+        if text.startswith(prefix):
+            constraints = [
+                item.strip()
+                for item in re.split(r"[；;、，,]", text[len(prefix):])
+                if item.strip()
+            ]
+            return bool(constraints) and all(
+                entry_only_blocker.search(item) for item in constraints
+            )
+        return bool(entry_only_blocker.search(text))
+
+    level_four_ignored_blockers = {
+        "无法从报告中解析出明确止损价",
+        "止损价必须低于入场触发价",
+        "止损价必须为正数",
+    }
+    level_four_blockers = [
+        blocker
+        for blocker in quality_blockers
+        if str(blocker).strip().rstrip("。") not in level_four_ignored_blockers
+        and not is_entry_only_blocker(blocker)
+    ]
+    if position_status == "no_position":
+        entry_ready = (
+            gate.get("passed", True)
+            and buy_level >= 2
+            and risk_level == 0
+            and trade_quality_check.get("execution_mode") == "条件触发"
+            and trade_quality_check.get("action") == "等待触发"
+            and trade_quality_check.get("entry_intent") is True
+            and trade_quality_check.get("conditional_entry_intent") is True
+            and (
+                trade_quality_check.get("trigger_price") is not None
+                or bool(trade_quality_check.get("entry_range"))
+            )
+            and trade_quality_check.get("stop_loss_price") is not None
+            and not trade_quality_check.get("do_not_trade_if")
+        )
+        action = "ENTER/条件入场" if entry_ready else "WAIT/观察"
+    elif position_status == "unknown":
+        action = "WAIT/观察（持仓状态待确认）"
+    elif not gate.get("passed", True) and not (
+        entry_veto_only and risk_level >= 2
+    ):
+        action = "WAIT/等待人工复核"
+    elif exit_constraint_active and risk_level >= 2:
+        action = "WAIT/等待人工复核"
+    elif risk_level >= 4 and not level_four_blockers:
+        action = "立即清仓"
+    elif quality_blockers and (
+        risk_level < 2
+        or any(not is_entry_only_blocker(blocker) for blocker in quality_blockers)
+    ):
+        action = "WAIT/等待人工复核"
+    elif risk_level == 3:
+        action = "触发止损"
+    elif risk_level == 2:
+        action = "条件减仓"
+    elif trade_quality_check.get("exit_intent"):
+        # An exit recommendation without independently confirmed sell-side risk
+        # is a conflict, not a HOLD. Keep it fail-closed for human review.
+        action = "WAIT/等待人工复核"
+    else:
+        action = (
+            "WAIT/等待人工复核"
+            if trade_quality_check.get("do_not_trade_if")
+            else "HOLD/持有"
+        )
+    gate_status = "通过" if gate.get("passed", True) else "未通过"
+    return (
+        "### 系统执行结论\n"
+        f"- 系统动作：{action}\n"
+        f"- 强动作门禁：{gate_status}\n"
+        f"- Buy Level：{buy_level}\n"
+        f"- Risk Level：{risk_level}"
+    )
 
 
 def _completed_bar_can_supply_execution_price(
@@ -199,6 +321,10 @@ _STRONG_SELL_KEYWORDS = [
     '立即清仓', '立刻清仓', '强制清仓', '清仓离场', '清仓出局', '全部卖出离场',
 ]
 
+# Trusted delimiter emitted by application code, never inferred from model
+# headings. Metadata stores the exact application-owned diagnostics boundary.
+_SYSTEM_DIAGNOSTICS_START = "<!-- TA_SYSTEM_DIAGNOSTICS_START -->"
+
 
 def _has_position_data(user_context: dict) -> bool:
     """Return whether the request supplied a usable position quantity signal."""
@@ -323,8 +449,15 @@ def create_risk_manager(llm, memory):
             trader_plan=trader_plan,
             final_decision=cleaned_response,
             user_context=state.get("user_context", {}),
+            position_context=state.get("position_context"),
         )
-        final_response = cleaned_response + "\n\n" + format_trade_quality_check(trade_quality_check)
+        final_response = (
+            cleaned_response
+            + "\n\n"
+            + _SYSTEM_DIAGNOSTICS_START
+            + "\n"
+            + format_trade_quality_check(trade_quality_check)
+        )
 
         # [C-001] position_validation_gate — 校验输出动作
         from tradingagents.agents.utils.position_validation_gate import (
@@ -537,7 +670,7 @@ def create_risk_manager(llm, memory):
 
         signals = extract_execution_signals(state, final_response, reports_dict)
 
-        _llm_body, _ = _split_llm_body_and_system_blocks(final_response)
+        _llm_body = cleaned_response
         contains_strong = any(
             kw in _llm_body for kw in _STRONG_BUY_KEYWORDS + _STRONG_SELL_KEYWORDS
         )
@@ -642,9 +775,15 @@ def create_risk_manager(llm, memory):
         )
 
         # ── D-002 真降级：移除/替换强动作文本 ──
-        final_response, _sanitize_changes = sanitize_forbidden_strong_actions(
+        (
+            final_response,
+            _sanitize_changes,
+            system_diagnostics_offset,
+        ) = sanitize_forbidden_strong_actions(
             final_response, gate, position_status,
             buy_result["level"], risk_result["level"],
+            trusted_system_offset=len(cleaned_response),
+            return_system_offset=True,
         )
         if _sanitize_changes:
             _logger.warning("[D-002] sanitize_forbidden_strong_actions: %s", _sanitize_changes)
@@ -661,35 +800,49 @@ def create_risk_manager(llm, memory):
             )
 
         # [Fix-9] Filter A-share short-selling language
-
-        # [Fix-9] Filter A-share short-selling language
-        final_response, ss_changes = _sanitize_short_selling_text(final_response)
+        visible_body = final_response[:system_diagnostics_offset].rstrip()
+        system_diagnostics = final_response[system_diagnostics_offset:].lstrip()
+        visible_body, ss_changes = _sanitize_short_selling_text(visible_body)
         if ss_changes:
             _logger.warning("[Fix-9] short_selling_filter: %s", ss_changes)
 
-        final_response += "\n\n" + format_execution_block(
-            source_coverage=source_coverage,
-            evidence_coverage=evidence_coverage,
-            confidence=confidence.value,
-            opportunity_score=opp_score,
-            risk_level=risk_result["level"],
-            buy_level=buy_result["level"],
-            risk_level_note=risk_result["note"],
-            buy_level_note=buy_result["note"],
-            strong_action_gate=gate,
+        execution_summary = _format_visible_execution_summary(
+            trade_quality_check=trade_quality_check,
+            gate=gate,
             position_status=position_status,
-            # [Fix-2]
-            valuation_mismatch=(
-                valuation_check["mismatch"]
-                or valuation_check.get("price_unavailable", False)
-            ),
-            # G-001: wire three-layer decision into production path
-            analysis_intent=state.get("analysis_intent", "watch"),
-            position_context=state.get("position_context", {}),
-            horizon=state.get("horizon", "short"),
-            fundamental_integrity_valid=fundamental_integrity["is_valid"],
+            buy_level=buy_result["level"],
+            risk_level=risk_result["level"],
         )
-
+        system_diagnostics = (
+            system_diagnostics.rstrip()
+            + "\n\n"
+            + execution_summary
+            + "\n\n"
+            + format_execution_block(
+                source_coverage=source_coverage,
+                evidence_coverage=evidence_coverage,
+                confidence=confidence.value,
+                opportunity_score=opp_score,
+                risk_level=risk_result["level"],
+                buy_level=buy_result["level"],
+                risk_level_note=risk_result["note"],
+                buy_level_note=buy_result["note"],
+                strong_action_gate=gate,
+                position_status=position_status,
+                # [Fix-2]
+                valuation_mismatch=(
+                    valuation_check["mismatch"]
+                    or valuation_check.get("price_unavailable", False)
+                ),
+                # G-001: wire three-layer decision into production path
+                analysis_intent=state.get("analysis_intent", "watch"),
+                position_context=state.get("position_context", {}),
+                horizon=state.get("horizon", "short"),
+                fundamental_integrity_valid=fundamental_integrity["is_valid"],
+            )
+        )
+        final_response = visible_body + "\n\n" + system_diagnostics
+        system_diagnostics_offset = len(visible_body) + 2
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
             tracker.emit_debate_message(
@@ -748,6 +901,7 @@ def create_risk_manager(llm, memory):
             "fundamental_integrity": fundamental_integrity,
             "fund_flow_provenance": fund_flow_provenance,
             "financial_anomaly_inputs": extract_financial_anomaly_inputs(period_facts),
+            "system_diagnostics_offset": system_diagnostics_offset,
         }
 
         return {

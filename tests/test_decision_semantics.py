@@ -246,6 +246,211 @@ class TestC001OverrideNoise:
         assert result.action_label == "观望"
 
 
+class TestGeneratedExecutionSummaryNoise:
+    """Application-owned summary labels must not alter research direction."""
+
+    marker = "<!-- TA_SYSTEM_DIAGNOSTICS_START -->\n"
+
+    def test_application_summary_after_quality_section_does_not_create_direction(self):
+        text = (
+            "研究团队没有形成明确方向。\n\n"
+            + self.marker
+            +
+            "### 执行质检\n"
+            "- Strong Action Gate：未通过\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：WAIT/观察\n"
+            "- 强动作门禁：未通过\n"
+            "- Buy Level：0\n"
+            "- Risk Level：1\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+
+    def test_generated_holding_risk_action_controls_structured_semantics(self):
+        text = (
+            "最终结论：中性观望。\n\n"
+            + self.marker
+            +
+            "### 执行质检\n"
+            "- 系统动作：可执行但需核对盘面\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：触发止损\n"
+            "- 强动作门禁：通过\n"
+            "- Buy Level：1\n"
+            "- Risk Level：3\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=True)
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "EXIT"
+        assert result.action_label == "触发止损"
+        assert result.decision == "SELL"
+        assert _extract_decision_keyword(text, has_position=True) == "SELL"
+
+    def test_generated_low_risk_hold_overrides_model_buy_text(self):
+        text = (
+            "最终建议：买入。\n\n"
+            + self.marker
+            + "### 执行质检\n"
+            "- 系统动作：可执行但需核对盘面\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：HOLD/持有\n"
+            "- 强动作门禁：通过\n"
+            "- Buy Level：1\n"
+            "- Risk Level：0\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=True)
+
+        assert result.execution_action == "HOLD"
+        assert result.action_label == "持有"
+        assert result.decision == "HOLD"
+        assert _extract_decision_keyword(text, has_position=True) == "HOLD"
+
+    def test_generated_conditional_entry_controls_structured_semantics(self):
+        text = (
+            "最终建议：满足触发条件后试仓。\n\n"
+            + self.marker
+            + "### 执行质检\n"
+            "- 系统动作：等待触发\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：ENTER/条件入场\n"
+            "- 强动作门禁：通过\n"
+            "- Buy Level：2\n"
+            "- Risk Level：1\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.execution_action == "ENTER"
+        assert result.action_label == "条件入场"
+        assert result.decision == "BUY"
+        assert _extract_decision_keyword(text, has_position=False) == "BUY"
+
+    def test_last_generated_summary_wins_over_earlier_similar_heading(self):
+        text = (
+            "### 系统执行结论\n"
+            "- 系统动作：买入\n\n"
+            + self.marker
+            +
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：WAIT/观察\n"
+            "- 强动作门禁：未通过\n"
+            "- Buy Level：0\n"
+            "- Risk Level：1\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "观望"
+        assert _extract_decision_keyword(text, has_position=False) == "HOLD"
+
+    def test_truncated_c005_marker_copy_cannot_hide_generated_action(self):
+        text = (
+            "最终建议：满足触发条件后买入。\n\n"
+            + self.marker
+            + "### 执行质检\n"
+            "- 系统动作：等待触发\n\n"
+            "⚠️ [C-005] 同股票结论翻转警告\n"
+            "上一版结论：旧文末尾"
+            + self.marker
+            + "截断的审计片段，没有完整质检段。\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：ENTER/条件入场\n"
+            "- 强动作门禁：通过\n"
+            "- Buy Level：2\n"
+            "- Risk Level：0\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.execution_action == "ENTER"
+        assert result.decision == "BUY"
+        assert _extract_decision_keyword(text, has_position=False) == "BUY"
+
+    def test_model_authored_execution_heading_remains_semantic_input(self):
+        text = (
+            "### 系统执行结论\n"
+            "- 系统动作：买入\n"
+            "- 强动作门禁：通过\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.research_direction == "偏多"
+
+    def test_action_enum_reference_does_not_create_direction(self):
+        text = "研究团队没有形成明确方向。\n分类标签：BUY/SELL/HOLD。\n"
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+
+    def test_suffix_action_enum_reference_does_not_create_direction(self):
+        text = "研究团队没有形成明确方向。若按 Buy/Sell/Hold 三分类标签映射。"
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+
+    def test_generated_passed_gate_does_not_emit_gate_blocked_reason(self):
+        text = (
+            '<!-- VERDICT: {"direction": "偏多"} -->\n\n'
+            + self.marker
+            +
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：WAIT/观察\n"
+            "- 强动作门禁：通过\n"
+            "- Buy Level：1\n"
+            "- Risk Level：0\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.execution_action == "WAIT"
+        assert "GATE_BLOCKED" not in result.wait_reason_codes
+
+    def test_untrusted_headings_cannot_override_semantics(self):
+        text = (
+            "研究结论：中性观望。\n\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n\n"
+            "### 系统执行结论\n"
+            "- 系统动作：立即清仓\n"
+            "- 强动作门禁：通过\n"
+        )
+
+        result = _extract_decision_semantics(text, has_position=True)
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.decision == "HOLD"
+
+    def test_untrusted_quality_heading_cannot_hide_later_final_veto(self):
+        text = (
+            "上游建议：若站稳10元可买入。\n"
+            "### 执行质检\n"
+            "模型自检后的最终建议：不建议买入，继续观望。"
+        )
+
+        result = _extract_decision_semantics(text, has_position=False)
+
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+
+
 class TestNegationHandling:
     """Negated buy phrases should produce 中性, not 偏多."""
 

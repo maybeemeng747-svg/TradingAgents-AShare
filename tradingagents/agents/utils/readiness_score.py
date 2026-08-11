@@ -1355,6 +1355,18 @@ _SANITIZE_STRONG_SELL = [
     (r'全部卖出离场', '等待触发条件，暂不执行强清仓'),
 ]
 _SANITIZE_STRONG_BUY = [
+    (
+        r'(?:提交|创建|下达|执行|发出|挂出)\s*'
+        r'(?:一笔|新的)?\s*买入订单'
+        r'(?:\s*(?:数量|金额|规模)?\s*\d+(?:\.\d+)?\s*(?:股|手|元|万元|亿元)?)?',
+        '等待条件确认，暂不提交订单',
+    ),
+    (
+        r'(?:最终建议|系统指令|当前操作|下一步)\s*[:：]\s*'
+        r'(?:提交|创建|下达|执行|发出|挂出)?\s*买入订单'
+        r'(?:\s*(?:数量|金额|规模)?\s*\d+(?:\.\d+)?\s*(?:股|手|元|万元|亿元)?)?',
+        '等待条件确认，暂不提交订单',
+    ),
     (r'强买', '暂不执行强买入，等待条件确认'),
     (r'重仓买入', '暂不执行强买入，等待条件确认'),
     (r'立即买入', '暂不执行强买入，等待条件确认'),
@@ -1390,6 +1402,9 @@ _SANITIZE_EVENT_RISK_BUY = [
     (r'试探性轻仓(?:策略)?', '等待风险解除'),
     (r'(?:轻仓|小仓位)试(?:多|错)', '等待风险解除'),
     (r'(?i)\bSTRONG_BUY\b', 'WAIT'),
+    # Known classification enum references are masked before these patterns
+    # run.  Slash-delimited text elsewhere may still be an executable choice
+    # (for example ``最终交易建议：BUY/HOLD``), so it must fail closed.
     (r'(?i)\bBUY\b', 'WAIT'),
     (r'(?i)\bENTER\b', 'WAIT'),
 ]
@@ -1398,10 +1413,326 @@ _ACTION_SIZE_VALUE = (
     r"(?:[\d.]+|[零〇一二两三四五六七八九十百千万半]+)"
     r"\s*(?:%|万元|元|成|仓)?|全仓|满仓|半仓|小仓位|轻仓|重仓)"
 )
+_ACTION_LABEL_CONTEXT = (
+    r'(?:\*{0,2})'
+    r'(?:系统指令|当前操作|操作|动作|我的动作|下一步|交易方向|方向|结论|意见|最终意见|交易意见|处理意见|策略|执行|建议|决策类型|最终交易建议|'
+    r'最终交易决策|最终决策|交易决策|最终结论|决策|我的意见|我们的意见|我的选择|我的决定|投资结论|'
+    r'风控结论|交易计划|仓位计划|执行方案|交易员动作)'
+    r'(?:(?:\*{0,2})\s*[:：]|[:：]\s*(?:\*{0,2})|'
+    r'(?:\*{0,2})\s*(?:定为|确定为|选择|选|为|是))\s*(?:\*{0,2})'
+)
+_ACTION_LINE_CONTEXT = (
+    rf'(?:(?:{_ACTION_LABEL_CONTEXT})|'
+    r'^\s*(?:(?:#{1,6}\s+)|(?:>\s*)|(?:[-*]\s*)|(?:\d+[.)、]\s*)|'
+    r'(?:[（(]\d+[）)]\s*))?(?:\*{0,2}))'
+)
+_ACTION_LEADING_DIRECTIVES = (
+    r'(?:(?:我|本人|我们|本基金|本账户|用户|投资者|客户|持币者|大家|'
+    r'系统|交易员|本策略|策略|模型|风控|投资委员会)(?:的)?\s*)?'
+    r'(?:(?:当前|现在|目前)\s*)?'
+    r'(?:(?:认为|觉得|判断(?:是|为)?|(?:个人)?观点(?:是|为)?|'
+    r'结论(?:是|为)?|考虑后)\s*)?'
+    r'(?:(?:建议|推荐|应|应当|应该|需要|需|务必|必须|请|坚决|'
+    r'无条件|果断|可|可以|允许|计划|准备|打算|拟|将|要|宜|适宜|主张|'
+    r'继续|维持|倾向于|倾向|适合|更适合|后续宜|后续可(?:以)?|会)\s*)?'
+    r'(?:(?:供\s*)?(?:用户|投资者|客户|持币者|大家)\s*)?'
+)
+
+_CURRENT_ACTION_LABEL = (
+    r'(?:最终|当前)(?:交易)?(?:建议|结论|动作|意见|决策|裁决)'
+    r'|操作建议|系统指令|风控(?:结论|裁决)|交易员(?:动作|结论|建议)'
+    r'|(?:现在|目前|当前)(?:建议|应|应该|需|需要|决定|计划|准备|打算|将|会|立刻|立即)'
+)
+
+_HYPOTHETICAL_HOLDING_PLAN = re.compile(
+    r'(?:(?:若|如果|假如|假设)[^。！？；;\n]{0,40})?'
+    r'(?:未来持仓|未来(?:买入|建仓|入场|开仓)(?:后)?|'
+    r'以后(?:买入|建仓|入场|开仓)(?:后)?|持仓后|买入后|建仓后|'
+    r'(?:买入|建仓|入场|开仓)成功(?:的情况下)?)'
+    rf'(?:(?!(?:{_CURRENT_ACTION_LABEL}))[^。！？；;\n]){{0,40}}'
+    r'(?:(?:计划|准备|打算|拟|将)\s*)?'
+    rf'(?:(?!(?:{_CURRENT_ACTION_LABEL}))[^。！？；;\n]){{0,24}}?'
+    r'(?:减仓|清仓|止盈|卖出|止损)'
+    r'(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值)'
+)
+
+_NON_EXECUTABLE_ENTRY_DISCUSSION = re.compile(
+    r'(?:'
+    r'(?:不确定|需判断|需要判断|讨论|研究问题|尚不能确定)'
+    r'[^。！？；;\n]{0,48}?'
+    r'(?:'
+    r'(?:是否|能否|可否|何时)[^。！？；;\n]{0,12}?'
+    r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+    r'|'
+    r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+    r'[^。！？；;\n]{0,12}?(?:是否|能否|可否|何时|可行性|合适|适合)'
+    r')'
+    r'|'
+    r'如需特批(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+    r'[^。！？；;\n]{0,24}(?:审批|批准)'
+    r')'
+)
+
+_ANALYTICAL_ENTRY_FACT = re.compile(
+    r'(?:'
+    r'(?:维持(?:原)?|重申)?买入评级'
+    r'(?:机构[^。！？；;，,\n]{0,20}|维持不变|不变|为[^。！？；;，,\n]{0,12})?'
+    r'|买入(?:成交额|资金(?:占比)?|意愿|盘)'
+    r'[^。！？；;，,\n]{0,20}?'
+    r'(?=(?:建议|推荐|可|可以|考虑|应|应该|应当|等待)'
+    r'[^。！？；;，,\n]{0,12}(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|介入|参与))'
+    r'|买入(?:成交额|资金(?:占比)?|意愿|盘)'
+    r'(?![^。！？；;，,\n]{0,20}(?:建议|推荐|可|可以|考虑|应|应该|应当|等待)'
+    r'[^。！？；;，,\n]{0,12}(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|介入|参与))'
+    r'[^。！？；;，,\n]{0,20}'
+    r'|买入(?:逻辑|信号)(?:尚|仍|暂时|目前|当前|才|可能|已经|已)*'
+    r'(?:不充分|不足|缺失|未出现|待验证|待确认|成立|不成立|有效|无效|明确|不明确)'
+    r')'
+)
+
+_ANALYTICAL_ACTION_NOUN = re.compile(
+    r'(?:'
+    r'(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|介入|卖出|减仓|清仓|止损|止盈)'
+    r'(?:行为|需求|意愿|人数|人气|方(?:力量)?|力量|资金(?:流|占比)?|盘|情绪|压力|风险|'
+    r'回报|收益|成交|评级机构)'
+    r'|(?:买入|购入|卖出|减仓|清仓|止损|止盈)订单'
+    r'(?=数量|金额|规模|占比|增长|下降|变化|上升|减少|增加|统计|数据|'
+    r'已|已经|刚刚|刚|完成|成交|撤单|取消)'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _mask_analytical_action_nouns(text: str) -> tuple[str, dict[str, str]]:
+    """Protect action-shaped analytical nouns from imperative sanitizers."""
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        prefix = text[max(0, match.start() - 16):match.start()]
+        imperative = re.search(
+            r'(?:提交|创建|下达|执行|发出|挂出)\s*$',
+            prefix,
+        )
+        if imperative:
+            before_verb = prefix[:imperative.start()].rstrip()
+            if not before_verb.endswith(("已", "已经")):
+                return match.group(0)
+        token = f"__TA_ANALYTICAL_ACTION_NOUN_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _ANALYTICAL_ACTION_NOUN.sub(_replace, text), protected
+
+
+def _restore_analytical_action_nouns(
+    text: str,
+    protected: dict[str, str],
+) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
+def _mask_hypothetical_holding_plans(text: str) -> tuple[str, dict[str, str]]:
+    """Protect future holding scenarios from current no-position rewrites."""
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__TA_HYPOTHETICAL_HOLDING_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _HYPOTHETICAL_HOLDING_PLAN.sub(_replace, text), protected
+
+
+def _restore_hypothetical_holding_plans(
+    text: str,
+    protected: dict[str, str],
+) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
+def _mask_non_executable_entry_discussion(
+    text: str,
+) -> tuple[str, dict[str, str]]:
+    """Protect research questions and plans explicitly deferred by a gate."""
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__TA_NON_EXECUTABLE_ENTRY_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _NON_EXECUTABLE_ENTRY_DISCUSSION.sub(_replace, text), protected
+
+
+def _restore_non_executable_entry_discussion(
+    text: str,
+    protected: dict[str, str],
+) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
+def _mask_analytical_entry_facts(text: str) -> tuple[str, dict[str, str]]:
+    """Protect analytical labels and measurements that are not directives."""
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__TA_ANALYTICAL_ENTRY_FACT_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _ANALYTICAL_ENTRY_FACT.sub(_replace, text), protected
+
+
+def _restore_analytical_entry_facts(
+    text: str,
+    protected: dict[str, str],
+) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
+def _display_action_replacement(replacement: str) -> str:
+    """Remove regex backreferences from user-facing audit descriptions."""
+    return re.sub(r"\\g<[^>]+>", "", replacement)
+
+
+_ACTION_SEQUENCE_MODIFIERS = (
+    r'(?:(?:先|优先|直接|立即|立刻|马上|逐步|分批|轻仓|小仓位|少量|'
+    r'适度|适当|酌情|谨慎|趁机|顺势|择机|适时|伺机|后续|逢高|反弹|逢低|'
+    r'维持|予以|做)\s*|'
+    r'等待[^。！？；;，,\n]{1,20}(?:后|时)\s*)*'
+)
+_ACTION_EXECUTABLE_CONTEXT = (
+    rf'{_ACTION_LINE_CONTEXT}'
+    rf'{_ACTION_LEADING_DIRECTIVES}'
+    rf'{_ACTION_SEQUENCE_MODIFIERS}'
+)
+_ACTION_MARKDOWN_SUFFIX = r'(?:\*{0,2})'
+_ACTION_CAUSAL_PREFIX = r'(?:因此|所以|由此|据此|故而|故)'
+_ACTION_CAUSAL_ACTOR_AND_MODAL = (
+    r'(?:(?:我|本人|我们|本基金|本账户|用户|投资者|客户|持币者|大家|'
+    r'系统|交易员|本策略|策略|模型|风控|投资委员会)(?:的)?\s*)?'
+    r'(?:(?:会|将|计划|准备|打算|拟|建议|推荐|可|可以|应|应当|应该|'
+    r'需|需要|选择|决定|值得|适合)\s*)?'
+)
+_ACTION_CONDITIONAL_SUBJECT_PREFIX = (
+    r'[^。！？；;，,\n]{1,36}(?:后|时)\s*'
+    r'(?:我|本人|我们|本基金|本账户)(?:的)?\s*'
+    r'(?:(?:认为|觉得|判断(?:是|为)?|(?:个人)?观点(?:是|为)?|'
+    r'结论(?:是|为)?|考虑后)\s*)?'
+    r'(?:会|将|计划|准备|打算|拟|决定|选择|建议|应|应当|应该|需要|需)\s*'
+)
+_ACTION_EXPLICIT_VERDICT_PREFIX = (
+    r'(?P<directive>'
+    r'(?:(?:最终|当前)(?:建议|裁决|结论|动作)?|今日|今天|明日|下周|'
+    r'收盘前|开盘即|只|仅|转为|改为|'
+    r'由[^。！？；;，,\n]{1,12}转为)'
+    r'\s*[:：]?\s*)'
+)
 _SANITIZE_FUNDAMENTAL_VETO_BUY = [
+    (
+        r'(?:(?:我|本人|我们|本基金|本账户|系统|模型|风控|投资委员会)\s*)?'
+        r'(?:赞成|支持|同意|认可)\s*'
+        r'(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|做多|介入|参与)'
+        r'(?!评级|信号|逻辑|条件|观点|建议|风险)',
+        '等待基本面证据复核',
+    ),
+    (
+        r'(?:提交|创建|下达|执行|发出|挂出)\s*'
+        r'(?:一笔|新的)?\s*买入订单'
+        r'(?:\s*(?:数量|金额|规模)?\s*\d+(?:\.\d+)?\s*(?:股|手|元|万元|亿元)?)?',
+        '等待基本面证据复核',
+    ),
+    (
+        rf'(?P<label>{_ACTION_LABEL_CONTEXT})'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|逻辑|评级|点|上限|额度|比例|限制|禁令|风险|建议)',
+        r'\g<label>等待基本面证据复核',
+    ),
+    (
+        rf'{_ACTION_EXPLICIT_VERDICT_PREFIX}'
+        r'(?:买入|购入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|逻辑|评级|点|上限|额度|比例|限制|禁令|风险|建议)',
+        r'\g<directive>等待基本面证据复核',
+    ),
+] + [
     (pattern, "等待基本面证据复核")
     for pattern, _replacement in _SANITIZE_EVENT_RISK_BUY
 ] + [
+    (
+        r'(?P<entry_condition>(?<!何)(?:后|时|则)\s*)'
+        r'(?:再\s*)?'
+        r'(?:(?:用户|投资者|客户|持币者|大家)\s*)?'
+        r'(?:(?:可|可以|建议|推荐|考虑|允许|应当|应该|应|需|需要|计划|准备|决定|选择)\s*)?'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|逻辑|评级|点|上限|额度|比例|限制|禁令|的?可行性|的?可能性|是否|何时)',
+        r'\g<entry_condition>等待基本面证据复核',
+    ),
+    (
+        rf'{_ACTION_CONDITIONAL_SUBJECT_PREFIX}'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        rf'{_ACTION_CAUSAL_PREFIX}\s*'
+        rf'{_ACTION_CAUSAL_ACTOR_AND_MODAL}'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:该股|该标的|本标的)\s*(?:值得|适合)\s*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?<!是否)(?<!能否)(?<!可否)(?<!不)'
+        r'(?:值得|最好|宁可)\s*'
+        r'(?:(?:考虑|选择|建议|推荐)\s*)?'
+        r'(?:买入|购入|建仓|入场|开仓|试仓|试多|低吸|加仓|补仓|'
+        r'增持|介入|参与|抄底|追涨|配置(?:仓位)?)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|逻辑|评级|点|上限|'
+        r'额度|比例|限制|禁令|的?可行性|的?可能性)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:不妨|不如)\s*'
+        r'(?:(?:考虑|选择|建议|推荐)\s*)?'
+        r'(?:买入|购入|建仓|入场|开仓|试仓|试多|低吸|加仓|补仓|'
+        r'增持|介入|参与|抄底|追涨|配置(?:仓位)?)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|逻辑|评级|点|上限|'
+        r'额度|比例|限制|禁令|的?可行性|的?可能性)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:用户|投资者)?\s*'
+        r'(?:建议|推荐|计划|考虑|可以|可|允许|执行|开始|进行|应当|应该|必须|务必|需要|需|请|主张|适宜|后续宜|宜|倾向于|倾向)\s*'
+        r'(?:用户|投资者)?\s*'
+        r'(?:(?:在|于)\s*[^。！？；;，,\n]{1,24}\s*)?'
+        r'(?:(?:逢低|逐步|分批|轻仓|小仓位|少量)\s*)*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?:\d+(?:\.\d+)?\s*(?:%|成仓|股|手|仓位))?',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:可|可以|建议|推荐|考虑)\s*'
+        r'(?:低吸|逢低吸纳|试多|追涨)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:昨日|昨天|今日|今天|当前|目前)?\s*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持)建议(?:仍然)?有效',
+        "等待基本面证据复核",
+    ),
     (
         r'(?:将|把)?(?:买入|建仓|入场|加仓)(?:额度|比例|上限|限制)'
         r'(?!字段|规则|阈值|说明)'
@@ -1454,7 +1785,73 @@ _SANITIZE_FUNDAMENTAL_VETO_BUY = [
         r'(?:买入|建仓|入场|加仓)(?=额度|比例|上限|限制)',
         "等待基本面证据复核",
     ),
-    (r'买入(?!价|价格|条件|区间|触发|信号|点|上限|额度|比例|限制|禁令)', "等待基本面证据复核"),
+    (
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        rf'买入{_ACTION_MARKDOWN_SUFFIX}'
+        r'(?!价|价格|条件|区间|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:综合判断|整体判断|操作|操作上|策略上|最终结论|当前结论|结论|首选(?:方案)?)'
+        r'\s*(?:以|偏向|倾向|为|是|[:：])?\s*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?:为主|优先|作为首选)?',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:(?:最终建议|最终裁决|最终结论|交易建议|操作建议|当前结论)\s*[:：]?\s*)?'
+        r'(?:建议|推荐|当前最好|首选(?:方案)?(?:是|为)?|我的选择(?:会)?是)?\s*'
+        r'(?:以\s*)?'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)\s*'
+        r'(?:为主|为宜|优先|作为首选)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:建议|推荐|可|可以|考虑)?\s*高抛低吸',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:若|如果|如|一旦|待|当)\s*'
+        r'[^。！？；;，,\n]{0,30}'
+        r'(?:突破|站稳|回踩|触及|达到|高于|站上)'
+        r'[^。！？；;，,\n]{0,24}?'
+        r'(?:后|则|时|即可|可以|可|建议|考虑|允许|应当|应该)?\s*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:若|如果|如|一旦|待|当)\s*'
+        r'[^。！？；;，,\n]{0,48}?'
+        r'(?:后|则|时)\s*'
+        r'(?:(?:再|择机|适时|伺机|逢低|轻仓|小仓位|分批)\s*)*'
+        r'(?:(?:可|可以|建议|推荐|考虑|允许|应当|应该|应|需|需要)\s*)?'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:建议|推荐|可|可以|考虑|允许|应|应该|应当|需|需要|计划|准备|决定|选择|执行|进行|采取)'
+        r'[^。！？；;，,:：\n]{0,12}?'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令|的?可行性|的?可能性)',
+        "等待基本面证据复核",
+    ),
+    (
+        rf'{_ACTION_LINE_CONTEXT}'
+        r'(?:(?:价格|股价|收盘价|指数|标的)\s*)?'
+        r'(?:突破|站稳|回踩|触及|达到|高于|站上)'
+        r'[^。！？；;，,\n]{0,24}?'
+        r'(?:后|则|时|即可|可以|可|建议|考虑|允许|应当|应该)\s*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)'
+        r'(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:本次|当前|最终)?\s*(?:决定|选择)\s*'
+        r'(?:买入|建仓|入场|加仓|开仓|增持|做多)',
+        "等待基本面证据复核",
+    ),
     (
         r'(?:现在|当前|目前)?\s*'
         r'(?:可|可以|建议|推荐|考虑|允许|应当|应该|适合)\s*'
@@ -1462,17 +1859,19 @@ _SANITIZE_FUNDAMENTAL_VETO_BUY = [
         "等待基本面证据复核",
     ),
     (
-        r'(?:(?:操作|动作|结论|策略|执行)\s*[:：]\s*|^\s*(?:[-*]\s*)?)'
-        r'买(?=\s*(?:\d+(?:\.\d+)?\s*(?:股|手|%|成仓)?|[。！？；;，,、]|$))',
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        rf'买{_ACTION_MARKDOWN_SUFFIX}'
+        r'(?=\s*(?:\d+(?:\.\d+)?\s*(?:股|手|%|成仓)?|[。！？；;，,、]|$))',
         "等待基本面证据复核",
     ),
     (r'买(?:一点|一些|少量|点仓位)', "等待基本面证据复核"),
-    (r'建仓(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)', "等待基本面证据复核"),
-    (r'入场(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)', "等待基本面证据复核"),
-    (r'加仓(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)', "等待基本面证据复核"),
-    (r'开仓(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)', "等待基本面证据复核"),
-    (r'增持(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)', "等待基本面证据复核"),
-    (r'做多(?!条件|计划|触发|信号|限制|禁令)', "等待基本面证据复核"),
+    (
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        r'(?:建仓|入场|加仓|开仓|增持|做多)'
+        rf'{_ACTION_MARKDOWN_SUFFIX}'
+        r'(?!价|价格|条件|区间|计划|触发|信号|点|上限|额度|比例|限制|禁令)',
+        "等待基本面证据复核",
+    ),
     (
         r'(?:(?:当前|现在|目前)(?:价格|价位)?\s*)?'
         r'(?:可|可以|建议|推荐|考虑|允许|应当|应该|适合)\s*'
@@ -1495,9 +1894,115 @@ _SANITIZE_FUNDAMENTAL_VETO_BUY = [
         r'(?:(?:逢低|分批|轻仓|小仓位)\s*)配置(?:仓位)?',
         "等待基本面证据复核",
     ),
-    (r'追涨|低吸|逢低吸纳|试多', "等待基本面证据复核"),
+    (
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        r'(?:追涨|低吸|逢低吸纳|试多)'
+        rf'{_ACTION_MARKDOWN_SUFFIX}',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:这|该结论|结论|判断|证据)\s*'
+        r'(?:意味着|表明|支持|指向)\s*'
+        r'(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|做多|介入|参与)'
+        r'(?!回报|收益|订单|成交|成本|评级|信号|逻辑|条件|风险)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:(?:我|本人|我们|系统|模型)\s*)?'
+        r'(?:投票|偏向|倾向|选择|决定)\s*'
+        r'(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|做多|介入|参与)'
+        r'(?!回报|收益|订单|成交|成本|评级|信号|逻辑|条件|风险)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:明天|明日|今日|今天|后续|下一交易日)\s*'
+        r'(?:(?:我|本人|我们|用户|投资者|客户|系统|交易员|模型)\s*)?'
+        r'(?:(?:会|将|计划|准备|打算|拟|决定|选择|建议|应|应该|应当|需|需要|要)\s*)?'
+        r'(?:择机|适时|伺机|逢低)?\s*'
+        r'(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|做多|介入|参与)'
+        r'(?!回报|收益|订单|成交|成本|评级|信号|逻辑|条件|风险)',
+        "等待基本面证据复核",
+    ),
+    (
+        r'(?:(?:这个|该)\s*)?(?:位置|价位|价格|区间|区域)\s*'
+        r'(?:买入|购入|建仓|入场|开仓|加仓|补仓|增持|做多|介入|参与)\s*'
+        r'(?:即可|为宜|较合适|合理)',
+        "等待基本面证据复核",
+    ),
 ]
 _SANITIZE_NO_POSITION = [
+    (
+        r'(?:(?:我|本人|我们|本基金|本账户|系统|模型|风控|投资委员会)\s*)?'
+        r'(?:赞成|支持|同意|认可)\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|'
+        r'失效|压力|信号|逻辑|风险|机制|纪律|参考|评级)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:提交|创建|下达|执行|发出|挂出)\s*'
+        r'(?:一笔|新的)?\s*(?:卖出|减仓|清仓|止损|止盈)订单'
+        r'(?:\s*(?:数量|金额|规模)?\s*\d+(?:\.\d+)?\s*(?:股|手|元|万元|亿元)?)?',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:最终建议|系统指令|当前操作|下一步)\s*[:：]\s*'
+        r'(?:提交|创建|下达|执行|发出|挂出)?\s*'
+        r'(?:卖出|减仓|清仓|止损|止盈)订单'
+        r'(?:\s*(?:数量|金额|规模)?\s*\d+(?:\.\d+)?\s*(?:股|手|元|万元|亿元)?)?',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        rf'(?P<label>{_ACTION_LABEL_CONTEXT})'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        r'\g<label>该持仓动作不适用，保持观察',
+    ),
+    (
+        rf'{_ACTION_EXPLICIT_VERDICT_PREFIX}'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        r'\g<directive>该持仓动作不适用，保持观察',
+    ),
+    (
+        rf'{_ACTION_CONDITIONAL_SUBJECT_PREFIX}'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        rf'{_ACTION_CAUSAL_PREFIX}\s*'
+        rf'{_ACTION_CAUSAL_ACTOR_AND_MODAL}'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?P<holding_condition>(?<!何)(?:后|时|则)\s*)'
+        r'(?:再\s*)?'
+        r'(?:(?:用户|投资者|客户|持币者|大家)\s*)?'
+        r'(?:(?:可|可以|建议|推荐|考虑|应当|应该|应|需|需要|计划|准备|决定|选择)\s*)?'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        r'\g<holding_condition>该持仓动作不适用，保持观察',
+    ),
+    (
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        rf'{_ACTION_MARKDOWN_SUFFIX}'
+        r'(?!上限|条件|额度|限制|规则|禁令|红线|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:投资者|用户|风险控制方面|仓位管理方面|操作上|策略上)?\s*'
+        r'(?:可以|可|建议|推荐|应当|应该|必须|务必|需要|需|请|主张|适宜|后续宜|宜|倾向于|倾向)\s*'
+        r'(?:(?:在|于)\s*[^。！？；;，,\n]{1,24}\s*)?'
+        r'(?:(?:考虑|小幅|适当|适度|逐步|分批|部分|酌情|果断|尽快|立即|择机|适时|伺机)\s*)*'
+        r'(?:执行|进行|采取)?\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值|失效|压力|信号|逻辑|风险|机制|纪律|参考)',
+        '该持仓动作不适用，保持观察',
+    ),
     # ── [P0-2] Replace action suggestions but preserve field names ──
     # Field names (止损价, 止损位, 止损条件, 止损红线, 止损线) are preserved by
     # using negative lookahead: (?!价|位|条件|线|红线) after each keyword.
@@ -1587,6 +2092,13 @@ _SANITIZE_NO_POSITION = [
         '该持仓动作不适用，保持观察',
     ),
     (
+        r'(?:建议|推荐|可|可以|考虑|应|应该|应当|需|需要|计划|准备|决定|选择|执行|进行|采取)'
+        r'[^。！？；;，,\n]{0,12}?'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值|失效|风险|机制|纪律|参考)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
         r'(?:建议|则|应当|应|需|务必|可|可以|后|时|就|考虑)'
         r'(?:考虑|小幅|适当|适度|逐步|分批|部分|酌情|果断|尽快|立即)?'
         r'(?:执行|进行|采取)?清仓(?!上限|条件|额度|限制|规则|禁令)',
@@ -1611,7 +2123,15 @@ _SANITIZE_NO_POSITION = [
         '该持仓动作不适用，保持观察',
     ),
     # ── Compound action phrases that must be fully replaced ──
-    (r'止损离场', '该持仓动作不适用，保持观察'),
+    (
+        r'(?:全部|全数)\s*(?:卖出|清仓|减仓|止盈)'
+        r'|(?:(?:剩余|当前|现有|全部|所有)\s*)?'
+        r'(?:仓位|持仓|股票|股份)\s*(?:全部|全数)?\s*'
+        r'(?:卖出|清仓|减仓|止盈)'
+        r'(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值|压力|信号|逻辑|风险)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (r'(?:止损|止盈)(?:离场|退出|出局)', '该持仓动作不适用，保持观察'),
     # [P0-2] 触发止损 + action verb combos — must match BEFORE bare 触发止损
     (r'触发止损.{0,4}(?:离场|清仓|卖出|减仓|出局)', '该持仓动作不适用，保持观察'),
     (r'触发止损', '该持仓动作不适用，保持观察'),
@@ -1624,15 +2144,77 @@ _SANITIZE_NO_POSITION = [
     (r'(?:执行|进行|采取)清仓', '该持仓动作不适用，保持观察'),
     (r'(?:执行|进行|采取)止盈', '该持仓动作不适用，保持观察'),
     (r'(?:执行|进行|采取)卖出', '该持仓动作不适用，保持观察'),
-    # Token-only catch-all: sanitize the action itself in any Chinese sentence
-    # without consuming its prefix. Preserve schema/constraint nouns.
-    (r'减仓(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值)', '该持仓动作不适用，保持观察'),
-    (r'清仓(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值)', '该持仓动作不适用，保持观察'),
-    (r'止盈(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值)', '该持仓动作不适用，保持观察'),
-    (r'卖出(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值)', '该持仓动作不适用，保持观察'),
+    # Bare nouns inside risk explanations and future plans are descriptive,
+    # not current executable actions.  Only sanitize an explicit action label
+    # or a line whose first token is the action; imperative phrases above still
+    # cover suggestions such as ``建议减仓`` and sizing instructions.
+    (
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        r'(?:减仓|清仓|止盈|卖出)'
+        rf'{_ACTION_MARKDOWN_SUFFIX}'
+        r'(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值|压力|信号|逻辑|风险)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:仓位方面|风险应对|操作上|策略上|最终结论|当前结论|结论|首选|当前仓位)'
+        r'\s*(?:以|偏向|倾向|为|是|宜|[:：])?\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)'
+        r'(?:为主|优先|作为首选)?'
+        r'(?!上限|条件|额度|限制|规则|禁令|线|位|价|比例|阈值)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:(?:最终建议|最终裁决|最终结论|交易建议|操作建议|当前结论)\s*[:：]?\s*)?'
+        r'(?:建议|推荐|当前最好|首选(?:方案)?(?:是|为)?|我的选择(?:会)?是)?\s*'
+        r'(?:以\s*)?'
+        r'(?:减仓|清仓|止盈|卖出|止损)\s*'
+        r'(?:为主|为宜|优先|作为首选)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:这|该结论|结论|判断|证据)\s*'
+        r'(?:意味着|表明|支持|指向)\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:(?:我|本人|我们|系统|模型)\s*)?'
+        r'(?:投票|偏向|倾向|选择|决定)\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:明天|明日|今日|今天|后续|下一交易日)\s*'
+        r'(?:(?:我|本人|我们|用户|投资者|客户|系统|交易员|模型)\s*)?'
+        r'(?:(?:会|将|计划|准备|打算|拟|决定|选择|建议|应|应该|应当|需|需要|要)\s*)?'
+        r'(?:择机|适时|伺机|逢高|反弹)?\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:当前)?仓位\s*(?:应|应该|需|需要|建议)?\s*'
+        r'(?:减至|降至|降低至)\s*'
+        rf'{_ACTION_SIZE_VALUE}',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:建议|推荐|可|可以|考虑)?\s*(?:逢高|反弹)?\s*高抛'
+        r'(?!低吸)',
+        '该持仓动作不适用，保持观察',
+    ),
     # ── Standalone 止损 with negative lookahead to preserve field names ──
     # Matches: 止损, 止损离场, 止损。 but NOT 止损价, 止损位, 止损条件, 止损红线, 止损线
-    (r'止损(?!价|位|条件|线|红线)', '该持仓动作不适用，保持观察'),
+    (
+        rf'{_ACTION_EXECUTABLE_CONTEXT}'
+        rf'止损{_ACTION_MARKDOWN_SUFFIX}'
+        r'(?!价|位|条件|线|红线|失效|风险|机制|纪律|参考)',
+        '该持仓动作不适用，保持观察',
+    ),
+    (
+        r'(?:本次|当前|最终)?\s*(?:决定|选择)\s*'
+        r'(?:减仓|清仓|止盈|卖出|止损)',
+        '该持仓动作不适用，保持观察',
+    ),
     # [Fix-4] No-position: HOLD should become WAIT/观察
     (r'HOLD/等待触发', 'WAIT/等待触发'),
     (r'\bHOLD\b(?!.*(?:等待|观察|条件))', 'WAIT/观察'),
@@ -1640,19 +2222,13 @@ _SANITIZE_NO_POSITION = [
     (r'(?:作为|建议).{0,6}条件减仓', '该持仓动作不适用，保持观察'),
 ]
 
-_SYSTEM_BLOCK_MARKERS = [
-    "📋 [C-008] 执行就绪度评分",
-    "📊 数据源可用性：",
-    "--- 报告质量评分 ---",
-    "### 执行等级与证据门禁",
-    "🚨 [C-007] 事件风控警告",
-    "⚠️ [D-002]",
-]
-
 _NEGATIVE_ACTION_CONTEXT = re.compile(
     r"(?:禁止|不得|不应|不建议|不允许|未允许|不推荐|未推荐|不可|不能|"
     r"不支持|不适合|并非|不是|并不|避免|无需|不要|暂不|不需(?:要)?|"
-    r"勿|严禁|不宜|"
+    r"不(?=(?:考虑|准备|打算|计划|选择|想|愿意|会)\s*"
+    r"(?:买入|购入|建仓|开仓|入场|加仓|增持|做多|追涨|低吸|抄底|试多|介入|参与|配置|卖出|减仓|清仓|止盈|止损))|"
+    r"勿|严禁|不宜|不(?=(?:首选|优先|妨|如))|"
+    r"不\s*(?:买入|购入|建仓|开仓|入场|加仓|增持|做多|追涨|低吸|抄底|试多|介入|参与|配置|卖出|减仓|清仓|止盈|止损)|"
     r"无(?:明确)?(?:买入|购入|建仓|开仓|入场|加仓|增持|做多|追涨|低吸|抄底|试多|介入|参与|配置)|"
     r"(?:尚未|还没|没有|未曾)\s*(?:买|买入|购入|建仓|开仓|入场|加仓|增持|做多|追涨|低吸|抄底|试多|介入|参与|配置))"
 )
@@ -1660,6 +2236,7 @@ _NEGATIVE_ACTION_CONTEXT = re.compile(
 _NEGATED_ACTION_TAIL = re.compile(
     r"\s*(?:(?:考虑|建议|推荐|计划|选择|打算|准备|尝试|执行|进行|采取|"
     r"在|于|以|按|这个|该|位置|价位|价格|附近|区域|区间|继续|要|想|逢低|低吸|"
+    r"首选|优先|值得|适合|最好|"
     r"立即|立刻|马上|贸然|盲目|轻易|随意|急于|过早|现在|当前|目前|"
     r"重仓|满仓|全仓|半仓|轻仓|少量|分批|"
     r"试探性|试探|小仓位|大仓位|将|把|调整|提高|提升|增加|调高|"
@@ -1778,11 +2355,115 @@ def _restore_completed_purchase_facts(
     return text
 
 
+_THIRD_PARTY_ENTRY_FACT = re.compile(
+    r'(?:公司(?:董事会)?|本公司|董事会|控股股东|实际控制人|大股东|股东|'
+    r'员工持股计划|员工持股平台|高管|董监高|管理层|董事|监事|'
+    r'北向资金|主力资金|机构(?:资金)?|游资|(?<!本)基金|外资)'
+    r'(?![^。！？；;，,\n]{0,30}(?:建议|推荐|可|可以|考虑|应|应该|应当|等待|若|如果)'
+    r'[^。！？；;，,\n]{0,12}(?:买入|增持))'
+    r'(?=[^。！？；;，,\n]{0,36}(?:买入|增持|加仓))'
+    r'(?=[^。！？；;，,\n]{0,36}(?:今日|今天|明日|明天|昨日|昨天|已|已经|累计|净|'
+    r'决定|公告|宣布|披露|拟|计划|将))'
+    r'[^。！？；;，,\n]{0,36}?'
+    r'(?:买入|增持|加仓)(?!评级|信号|逻辑|建议)'
+    r'(?:了|股份|股票|公司股票|[\d,.万亿元股手%]*)?',
+    re.IGNORECASE,
+)
+
+_THIRD_PARTY_EXIT_FACT = re.compile(
+    r'(?:公司(?:董事会)?|本公司|董事会|控股股东|实际控制人|大股东|股东|'
+    r'员工持股计划|员工持股平台|高管|董监高|管理层|董事|监事|'
+    r'北向资金|主力资金|机构(?:资金)?|游资|(?<!本)基金|外资)'
+    r'(?=[^。！？；;，,\n]{0,36}(?:卖出|减持|减仓|清仓))'
+    r'(?=[^。！？；;，,\n]{0,36}(?:今日|今天|明日|明天|昨日|昨天|已|已经|累计|净|'
+    r'决定|公告|宣布|披露|拟|计划|将))'
+    r'[^。！？；;，,\n]{0,36}?'
+    r'(?:卖出|减持|减仓|清仓)(?!评级|信号|逻辑|建议)'
+    r'(?:了|股份|股票|公司股票|[\d,.万亿元股手%]*)?',
+    re.IGNORECASE,
+)
+
+
+def _mask_third_party_entry_facts(text: str) -> tuple[str, dict[str, str]]:
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__TA_THIRD_PARTY_ENTRY_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _THIRD_PARTY_ENTRY_FACT.sub(_replace, text), protected
+
+
+def _restore_third_party_entry_facts(text: str, protected: dict[str, str]) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
+def _mask_third_party_exit_facts(text: str) -> tuple[str, dict[str, str]]:
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__TA_THIRD_PARTY_EXIT_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _THIRD_PARTY_EXIT_FACT.sub(_replace, text), protected
+
+
+def _restore_third_party_exit_facts(text: str, protected: dict[str, str]) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
+_ACTION_ENUM_REFERENCE = re.compile(
+    r'(?im)(?:'
+    r'(?:^\s*[-*]\s*)?\*{0,2}'
+    r'(?:分类标签|动作枚举|决策枚举|可选动作|动作集合|动作标签)\s*'
+    r'(?:[:：]\s*\*{0,2}|\*{0,2}\s*[:：]\s*\*{0,2})'
+    r'(?:BUY\s*[/／]\s*SELL\s*[/／]\s*HOLD|'
+    r'ENTER\s*[/／]\s*WAIT\s*[/／]\s*HOLD\s*[/／]\s*REDUCE\s*[/／]\s*EXIT)'
+    r'\*{0,2}'
+    r'|'
+    r'(?:BUY\s*[/／]\s*SELL\s*[/／]\s*HOLD|'
+    r'ENTER\s*[/／]\s*WAIT\s*[/／]\s*HOLD\s*[/／]\s*REDUCE\s*[/／]\s*EXIT)'
+    r'\s*(?:三分类标签|分类标签|动作枚举|决策枚举|可选动作|动作集合|动作标签)'
+    r')'
+)
+
+
+def _mask_action_enum_references(text: str) -> tuple[str, dict[str, str]]:
+    """Protect explicit classification enums, not arbitrary slash actions."""
+    protected: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__TA_ACTION_ENUM_{len(protected)}__"
+        protected[token] = match.group(0)
+        return token
+
+    return _ACTION_ENUM_REFERENCE.sub(_replace, text), protected
+
+
+def _restore_action_enum_references(
+    text: str,
+    protected: dict[str, str],
+) -> str:
+    for token, original in protected.items():
+        text = text.replace(token, original)
+    return text
+
+
 def _sanitize_fundamental_entry_actions(
     text: str,
     replacement_text: str = "等待基本面证据复核",
 ) -> tuple[str, list[str]]:
     """Downgrade positive entry clauses without corrupting guardrail text."""
+    text, protected_enums = _mask_action_enum_references(text)
+    text, protected_third_party_facts = _mask_third_party_entry_facts(text)
+    text, protected_analytical_facts = _mask_analytical_entry_facts(text)
+    text, protected_discussion = _mask_non_executable_entry_discussion(text)
     changes: list[str] = []
     sanitized_lines: list[str] = []
     for line in text.splitlines(keepends=True):
@@ -1826,25 +2507,72 @@ def _sanitize_fundamental_entry_actions(
                         ]
                         * double_negation_count
                     )
+                # ``不妨`` / ``不如`` / ``不排除`` are lexical positive
+                # recommendations,
+                # not negations. Handle them before the generic negative-mask
+                # pass so they cannot survive a failed entry gate.
+                scoped_clause, lexical_recommendation_count = re.subn(
+                    r"(?:不妨|不如|不排除)\s*"
+                    r"(?:(?:考虑|选择|建议|推荐)\s*)?"
+                    r"(?:买入|购入|建仓|入场|开仓|试仓|试多|低吸|加仓|补仓|"
+                    r"增持|介入|参与|抄底|追涨|配置(?:仓位)?)"
+                    r"(?!价|价格|条件|区间|计划|触发|信号|逻辑|评级|点|上限|"
+                    r"额度|比例|限制|禁令|的?可行性|的?可能性)",
+                    replacement_text,
+                    scoped_clause,
+                )
+                if lexical_recommendation_count:
+                    changes.extend(
+                        [
+                            f"入场门禁买入动作已降级为「{replacement_text}」"
+                        ]
+                        * lexical_recommendation_count
+                    )
                 scoped_clause, protected = _mask_negated_action_contexts(
                     scoped_clause
                 )
                 for pattern, replacement in _SANITIZE_FUNDAMENTAL_VETO_BUY:
-                    if re.search(pattern, scoped_clause):
-                        scoped_clause = re.sub(
-                            pattern,
-                            replacement_text,
-                            scoped_clause,
+                    def _replace_entry_action(match: re.Match[str]) -> str:
+                        prefixes = "".join(
+                            match.groupdict().get(name, "") or ""
+                            for name in ("label", "directive", "entry_condition")
                         )
-                        changes.append(
-                            f"入场门禁买入动作已降级为「{replacement_text}」"
+                        return f"{prefixes}{replacement_text}"
+
+                    scoped_clause, replacement_count = re.subn(
+                        pattern,
+                        _replace_entry_action,
+                        scoped_clause,
+                    )
+                    if replacement_count:
+                        changes.extend(
+                            [
+                                f"入场门禁买入动作已降级为「{replacement_text}」"
+                            ]
+                            * replacement_count
                         )
                 scoped_parts[scoped_index] = _restore_negated_action_contexts(
                     scoped_clause, protected
                 )
             parts[index] = "".join(scoped_parts)
         sanitized_lines.append("".join(parts))
-    return "".join(sanitized_lines), changes
+    sanitized = _restore_action_enum_references(
+        "".join(sanitized_lines),
+        protected_enums,
+    )
+    sanitized = _restore_third_party_entry_facts(
+        sanitized,
+        protected_third_party_facts,
+    )
+    sanitized = _restore_analytical_entry_facts(
+        sanitized,
+        protected_analytical_facts,
+    )
+    sanitized = _restore_non_executable_entry_discussion(
+        sanitized,
+        protected_discussion,
+    )
+    return sanitized, changes
 
 
 def _sanitize_strong_buy_actions(text: str) -> tuple[str, list[str]]:
@@ -1921,6 +2649,7 @@ def _sanitize_no_position_actions(
     changes: list[str] = []
     sanitized_lines: list[str] = []
     for line in text.splitlines(keepends=True):
+        line, hypothetical_plans = _mask_hypothetical_holding_plans(line)
         # A double negation permits the holding-only action (for example
         # ``不是不能减仓``). It must therefore be downgraded for a
         # no-position user instead of being protected as a prohibition.
@@ -1961,34 +2690,43 @@ def _sanitize_no_position_actions(
                     if re.search(pattern, scoped_clause):
                         scoped_clause = re.sub(pattern, replacement, scoped_clause)
                         changes.append(
-                            f"未持仓动作已降级为「{replacement}」"
+                            "未持仓动作已降级为"
+                            f"「{_display_action_replacement(replacement)}」"
                         )
                 scoped_parts[scoped_index] = _restore_negated_action_contexts(
                     scoped_clause, protected
                 )
             parts[index] = "".join(scoped_parts)
-        sanitized_lines.append("".join(parts))
+        sanitized_lines.append(
+            _restore_hypothetical_holding_plans(
+                "".join(parts), hypothetical_plans
+            )
+        )
     return "".join(sanitized_lines), changes
 
 
-def _split_llm_body_and_system_blocks(text: str) -> tuple:
-    """分离 LLM 原始输出（body）和系统追加区块。
+def _split_llm_body_and_system_blocks(
+    text: str,
+    trusted_system_offset: int | None = None,
+) -> tuple[str, str]:
+    """Split model text from caller-appended diagnostics at a trusted offset.
 
-    系统追加区块的起始标记包括数据源、质量评分、执行门禁、
-    C-007 事件风控警告和 D-002 降级说明。
-
-    Returns:
-        (body, system_blocks) where body is the LLM original output
-        and system_blocks is everything after the first system marker.
+    Marker text is not a trust boundary because the model can emit the same
+    headings.  Callers that append deterministic diagnostics must therefore
+    pass the exact offset where those diagnostics begin.  Without an offset,
+    the complete text remains subject to action sanitation.
     """
-    earliest_idx = len(text)
-    for marker in _SYSTEM_BLOCK_MARKERS:
-        idx = text.find(marker)
-        if idx >= 0 and idx < earliest_idx:
-            earliest_idx = idx
-    if earliest_idx < len(text):
-        return text[:earliest_idx], text[earliest_idx:]
+    if (
+        isinstance(trusted_system_offset, int)
+        and 0 <= trusted_system_offset <= len(text)
+    ):
+        return text[:trusted_system_offset], text[trusted_system_offset:]
     return text, ""
+
+
+def _dedupe_changes(changes: list[str]) -> list[str]:
+    """Keep the audit useful without listing the same rewrite dozens of times."""
+    return list(dict.fromkeys(changes))
 
 
 def sanitize_forbidden_strong_actions(
@@ -1997,6 +2735,8 @@ def sanitize_forbidden_strong_actions(
     position_status: str,
     buy_level: int,
     risk_level: int,
+    trusted_system_offset: int | None = None,
+    return_system_offset: bool = False,
 ) -> tuple:
     """移除或替换最终报告中未被 gate 允许的强动作表达。
 
@@ -2004,14 +2744,25 @@ def sanitize_forbidden_strong_actions(
     只要 position_status == "no_position" 就会执行。
     强买/强卖替换仅在 gate 未通过时执行。
 
+    When ``return_system_offset`` is true, also return the corrected offset at
+    which the caller-provided system block starts after body rewrites.  This is
+    safer than searching the combined text for a delimiter the model can copy.
+
     Returns:
-        (sanitized_text, list_of_changes)
+        (sanitized_text, list_of_changes), or that pair plus system offset.
     """
     changes = []
     result = text
 
-    body, system_blocks = _split_llm_body_and_system_blocks(result)
+    body, system_blocks = _split_llm_body_and_system_blocks(
+        result,
+        trusted_system_offset=trusted_system_offset,
+    )
     body, completed_purchase_facts = _mask_completed_purchase_facts(body)
+    body, third_party_entry_facts = _mask_third_party_entry_facts(body)
+    body, third_party_exit_facts = _mask_third_party_exit_facts(body)
+    body, protected_action_enums = _mask_action_enum_references(body)
+    body, protected_analytical_action_nouns = _mask_analytical_action_nouns(body)
 
     if position_status == "no_position":
         body, no_position_changes = _sanitize_no_position_actions(body)
@@ -2055,7 +2806,11 @@ def sanitize_forbidden_strong_actions(
             bool(failures)
             and all(reason in buy_only_failures for reason in failures)
         )
-        if not entry_veto_only:
+        # Entry-only vetoes do not invalidate an independently confirmed exit,
+        # but a model-authored forced exit must still be downgraded when the
+        # computed Risk Level does not authorize Level 4 action.
+        preserve_strong_sell = entry_veto_only and risk_level >= 4
+        if not preserve_strong_sell:
             for pattern, replacement in _SANITIZE_STRONG_SELL:
                 matches = list(re.finditer(pattern, body))
                 if matches:
@@ -2065,6 +2820,7 @@ def sanitize_forbidden_strong_actions(
         body, strong_buy_changes = _sanitize_strong_buy_actions(body)
         changes.extend(strong_buy_changes)
 
+    changes = _dedupe_changes(changes)
     if changes:
         if not gate.get("passed", True):
             downgrade_note = "\n\n⚠️ [D-002] 强动作门禁未通过，以下动作已降级：\n"
@@ -2075,10 +2831,31 @@ def sanitize_forbidden_strong_actions(
             downgrade_note = "\n\n⚠️ [D-002] 持仓状态校验，以下动作已降级：\n"
             for c in changes:
                 downgrade_note += f"  - {c}\n"
-        body += downgrade_note
+        if system_blocks:
+            system_blocks += downgrade_note
+        else:
+            body += downgrade_note
 
+    body = _restore_action_enum_references(body, protected_action_enums)
+    body = _restore_analytical_action_nouns(
+        body,
+        protected_analytical_action_nouns,
+    )
     body = _restore_completed_purchase_facts(body, completed_purchase_facts)
-    return body + system_blocks, changes
+    body = _restore_third_party_entry_facts(body, third_party_entry_facts)
+    body = _restore_third_party_exit_facts(body, third_party_exit_facts)
+    separator = (
+        "\n\n"
+        if system_blocks
+        and not body.endswith(("\n", "\r"))
+        and not system_blocks.startswith(("\n", "\r"))
+        else ""
+    )
+    sanitized = body + separator + system_blocks
+    if return_system_offset:
+        system_offset = len(body) + len(separator) if system_blocks else None
+        return sanitized, changes, system_offset
+    return sanitized, changes
 
 
 _OHLC_PATTERNS = [

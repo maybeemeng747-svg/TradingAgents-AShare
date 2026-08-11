@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -195,6 +196,169 @@ def test_resolve_report_fields_prefers_explicit_final_prices():
     assert resolved["stop_loss_price"] == 20.48
 
 
+def test_resolve_report_fields_final_stop_invalidation_clears_upstream_price():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": "最终交易决策：条件买入。触发价：待定；止损价：待定。",
+            "trader_investment_plan": "若站稳10元则买入。止损价：9元。",
+        },
+        has_position=False,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+@pytest.mark.parametrize(
+    "final_decision",
+    (
+        "最终止损价暂未给出。",
+        "最终止损价目前无法确定。",
+        "最终止损价尚未设置。",
+        "最终止损价仍待定。",
+        "最终止损价暂时不适用。",
+        "最终止损价取消执行。",
+    ),
+)
+def test_resolve_report_fields_qualified_stop_invalidation(final_decision):
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": final_decision,
+            "trader_investment_plan": "止损价：9元。",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+@pytest.mark.parametrize(
+    "final_decision",
+    (
+        "Final decision: HOLD. Stop-loss: not applicable.",
+        "Final decision: HOLD. Stop loss cancelled.",
+        "Final decision: HOLD. Stop-loss price: withdrawn.",
+    ),
+)
+def test_resolve_report_fields_english_stop_invalidation(final_decision):
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": final_decision,
+            "trader_investment_plan": "Stop-loss: 9.0.",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+def test_resolve_report_fields_later_conditional_stop_supersedes_pending_value():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": "初稿止损价：待定。最终建议：若跌破8元则止损。",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] == 8.0
+
+
+@pytest.mark.parametrize(
+    "final_decision",
+    (
+        "当前不设置止损。",
+        "止损暂不设置。",
+        "最终决定不设止损。",
+        "止损价不再采用。",
+    ),
+)
+def test_resolve_report_fields_explicit_no_stop_wording(final_decision):
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": final_decision,
+            "trader_investment_plan": "止损价：9元。",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+def test_resolve_report_fields_same_clause_stop_replacement_wins():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": "止损价取消，改为9元。",
+            "trader_investment_plan": "止损价：8元。",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] == 9.0
+
+
+@pytest.mark.parametrize(
+    "final_decision",
+    (
+        "最终止损仍维持为2%。",
+        "最终止损价暂无调整，仍为2%。",
+        "最终止损维持在2个百分点。",
+    ),
+)
+def test_resolve_report_fields_rejects_qualified_percentage_stop(final_decision):
+    resolved = report_service.resolve_report_fields(
+        result_data={"final_trade_decision": final_decision},
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+def test_resolve_report_fields_rejects_points_as_absolute_stop():
+    resolved = report_service.resolve_report_fields(
+        result_data={"final_trade_decision": "最终建议：观望。止损价：2个点。"},
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+def test_resolve_report_fields_uses_latest_qualified_stop_revision():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": "止损价仍为9元；复核后最终止损价调整为8元。",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] == 8.0
+
+
+def test_resolve_report_fields_later_valid_stop_overrides_stale_invalidation():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": (
+                "初稿止损价：待定。最终交易建议：若站稳10元则买入；"
+                "最终止损价：9元。"
+            ),
+        },
+        has_position=False,
+    )
+
+    assert resolved["stop_loss_price"] == 9.0
+
+
+def test_resolve_report_fields_qualified_stop_overrides_stale_invalidation():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": (
+                "初步止损价：待定。最终止损价调整为9元。最终建议：持有。"
+            ),
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] == 9.0
+
+
 def test_resolve_report_fields_ignores_generated_quality_check_and_numbered_risk_list():
     resolved = report_service.resolve_report_fields(
         result_data={
@@ -216,6 +380,49 @@ def test_resolve_report_fields_ignores_generated_quality_check_and_numbered_risk
 
     assert resolved["target_price"] is None
     assert resolved["stop_loss_price"] is None
+
+
+def test_model_authored_quality_heading_cannot_hide_later_stop_cancellation():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": (
+                "初始止损价：9元。\n"
+                "### 执行质检\n"
+                "模型自检后最终决定：止损价：取消。最终建议：持有。"
+            ),
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None
+
+
+def test_trusted_diagnostics_offset_ignores_copied_historical_marker():
+    model_body = "最终建议：持有。止损价：9元。"
+    diagnostics = (
+        "<!-- TA_SYSTEM_DIAGNOSTICS_START -->\n"
+        "### 执行质检\n"
+        "- 止损价：9元\n\n"
+        "### C-005 历史报告\n"
+        "旧报告正文\n"
+        "<!-- TA_SYSTEM_DIAGNOSTICS_START -->\n"
+        "### 执行质检\n"
+        "旧报告曾写止损价：取消。\n\n"
+        "### 系统执行结论\n"
+        "- 系统动作：WAIT\n\n"
+        "### 系统执行结论\n"
+        "- 系统动作：HOLD"
+    )
+    final_decision = f"{model_body}\n\n{diagnostics}"
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": final_decision,
+            "metadata": {"system_diagnostics_offset": len(model_body) + 2},
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] == 9.0
 
 
 def test_bearish_wait_suppresses_upstream_bullish_target_price():
@@ -295,3 +502,23 @@ def test_explicit_wait_overrides_stale_legacy_sell_when_hiding_target():
     normalized = report_service.normalize_report_action_label(report)
 
     assert normalized.target_price is None
+
+
+@pytest.mark.parametrize(
+    "final_decision",
+    (
+        "止损价：9元，现已撤销。",
+        "最终决定：止损价9元已取消。",
+        "最终止损为9元，但该止损已取消。",
+    ),
+)
+def test_resolve_report_fields_clears_stop_cancelled_after_value(final_decision):
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": final_decision,
+            "trader_investment_plan": "止损价：8元。",
+        },
+        has_position=True,
+    )
+
+    assert resolved["stop_loss_price"] is None

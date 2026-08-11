@@ -1015,6 +1015,7 @@ def extract_structured_data(
 # ─── Fallback regex extraction (used when LLM extraction unavailable) ─────────
 
 _GENERATED_QUALITY_SECTION_RE = re.compile(r"\n?###?\s*执行质检[\s\S]*$", re.IGNORECASE)
+_SYSTEM_DIAGNOSTICS_MARKER = "<!-- TA_SYSTEM_DIAGNOSTICS_START -->"
 _LIST_MARKER_AFTER_NUMBER_RE = re.compile(r"\s*[.)、]\s*(?:[A-Z0-9一二三四五六七八九十]|[*-])")
 
 
@@ -1022,6 +1023,37 @@ def _strip_generated_quality_section(text: Optional[str]) -> Optional[str]:
     if not text:
         return text
     return _GENERATED_QUALITY_SECTION_RE.sub("", text)
+
+
+def _model_authored_report_text(
+    text: Optional[str],
+    trusted_diagnostics_offset: Optional[int] = None,
+) -> str:
+    """Return model text before a validated application diagnostics block."""
+    source = text or ""
+    if trusted_diagnostics_offset is not None:
+        if (
+            isinstance(trusted_diagnostics_offset, int)
+            and not isinstance(trusted_diagnostics_offset, bool)
+            and 0 <= trusted_diagnostics_offset <= len(source)
+        ):
+            tail = source[trusted_diagnostics_offset:]
+            if tail.startswith(_SYSTEM_DIAGNOSTICS_MARKER):
+                quality = re.search(r"(?m)^#{1,6}\s*执行质检\s*$", tail)
+                summary = re.search(r"(?m)^#{1,6}\s*系统执行结论\s*$", tail)
+                if quality and summary and quality.start() < summary.start():
+                    return source[:trusted_diagnostics_offset].rstrip()
+        # When metadata claims an application boundary but it is invalid, do
+        # not fall back to a copied marker inside model or historical text.
+        return source
+    marker_matches = list(re.finditer(re.escape(_SYSTEM_DIAGNOSTICS_MARKER), source))
+    for marker in reversed(marker_matches):
+        tail = source[marker.end():]
+        quality = re.search(r"(?m)^#{1,6}\s*执行质检\s*$", tail)
+        summary = re.search(r"(?m)^#{1,6}\s*系统执行结论\s*$", tail)
+        if quality and summary and quality.start() < summary.start():
+            return source[:marker.start()].rstrip()
+    return source
 
 
 def _is_likely_list_marker(text: str, end_index: int) -> bool:
@@ -1048,11 +1080,11 @@ def _extract_price_regex(
         return None
     if price_type == "target":
         patterns = [
-            r'目标价[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'目标价格[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'目标位[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'止盈位[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'target[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'目标价[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'目标价格[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'目标位[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'止盈位[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'target[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
         ]
         if include_tactical:
             patterns.extend([
@@ -1064,10 +1096,13 @@ def _extract_price_regex(
             ])
     else:
         patterns = [
-            r'止损价[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'止损价格[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'止损位[:：][^\d\n]{0,30}(\d+\.?\d*)',
-            r'stop[-\s_]?loss[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'(?:最终)?止损(?:价|价格|位)?[^\d\n。！？；;]{0,24}'
+            r'(?:仍为|维持(?:在|为)?|调整为|改为|设为)\s*'
+            r'[^\d\n。！？；;]{0,6}(\d+\.?\d*)',
+            r'止损价[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'止损价格[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'止损位[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
+            r'stop[-\s_]?loss[:：][^\d\n。！？；;]{0,30}(\d+\.?\d*)',
         ]
         if include_tactical:
             patterns.extend([
@@ -1075,6 +1110,20 @@ def _extract_price_regex(
                 r'股价[^\n。；]{0,20}跌破\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|离场|减仓)',
                 r'跌破\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|离场|减仓)',
             ])
+    if price_type == "stop_loss":
+        candidates: list[tuple[int, float]] = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                if _is_likely_list_marker(text, match.end(1)):
+                    continue
+                if re.match(
+                    r"\s*(?:[%％]|个百分点|个百分比点|个点)",
+                    text[match.end(1):match.end(1) + 12],
+                ):
+                    continue
+                candidates.append((match.start(1), float(match.group(1))))
+        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
         if m:
@@ -1152,6 +1201,16 @@ def resolve_report_fields(
         trader_investment_plan = result_data.get("trader_investment_plan")
         final_trade_decision = result_data.get("final_trade_decision")
 
+    trusted_diagnostics_offset: Optional[int] = None
+    if isinstance(result_data, dict):
+        metadata = result_data.get("metadata")
+        if isinstance(metadata, dict) and "system_diagnostics_offset" in metadata:
+            trusted_diagnostics_offset = metadata.get("system_diagnostics_offset")
+    model_authored_decision = _model_authored_report_text(
+        final_trade_decision,
+        trusted_diagnostics_offset,
+    )
+
     verdict = _extract_verdict(final_trade_decision)
     direction = verdict["direction"] if verdict else None
 
@@ -1175,6 +1234,28 @@ def resolve_report_fields(
         if stop_loss_override is not None
         else _extract_price_from_sections(price_sections, "stop_loss")
     )
+    if final_trade_decision and re.search(
+        r"待定|不适用|取消|撤销|未设置|未给出|无法确定|暂无|"
+        r"不(?:再)?(?:设置|设定|设|采用|使用|执行)|(?:^|[：:，,；;。\s])无(?:$|[，,；;。\s])|"
+        r"not applicable|cancelled|canceled|withdrawn|unset|not set|\bTBD\b|\bN/?A\b|\bnone\b",
+        model_authored_decision,
+        re.IGNORECASE,
+    ):
+        # The final decision is authoritative. An explicit withdrawal must not
+        # leak an older trader/manager stop into API fields or the UI. Preserve
+        # the legacy dash-only convention, which denotes an omitted display
+        # value rather than an explicit cancellation of an upstream risk level.
+        from tradingagents.agents.utils.trade_setup import _field_explicitly_invalidated
+
+        if _field_explicitly_invalidated(
+            model_authored_decision,
+            (
+                "止损价", "止损位", "初始止损", "硬性止损", "止损红线",
+                "止损线", "止损", "失效价", "失效位", "防守位",
+                "Stop-loss price", "Stop loss price", "Stop-loss", "Stop loss",
+            ),
+        ):
+            stop_loss_price = None
 
     research_direction = str(result_data.get("research_direction") or "") if result_data else ""
     execution_action = str(result_data.get("execution_action") or "") if result_data else ""

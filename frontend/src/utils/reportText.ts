@@ -25,6 +25,65 @@ export function sanitizeReportMarkdown(text?: string | null): string {
         .replace(/SELL with Conditional Trigger/gi, '卖出（条件触发）')
 }
 
+const SYSTEM_DIAGNOSTICS_START = '<!-- TA_SYSTEM_DIAGNOSTICS_START -->'
+
+export interface ReportTextParts {
+    main: string
+    diagnostics: string
+}
+
+const GENERATED_EXECUTION_SUMMARY = /(?:^|\n)#{1,6}\s*系统执行结论\s*\n(?:\s*-\s*[^\n]*(?:\n|$)){1,8}/g
+
+export function selectReportTextForDiagnostics(
+    streamedText?: string | null,
+    completedText?: string | null,
+    trustedBoundary?: number | null,
+): string {
+    if (Number.isInteger(trustedBoundary) && completedText) return completedText
+    return streamedText || completedText || ''
+}
+
+/**
+ * Keep the human decision readable while preserving the full audit trail.
+ * The backend appends machine/system diagnostics after a trusted delimiter and
+ * records the raw-text offset in metadata. Never infer this boundary from a
+ * model-written heading: headings are ordinary, untrusted report text.
+ */
+export function splitReportSystemDiagnostics(
+    text?: string | null,
+    trustedBoundary?: number | null,
+): ReportTextParts {
+    const raw = text || ''
+    const codePoints = Array.from(raw)
+    const hasTrustedOffset = Number.isInteger(trustedBoundary)
+        && (trustedBoundary as number) >= 0
+        && (trustedBoundary as number) <= codePoints.length
+    const trustedCodeUnitBoundary = hasTrustedOffset
+        ? codePoints.slice(0, trustedBoundary as number).join('').length
+        : null
+    if (!hasTrustedOffset) {
+        return { main: sanitizeReportMarkdown(raw).trim(), diagnostics: '' }
+    }
+    const boundary = trustedCodeUnitBoundary as number
+    const trustedContentStart = boundary + (raw.slice(boundary).match(/^\s*/)?.[0].length || 0)
+    const diagnosticsStart = raw.startsWith(SYSTEM_DIAGNOSTICS_START, trustedContentStart)
+        ? trustedContentStart + SYSTEM_DIAGNOSTICS_START.length
+        : boundary
+    const rawDiagnostics = raw.slice(diagnosticsStart)
+    const summaryMatches = Array.from(rawDiagnostics.matchAll(GENERATED_EXECUTION_SUMMARY))
+    const summaryMatch = summaryMatches[summaryMatches.length - 1]
+    const visibleSummary = summaryMatch ? sanitizeReportMarkdown(summaryMatch[0]).trim() : ''
+    const remainingDiagnostics = summaryMatch
+        ? rawDiagnostics.slice(0, summaryMatch.index)
+            + rawDiagnostics.slice((summaryMatch.index || 0) + summaryMatch[0].length)
+        : rawDiagnostics
+    const main = sanitizeReportMarkdown(raw.slice(0, boundary)).trim()
+    return {
+        main: [main, visibleSummary].filter(Boolean).join('\n\n'),
+        diagnostics: sanitizeReportMarkdown(remainingDiagnostics).trim(),
+    }
+}
+
 export function buildAgentSummary(text?: string | null): string {
     const cleaned = sanitizeReportMarkdown(text)
         .replace(/^#+\s*/gm, '')
