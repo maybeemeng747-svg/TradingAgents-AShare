@@ -237,7 +237,7 @@ class TestResolveFallbackInfo:
 
     def test_fallback_returns_primary(self):
         result = resolve_fallback_info("cn_astock", "fund_flow")
-        assert result == "cn_akshare"
+        assert result == "cn_tushare"
 
     def test_unknown_type(self):
         result = resolve_fallback_info("cn_akshare", "nonexistent")
@@ -269,7 +269,7 @@ class TestComputeContractCompleteness:
         try:
             re_data = _build_evidence()
             assert re_data["fund_flow_individual"]["vendor"] == "cn_astock"
-            assert re_data["fund_flow_individual"]["fallback_from"] == "cn_akshare"
+            assert re_data["fund_flow_individual"]["fallback_from"] == "cn_tushare"
         finally:
             _last_hit_vendor.pop("get_individual_fund_flow", None)
 
@@ -364,11 +364,11 @@ class TestBuildRawEvidenceContractFields:
 
     def test_fund_flow_endpoint(self):
         re_data = _build_evidence()
-        assert re_data["fund_flow_individual"]["endpoint"] == "stock_individual_fund_flow"
+        assert re_data["fund_flow_individual"]["endpoint"] == "moneyflow"
 
     def test_lhb_endpoint(self):
         re_data = _build_evidence()
-        assert re_data["lhb"]["endpoint"] == "stock_lhb_detail_em"
+        assert re_data["lhb"]["endpoint"] == "top_list"
 
     def test_fallback_detected_when_non_primary(self):
         _last_hit_vendor["get_individual_fund_flow"] = "cn_astock"
@@ -376,16 +376,16 @@ class TestBuildRawEvidenceContractFields:
             re_data = _build_evidence()
             ff = re_data["fund_flow_individual"]
             assert ff["vendor"] == "cn_astock"
-            assert ff["fallback_from"] == "cn_akshare"
+            assert ff["fallback_from"] == "cn_tushare"
         finally:
             _last_hit_vendor.pop("get_individual_fund_flow", None)
 
     def test_no_fallback_when_primary(self):
-        _last_hit_vendor["get_individual_fund_flow"] = "cn_akshare"
+        _last_hit_vendor["get_individual_fund_flow"] = "cn_tushare"
         try:
             re_data = _build_evidence()
             ff = re_data["fund_flow_individual"]
-            assert ff["vendor"] == "cn_akshare"
+            assert ff["vendor"] == "cn_tushare"
             assert ff["fallback_from"] is None
         finally:
             _last_hit_vendor.pop("get_individual_fund_flow", None)

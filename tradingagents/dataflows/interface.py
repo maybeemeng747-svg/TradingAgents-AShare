@@ -1,4 +1,5 @@
 import os
+import threading
 
 from .alpha_vantage_common import AlphaVantageRateLimitError
 from .config import get_config
@@ -58,11 +59,42 @@ VENDOR_LIST = _registry.list_names()
 
 # [N-003] cn_astock_raw_evidence: track which vendor last handled each method
 _last_hit_vendor: dict[str, str] = {}
+_thread_hit_vendors = threading.local()
+
+
+def _thread_vendor_map() -> dict[str, str]:
+    vendors = getattr(_thread_hit_vendors, "vendors", None)
+    if vendors is None:
+        vendors = {}
+        _thread_hit_vendors.vendors = vendors
+    return vendors
+
+
+def _record_hit_vendor(method: str, vendor: str) -> None:
+    # Keep the process-wide map for existing callers, while collection workers
+    # consume the thread-local value so concurrent symbols cannot overwrite one
+    # another's provenance.
+    _last_hit_vendor[method] = vendor
+    _thread_vendor_map()[method] = vendor
 
 
 def get_last_hit_vendor(method: str) -> str:
     """Return the vendor name that most recently produced a successful hit for *method*."""
     return _last_hit_vendor.get(method, "")
+
+
+def get_current_thread_hit_vendor(method: str) -> str:
+    """Return the successful vendor recorded by this worker thread."""
+    return _thread_vendor_map().get(method, "")
+
+
+def clear_current_thread_hit_vendor(method: str | None = None) -> None:
+    """Clear per-call provenance before a worker invokes a routed tool."""
+    vendors = _thread_vendor_map()
+    if method is None:
+        vendors.clear()
+    else:
+        vendors.pop(method, None)
 
 
 def _is_trace_enabled() -> bool:
@@ -95,6 +127,7 @@ _FAILURE_RESULT_PATTERNS = (
     "REPORT_FAILED",
     "RATINGS_FAILED",
     "FUND_FLOW_FAILED",
+    "MARGIN_FAILED",
 )
 
 _STRUCTURED_FAILURE_MARKERS = (
@@ -103,6 +136,7 @@ _STRUCTURED_FAILURE_MARKERS = (
     "[DATA-012] RATINGS_FAILED",
     "[DATA-013] BUYBACK_FAILED",
     "[DATA-024] FUND_FLOW_FAILED",
+    "[DATA-010] MARGIN_FAILED",
 )
 
 _DEGRADED_RESULT_MARKERS = (
@@ -225,7 +259,7 @@ def route_to_vendor(method: str, *args, **kwargs):
                     "reason=degraded-result"
                 )
                 continue
-            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _record_hit_vendor(method, vendor)  # [N-003] cn_astock_raw_evidence
             _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
             return result
         except (AlphaVantageRateLimitError, NotImplementedError) as exc:
@@ -247,7 +281,7 @@ def route_to_vendor(method: str, *args, **kwargs):
             continue
 
     if degraded_result is not None:
-        _last_hit_vendor[method] = degraded_vendor
+        _record_hit_vendor(method, degraded_vendor)
         _trace(
             f"method={method} {args_summary} vendor={degraded_vendor} "
             "status=degraded-hit"

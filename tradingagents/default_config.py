@@ -36,11 +36,16 @@ DEFAULT_CONFIG = {
     "data_vendors": {
         "core_stock_apis": "cn_akshare,cn_baostock,yfinance",
         "technical_indicators": "cn_akshare,cn_baostock,yfinance",
-        "fundamental_data": "cn_akshare,cn_baostock,yfinance",
+        "fundamental_data": "cn_tushare,cn_akshare,cn_baostock,yfinance",
         "news_data": "cn_akshare,cn_baostock,yfinance",
         "realtime_data": "cn_akshare",
     },
-    "tool_vendors": {},
+    "tool_vendors": {
+        "get_individual_fund_flow": "cn_tushare,cn_akshare,cn_astock",
+        "get_lhb_detail": "cn_tushare,cn_akshare,cn_astock",
+        "get_margin_trading": "cn_tushare,cn_akshare,cn_astock",
+        "get_buybacks": "cn_akshare,cn_tushare,cn_astock",
+    },
 
     # [C-002] account_capability
     "account_capability": {

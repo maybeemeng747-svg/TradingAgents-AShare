@@ -215,6 +215,17 @@ def _build_catalog() -> None:
         known_gaps=["前复权 adjustflag=2，更新有延迟"],
         notes="BaoStock 日线，延迟较大但稳定",
     )
+    _register(
+        "cn_tushare", "daily + adj_factor",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume", "Amount"],
+        unit="元/股, 股, 元",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=7,
+        known_gaps=["非实时行情", "需要已配置的 Tushare Pro 凭据"],
+        notes="Tushare Pro 日线与复权因子；provider 统一换算成交量和成交额单位",
+    )
 
     # ── 实时行情 ────────────────────────────────────────────────────────
     _register(
@@ -256,14 +267,25 @@ def _build_catalog() -> None:
 
     # ── 资金流 / 个股资金 ──────────────────────────────────────────────
     _register(
+        "cn_tushare", "moneyflow",
+        DataType.FUND_FLOW,
+        fields=["日期", "主力净流入(大单+超大单)", "L2总净流入", "小单买卖额", "中单买卖额", "大单买卖额", "超大单买卖额"],
+        unit="万元",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=1,
+        is_primary=True,
+        known_gaps=["需要已配置的 Tushare Pro 凭据", "非板块资金流"],
+        notes="Tushare Pro 个股资金流；主力口径由大单与超大单买卖额确定性计算，单位为万元",
+    )
+    _register(
         "cn_akshare", "stock_individual_fund_flow",
         DataType.FUND_FLOW,
         fields=["日期", "主力净流入", "小单净流入", "中单净流入", "大单净流入", "超大单净流入"],
         unit="万元",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.HIGH,
-        fallback_priority=1,
-        is_primary=True,
+        fallback_priority=2,
         known_gaps=["高限流风险", "ConnectionError 常见"],
         notes="AKShare/东财个股资金流，限流风险高，fallback 必须可切换",
     )
@@ -274,7 +296,7 @@ def _build_catalog() -> None:
         unit="万元",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=2,
+        fallback_priority=3,
         notes="东财 push2his 直连个股资金流，不经过 AKShare",
     )
 
@@ -314,14 +336,25 @@ def _build_catalog() -> None:
 
     # ── 龙虎榜 ─────────────────────────────────────────────────────────
     _register(
+        "cn_tushare", "top_list",
+        DataType.LHB,
+        fields=["证券代码", "证券简称", "上榜原因", "买入额", "卖出额", "净买入额"],
+        unit="万元",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=1,
+        is_primary=True,
+        known_gaps=["仅异动日有记录", "需要 force=True", "需要已配置的 Tushare Pro 凭据"],
+        notes="Tushare Pro 龙虎榜；空表表示非异动日正常无数据",
+    )
+    _register(
         "cn_akshare", "stock_lhb_detail_em",
         DataType.LHB,
         fields=["代码", "名称", "上榜原因", "买入额", "卖出额", "净买额"],
         unit="万元",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.HIGH,
-        fallback_priority=1,
-        is_primary=True,
+        fallback_priority=2,
         known_gaps=["高限流风险", "force=False 时返回 NOT_QUERIED"],
         notes="AKShare/东财龙虎榜，必须 force=True 才实际查询",
     )
@@ -332,11 +365,23 @@ def _build_catalog() -> None:
         unit="元(需/10000转万元)",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=2,
+        fallback_priority=3,
         notes="东财 datacenter 直连龙虎榜",
     )
 
     # ── 融资融券 ────────────────────────────────────────────────────────
+    _register(
+        "cn_tushare", "margin_detail",
+        DataType.MARGIN_TRADING,
+        fields=["证券代码", "融资余额", "融券余额", "融资买入额", "融券卖出量"],
+        unit="元, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=1,
+        is_primary=True,
+        known_gaps=["非两融标的或无交易时为空", "需要已配置的 Tushare Pro 凭据"],
+        notes="Tushare Pro 个股融资融券明细",
+    )
     _register(
         "cn_akshare", "stock_margin_underlying_info_szse",
         DataType.MARGIN_TRADING,
@@ -344,8 +389,7 @@ def _build_catalog() -> None:
         unit="万元/股",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=1,
-        is_primary=True,
+        fallback_priority=2,
         notes="AKShare 深交所融资融券标的；沪市用 stock_margin_underlying_info_sse",
     )
     _register(
@@ -355,7 +399,7 @@ def _build_catalog() -> None:
         unit="元(需/10000转万元)",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=2,
+        fallback_priority=3,
         notes="东财 datacenter 融资融券汇总",
     )
 
@@ -489,14 +533,29 @@ def _build_catalog() -> None:
 
     # ── 财务三表 ───────────────────────────────────────────────────────
     _register(
+        "cn_tushare", "stock_basic + stock_company + daily_basic + income + balancesheet + cashflow + fina_indicator + forecast",
+        DataType.FINANCIALS,
+        fields=[
+            "证券代码", "证券简称", "所属行业", "交易所", "主营业务",
+            "公告日期", "实际公告日期", "报告日", "报告类型", "更新标记",
+            "利润表", "资产负债表", "现金流量表", "财务指标", "估值快照", "业绩预告",
+        ],
+        unit="元, %, 倍, 万元",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=1,
+        is_primary=True,
+        known_gaps=["非实时行情", "公告原文仍以交易所/巨潮为准", "需要已配置的 Tushare Pro 凭据"],
+        notes="Tushare Pro 结构化财务主源；保留期间口径、公告日和更新标记",
+    )
+    _register(
         "cn_akshare", "stock_individual_info_em",
         DataType.FINANCIALS,
         fields=["公司基本信息"],
         unit="项",
         freshness=Freshness.DELAYED,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=1,
-        is_primary=True,
+        fallback_priority=2,
         notes="AKShare/东财个股基本信息",
     )
     _register(
@@ -506,7 +565,7 @@ def _build_catalog() -> None:
         unit="元",
         freshness=Freshness.DELAYED,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=2,
+        fallback_priority=3,
         notes="新浪财报三表",
     )
     _register(
@@ -516,7 +575,7 @@ def _build_catalog() -> None:
         unit="元",
         freshness=Freshness.DELAYED,
         rate_limit_risk=RateLimitRisk.LOW,
-        fallback_priority=3,
+        fallback_priority=4,
         notes="新浪财报三表直连",
     )
     _register(
@@ -526,7 +585,7 @@ def _build_catalog() -> None:
         unit="元",
         freshness=Freshness.DELAYED,
         rate_limit_risk=RateLimitRisk.LOW,
-        fallback_priority=4,
+        fallback_priority=5,
         known_gaps=["接口封装中，暂未暴露到 provider 层"],
         notes="BaoStock 财务数据，当前 provider 未实现（NotImplementedError）",
     )
@@ -606,7 +665,7 @@ def _build_catalog() -> None:
         "cn_akshare", "stock_repurchase_em",
         DataType.BUYBACK,
         fields=["股票代码", "最新公告日期", "已回购金额", "已回购股份数量", "实施进度"],
-        unit="元/股",
+        unit="元, 股, 元/股",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
         fallback_priority=1,
@@ -620,8 +679,19 @@ def _build_catalog() -> None:
         unit="元(需/10000转万元)",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=2,
+        fallback_priority=3,
         notes="东财 datacenter 回购数据",
+    )
+    _register(
+        "cn_tushare", "repurchase",
+        DataType.BUYBACK,
+        fields=["证券代码", "公告日期", "截止日期", "实施进度", "回购数量", "回购金额"],
+        unit="股, 元, 元/股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=2,
+        known_gaps=["公告原文仍以交易所/巨潮为准", "需要已配置的 Tushare Pro 凭据"],
+        notes="Tushare Pro 结构化回购记录 fallback",
     )
 
 
