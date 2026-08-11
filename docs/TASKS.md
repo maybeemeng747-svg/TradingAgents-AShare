@@ -631,7 +631,7 @@
 175. `SCORE-001B`：研究快照接入 KB-020 聚合响应与 TradeFlow candidate detail（P1，done，SCORE-001B-20260723-022706）。
 176. `SCORE-002`：复用 TradeFlow 现有因子生成 `entry_timing` 评分卡（P1，done，SCORE-002-20260723-023857）。
 177. `SCORE-003`：账户上下文 `portfolio_fit` 评分卡（P1，blocked-auto，依赖 SCORE-001）。
-178. `SCORE-004`：八类硬性否决统一门禁（P0，ready — 依赖 SCORE-002/SCORE-003/D-002/D-003/PLAYBOOK-001 全部 done）。
+178. `SCORE-004`：八类硬性否决统一门禁（P0，blocked — NEEDS_HUMAN，见 `docs/task_runs/SCORE-004-20260728-190004/`）。
 179. `SCORE-005`：四卡结果到七阶段与动作语义的确定性映射（P1，blocked-auto，依赖 SCORE-004/PLAYBOOK-001）。
 180. `SCORE-006`：研究评分接入端到端对抗回放（P1，blocked-human，依赖 SCORE-005 与 ZCode 正式发布的真实快照）。
 181. `FUND-001`：标的身份与公司画像硬门禁（P0，blocked-review，第一版待 FUND-001A 补修）。
@@ -6268,7 +6268,7 @@
 ### SCORE-004: 八类硬性否决统一门禁（P0）
 - **描述**：把研究证据、TradeFlow 时机、账户适配和既有强动作门禁汇总成单一 `vetoes` 裁决层；评分再高也不得绕过否决项。
 - **优先级**：P0
-- **状态**：ready — 所有依赖已完成（SCORE-002 done, SCORE-003 done, D-002 done, D-003 done, PLAYBOOK-001 done）
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/SCORE-004-20260728-190004
 - **前置条件**：SCORE-002、SCORE-003、D-002、D-003、PLAYBOOK-001 完成。
 - **depends_on**：SCORE-002, SCORE-003, D-002, D-003, PLAYBOOK-001
 - **auto_release**：true
