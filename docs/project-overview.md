@@ -34,12 +34,12 @@ TradeFlow 的 `TECH_TRADE` 与 `POLICY_AMBUSH/POLICY_CONFIRM` 必须分池展示
 
 | 角色 | 职责 | 数据源 |
 |------|------|--------|
-| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 基本面分析师 | 财务指标、估值分析 | Tushare Pro（结构化主源）/AKShare/BaoStock |
 | 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
 | 新闻分析师 | 新闻事件、政策影响 | AKShare |
 | 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
 | 宏观分析师 | 宏观经济、利率环境 | AKShare |
-| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | Tushare Pro（个股资金主源）/AKShare |
 | 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
 
 ### 2. 研究员团队

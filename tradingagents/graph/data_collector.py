@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import json
 import os
+import re
 import threading
 import time
 import pandas as pd
@@ -35,7 +36,11 @@ from tradingagents.agents.utils.agent_utils import (
     get_research_report,  # [DATA-011A] research_report_collector_wiring
     get_buybacks,  # [DATA-013A] buyback_collector_wiring
 )
-from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+from tradingagents.dataflows.interface import (  # [N-003] cn_astock_raw_evidence
+    clear_current_thread_hit_vendor,
+    get_current_thread_hit_vendor,
+    get_last_hit_vendor,
+)
 from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
     resolve_data_type as _resolve_data_type_contract,
     resolve_endpoint as _resolve_endpoint_contract,
@@ -380,6 +385,30 @@ def _safe(tool, payload: dict) -> Any:
         return f"数据获取失败：{type(exc).__name__}: {exc}"
 
 
+def _safe_with_vendor(tool, payload: dict) -> tuple[Any, str]:
+    """Invoke one tool and return the vendor captured in the same worker."""
+    method = getattr(tool, "name", str(tool))
+    clear_current_thread_hit_vendor(method)
+    result = _safe(tool, payload)
+    return result, get_current_thread_hit_vendor(method)
+
+
+_TUSHARE_ENDPOINTS_RE = re.compile(r"\bendpoints?=([A-Za-z0-9_,]+)")
+
+
+def _extract_tushare_endpoints(raw_value: Any) -> str:
+    """Extract exact endpoint provenance embedded by the Tushare provider."""
+    if not isinstance(raw_value, str):
+        return ""
+    endpoints: list[str] = []
+    for match in _TUSHARE_ENDPOINTS_RE.finditer(raw_value):
+        for endpoint in match.group(1).split(","):
+            endpoint = endpoint.strip()
+            if endpoint and endpoint not in endpoints:
+                endpoints.append(endpoint)
+    return " + ".join(endpoints)
+
+
 def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
     """Detect if individual fund flow shows significant capital anomaly.
 
@@ -535,17 +564,23 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     })
 
     results: Dict[str, Any] = {}
+    provider_hits: Dict[str, str] = {}
     fetch_start = time.time()
     stock_data_fetch_started_at = datetime.now(timezone.utc)
     # Provider calls remain joined here. A process-wide socket timeout bounds
     # ordinary network stalls without abandoning live worker threads.
     with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
         future_to_key = {
-            executor.submit(_safe, tool, payload): key
+            executor.submit(_safe_with_vendor, tool, payload): key
             for key, (tool, payload) in tasks.items()
         }
         for future in future_to_key:
-            results[future_to_key[future]] = future.result()
+            key = future_to_key[future]
+            result, vendor = future.result()
+            results[key] = result
+            if vendor:
+                provider_hits[key] = vendor
+    results["_provider_hits"] = provider_hits
 
     # [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
     # 结构化条目，让 raw_evidence / readiness 识别为"已跳过（低危）"而非"未查询/缺失"，
@@ -595,8 +630,13 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
         if lhb_force_needed:
             print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
-            lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+            lhb_forced, lhb_vendor = _safe_with_vendor(
+                get_lhb_detail,
+                {"symbol": ticker, "date": trade_date, "force": True},
+            )
             results["lhb"] = lhb_forced
+            if lhb_vendor:
+                provider_hits["lhb"] = lhb_vendor
             results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
             results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
     else:
@@ -655,18 +695,24 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     # A financial abstract alone is not a company profile and is never treated
     # as sufficient evidence for business/industry analysis.
     profile = extract_profile_from_fundamentals(results.get("fundamentals"))
+    fundamentals_vendor = provider_hits.get("fundamentals") or "provider"
     identity = build_instrument_identity(
         ticker,
         profile,
-        source="akshare_company_profile" if profile else "provider_profile_missing",
+        source=(
+            f"{fundamentals_vendor}_company_profile"
+            if profile
+            else "provider_profile_missing"
+        ),
         as_of=trade_date,
     )
     results["instrument_identity"] = identity.to_dict()
     results["company_profile"] = {
         "status": identity.status,
         "raw": profile,
-        "vendor": "akshare" if profile else "provider",
+        "vendor": fundamentals_vendor if profile else "provider",
         "field": "company_profile",
+        "endpoint": "stock_basic + stock_company" if fundamentals_vendor == "cn_tushare" else "",
         "as_of": trade_date,
         "missing_fields": list(identity.missing_fields),
         "reason": identity.conflict_reason,
@@ -812,8 +858,16 @@ class DataCollector:
                 return "HAS_DATA"
             if "FUND_FLOW_AGGREGATE_HAS_DATA" in val:
                 return "HAS_DATA"
+            if "FUND_FLOW_NORMAL_NO_DATA" in val:
+                return "NORMAL_NO_DATA"
             if "FUND_FLOW_FAILED" in val:
                 return "FAILED"
+            if "MARGIN_NORMAL_NO_DATA" in val:
+                return "NORMAL_NO_DATA"
+            if "MARGIN_FAILED" in val:
+                return "FAILED"
+            if "MARGIN_HAS_DATA" in val:
+                return "HAS_DATA"
             if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
                 return "NOT_QUERIED"
             if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
@@ -871,10 +925,36 @@ class DataCollector:
             "ratings",  # [DATA-012A] rating_data_collector_wiring
             "buybacks",  # [DATA-013A] buyback_collector_wiring
         ]
+        provider_hits = pool.get("_provider_hits") or {}
+
+        method_for_key = {
+            "stock_data": "get_stock_data",
+            "realtime_quote": "get_realtime_quotes",
+            "fund_flow_board": "get_board_fund_flow",
+            "fund_flow_individual": "get_individual_fund_flow",
+            "lhb": "get_lhb_detail",
+            "announcements": "get_announcements",
+            "fundamentals": "get_fundamentals",
+            "balance_sheet": "get_balance_sheet",
+            "cashflow": "get_cashflow",
+            "income_statement": "get_income_statement",
+            "margin_trading": "get_margin_trading",
+            "research_report": "get_research_report",
+            "ratings": "get_ratings",
+            "buybacks": "get_buybacks",
+        }
+
+        def _vendor_for(key: str) -> str:
+            current_vendor = str(provider_hits.get(key) or "").strip()
+            if current_vendor:
+                return current_vendor
+            method = method_for_key.get(key)
+            return get_last_hit_vendor(method) if method else ""
 
         raw_evidence: Dict[str, Any] = {}
         for key in data_source_keys:
             raw_value = pool.get(key)
+            provider_metadata = raw_value if isinstance(raw_value, dict) else {}
             if key == "company_profile" and isinstance(raw_value, dict):
                 raw_value = raw_value.get("raw")
             status = self._infer_source_status(raw_value)
@@ -922,10 +1002,7 @@ class DataCollector:
                 if partial_without_completed_bar:
                     entry["status"] = "NORMAL_NO_DATA"
                     entry["record_count"] = 0
-                actual_vendor = (
-                    get_last_hit_vendor("get_stock_data")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
                 if "is_realtime_patched=True" in raw_value:
@@ -984,74 +1061,55 @@ class DataCollector:
                 entry["source_type"] = "individual_fund_flow"
                 if is_aggregate_fallback:
                     entry["granularity"] = "aggregate_current_and_5d"
-                actual_vendor = (
-                    get_last_hit_vendor("get_individual_fund_flow")
-                    if has_current_provider_result else None
-                )  # [DATA-P0-603629]
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "fund_flow_board":
                 entry["source_type"] = "board_fund_flow"
-                actual_vendor = (
-                    get_last_hit_vendor("get_board_fund_flow")
-                    if has_current_provider_result else None
-                )  # [DATA-P0-603629]
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "lhb":
                 entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
                 entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
-                actual_vendor = (
-                    get_last_hit_vendor("get_lhb_detail")
-                    if has_current_provider_result else None
-                )  # [DATA-P0-603629]
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key in ("stock_data",):
                 entry["unit"] = "股"
             elif key == "realtime_quote":
-                actual_vendor = (
-                    get_last_hit_vendor("get_realtime_quotes")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
                 entry["unit"] = "结构化行情"
             elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
-                actual_vendor = (
-                    get_last_hit_vendor("get_announcements")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
+            elif key in ("fundamentals", "balance_sheet", "cashflow", "income_statement"):
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "company_profile":
+                profile_vendor = str(provider_metadata.get("vendor") or "").strip()
+                if profile_vendor:
+                    entry["vendor"] = profile_vendor
             elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
-                actual_vendor = (
-                    get_last_hit_vendor("get_margin_trading")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
             elif key == "research_report":  # [DATA-011] research_report_raw_evidence
-                actual_vendor = (
-                    get_last_hit_vendor("get_research_report")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
                 entry["unit"] = "条"
             elif key == "ratings":  # [DATA-012A] rating_data_collector_wiring
-                actual_vendor = (
-                    get_last_hit_vendor("get_ratings")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
                 entry["unit"] = "条"
             elif key == "buybacks":  # [DATA-013A] buyback_collector_wiring
-                actual_vendor = (
-                    get_last_hit_vendor("get_buybacks")
-                    if has_current_provider_result else None
-                )
+                actual_vendor = _vendor_for(key) if has_current_provider_result else None
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
                 entry["unit"] = "接口原始金额"
@@ -1064,6 +1122,14 @@ class DataCollector:
                 entry["fallback_from"] = _resolve_fallback_for_vendor(
                     entry["vendor"], data_type
                 )
+                if entry["vendor"] == "cn_tushare":
+                    exact_endpoints = _extract_tushare_endpoints(raw_value)
+                    if exact_endpoints:
+                        entry["endpoint"] = exact_endpoints
+                    elif key == "company_profile":
+                        entry["endpoint"] = str(
+                            provider_metadata.get("endpoint") or entry["endpoint"]
+                        )
 
             if status == "FAILED" and isinstance(raw_value, str):
                 entry["error"] = raw_value[:200]

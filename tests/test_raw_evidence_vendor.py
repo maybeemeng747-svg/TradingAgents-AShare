@@ -119,7 +119,7 @@ class TestRawEvidenceVendorTracking:
         assert re_data["fundamentals"]["vendor"] == "akshare"
 
     def test_failed_stock_data_no_vendor_override(self):
-        """Failed stock_data uses default vendor when no tracking available."""
+        """Failed stock data must not invent a vendor when no route succeeded."""
         _last_hit_vendor.pop("get_stock_data", None)
         collector = DataCollector()
         pool = _make_pool(stock_data="数据获取失败：timeout")
@@ -127,5 +127,5 @@ class TestRawEvidenceVendorTracking:
             collector.collect("600584.SH", "2026-05-26")
 
         re_data = collector.build_raw_evidence("600584.SH", "2026-05-26")
-        assert re_data["stock_data"]["vendor"] == "akshare"
+        assert re_data["stock_data"]["vendor"] == ""
         assert re_data["stock_data"]["status"] == "FAILED"

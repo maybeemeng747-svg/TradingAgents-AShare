@@ -70,13 +70,15 @@ class TestSourceCatalogMarginTrading:
     def test_margin_trading_has_primary(self):
         primary = get_primary_source(DataType.MARGIN_TRADING)
         assert primary is not None
-        assert primary.vendor == "cn_akshare"
+        assert primary.vendor == "cn_tushare"
         assert primary.is_primary is True
 
     def test_margin_trading_fallback_chain(self):
         chain = get_fallback_chain(DataType.MARGIN_TRADING)
+        assert "cn_tushare" in chain
         assert "cn_akshare" in chain
         assert "cn_astock" in chain
+        assert chain.index("cn_tushare") < chain.index("cn_akshare")
         assert chain.index("cn_akshare") < chain.index("cn_astock")
 
     def test_margin_trading_in_all_data_types(self):
@@ -360,6 +362,7 @@ class TestInterfaceMarginTrading:
     def test_route_fallback_detects_failure_string(self):
         from tradingagents.dataflows.interface import _is_failure_result
         assert _is_failure_result("融资融券数据获取失败：ConnectionError") is True
+        assert _is_failure_result("600519 [DATA-010] MARGIN_FAILED: permission denied") is True
         assert _is_failure_result("600519 [DATA-010] MARGIN_HAS_DATA") is False
 
 
