@@ -45,11 +45,12 @@ STALE_REPORT_ERROR_MESSAGE = "分析任务已中断，请重新发起分析"
 
 
 def normalize_report_action_label(report: Any) -> Any:
-    """Normalize stale DECISION labels on read without mutating the database.
+    """Normalize stale decision presentation on read without database writes.
 
     Older rows may have action_label="数据不足观察" even when the final
     research_direction was directional. Keep true neutral insufficient-data
-    cases unchanged, but recover useful labels for directional WAIT reports.
+    cases unchanged, recover useful labels for directional WAIT reports, and
+    hide stale bullish targets from bearish WAIT decisions.
     """
     if not report:
         return report
@@ -67,24 +68,59 @@ def normalize_report_action_label(report: Any) -> Any:
         or result_research_direction
         or getattr(report, "direction", None)
     )
+    decision = (
+        getattr(report, "decision", None)
+        or (result_data.get("decision") if isinstance(result_data, dict) else None)
+    )
     normalized_label = None
     if label == "数据不足观察" and action == "WAIT":
         if direction in ("偏空", "看空"):
             normalized_label = "回避"
         elif direction in ("偏多", "看多"):
             normalized_label = "等待触发"
-    if normalized_label:
+    normalized_action = str(action or "").upper()
+    is_exit_action = (
+        normalized_action in ("REDUCE", "EXIT")
+        if normalized_action
+        else str(decision or "").upper() in ("SELL", "REDUCE", "EXIT")
+    )
+    suppress_target = not is_exit_action and (
+        label in ("回避", "禁止买入")
+        or (
+            direction in ("偏空", "看空")
+            and (
+                action == "WAIT"
+                or (
+                    action in (None, "")
+                    and label in (None, "", "数据不足观察", "观望", "等待触发")
+                    and str(decision or "").upper() not in ("SELL", "REDUCE", "EXIT")
+                )
+            )
+        )
+    )
+    normalized_result_data = None
+    if isinstance(result_data, dict):
+        if normalized_label and result_action_label == "数据不足观察":
+            normalized_result_data = dict(result_data)
+            normalized_result_data["action_label"] = normalized_label
+        if suppress_target and result_data.get("target_price") is not None:
+            normalized_result_data = dict(normalized_result_data or result_data)
+            normalized_result_data["target_price"] = None
+
+    if normalized_label or suppress_target:
         if isinstance(report, ReportDB):
-            set_committed_value(report, "action_label", normalized_label)
-            if isinstance(result_data, dict) and result_action_label == "数据不足观察":
-                normalized_result_data = dict(result_data)
-                normalized_result_data["action_label"] = normalized_label
+            if normalized_label:
+                set_committed_value(report, "action_label", normalized_label)
+            if suppress_target:
+                set_committed_value(report, "target_price", None)
+            if normalized_result_data is not None:
                 set_committed_value(report, "result_data", normalized_result_data)
         else:
-            setattr(report, "action_label", normalized_label)
-            if isinstance(result_data, dict) and result_action_label == "数据不足观察":
-                normalized_result_data = dict(result_data)
-                normalized_result_data["action_label"] = normalized_label
+            if normalized_label:
+                setattr(report, "action_label", normalized_label)
+            if suppress_target:
+                setattr(report, "target_price", None)
+            if normalized_result_data is not None:
                 setattr(report, "result_data", normalized_result_data)
     return report
 
@@ -1173,6 +1209,18 @@ def resolve_report_fields(
     research_direction = research_direction or None
     execution_action = execution_action or None
     action_label = action_label or None
+
+    # A bearish WAIT/avoid conclusion must not expose an upstream bullish
+    # target as if it were an executable objective.  Neutral/bullish WAIT may
+    # still use target_price as a trigger level.
+    if (
+        execution_action == "WAIT"
+        and (
+            research_direction in {"偏空", "看空"}
+            or action_label in {"回避", "禁止买入"}
+        )
+    ):
+        target_price = None
 
     # [REPORT-UX-003] wait_reason_codes — recompute when semantics were already
     # resolved but codes are missing (e.g. legacy rows read back from DB, or

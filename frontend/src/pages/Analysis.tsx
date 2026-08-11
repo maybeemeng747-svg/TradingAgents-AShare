@@ -11,6 +11,7 @@ import KeyMetrics from '@/components/KeyMetrics'
 import { useAnalysisStore } from '@/stores/analysisStore'
 import { api } from '@/services/api'
 import type { FullTACostPreview } from '@/types'
+import { shouldSuppressTargetPrice } from '@/utils/decisionPresentation'
 import { AlertTriangle, X, Eye, Loader2 } from 'lucide-react'
 
 // [TA-UI-001] analysis_console_horizon_intent
@@ -76,7 +77,6 @@ export default function Analysis() {
     const [activeSymbol, setActiveSymbol] = useState(() => querySymbol || useAnalysisStore.getState().currentSymbol || '000001.SH')
     const [activeSection, setActiveSection] = useState<string | undefined>()
     const [debateDrawer, setDebateDrawer] = useState<'research' | 'risk' | null>(null)
-    const [latestPriceFallback, setLatestPriceFallback] = useState<{ target?: number | null; stop?: number | null; symbol?: string } | null>(null)
     const reportRef = useRef<HTMLDivElement | null>(null)
     const [fullTaMode, setFullTaMode] = useState(false)  // [PERF-004]
     const [showCostPreview, setShowCostPreview] = useState(false)  // [PERF-004]
@@ -94,7 +94,6 @@ export default function Analysis() {
         jobStopLoss,
         riskItems,
         keyMetrics,
-        analysisRunState,
         // [TA-UI-001] analysis_console_horizon_intent
         analysisHorizon,
         analysisIntent,
@@ -133,38 +132,15 @@ export default function Analysis() {
     const finalDecision = report?.final_trade_decision
     const confidence = jobConfidence ?? extractConfidence(finalDecision)
     const reportMatchesActiveSymbol = !report?.symbol || report.symbol === activeSymbol
-    const latestFallbackMatches = latestPriceFallback?.symbol === activeSymbol
-    const targetPrice = jobTargetPrice
-        ?? (reportMatchesActiveSymbol ? report?.target_price : undefined)
-        ?? (latestFallbackMatches ? latestPriceFallback?.target : undefined)
-        ?? extractPrice(finalDecision, 'target')
+    const suppressTargetPrice = reportMatchesActiveSymbol && shouldSuppressTargetPrice(report)
+    const targetPrice = suppressTargetPrice
+        ? undefined
+        : jobTargetPrice
+            ?? (reportMatchesActiveSymbol ? report?.target_price : undefined)
+            ?? extractPrice(finalDecision, 'target')
     const stopLoss = jobStopLoss
         ?? (reportMatchesActiveSymbol ? report?.stop_loss_price : undefined)
-        ?? (latestFallbackMatches ? latestPriceFallback?.stop : undefined)
         ?? extractPrice(finalDecision, 'stop')
-
-    useEffect(() => {
-        let cancelled = false
-        const symbol = activeSymbol
-        if (!symbol || targetPrice != null || stopLoss != null || analysisRunState === 'running') return
-        api.getReports(symbol, 0, 1)
-            .then(response => {
-                if (cancelled) return
-                const latest = response.reports?.[0]
-                if (!latest || latest.symbol !== symbol) return
-                setLatestPriceFallback({
-                    symbol,
-                    target: latest.target_price ?? null,
-                    stop: latest.stop_loss_price ?? null,
-                })
-            })
-            .catch(() => {
-                if (!cancelled) setLatestPriceFallback(null)
-            })
-        return () => {
-            cancelled = true
-        }
-    }, [activeSymbol, targetPrice, stopLoss, analysisRunState])
 
     return (
         <div className="space-y-4">
@@ -317,7 +293,7 @@ export default function Analysis() {
                                     api.addTAReportToObservervation(activeSymbol, {
                                         action_label: report.action_label,
                                         research_direction: report.research_direction,
-                                        target_price: report.target_price ?? targetPrice ?? null,
+                                        target_price: targetPrice ?? null,
                                         stop_loss_price: report.stop_loss_price ?? stopLoss ?? null,
                                         via: 'analysis_page',
                                     })

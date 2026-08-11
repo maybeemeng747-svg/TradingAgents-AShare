@@ -44,15 +44,19 @@ def create_trader(llm, memory):
             },
             {
                 "role": "user",
-                "content": get_prompt("trader_user_prompt", config=config).format(
-                    company_name=company_name,
-                    investment_plan=investment_plan,
-                    previous_trader_plan=previous_trader_plan or "无",
-                    instrument_context_summary=context_view["instrument_context_summary"],
-                    market_context_summary=context_view["market_context_summary"],
-                    user_context_summary=context_view["user_context_summary"],
-                    risk_feedback_summary=risk_feedback_summary,
-                    past_memory_str=past_memory_str,
+                "content": (
+                    "【价格口径】\n"
+                    f"{context_view['price_snapshot_summary']}\n\n"
+                    + get_prompt("trader_user_prompt", config=config).format(
+                        company_name=company_name,
+                        investment_plan=investment_plan,
+                        previous_trader_plan=previous_trader_plan or "无",
+                        instrument_context_summary=context_view["instrument_context_summary"],
+                        market_context_summary=context_view["market_context_summary"],
+                        user_context_summary=context_view["user_context_summary"],
+                        risk_feedback_summary=risk_feedback_summary,
+                        past_memory_str=past_memory_str,
+                    )
                 ),
             },
         ]

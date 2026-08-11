@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import json
 import os
@@ -41,7 +41,11 @@ from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_eviden
     resolve_endpoint as _resolve_endpoint_contract,
     resolve_fallback_info as _resolve_fallback_info_contract,
 )
-from tradingagents.agents.utils.context_utils import infer_instrument_context  # [HK-001] hk_market_boundary
+from tradingagents.agents.utils.context_utils import (  # [HK-001] hk_market_boundary
+    infer_instrument_context,
+    is_daily_bar_final,
+    market_today_str,
+)
 from tradingagents.dataflows.financial_periods import (  # [FUND-002] financial_period_normalizer
     derive_single_quarters,
     normalize_financial_markdown,
@@ -127,6 +131,48 @@ def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
             rename_dict[cols_map[target]] = target
     df = df.rename(columns=rename_dict)
     return df
+
+
+def _exclude_forming_daily_bar(
+    raw_csv: Any,
+    ticker: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Any:
+    """Remove a provider's current forming row before indicator calculation."""
+    df = _parse_csv_to_dataframe(raw_csv)
+    if df is None or "date" not in df.columns:
+        return raw_csv
+
+    parsed_dates = pd.to_datetime(df["date"], errors="coerce")
+    valid_dates = parsed_dates.dropna()
+    if valid_dates.empty:
+        return raw_csv
+    latest_date = valid_dates.max().strftime("%Y-%m-%d")
+    if is_daily_bar_final(ticker, latest_date, now=now):
+        return raw_csv
+
+    completed = df.loc[parsed_dates.dt.strftime("%Y-%m-%d") != latest_date].copy()
+    original_headers = [
+        line
+        for line in str(raw_csv).splitlines()
+        if line.lstrip().startswith("#")
+        and "[INTRADAY-DAYBAR]" not in line
+    ]
+    header = (
+        "# [INTRADAY-DAYBAR] "
+        "current_day_status=PARTIAL_INTRADAY, "
+        "action=excluded_from_daily_ohlcv\n"
+    )
+    if original_headers:
+        header += "\n".join(original_headers) + "\n"
+    if completed.empty:
+        return (
+            header
+            + f"No data found for symbol '{ticker}' after excluding forming bar "
+            + latest_date
+        )
+    return header + completed.to_csv(index=False)
 
 
 # ── VPA (Volume Price Analysis) 预计算 ──────────────────────────
@@ -313,11 +359,11 @@ def make_cache_key(ticker: str, trade_date: str) -> str:
 def _should_fetch_realtime_quote(
     trade_date: str,
     *,
+    symbol: str = "",
     now: Optional[datetime] = None,
 ) -> bool:
-    """Only attach a realtime quote to an analysis for the same calendar day."""
-    current = now or datetime.now()
-    return trade_date == current.strftime("%Y-%m-%d")
+    """Only attach a quote for the instrument's current market-local date."""
+    return trade_date == market_today_str(symbol, now=now)
 
 
 def _safe(tool, payload: dict) -> Any:
@@ -453,7 +499,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "research_report": (get_research_report, {"symbol": ticker}),
         "buybacks": (get_buybacks, {"symbol": ticker}),
     }
-    is_current_trade_date = _should_fetch_realtime_quote(trade_date)
+    is_current_trade_date = _should_fetch_realtime_quote(trade_date, symbol=ticker)
     if is_current_trade_date:
         tasks["realtime_quote"] = (get_realtime_quotes, {"symbols": [ticker]})
 
@@ -490,6 +536,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
     results: Dict[str, Any] = {}
     fetch_start = time.time()
+    stock_data_fetch_started_at = datetime.now(timezone.utc)
     # Provider calls remain joined here. A process-wide socket timeout bounds
     # ordinary network stalls without abandoning live worker threads.
     with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
@@ -523,6 +570,14 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
             "field": "realtime_quote",
             "as_of": trade_date,
         }
+
+    # Apply one provider-independent finality contract. Some fallback vendors
+    # include today's forming daily row even while the market is open.
+    results["stock_data"] = _exclude_forming_daily_bar(
+        results.get("stock_data"),
+        ticker,
+        now=stock_data_fetch_started_at,
+    )
 
     # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
     # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
@@ -798,7 +853,10 @@ class DataCollector:
         if not pool:
             return {}
 
-        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        # Preserve the producer timezone. Docker commonly runs in UTC while
+        # quote timestamps are Asia/Shanghai; a naive value makes a fresh quote
+        # look eight hours stale at the consumer.
+        now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
 
         data_source_keys = [
             "stock_data", "realtime_quote", "news", "global_news",

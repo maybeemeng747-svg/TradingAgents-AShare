@@ -62,7 +62,8 @@ def create_market_analyst(llm, data_collector=None):
             HumanMessage(content=(
                 horizon_ctx + "\n"
                 f"{context_block}\n\n"
-                f"以下是 {ticker} 在 {current_date} 的 K 线数据与指标（数据窗口：{data_window}）。\n\n"
+                f"以下是 {ticker} 截至 {current_date} 可用的已完成日线与指标"
+                f"（数据窗口：{data_window}）。盘中最新价只能引用上方“价格口径”。\n\n"
                 f"【get_stock_data】\n{stock_data}\n\n"
                 + "\n\n".join(indicator_blocks)
             )),

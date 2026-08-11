@@ -447,8 +447,8 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         report,
         currentSymbol: report?.symbol || state.currentSymbol,
         jobConfidence: report?.confidence ?? state.jobConfidence,
-        jobTargetPrice: report?.target_price ?? state.jobTargetPrice,
-        jobStopLoss: report?.stop_loss_price ?? state.jobStopLoss,
+        jobTargetPrice: report ? report.target_price ?? null : state.jobTargetPrice,
+        jobStopLoss: report ? report.stop_loss_price ?? null : state.jobStopLoss,
     })),
 
     setStructuredData: (data) => set({

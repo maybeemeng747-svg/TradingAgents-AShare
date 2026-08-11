@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -9,7 +10,11 @@ from tradingagents.agents.utils.readiness_score import (
     EvidenceStatus,
     infer_evidence_statuses,
 )
-from tradingagents.graph.data_collector import DataCollector, _EVIDENCE_KEY_TO_DATA_TYPE
+from tradingagents.graph.data_collector import (
+    DataCollector,
+    _EVIDENCE_KEY_TO_DATA_TYPE,
+    _exclude_forming_daily_bar,
+)
 from tradingagents.graph.data_collector import _should_fetch_realtime_quote
 
 
@@ -64,6 +69,7 @@ def test_realtime_quote_enrichment_preserves_primary_price():
                 "price": 999.0,
                 "turnover_rate": 18.26,
                 "volume_ratio": 1.24,
+                "quote_time": "2026-07-29 14:20:03",
                 "source": "tencent",
             }
         },
@@ -81,7 +87,37 @@ def test_realtime_quote_enrichment_preserves_primary_price():
     assert quote["price"] == 166.43
     assert quote["turnover_rate"] == 18.26
     assert quote["volume_ratio"] == 1.24
+    assert quote.get("quote_time") is None
     assert quote["source"] == "sina+tencent"
+
+
+def test_realtime_quote_enrichment_copies_timestamp_when_prices_match():
+    from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+
+    primary = json.dumps(
+        {"002409.SZ": {"price": 154.6, "source": "sina"}},
+        ensure_ascii=False,
+    )
+    fallback = json.dumps(
+        {
+            "002409.SZ": {
+                "price": 154.6,
+                "turnover_rate": 18.26,
+                "quote_time": "2026-07-29 14:20:03",
+                "source": "tencent",
+            }
+        },
+        ensure_ascii=False,
+    )
+    with patch(
+        "tradingagents.dataflows.providers.cn_astock_provider.CnAstockProvider.get_realtime_quotes",
+        return_value=fallback,
+    ):
+        result = json.loads(
+            CnAkshareProvider._enrich_realtime_quotes(primary, ["002409.SZ"])
+        )
+
+    assert result["002409.SZ"]["quote_time"] == "2026-07-29 14:20:03"
 
 
 def test_fund_flow_uses_independent_ths_fallback():
@@ -189,6 +225,68 @@ def test_stock_data_contract_exposes_partial_intraday_status():
     assert evidence["stock_data"]["is_realtime_patched"] is False
 
 
+def test_provider_independent_filter_removes_forming_daily_row():
+    raw = (
+        "# fallback provider output\n"
+        "# [DATA-P0-603629] adjustment=前复权\n"
+        "# source=cn_astock fetched_at=2026-07-29T14:20:00+08:00\n"
+        "Date,Open,High,Low,Close,Volume\n"
+        "2026-07-28,160,170,155,166,100000\n"
+        "2026-07-29,166,168,150,154,120000\n"
+    )
+    with patch(
+        "tradingagents.graph.data_collector.is_daily_bar_final",
+        return_value=False,
+    ):
+        filtered = _exclude_forming_daily_bar(raw, "002409.SZ")
+
+    assert "current_day_status=PARTIAL_INTRADAY" in filtered
+    assert "adjustment=前复权" in filtered
+    assert "source=cn_astock" in filtered
+    assert "2026-07-28" in filtered
+    assert "\n2026-07-29," not in filtered
+
+
+def test_stock_data_finality_uses_fetch_start_not_later_join_time():
+    raw = (
+        "Date,Open,High,Low,Close,Volume\n"
+        "2026-07-28,160,170,155,166,100000\n"
+        "2026-07-29,166,168,150,154,120000\n"
+    )
+    fetch_started_at = datetime(
+        2026, 7, 29, 14, 59, tzinfo=ZoneInfo("Asia/Shanghai")
+    )
+
+    filtered = _exclude_forming_daily_bar(
+        raw,
+        "002409.SZ",
+        now=fetch_started_at,
+    )
+
+    assert "current_day_status=PARTIAL_INTRADAY" in filtered
+    assert "\n2026-07-29," not in filtered
+
+
+def test_stock_data_finality_accepts_aware_utc_fetch_time_after_cn_close():
+    raw = (
+        "Date,Open,High,Low,Close,Volume\n"
+        "2026-07-28,160,170,155,166,100000\n"
+        "2026-07-29,166,168,150,154,120000\n"
+    )
+    fetch_started_at = datetime(
+        2026, 7, 29, 7, 10, tzinfo=ZoneInfo("UTC")
+    )
+
+    filtered = _exclude_forming_daily_bar(
+        raw,
+        "002409.SZ",
+        now=fetch_started_at,
+    )
+
+    assert "current_day_status=PARTIAL_INTRADAY" not in filtered
+    assert "\n2026-07-29," in filtered
+
+
 def test_empty_partial_intraday_stock_data_is_not_counted_as_available():
     collector = DataCollector()
     collector._cache["002409.SZ_2026-07-29"] = {
@@ -256,8 +354,16 @@ def test_partial_realtime_quote_marks_missing_market_fields():
 
 def test_realtime_quote_is_only_allowed_for_same_day_analysis():
     now = datetime(2026, 7, 28, 16, 5)
-    assert _should_fetch_realtime_quote("2026-07-28", now=now) is True
-    assert _should_fetch_realtime_quote("2026-07-27", now=now) is False
+    assert _should_fetch_realtime_quote("2026-07-28", symbol="002409.SZ", now=now) is True
+    assert _should_fetch_realtime_quote("2026-07-27", symbol="002409.SZ", now=now) is False
+
+
+def test_realtime_quote_uses_instrument_market_local_date():
+    now = datetime(2026, 8, 4, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert _should_fetch_realtime_quote("2026-08-04", symbol="002409.SZ", now=now) is True
+    assert _should_fetch_realtime_quote("2026-08-03", symbol="AAPL", now=now) is True
+    assert _should_fetch_realtime_quote("2026-08-04", symbol="AAPL", now=now) is False
 
 
 def test_historical_skipped_quote_does_not_reuse_stale_live_vendor():

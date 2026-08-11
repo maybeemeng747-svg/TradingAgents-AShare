@@ -198,12 +198,16 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
     def _sina_symbol(self, symbol: str) -> str:
         code = self._normalize_symbol(symbol)
+        if code.startswith(("4", "8", "920")):
+            return f"bj{code}"
         if code.startswith(("5", "6", "9")):
             return f"sh{code}"
         return f"sz{code}"
 
     def _xq_symbol(self, symbol: str) -> str:
         code = self._normalize_symbol(symbol)
+        if code.startswith(("4", "8", "920")):
+            return f"BJ{code}"
         if code.startswith(("5", "6", "9")):
             return f"SH{code}"
         return f"SZ{code}"
@@ -448,8 +452,10 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
         code = self._normalize_symbol(symbol)
         upper_symbol = symbol.strip().upper()
-        if not upper_symbol.endswith((".SH", ".SZ", ".SS")):
-            if code.startswith(("5", "6", "9")):
+        if not upper_symbol.endswith((".SH", ".SZ", ".SS", ".BJ")):
+            if code.startswith(("4", "8", "920")):
+                upper_symbol = f"{code}.BJ"
+            elif code.startswith(("5", "6", "9")):
                 upper_symbol = f"{code}.SH"
             else:
                 upper_symbol = f"{code}.SZ"
@@ -1170,6 +1176,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             isinstance(item, dict)
             and item.get("turnover_rate") is not None
             and item.get("volume_ratio") is not None
+            and item.get("quote_time")
             for item in primary.values()
         ):
             return raw_json
@@ -1201,6 +1208,20 @@ class CnAkshareProvider(BaseMarketDataProvider):
             for field in enrichment_fields:
                 if quote.get(field) is None and extra.get(field) is not None:
                     quote[field] = extra[field]
+                    enriched = True
+            if quote.get("quote_time") is None and extra.get("quote_time"):
+                try:
+                    primary_price = float(quote.get("price"))
+                    fallback_price = float(extra.get("price"))
+                except (TypeError, ValueError):
+                    primary_price = fallback_price = 0.0
+                denominator = max(abs(primary_price), abs(fallback_price), 1.0)
+                if (
+                    primary_price > 0
+                    and fallback_price > 0
+                    and abs(primary_price - fallback_price) / denominator <= 0.001
+                ):
+                    quote["quote_time"] = extra["quote_time"]
                     enriched = True
             if enriched:
                 quote["source"] = f"{quote.get('source', 'primary')}+tencent"
@@ -1242,7 +1263,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         sina_codes = []
         sina_to_original: dict[str, str] = {}
         for code, original in code_to_original.items():
-            prefix = "sh" if code.startswith(("5", "6", "9")) else "bj" if code.startswith(("4", "8")) else "sz"
+            prefix = "bj" if code.startswith(("4", "8", "920")) else "sh" if code.startswith(("5", "6", "9")) else "sz"
             sina_code = f"{prefix}{code}"
             sina_codes.append(sina_code)
             sina_to_original[sina_code] = original

@@ -16,6 +16,7 @@ import pytest
 from tradingagents.agents.utils.fundamental_integrity import (
     ACCOUNTING_POLICY_UNKNOWN,
     CAUSE_UNSUPPORTED,
+    DERIVATION_CONFLICT,
     IDENTITY_UNVERIFIED,
     PERIOD_SCOPE_INVALID,
     build_gated_fundamentals_report,
@@ -269,6 +270,55 @@ class TestGatedReportContent:
         assert "营业收入" in report
         assert "利通电子" in report
 
+    def test_derivation_only_failure_preserves_safe_narrative(self):
+        facts = _facts() + [{
+            "metric": "revenue",
+            "report_date": "2025-12-31",
+            "value": None,
+            "unit": "亿元",
+            "status": "FIELD_MISSING",
+        }]
+        pool = _pool()
+        pool["financial_period_facts"] = facts
+        original = (
+            "公司主营业务身份已经核验，经营现金流为负。\n"
+            "2026Q1较2025Q4环比增长18.1%，该项由模型推算。\n"
+            "2025Q4营业收入为10亿元，净利润为1亿元。\n"
+            "单季度收入10亿元。\n"
+            "2026年一季度较2025年四季度增长18%。\n"
+            "2026Q1营业收入为9.97亿元。\n"
+            '<!-- VERDICT: {"direction": "看空", "reason": "Q4派生恶化"} -->\n'
+            "资产负债率较高，需要关注偿债结构。"
+        )
+        integrity = evaluate_fundamental_integrity(
+            identity=_identity(),
+            period_facts=facts,
+            explanation_context={"status": "unexplained", "entries": []},
+            report_text=original,
+        )
+
+        report = build_gated_fundamentals_report(
+            original_report=original,
+            integrity=integrity,
+            pool=pool,
+        )
+
+        assert integrity["is_valid"] is False
+        assert integrity["weight_allowed"] is False
+        assert DERIVATION_CONFLICT in report
+        assert "公司主营业务身份已经核验" not in report
+        assert "资产负债率较高" not in report
+        assert "环比增长18.1%" not in report
+        assert "2025Q4营业收入为10亿元" not in report
+        assert "单季度收入10亿元" not in report
+        assert "2026年一季度较2025年四季度增长18%" not in report
+        assert "2026Q1营业收入为9.97亿元" not in report
+        assert '"direction": "看空"' not in report
+        assert '"direction": "中性"' in report
+        assert "原模型基本面叙事已隔离" in report
+        assert "营业收入" in report
+        assert "局部降级" in report
+
 
 # ── Research Manager Consensus Tests ──────────────────────────────────────────
 
@@ -320,6 +370,31 @@ class TestResearchManagerConsensusExclusion:
         # Fundamentals should still be included (as minority bearish)
         if block is not None:
             assert "fundamentals_analyst" in block
+
+    def test_consensus_excludes_derivation_only_neutral_placeholder(self):
+        from tradingagents.agents.managers.research_manager import _build_consensus_block
+
+        state = {
+            "market_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "sentiment_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "news_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "fundamentals_report": '<!-- VERDICT: {"direction": "看空"} -->',
+            "smart_money_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "volume_price_report": '<!-- VERDICT: {"direction": "看多"} -->',
+            "metadata": {
+                "fundamental_integrity": {
+                    "status": "NEEDS_REVIEW",
+                    "is_valid": False,
+                    "weight_allowed": False,
+                    "blockers": [{"code": DERIVATION_CONFLICT, "reason": "test"}],
+                },
+            },
+        }
+
+        block = _build_consensus_block(state)
+
+        if block is not None:
+            assert "fundamentals_analyst" not in block
 
     def test_consensus_works_without_integrity_metadata(self):
         from tradingagents.agents.managers.research_manager import _build_consensus_block

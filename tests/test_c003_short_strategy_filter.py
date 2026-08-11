@@ -507,6 +507,7 @@ class TestResearchManagerStreamNoLeak:
             def __init__(self):
                 self.tokens = []
                 self.messages = []
+                self.messages = []
 
             def _emit_token(self, agent, report_type, token):
                 self.tokens.append(token)
@@ -624,18 +625,20 @@ class TestRiskManagerStreamNoLeak:
         class _Tracker:
             def __init__(self):
                 self.tokens = []
+                self.messages = []
 
             def emit_debate_token(self, *, debate, agent, round_num, token):
                 self.tokens.append(token)
 
             def emit_debate_message(self, *, debate, agent, round_num,
                                     content, is_verdict=False):
-                pass
+                self.messages.append(content)
 
         class _FakeLLM:
             async def astream(self, _prompt):
                 for piece in ["建议", "做空策略", "，short position", "。"]:
                     yield MagicMock(content=piece)
+                yield MagicMock(content="假设约25元，建议买入。")
                 yield MagicMock(
                     content=(
                         "\n<!-- RISK_JUDGE: {"
@@ -655,6 +658,7 @@ class TestRiskManagerStreamNoLeak:
 
         state = {
             "company_of_interest": "002837.SZ",
+            "trade_date": "2026-08-04",
             "market_report": "技术面", "sentiment_report": "情绪",
             "news_report": "新闻", "fundamentals_report": "基本面",
             "investment_plan": "方案", "trader_investment_plan": "交易计划",
@@ -688,8 +692,12 @@ class TestRiskManagerStreamNoLeak:
             low = tok.lower()
             assert "做空" not in tok
             assert "short" not in low
+        assert tracker.tokens == []
+        assert tracker.messages
+        assert "建议买入" not in tracker.messages[-1]
         assert "做空" not in result["final_trade_decision"]
         assert "short" not in result["final_trade_decision"].lower()
+        assert "建议买入" not in result["final_trade_decision"]
 
 
 class TestBearResearcherStreamNoLeak:

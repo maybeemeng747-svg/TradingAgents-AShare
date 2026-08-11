@@ -43,7 +43,7 @@ def _load_cn_trade_dates() -> tuple[list[date], set[date]]:
 
 def is_cn_symbol(symbol: str) -> bool:
     s = symbol.strip().upper()
-    return bool(re.match(r"^\d{6}(\.(SH|SZ|SS))?$", s))
+    return bool(re.match(r"^\d{6}(\.(SH|SZ|SS|BJ))?$", s))
 
 
 def is_cn_trading_day(date_str: str) -> bool:

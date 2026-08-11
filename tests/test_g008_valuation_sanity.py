@@ -5,9 +5,16 @@ Covers:
 2. risk_manager raw_evidence wiring — reads from state.metadata.raw_evidence
 3. Old-price pollution blocking — stale valuation prices flagged
 """
+import json
 import pytest
+from datetime import datetime
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from tradingagents.agents.utils.readiness_score import check_valuation_mismatch
+from tradingagents.agents.managers.risk_manager import (
+    _completed_bar_can_supply_execution_price,
+)
 
 
 class TestValuationMismatch:
@@ -31,10 +38,21 @@ class TestValuationMismatch:
         assert result["deviation_pct"] > 20
         assert "估值口径错配" in result["note"]
 
-    def test_no_mismatch_when_current_price_none(self):
+    def test_missing_current_price_blocks_even_without_valuation_phrase(self):
+        result = check_valuation_mismatch(
+            None,
+            "建议立即买入，目标价186元。",
+        )
+        assert result["mismatch"] is False
+        assert result["price_unavailable"] is True
+        assert "强动作必须降级" in result["note"]
+
+    def test_missing_current_price_blocks_with_valuation_phrase(self):
         text = "假设股价约25.30元"
         result = check_valuation_mismatch(None, text)
         assert result["mismatch"] is False
+        assert result["price_unavailable"] is True
+        assert "强动作必须降级" in result["note"]
 
     def test_no_mismatch_when_empty_report(self):
         result = check_valuation_mismatch(25.50, "")
@@ -82,8 +100,17 @@ class TestRiskManagerRawEvidenceWiring:
                 "vendor": "akshare",
             }
         }
+        refreshed_raw = {
+            **metadata_raw,
+            "realtime_quote": {
+                "status": "HAS_DATA",
+                "raw": '{"600584.SH":{"price":25.6}}',
+                "refresh_stage": "final_risk_gate",
+            },
+        }
 
         captured_raw_evidence = {}
+        captured_prompt = {}
 
         original_infer = __import__(
             "tradingagents.agents.utils.readiness_score",
@@ -95,7 +122,8 @@ class TestRiskManagerRawEvidenceWiring:
             return original_infer(reports, raw_evidence=raw_evidence)
 
         class _FakeLLM:
-            async def astream(self, _prompt):
+            async def astream(self, prompt):
+                captured_prompt["value"] = prompt
                 yield MagicMock(
                     content=(
                         "建议持有。\n"
@@ -117,6 +145,7 @@ class TestRiskManagerRawEvidenceWiring:
         state = {
             "company_of_interest": "600584.SH",
             "ticker": "600584.SH",
+            "trade_date": "2026-05-26",
             "market_report": "技术面报告",
             "sentiment_report": "情绪面报告",
             "news_report": "新闻报告",
@@ -151,11 +180,16 @@ class TestRiskManagerRawEvidenceWiring:
         with patch(
             "tradingagents.agents.managers.risk_manager.infer_evidence_statuses",
             side_effect=mock_infer,
+        ), patch(
+            "tradingagents.agents.managers.risk_manager._refresh_intraday_quote_if_stale",
+            return_value=refreshed_raw,
         ):
             node = create_risk_manager(_FakeLLM(), _Memory())
             result = asyncio.run(node(state))
 
-        assert captured_raw_evidence["value"] == metadata_raw
+        assert captured_raw_evidence["value"] == refreshed_raw
+        assert result["metadata"]["raw_evidence"] == refreshed_raw
+        assert "最新价 25.60" in captured_prompt["value"]
 
     def test_fallback_to_state_root_raw_evidence(self):
         from tradingagents.agents.managers.risk_manager import create_risk_manager
@@ -201,6 +235,7 @@ class TestRiskManagerRawEvidenceWiring:
         state = {
             "company_of_interest": "600584.SH",
             "ticker": "600584.SH",
+            "trade_date": "2026-05-26",
             "market_report": "报告",
             "sentiment_report": "情绪面报告",
             "news_report": "新闻报告",
@@ -241,6 +276,148 @@ class TestRiskManagerRawEvidenceWiring:
             result = asyncio.run(node(state))
 
         assert captured["price"] == 25.50
+
+
+class TestCompletedBarExecutionFallback:
+    def test_current_day_previous_close_is_not_current_execution_price(self):
+        now = datetime(2026, 7, 29, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-07-28", "close": 166.43},
+            "2026-07-29",
+            symbol="002409.SZ",
+            now=now,
+        )
+
+        assert allowed is False
+
+    def test_historical_analysis_can_use_latest_completed_close(self):
+        now = datetime(2026, 7, 29, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-05-26", "close": 25.50},
+            "2026-05-26",
+            symbol="002409.SZ",
+            now=now,
+        )
+
+        assert allowed is True
+
+    def test_current_day_completed_bar_can_be_used(self):
+        now = datetime(2026, 7, 29, 15, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-07-29", "close": 154.60},
+            "2026-07-29",
+            symbol="002409.SZ",
+            now=now,
+        )
+
+        assert allowed is True
+
+    def test_current_day_bar_is_not_execution_price_before_close(self):
+        now = datetime(2026, 7, 29, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-07-29", "close": 154.60},
+            "2026-07-29",
+            symbol="002409.SZ",
+            now=now,
+        )
+
+        assert allowed is False
+
+    def test_us_previous_close_is_not_current_price_during_us_session(self):
+        now = datetime(2026, 7, 30, 3, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-07-28", "close": 210.0},
+            "2026-07-29",
+            symbol="AAPL",
+            now=now,
+        )
+
+        assert allowed is False
+
+    def test_us_same_day_close_is_available_after_us_finality_cutoff(self):
+        now = datetime(2026, 7, 30, 4, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-07-29", "close": 212.0},
+            "2026-07-29",
+            symbol="AAPL",
+            now=now,
+        )
+
+        assert allowed is True
+
+    def test_closed_non_trading_day_rejects_previous_completed_close(self):
+        now = datetime(2026, 8, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        allowed = _completed_bar_can_supply_execution_price(
+            {"date": "2026-07-31", "close": 154.60},
+            "2026-08-01",
+            symbol="002409.SZ",
+            now=now,
+        )
+
+        assert allowed is False
+
+
+def test_final_risk_gate_refreshes_stale_quote_after_same_day_close():
+    from tradingagents.agents.managers.risk_manager import (
+        _refresh_intraday_quote_if_stale,
+    )
+
+    raw = {
+        "realtime_quote": {
+            "status": "HAS_DATA",
+            "fetched_at": "2026-07-29T14:51:00+08:00",
+            "raw": json.dumps({
+                "002409.SZ": {
+                    "price": 154.6,
+                    "quote_time": "2026-07-29 14:50:00",
+                }
+            }),
+        }
+    }
+    closing_payload = json.dumps({
+        "002409.SZ": {
+            "price": 155.8,
+            "quote_time": "2026-07-29 15:00:03",
+        }
+    })
+    now = datetime(2026, 7, 29, 15, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    with patch(
+        "tradingagents.agents.managers.risk_manager.get_realtime_quotes"
+    ) as quote_tool:
+        quote_tool.invoke.return_value = closing_payload
+        refreshed = _refresh_intraday_quote_if_stale(
+            raw, "002409.SZ", "2026-07-29", now=now
+        )
+
+    quote_tool.invoke.assert_called_once_with({"symbols": ["002409.SZ"]})
+    assert refreshed["realtime_quote"]["refresh_stage"] == "final_risk_gate"
+
+
+def test_missing_valuation_price_does_not_suppress_existing_position_exit():
+    from tradingagents.agents.utils.readiness_score import (
+        sanitize_forbidden_strong_actions,
+    )
+
+    text = "风险条件已触发，建议立即清仓止损。假设股价约25.30元。"
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "has_position", buy_level=0, risk_level=4,
+    )
+
+    assert "立即清仓止损" in result
+    assert changes == []
 
 
 class TestOldPricePollution:

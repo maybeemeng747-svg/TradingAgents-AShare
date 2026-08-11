@@ -1,10 +1,18 @@
+import asyncio
 import time
 import json
 import logging
+from datetime import datetime, timezone
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
-from tradingagents.agents.utils.context_utils import build_agent_context_view
+from tradingagents.agents.utils.context_utils import (
+    build_market_context,
+    build_agent_context_view,
+    extract_price_snapshot,
+    is_daily_bar_final,
+)
+from tradingagents.agents.utils.agent_utils import get_realtime_quotes
 from tradingagents.agents.utils.trade_setup import (
     build_trade_quality_check,
     format_trade_quality_check,
@@ -55,6 +63,130 @@ from tradingagents.agents.utils.readiness_score import (
     ShortSellingStreamFilter,
 )
 
+
+def _completed_bar_can_supply_execution_price(
+    completed_bar,
+    trade_date: str,
+    *,
+    symbol: str = "",
+    now: datetime | None = None,
+) -> bool:
+    """Allow a close fallback only when that instrument's session is final."""
+    if not completed_bar or not trade_date:
+        return False
+    analysis_date = str(trade_date)[:10]
+    bar_date = str(completed_bar.get("date") or "")[:10]
+    if not analysis_date or not bar_date:
+        return False
+    market_context = build_market_context(symbol, analysis_date, now=now)
+    if market_context.get("analysis_mode") == "historical":
+        return bar_date == analysis_date
+    if market_context.get("analysis_mode") == "closed":
+        return False
+    return bar_date == analysis_date and is_daily_bar_final(
+        symbol,
+        analysis_date,
+        now=now,
+    )
+
+
+def _refresh_intraday_quote_if_stale(
+    raw_evidence,
+    stock_code: str,
+    trade_date: str,
+    *,
+    now: datetime | None = None,
+):
+    """Refresh an expired intraday quote once before execution-price gates."""
+    if not isinstance(raw_evidence, dict) or not stock_code or not trade_date:
+        return raw_evidence
+    consumed_at = now or datetime.now(timezone.utc)
+    market_context = build_market_context(stock_code, trade_date, now=consumed_at)
+    if market_context.get("analysis_mode") not in {"intraday", "post_market"}:
+        return raw_evidence
+    current = extract_price_snapshot(
+        raw_evidence,
+        stock_code,
+        trade_date,
+        now=consumed_at,
+    ).get("realtime_quote")
+    if current and current.get("same_trade_date"):
+        return raw_evidence
+    try:
+        refreshed_raw = get_realtime_quotes.invoke({"symbols": [stock_code]})
+    except Exception as exc:
+        _logger.warning("[PRICE] Intraday quote refresh failed for %s: %s", stock_code, exc)
+        return raw_evidence
+    if not isinstance(refreshed_raw, str) or not refreshed_raw.strip():
+        return raw_evidence
+    try:
+        parsed = json.loads(refreshed_raw)
+    except (TypeError, ValueError):
+        return raw_evidence
+    if not isinstance(parsed, dict) or not parsed:
+        return raw_evidence
+    refreshed = dict(raw_evidence)
+    previous = raw_evidence.get("realtime_quote")
+    entry = dict(previous) if isinstance(previous, dict) else {}
+    entry.update(
+        {
+            "status": "HAS_DATA",
+            "raw": refreshed_raw,
+            "field": "realtime_quote",
+            "as_of": trade_date,
+            "fetched_at": consumed_at.astimezone(timezone.utc).isoformat(),
+            "refresh_stage": "final_risk_gate",
+        }
+    )
+    refreshed["realtime_quote"] = entry
+    return refreshed
+
+
+def _build_valuation_check(
+    raw_evidence,
+    stock_code: str,
+    trade_date: str,
+    report_text: str,
+    *fallback_reports: str,
+) -> dict:
+    """Resolve a trustworthy execution price before validating valuation prose."""
+    current_price = None
+    if raw_evidence:
+        price_snapshot = extract_price_snapshot(
+            raw_evidence,
+            stock_code,
+            trade_date,
+        )
+        realtime_quote = price_snapshot.get("realtime_quote")
+        completed_bar = price_snapshot.get("completed_bar")
+        if realtime_quote and realtime_quote.get("same_trade_date"):
+            current_price = realtime_quote["price"]
+            _logger.info(
+                "[G-008] Extracted current price from realtime quote: %.2f (%s)",
+                current_price,
+                realtime_quote.get("quote_time") or "unknown time",
+            )
+        elif _completed_bar_can_supply_execution_price(
+            completed_bar,
+            trade_date,
+            symbol=stock_code,
+        ):
+            current_price = completed_bar["close"]
+            _logger.info(
+                "[G-008] Extracted current price from completed daily bar: %.2f (%s)",
+                current_price,
+                completed_bar.get("date") or "unknown date",
+            )
+    # Model-written reports are interpretation, not raw execution evidence.
+    # Missing or empty raw_evidence must therefore leave current_price unset
+    # so the valuation and Buy Level gates fail closed.
+
+    return check_valuation_mismatch(
+        current_price=current_price,
+        report_text=report_text,
+    )
+
+
 _logger = logging.getLogger(__name__)
 
 _STRONG_BUY_KEYWORDS = [
@@ -66,6 +198,15 @@ _STRONG_BUY_KEYWORDS = [
 _STRONG_SELL_KEYWORDS = [
     '立即清仓', '立刻清仓', '强制清仓', '清仓离场', '清仓出局', '全部卖出离场',
 ]
+
+
+def _has_position_data(user_context: dict) -> bool:
+    """Return whether the request supplied a usable position quantity signal."""
+    context = user_context or {}
+    return any(
+        context.get(field) is not None
+        for field in ("current_position", "current_position_pct")
+    )
 
 
 def create_risk_manager(llm, memory):
@@ -90,6 +231,31 @@ def create_risk_manager(llm, memory):
         trader_plan = state["trader_investment_plan"]
         investment_plan = state.get("investment_plan", "")  # research_manager output
         risk_feedback_state = state.get("risk_feedback_state", {})
+        stock_code = state.get("ticker", company_name)
+
+        # Refresh an expired intraday quote before the LLM sees any price
+        # context.  Later gates intentionally re-evaluate this same snapshot;
+        # if a long-running verdict outlives the quote TTL, they fail closed
+        # instead of making an old verdict appear valid with a newer price.
+        raw_evidence = (
+            state.get("metadata", {}).get("raw_evidence")
+            or state.get("raw_evidence")
+            or {}
+        )
+        raw_evidence = await asyncio.to_thread(
+            _refresh_intraday_quote_if_stale,
+            raw_evidence,
+            stock_code,
+            str(state.get("trade_date") or ""),
+        )
+        prompt_state = {
+            **state,
+            "raw_evidence": raw_evidence,
+            "metadata": {
+                **(state.get("metadata") or {}),
+                "raw_evidence": raw_evidence,
+            },
+        }
 
         # [P1-2] Detect research_manager bearish direction
         _research_bearish = _is_direction_bearish(investment_plan)
@@ -101,51 +267,43 @@ def create_risk_manager(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        context_view = build_agent_context_view(state, "risk")
+        context_view = build_agent_context_view(prompt_state, "risk")
         claims = risk_debate_state.get("claims", [])
         unresolved_claim_ids = risk_debate_state.get("unresolved_claim_ids", [])
-        prompt = get_prompt("risk_manager_prompt", config=config).format(
-            trader_plan=trader_plan,
-            past_memory_str=past_memory_str,
-            history=history,
-            market_context_summary=context_view["market_context_summary"],
-            user_context_summary=context_view["user_context_summary"],
-            claims_text=format_claims_for_prompt(claims, empty_message="当前没有已登记风控 claim。"),
-            unresolved_claims_text=format_claim_subset_for_prompt(claims, unresolved_claim_ids),
-            round_summary=risk_debate_state.get("round_summary", "暂无风险轮次摘要。"),
+        prompt = (
+            "【价格口径】\n"
+            f"{context_view['price_snapshot_summary']}\n\n"
+            + get_prompt("risk_manager_prompt", config=config).format(
+                trader_plan=trader_plan,
+                past_memory_str=past_memory_str,
+                history=history,
+                market_context_summary=context_view["market_context_summary"],
+                user_context_summary=context_view["user_context_summary"],
+                claims_text=format_claims_for_prompt(claims, empty_message="当前没有已登记风控 claim。"),
+                unresolved_claims_text=format_claim_subset_for_prompt(claims, unresolved_claim_ids),
+                round_summary=risk_debate_state.get("round_summary", "暂无风险轮次摘要。"),
+            )
         )
 
         # ── 流式输出 ──
         tracker = current_tracker_var.get()
         full_content = ""
 
-        # [C-003-R1] Server-side blocking: sanitize every risk token *before*
-        # it reaches SSE / frontend. The audit (round 1) found the risk agent's
-        # raw tokens were streamed before _sanitize_short_selling_text ran, so
-        # short-selling language leaked to the frontend. The stream filter
-        # catches keywords (including those split across chunks) prior to
-        # emission; legitimate SELL/EXIT is never stripped.
+        # Buffer the risk-manager stream until every evidence, valuation and
+        # position gate has run. Token-level filtering alone cannot know gates
+        # that depend on the complete response, so emitting here could briefly
+        # expose an action that the final decision correctly forbids.
         short_stream_filter = ShortSellingStreamFilter(can_short=can_short)
 
         async for chunk in llm.astream(prompt):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
             safe_token = short_stream_filter.feed(content)
             full_content += safe_token
-            if tracker and safe_token:
-                tracker.emit_debate_token(
-                    debate="risk", agent="Portfolio Manager",
-                    round_num=-1, token=safe_token,
-                )
 
         # [C-003-R1] Flush the buffered tail (sanitized) into full_content.
         flushed_tail = short_stream_filter.finalize()
         if flushed_tail:
             full_content += flushed_tail
-            if tracker:
-                tracker.emit_debate_token(
-                    debate="risk", agent="Portfolio Manager",
-                    round_num=-1, token=flushed_tail,
-                )
         if short_stream_filter.changes:
             _logger.warning(
                 "[C-003-R1] risk short_stream_filter applied: %s",
@@ -178,7 +336,6 @@ def create_risk_manager(llm, memory):
             final_response += format_position_validation_warning(gate_result)
 
         # [C-005] delta_check — 检测结论是否翻转
-        stock_code = state.get("ticker", company_name)
         delta_info = check_delta(stock_code, final_response, ["risk_manager"])
         if delta_info is not None:
             final_response += format_delta_warning(delta_info)
@@ -191,12 +348,10 @@ def create_risk_manager(llm, memory):
         # 等参数（它们恒为 None/False），导致门禁永不触发。现改用
         # check_event_risk_from_state，从已采集的 raw_evidence / 公告 / 新闻
         # 自动提取解禁比例、停复牌、并购事件，并回传 data_status。
-        raw_evidence = (
-            state.get("metadata", {}).get("raw_evidence")
-            or state.get("raw_evidence")
-            or {}
+        event_risk_info = check_event_risk_from_state(
+            stock_code,
+            state=prompt_state,
         )
-        event_risk_info = check_event_risk_from_state(stock_code, state=state)
         if event_risk_info["has_risk"]:
             final_response += format_event_risk_warning(event_risk_info)
             _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
@@ -248,7 +403,7 @@ def create_risk_manager(llm, memory):
         has_smart_money = bool(state.get("smart_money_report", ""))
         has_volume_price = bool(state.get("volume_price_report", ""))
         has_user_context = bool(state.get("user_context"))
-        has_position_data = user_context.get("current_position") is not None
+        has_position_data = _has_position_data(user_context)
 
         data_completeness = calculate_data_completeness(
             has_market_data=has_market,
@@ -375,7 +530,10 @@ def create_risk_manager(llm, memory):
         final_response += f"\n\n📊 数据源可用性：\n{checklist}"
 
         # ── D-002 ~ D-004: 证据门禁 + 双等级 + 机会评分 ──
-        position_status = get_position_status(user_context)
+        position_status = get_position_status(
+            user_context,
+            state.get("position_context"),
+        )
 
         signals = extract_execution_signals(state, final_response, reports_dict)
 
@@ -390,6 +548,15 @@ def create_risk_manager(llm, memory):
         if is_name_mismatch:
             final_response += f"\n\n{name_check['note']}"
             _logger.warning("[E-002] name_mismatch: %s", name_check["note"])
+
+        valuation_check = _build_valuation_check(
+            raw_evidence,
+            stock_code,
+            str(state.get("trade_date") or ""),
+            cleaned_response,
+            market_research_report or "",
+            state.get("volume_price_report", "") or "",
+        )
 
         gate = get_strong_action_gate(
             source_coverage=source_coverage,
@@ -415,6 +582,12 @@ def create_risk_manager(llm, memory):
             gate["passed"] = False
             if "event_risk_block_open" not in gate["failures"]:
                 gate["failures"].append("event_risk_block_open")
+        if valuation_check.get("price_unavailable"):
+            gate["passed"] = False
+            if "估值基准价不可用(valuation_price_unavailable)" not in gate["failures"]:
+                gate["failures"].append(
+                    "估值基准价不可用(valuation_price_unavailable)"
+                )
 
         risk_result = calculate_risk_level(
             source_coverage=source_coverage,
@@ -441,6 +614,9 @@ def create_risk_manager(llm, memory):
             # [C-007-R1] 事件门禁真降级 Buy Level
             event_risk_active=event_risk_info["has_risk"],
             event_risk_level=event_risk_info.get("risk_level", "none"),
+            execution_price_available=not valuation_check.get(
+                "price_unavailable", False
+            ),
         )
         if not fundamental_integrity["is_valid"]:
             buy_result["level"] = 0
@@ -473,56 +649,16 @@ def create_risk_manager(llm, memory):
         if _sanitize_changes:
             _logger.warning("[D-002] sanitize_forbidden_strong_actions: %s", _sanitize_changes)
 
-        # [Fix-2] Valuation sanity check
-        # Try to extract current price from market report or combined text
-        # [G-008] Enhanced: Extract current price from raw_evidence first
-        current_price_from_raw = None
-        raw_evidence = state.get("metadata", {}).get("raw_evidence") or state.get("raw_evidence")
-
-        # Extract current price from raw_evidence (new G-006 format support)
-        if raw_evidence:
-            raw_stock_data = raw_evidence.get("stock_data")
-            if isinstance(raw_stock_data, dict) and "raw" in raw_stock_data:
-                # New G-006 format: raw_evidence.stock_data.raw = CSV string
-                raw_csv = raw_stock_data["raw"]
-                lines_csv = raw_csv.strip().split('\n')
-                if len(lines_csv) >= 2:
-                    # Extract latest close price from CSV (last line)
-                    latest_line = lines_csv[-1]
-                    parts = latest_line.split(',')
-                    if len(parts) >= 5:
-                        try:
-                            current_price_from_raw = float(parts[4])
-                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
-                        except (ValueError, IndexError):
-                            pass
-            elif isinstance(raw_stock_data, str):
-                # Legacy format: raw_evidence.stock_data = CSV string
-                raw_csv = raw_stock_data
-                lines_csv = raw_csv.strip().split('\n')
-                if len(lines_csv) >= 2:
-                    latest_line = lines_csv[-1]
-                    parts = latest_line.split(',')
-                    if len(parts) >= 5:
-                        try:
-                            current_price_from_raw = float(parts[4])
-                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
-                        except (ValueError, IndexError):
-                            pass
-
-        # Use raw_evidence price if available, otherwise use original method
-        current_price = current_price_from_raw or _extract_current_price(
-            market_research_report or "",
-            state.get("volume_price_report", "") or "",
-        )
-
-        valuation_check = check_valuation_mismatch(
-            current_price=current_price,
-            report_text=cleaned_response,
-        )
-        if valuation_check["mismatch"]:
+        # [Fix-2] Surface mismatches and unavailable execution-price blockers.
+        if valuation_check["note"]:
             final_response += "\n\n" + valuation_check["note"]
+        if valuation_check["mismatch"]:
             _logger.warning("[G-008] valuation_mismatch: %s", valuation_check["note"])
+        elif valuation_check.get("price_unavailable"):
+            _logger.warning(
+                "[G-008] valuation_price_unavailable: %s",
+                valuation_check["note"],
+            )
 
         # [Fix-9] Filter A-share short-selling language
 
@@ -543,7 +679,10 @@ def create_risk_manager(llm, memory):
             strong_action_gate=gate,
             position_status=position_status,
             # [Fix-2]
-            valuation_mismatch=valuation_check["mismatch"],
+            valuation_mismatch=(
+                valuation_check["mismatch"]
+                or valuation_check.get("price_unavailable", False)
+            ),
             # G-001: wire three-layer decision into production path
             analysis_intent=state.get("analysis_intent", "watch"),
             position_context=state.get("position_context", {}),
@@ -591,6 +730,9 @@ def create_risk_manager(llm, memory):
         }
         metadata = {
             **(state.get("metadata") or {}),
+            # Persist the exact evidence consumed by the final action gate. An
+            # intraday quote may have been refreshed after a long analysis.
+            "raw_evidence": raw_evidence,
             "trade_quality_check": trade_quality_check,
             "source_coverage": source_coverage,
             "evidence_coverage": evidence_coverage,
@@ -600,6 +742,9 @@ def create_risk_manager(llm, memory):
             "strong_action_gate_passed": gate["passed"],
             # [Fix-2]
             "valuation_mismatch": valuation_check["mismatch"],
+            "valuation_price_unavailable": valuation_check.get(
+                "price_unavailable", False
+            ),
             "fundamental_integrity": fundamental_integrity,
             "fund_flow_provenance": fund_flow_provenance,
             "financial_anomaly_inputs": extract_financial_anomaly_inputs(period_facts),

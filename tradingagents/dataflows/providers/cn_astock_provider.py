@@ -63,10 +63,10 @@ def _extract_code(symbol: str) -> str:
 
 def _get_prefix(code: str) -> str:
     """6-digit code → market prefix (sh/sz/bj)."""
-    if code.startswith(("6", "9")):
-        return "sh"
-    elif code.startswith("8"):
+    if code.startswith(("4", "8", "920")):
         return "bj"
+    if code.startswith(("5", "6", "9")):
+        return "sh"
     else:
         return "sz"
 
@@ -235,7 +235,7 @@ class CnAstockProvider(BaseMarketDataProvider):
         # [DATA-P0-603629] astock_source_fallback: fqt=1 means 前复权 (forward-adjusted).
         """
         _rate_limit("em_kline")
-        market_code = 1 if code.startswith(("5", "6", "9")) else 0
+        market_code = 1 if _get_prefix(code) == "sh" else 0
         secid = f"{market_code}.{code}"
         url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
         params = {
@@ -482,7 +482,7 @@ class CnAstockProvider(BaseMarketDataProvider):
     def _eastmoney_stock_info(self, code: str) -> dict:
         """东财个股基本面 — 行业/总股本/流通股/市值/上市日期."""
         _rate_limit("em_stock_info")
-        market_code = 1 if code.startswith(("5", "6", "9")) else 0
+        market_code = 1 if _get_prefix(code) == "sh" else 0
         url = "https://push2.eastmoney.com/api/qt/stock/get"
         params = {
             "fltt": "2", "invt": "2",
@@ -530,6 +530,15 @@ class CnAstockProvider(BaseMarketDataProvider):
             if len(vals) < 53:
                 continue
             code = key[2:]
+            quote_time = None
+            raw_quote_time = vals[30].strip() if len(vals) > 30 else ""
+            if raw_quote_time:
+                try:
+                    quote_time = datetime.strptime(
+                        raw_quote_time[:14], "%Y%m%d%H%M%S"
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    quote_time = None
             result[code] = {
                 "name": vals[1],
                 "price": float(vals[3]) if vals[3] else 0,
@@ -550,6 +559,7 @@ class CnAstockProvider(BaseMarketDataProvider):
                 "limit_down": float(vals[48]) if vals[48] else 0,
                 "vol_ratio": float(vals[49]) if vals[49] else 0,
                 "pe_static": float(vals[52]) if vals[52] else 0,
+                "quote_time": quote_time,
             }
         return result
 
@@ -880,7 +890,7 @@ class CnAstockProvider(BaseMarketDataProvider):
         code = _extract_code(symbol)
         try:
             _rate_limit("em_fund_flow_individual")
-            market_code = 1 if code.startswith(("5", "6", "9")) else 0
+            market_code = 1 if _get_prefix(code) == "sh" else 0
             secid = f"{market_code}.{code}"
             url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
             params = {
@@ -1062,6 +1072,7 @@ class CnAstockProvider(BaseMarketDataProvider):
                 "pe_ttm": q["pe_ttm"],
                 "pe_static": q["pe_static"],
                 "pb": q["pb"],
+                "quote_time": q.get("quote_time"),
                 "source": "tencent",
             }
         return json.dumps(result, ensure_ascii=False)

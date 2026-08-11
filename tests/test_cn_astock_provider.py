@@ -16,6 +16,7 @@ from tradingagents.dataflows.providers.cn_astock_provider import (
     _extract_code,
     _get_prefix,
 )
+from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
 from tradingagents.dataflows.providers.registry import build_default_registry
 
 
@@ -43,6 +44,8 @@ class TestSymbolNormalization:
             _extract_code("INVALID")
 
     def test_get_prefix_sh(self):
+        assert _get_prefix("510300") == "sh"
+        assert _get_prefix("588000") == "sh"
         assert _get_prefix("600519") == "sh"
         assert _get_prefix("900001") == "sh"
 
@@ -52,7 +55,15 @@ class TestSymbolNormalization:
         assert _get_prefix("300001") == "sz"
 
     def test_get_prefix_bj(self):
+        assert _get_prefix("430047") == "bj"
         assert _get_prefix("800001") == "bj"
+        assert _get_prefix("920045") == "bj"
+
+    def test_akshare_prefixes_support_920_series_bj_symbols(self):
+        provider = CnAkshareProvider()
+
+        assert provider._sina_symbol("920045.BJ") == "bj920045"
+        assert provider._xq_symbol("920045.BJ") == "BJ920045"
 
 
 class TestRegistryRegistration:
@@ -140,8 +151,45 @@ class TestGetRealtimeQuotesJSON:
                 "limit_down": 31.5,
                 "vol_ratio": 1.2,
                 "pe_static": 26.0,
+                "quote_time": "2026-07-29 14:20:03",
             }
         }
+
+    def test_tencent_payload_timestamp_is_normalized(self):
+        fields = [""] * 53
+        fields[1] = "顺络电子"
+        fields[3] = "35.50"
+        fields[4] = "35.00"
+        fields[5] = "35.20"
+        fields[30] = "20260729142003"
+        fields[31] = "0.50"
+        fields[32] = "1.43"
+        fields[33] = "36.00"
+        fields[34] = "34.80"
+        fields[37] = "58000"
+        fields[38] = "3.2"
+        fields[39] = "25.5"
+        fields[43] = "3.43"
+        fields[44] = "280"
+        fields[45] = "250"
+        fields[46] = "4.5"
+        fields[47] = "38.5"
+        fields[48] = "31.5"
+        fields[49] = "1.2"
+        fields[52] = "26"
+        payload = f'v_sz002138="{"~".join(fields)}";'
+        response = MagicMock()
+        response.read.return_value = payload.encode("gbk")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with patch(
+            "tradingagents.dataflows.providers.cn_astock_provider.urllib.request.build_opener",
+            return_value=opener,
+        ):
+            quote = CnAstockProvider()._tencent_quote(["002138"])["002138"]
+
+        assert quote["quote_time"] == "2026-07-29 14:20:03"
 
     def test_returns_required_fields(self):
         provider = CnAstockProvider()
@@ -151,7 +199,7 @@ class TestGetRealtimeQuotesJSON:
         data = json.loads(result_json)
         assert "002138" in data
         q = data["002138"]
-        for field in ["price", "open", "high", "low", "previous_close", "amount", "source"]:
+        for field in ["price", "open", "high", "low", "previous_close", "amount", "quote_time", "source"]:
             assert field in q, f"Missing field: {field}"
 
     def test_amount_is_turnover_not_volume(self):

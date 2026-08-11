@@ -300,6 +300,21 @@ def test_buy_level_max_2_when_position_unknown():
     assert "上限为 2" in result["note"]
 
 
+def test_buy_level_capped_at_observation_without_execution_price():
+    result = calculate_buy_level(
+        source_coverage=95,
+        evidence_coverage=95,
+        trend_confirmed=True,
+        main_capital_inflow_days=3,
+        volume_healthy_expansion=True,
+        position_status="has_position",
+        execution_price_available=False,
+    )
+
+    assert result["level"] == 1
+    assert "可执行价格不可用" in result["note"]
+
+
 def test_buy_level_0_when_coverage_very_low():
     result = calculate_buy_level(
         source_coverage=20, evidence_coverage=20,
@@ -402,6 +417,21 @@ def test_get_position_status_no_position():
 def test_get_position_status_has_position():
     assert get_position_status({"current_position": 100}) == "has_position"
     assert get_position_status({"current_position": 0.5}) == "has_position"
+
+
+def test_get_position_status_supports_percentage_only_positions():
+    assert get_position_status({"current_position_pct": 30}) == "has_position"
+    assert get_position_status({"current_position_pct": 0}) == "no_position"
+
+
+def test_get_position_status_falls_back_to_position_context():
+    assert get_position_status({}, {"has_position": True}) == "has_position"
+    assert get_position_status(None, {"has_position": True}) == "has_position"
+    assert get_position_status({}, {"has_position": False}) == "no_position"
+    assert get_position_status(
+        {},
+        {"has_position": False, "position_status_explicit": False},
+    ) == "unknown"
 
 
 # ── Opportunity score tests ──
@@ -570,6 +600,40 @@ def test_fundamental_veto_only_rewrites_positive_clause_on_mixed_line():
     assert "轻仓试多" not in sanitized
     assert "等待基本面证据复核" in sanitized
     assert changes
+
+
+def test_fundamental_veto_preserves_size_modified_negated_actions():
+    original = (
+        "不允许重仓买入。禁止加仓买入。不得追涨买入。"
+        "不允许提高买入额度。禁止设置加仓比例。"
+    )
+    sanitized, _ = sanitize_forbidden_strong_actions(
+        original,
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    assert original in sanitized
+
+
+def test_fundamental_veto_preserves_location_modified_negated_actions():
+    original = (
+        "不建议在当前位置重仓买入。"
+        "禁止在这个价位立即建仓。"
+        "不适合以当前价格加仓。"
+    )
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        original,
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    assert original in sanitized
+    assert changes == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -994,6 +1058,540 @@ def test_no_position_止损_replaced_when_gate_passes():
     assert len(changes) > 0
 
 
+def test_no_position_sanitizer_does_not_consume_risk_clause_prefix():
+    text = (
+        "左侧挂单止损条件失效时，仅记录风险，不代表已有持仓。"
+        "未来减仓上限仅适用于建仓后的情景。"
+    )
+    gate = {"passed": True, "failures": []}
+
+    result, _ = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "左侧挂单止损条件失效" in result
+    assert "未来减仓上限" in result
+    assert "左侧挂单该持仓动作" not in result
+
+
+def test_no_position_sanitizer_preserves_negated_action_guardrails():
+    for text in (
+        "建议不要减仓，继续观察",
+        "暂不减仓，等待确认",
+        "当前不需要减仓",
+        "不要立即买入，先观察",
+        "暂不立即买入，先观察",
+    ):
+        gate = {"passed": False, "failures": ["source_coverage=50% < 70%"]}
+
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 0, 0,
+        )
+
+        assert text in result
+        assert "不要该持仓动作" not in result
+        assert "暂不该持仓动作" not in result
+        assert "暂不暂不执行" not in result
+        assert changes == []
+
+
+def test_no_position_sanitizer_removes_modified_and_conditional_sell_actions():
+    text = (
+        "建议小幅减仓控制风险。跌破支撑则减仓。"
+        "跌破支撑后小幅减仓。可以小幅减仓。"
+        "跌破支撑就减仓。考虑减仓。未来减仓上限为20%。"
+    )
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "建议小幅减仓" not in result
+    assert "则减仓" not in result
+    assert "后小幅减仓" not in result
+    assert "可以小幅减仓" not in result
+    assert "就减仓" not in result
+    assert "考虑减仓" not in result
+    assert "跌破支撑" in result
+    assert "未来减仓上限" in result
+    assert changes
+
+
+def test_fundamental_sanitizer_preserves_limits_and_unlock_language():
+    text = (
+        "未来加仓上限为10%。解除加仓禁令前不得执行买入。"
+        "若证据补齐，建议建仓。"
+    )
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, _ = sanitize_forbidden_strong_actions(
+        text, gate, "has_position", 0, 0,
+    )
+
+    assert "未来加仓上限为10%" in result
+    assert "解除加仓禁令前不得执行买入" in result
+    assert "建议建仓" not in result
+    assert "等待基本面证据复核" in result
+
+
+def test_fundamental_sanitizer_filters_buy_after_unlock_clause():
+    text = "解除加仓禁令后建议买入。维持加仓上限为10%。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "建议买入" not in result
+    assert "解除加仓禁令后" in result
+    assert "维持加仓上限" in result
+    assert "等待基本面证据复核" in result
+    assert changes
+
+
+def test_fundamental_sanitizer_filters_executable_buy_size_but_keeps_field():
+    text = (
+        "执行买入额度10万元。可买入比例不超过10%。"
+        "买入额度字段用于记录约束。"
+    )
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "执行买入额度" not in result
+    assert "可买入比例" not in result
+    assert "买入额度字段用于记录约束" in result
+    assert changes
+
+
+def test_fundamental_sanitizer_filters_unprefixed_and_recommended_buy_sizes():
+    text = (
+        "推荐买入比例为10%。建仓额度10万元。"
+        "买入比例字段用于记录约束。建仓额度字段不得作为动作。"
+    )
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "推荐买入比例为10%" not in result
+    assert "建仓额度10万元" not in result
+    assert "买入比例字段用于记录约束" in result
+    assert "建仓额度字段不得作为动作" in result
+    assert changes
+
+
+def test_fundamental_sanitizer_preserves_negated_buy_constraints():
+    text = "不允许买入比例超过10%。不推荐建仓额度。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "不允许买入比例超过10%" in result
+    assert "不推荐建仓额度" in result
+    assert "不等待" not in result
+    assert changes == []
+
+
+def test_fundamental_sanitizer_scopes_negation_across_contrast_clause():
+    text = "不推荐追涨但建议建仓。不允许加仓但可买入。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "不推荐追涨" in result
+    assert "不允许加仓" in result
+    assert "建议建仓" not in result
+    assert "可买入" not in result
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert body.count("等待基本面证据复核") == 2
+    assert changes
+
+
+def test_fundamental_sanitizer_scopes_negation_across_er_contrast():
+    text = "未允许加仓而后续建议买入。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "未允许加仓" in result
+    assert "建议买入" not in result
+    assert "等待基本面证据复核" in result
+    assert changes
+
+
+def test_fundamental_sanitizer_scopes_negation_across_bare_and():
+    text = "不推荐追涨并建议建仓。未允许加仓并建议买入。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "不推荐追涨" in result
+    assert "未允许加仓" in result
+    assert "建议建仓" not in result
+    assert "建议买入" not in result
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert body.count("等待基本面证据复核") == 2
+    assert changes
+
+
+def test_fundamental_sanitizer_scopes_negation_across_choice_delimiters():
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+    cases = (
+        ("不允许追涨、建议逢低建仓。", "建议逢低建仓"),
+        ("未推荐加仓、建议买入。", "建议买入"),
+        ("不推荐追涨或建议建仓。", "建议建仓"),
+        ("禁止加仓、可以买入。", "可以买入"),
+    )
+
+    for text, forbidden in cases:
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 0, 0,
+        )
+        assert changes
+        assert forbidden not in result
+        assert "等待基本面证据复核" in result
+
+
+def test_strong_buy_sanitizer_scans_after_negated_clause():
+    gate = {"passed": False, "failures": ["source_coverage_below_70"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        "不建议追涨所以建议加仓。", gate, "no_position", 0, 0,
+    )
+
+    assert "不建议追涨" in result
+    assert "建议加仓" not in result
+    assert changes
+
+
+def test_no_position_sanitizer_scans_after_negated_clause():
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        "尚未买入因此建议卖出。", gate, "no_position", 0, 0,
+    )
+
+    assert "尚未买入" in result
+    assert "建议卖出" not in result
+    assert changes
+
+
+def test_entry_sanitizer_preserves_fully_negated_buy():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    for text in ("并非建议买入。", "不是建议买入。"):
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 0, 0,
+        )
+        assert text.strip("。") in result
+        assert "并非等待" not in result
+        assert "不是等待" not in result
+        assert changes == []
+
+
+def test_entry_and_no_position_sanitizers_filter_minimum_position_sizes():
+    entry_gate = {
+        "passed": False,
+        "failures": ["fundamental_semantic_gate"],
+    }
+    entry_result, entry_changes = sanitize_forbidden_strong_actions(
+        "买入比例至少50%。", entry_gate, "no_position", 0, 0,
+    )
+    sell_result, sell_changes = sanitize_forbidden_strong_actions(
+        "减仓比例不低于三成。", {"passed": True, "failures": []},
+        "no_position", 0, 0,
+    )
+
+    assert "买入比例至少50%" not in entry_result
+    assert "减仓比例不低于三成" not in sell_result
+    assert entry_changes
+    assert sell_changes
+
+
+def test_sanitizers_filter_positive_action_before_later_negation():
+    gate = {"passed": False, "failures": ["source_coverage_below_70"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        "建议立即买入（不建议追涨）。", gate, "no_position", 0, 0,
+    )
+
+    assert "建议立即买入" not in result
+    assert "不建议追涨" in result
+    assert changes
+
+
+def test_fundamental_sanitizer_filters_mediated_buy_sizing():
+    text = "建议将买入比例提高至10%。建议把建仓额度提高到10万元。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert "建议将买入比例提高至10%" not in body
+    assert "建议把建仓额度提高到10万元" not in body
+    assert body.count("等待基本面证据复核") == 2
+    assert changes
+
+
+def test_fundamental_sanitizer_filters_chinese_buy_sizing():
+    text = "建议将买入比例提高至一成。买入比例控制在半仓。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert "买入比例提高至一成" not in body
+    assert "买入比例控制在半仓" not in body
+    assert "等待基本面证据复核成" not in body
+    assert "等待基本面证据复核仓" not in body
+    assert body.count("等待基本面证据复核") == 2
+    assert changes
+
+
+def test_fundamental_sanitizer_filters_unsized_adjusted_buy_allocation():
+    text = "建议调整加仓比例，待风险解除后执行。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert "调整加仓比例" not in body
+    assert "等待基本面证据复核" in body
+    assert changes
+
+
+def test_fundamental_sanitizer_filters_noun_first_buy_allocation():
+    text = "买入比例建议为50%。建仓比例建议控制在20%。"
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert "买入比例建议为50%" not in body
+    assert "建仓比例建议控制在20%" not in body
+    assert body.count("等待基本面证据复核") == 2
+    assert changes
+
+
+def test_no_position_sanitizer_consumes_executable_sell_size():
+    text = "建议减仓比例为50%。可卖出比例为30%。"
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "减仓比例" not in result
+    assert "卖出比例" not in result
+    assert "比例为50%" not in result
+    assert "比例为30%" not in result
+    assert changes
+
+
+def test_no_position_sanitizer_filters_unsized_adjusted_sell_allocation():
+    text = "建议动态调整卖出比例以控制风险。"
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "调整卖出比例" not in result
+    assert "该持仓动作不适用" in result
+    assert changes
+
+
+def test_no_position_sanitizer_filters_noun_first_sell_allocation():
+    text = "卖出比例建议为50%。减仓比例建议控制在20%。"
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "卖出比例建议为50%" not in result
+    assert "减仓比例建议控制在20%" not in result
+    body = result.split("⚠️ [D-002]", 1)[0]
+    assert body.count("该持仓动作不适用") == 2
+    assert changes
+
+
+def test_no_position_sanitizer_preserves_negated_sell_guardrails():
+    gate = {"passed": True, "failures": []}
+    cases = (
+        "不建议减仓，继续观察。",
+        "禁止卖出比例超过30%。",
+        "不允许清仓，等待进一步确认。",
+        "无需止损，仅记录假设止损位。",
+    )
+
+    for text in cases:
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 0, 0,
+        )
+        assert result == text
+        assert changes == []
+
+
+def test_no_position_sanitizer_downgrades_positive_double_negation_actions():
+    gate = {"passed": True, "failures": []}
+    for text in (
+        "不是不能减仓",
+        "并不是不建议清仓",
+        "不是不需要清仓",
+        "并非不适合卖出",
+        "不是无需止损",
+        "不能不卖出",
+        "没有不止盈",
+    ):
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 1, 1,
+        )
+        assert "该持仓动作不适用，保持观察" in result
+        assert changes
+
+
+def test_strong_buy_sanitizer_downgrades_positive_double_negation_actions():
+    gate = {"passed": False, "failures": ["data_completeness<70%"]}
+    for text in (
+        "不是不能重仓买入",
+        "并非不建议加仓",
+        "不是不需要重仓买入",
+        "并非不适合立即买入",
+        "不是无需加仓",
+        "不能不立即买入",
+    ):
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 0, 0,
+        )
+        body = result.split("⚠️ [D-002]", 1)[0]
+        assert body.strip() == "暂不执行强买入，等待条件确认"
+        assert changes
+
+
+def test_entry_gates_downgrade_positive_double_negation_actions():
+    cases = (
+        ("fundamental_semantic_gate", "等待基本面证据复核"),
+        ("event_risk_block_open", "等待风险解除"),
+        (
+            "估值基准价不可用(valuation_price_unavailable)",
+            "等待可执行价格确认",
+        ),
+    )
+    actions = (
+        "并非不能建仓",
+        "不是不能买入",
+        "并非不建议建仓",
+        "不是不可以买入",
+        "并非不适合入场",
+        "不能不买入",
+    )
+
+    for failure, replacement in cases:
+        for action in actions:
+            result, changes = sanitize_forbidden_strong_actions(
+                action,
+                gate={"passed": False, "failures": [failure]},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=0,
+            )
+            body = result.split("⚠️ [D-002]", 1)[0]
+            assert body.strip() == replacement
+            assert changes
+
+
+def test_no_position_sanitizer_scopes_negation_before_positive_sell_action():
+    gate = {"passed": True, "failures": []}
+    cases = (
+        ("不建议减仓但建议卖出。", "不建议减仓", "建议卖出"),
+        ("禁止清仓、可以减仓。", "禁止清仓", "可以减仓"),
+        ("不允许止损或建议卖出。", "不允许止损", "建议卖出"),
+    )
+
+    for text, preserved, removed in cases:
+        result, changes = sanitize_forbidden_strong_actions(
+            text, gate, "no_position", 0, 0,
+        )
+        assert preserved in result
+        assert removed not in result
+        assert "该持仓动作不适用" in result
+        assert changes
+
+
+def test_no_position_sanitizer_consumes_mediated_sell_size():
+    text = "建议将减仓比例提高至50%。建议把卖出额度调整到10万元。"
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "建议将减仓比例提高至50%" not in result
+    assert "建议把卖出额度调整到10万元" not in result
+    assert "比例提高至50%" not in result
+    assert "额度调整到10万元" not in result
+    assert changes
+
+
+def test_no_position_sanitizer_consumes_chinese_sell_size():
+    text = "建议将减仓比例提高至一半。卖出额度控制在十万元。"
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "减仓比例提高至一半" not in result
+    assert "卖出额度控制在十万元" not in result
+    assert "该持仓动作不适用，保持观察半" not in result
+    assert "该持仓动作不适用，保持观察元" not in result
+    assert result.count("该持仓动作不适用") >= 2
+    assert changes
+
+
+def test_no_position_sanitizer_consumes_unprefixed_sell_size():
+    text = (
+        "减仓比例为50%。卖出额度10万元。清仓比例设置为100%。"
+        "减仓比例字段用于记录约束。"
+    )
+    gate = {"passed": True, "failures": []}
+
+    result, changes = sanitize_forbidden_strong_actions(
+        text, gate, "no_position", 0, 0,
+    )
+
+    assert "减仓比例为50%" not in result
+    assert "卖出额度10万元" not in result
+    assert "清仓比例设置为100%" not in result
+    assert "减仓比例字段用于记录约束" in result
+    assert changes
+
+
 def test_has_position_减仓_preserved_when_gate_passes():
     text = "建议适度减仓控制风险。📊 数据源可用性：\n  ✅ 市场"
     gate = {"passed": True, "failures": []}
@@ -1225,6 +1823,14 @@ def test_validate_stock_name_md_title_extracts_name():
     assert "环旭电子" in result["found_names"]
 
 
+def test_validate_stock_name_bj_title_extracts_mismatch():
+    from unittest.mock import patch
+    with patch("tradingagents.agents.utils.readiness_score._resolve_name_from_ticker", return_value="诺思兰德"):
+        result = validate_stock_name("430047.BJ", "# 430047.BJ 利通电子 分析")
+    assert result["name_mismatch"] is True
+    assert "利通电子" in result["found_names"]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # E-004: Raw evidence priority over text regex
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1331,6 +1937,479 @@ def test_raw_evidence_none_falls_back_to_text():
     assert statuses_raw_empty["ohlcv_5d"] == EvidenceStatus.HAS_DATA
 
 
+def test_fundamental_gate_filters_control_style_buy_sizing():
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+    for text in ("买入比例控制在10%。", "建仓额度控制在10万元。"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+        assert "控制在" not in sanitized
+        assert "等待基本面证据复核" in sanitized
+        assert changes
+
+
+def test_valuation_price_gate_filters_ordinary_entry_actions():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text in ("建议买入", "建议建仓", "可以入场"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+        assert text not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_valuation_price_gate_filters_prospective_buy_cost_instructions():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text in ("建议买入成本为20元。", "计划买入成本控制在20元。"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+
+        assert text not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_valuation_price_gate_filters_bare_buy_recommendations():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text in ("现在可以买", "建议买", "买一点", "操作：买", "买 100 股"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert text not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_valuation_price_gate_filters_entry_synonyms():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    for text in ("假设约10元，建议抄底", "可购入少量仓位"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert "抄底" not in sanitized
+        assert "购入" not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_valuation_price_gate_preserves_negated_entry_synonyms():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    for text in ("不建议抄底。", "不可购入。"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert sanitized == text
+        assert not changes
+
+
+def test_valuation_price_gate_preserves_bare_buy_negations():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text in ("还没买，继续观察", "不建议买", "禁止现在买"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert text in sanitized
+        assert not changes
+
+
+def test_entry_gate_preserves_negation_but_filters_later_positive_action():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text, forbidden in (
+        ("不建议追涨可逢低吸纳。", "逢低吸纳"),
+        ("不建议买入但可低吸。", "可低吸"),
+        ("暂不建议追涨可考虑低吸。", "考虑低吸"),
+    ):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+
+        assert forbidden not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_event_risk_gate_preserves_negated_buy_guardrails():
+    gate = {"passed": False, "failures": ["event_risk_block_open"]}
+    for text in (
+        "不建议买入，继续观察。",
+        "禁止建议建仓。",
+        "不建议加仓买入。",
+        "不得追涨买入。",
+    ):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="has_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert sanitized == text
+        assert changes == []
+
+
+def test_event_risk_gate_preserves_negation_and_filters_later_positive_action():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "不建议买入但可低吸。",
+        gate={"passed": False, "failures": ["event_risk_block_open"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert "不建议买入" in sanitized
+    assert "可低吸" not in sanitized
+    assert "等待风险解除" in sanitized
+    assert changes
+
+
+def test_entry_price_gate_filters_executable_entry_synonyms():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text, forbidden in (
+        ("当前价格可以介入。", "可以介入"),
+        ("建议小仓位参与。", "小仓位参与"),
+        ("当前可逢低配置仓位。", "逢低配置仓位"),
+    ):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert forbidden not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_entry_price_gate_filters_bare_sized_entry_phrases():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text, forbidden in (
+        ("分批介入，仓位10%。", "分批介入"),
+        ("轻仓介入该股。", "轻仓介入"),
+        ("小仓位参与。", "小仓位参与"),
+        ("逐步建立仓位。", "逐步建立仓位"),
+        ("配置10%仓位。", "配置10%仓位"),
+    ):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert forbidden not in sanitized
+        assert "等待可执行价格确认" in sanitized
+        assert changes
+
+
+def test_entry_price_gate_preserves_negated_entry_synonyms():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for text in (
+        "不建议介入。",
+        "禁止小仓位参与。",
+        "不允许逢低配置仓位。",
+    ):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert sanitized == text
+        assert changes == []
+
+
+def test_valuation_gate_preserves_negated_strong_buy_language():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "不建议加仓，继续观察。",
+        gate=gate,
+        position_status="has_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert "不建议加仓" in sanitized
+    assert "不暂不执行强买入" not in sanitized
+    assert not changes
+
+
+def test_fundamental_gate_filters_executable_buy_limit_increase():
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+    text = "建议将买入上限提高至50%。未来买入上限为10%。"
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate=gate,
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "建议将买入上限提高至50%" not in body
+    assert "未来买入上限为10%" in body
+    assert changes
+
+
+def test_fundamental_gate_filters_noun_first_buy_limit_increase():
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+    text = "买入比例提高至50%。未来买入上限为10%。"
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate=gate,
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "买入比例提高至50%" not in body
+    assert "未来买入上限为10%" in body
+    assert changes
+
+
+def test_fundamental_gate_filters_set_to_buy_sizing():
+    gate = {"passed": False, "failures": ["fundamental_semantic_gate"]}
+    for executable in ("建议将买入比例设为50%", "建议将买入上限设成50%"):
+        text = f"{executable}。未来买入上限为10%。"
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+
+        body = sanitized.split("⚠️ [D-002]", 1)[0]
+        assert executable not in body
+        assert "未来买入上限为10%" in body
+        assert changes
+
+
+def test_failed_entry_gates_filter_approximate_buy_allocations():
+    cases = (
+        ("fundamental_semantic_gate", "等待基本面证据复核"),
+        ("估值基准价不可用(valuation_price_unavailable)", "等待可执行价格确认"),
+    )
+    for failure, replacement in cases:
+        for executable in (
+            "可将买入比例调整到约20%",
+            "建议将建仓额度提高到大约10万元",
+            "可以把加仓比例设为大概一成",
+        ):
+            sanitized, changes = sanitize_forbidden_strong_actions(
+                executable,
+                gate={"passed": False, "failures": [failure]},
+                position_status="has_position",
+                buy_level=1,
+                risk_level=1,
+            )
+
+            body = sanitized.split("⚠️ [D-002]", 1)[0]
+            assert executable not in body
+            assert replacement in body
+            assert changes
+
+
+def test_no_position_filters_control_style_sell_sizing():
+    gate = {"passed": True, "failures": []}
+    for text in ("减仓比例控制在50%。", "卖出额度控制在10万元。"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+        assert "控制在" not in sanitized
+        assert "该持仓动作不适用" in sanitized
+        assert changes
+
+
+def test_no_position_filters_executable_sell_limit_increase():
+    gate = {"passed": True, "failures": []}
+    text = "建议将减仓上限提高至50%。未来减仓上限为20%。"
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate=gate,
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "建议将减仓上限提高至50%" not in body
+    assert "未来减仓上限为20%" in body
+    assert changes
+
+
+def test_no_position_filters_noun_first_sell_limit_increase():
+    gate = {"passed": True, "failures": []}
+    text = "减仓上限提高至50%。未来减仓上限为20%。"
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate=gate,
+        position_status="no_position",
+        buy_level=0,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "减仓上限提高至50%" not in body
+    assert "未来减仓上限为20%" in body
+    assert changes
+
+
+def test_no_position_filters_set_to_sell_sizing():
+    gate = {"passed": True, "failures": []}
+    for executable in ("将减仓上限设为50%", "把卖出比例设成50%"):
+        text = f"{executable}。未来减仓上限为20%。"
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate=gate,
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+
+        body = sanitized.split("⚠️ [D-002]", 1)[0]
+        assert executable not in body
+        assert "未来减仓上限为20%" in body
+        assert changes
+
+
+def test_no_position_filters_approximate_sell_allocations():
+    for executable in (
+        "建议将减仓比例调整到约50%",
+        "可把清仓比例设置为大约一半",
+    ):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            executable,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=0,
+            risk_level=0,
+        )
+
+        body = sanitized.split("⚠️ [D-002]", 1)[0]
+        assert executable not in body
+        assert "该持仓动作不适用" in body
+        assert changes
+
+
+def test_fundamental_veto_filters_canonical_entry_verbs_but_preserves_negations():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    for phrase in ("建议增持20%仓位", "建议做多", "建议开仓"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            phrase,
+            gate=gate,
+            position_status="has_position",
+            buy_level=1,
+            risk_level=2,
+        )
+        body = sanitized.split("⚠️ [D-002]", 1)[0]
+        assert phrase not in body
+        assert not any(action in body for action in ("增持", "做多", "开仓"))
+        assert changes
+
+    for phrase in ("不建议增持", "暂不做多", "不要开仓"):
+        sanitized, changes = sanitize_forbidden_strong_actions(
+            phrase,
+            gate=gate,
+            position_status="has_position",
+            buy_level=1,
+            risk_level=2,
+        )
+        assert phrase in sanitized
+        assert changes == []
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # LHB 未触发 & fund_flow anomaly fix
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1393,3 +2472,91 @@ def test_fund_flow_anomaly_table_amount_no_trigger():
     from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
     text = "日期       主力净流入    成交额\n2026-05-09  1234.56万  50000万\n2026-05-08  -800万     45000万"
     assert _check_fund_flow_anomaly(text) is False
+
+
+def test_price_gate_preserves_completed_purchase_facts():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+    original = "用户已在20元买入100股，当前建议持有。买入成本为20元。"
+
+    sanitized, _changes = sanitize_forbidden_strong_actions(
+        original,
+        gate=gate,
+        position_status="has_position",
+        buy_level=1,
+        risk_level=2,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "用户已在20元买入100股" in body
+    assert "买入成本为20元" in body
+
+
+def test_price_gate_preserves_date_first_completed_purchase_facts():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    for original in ("昨天我买入了100股。", "上周三我买入100股。"):
+        sanitized, _changes = sanitize_forbidden_strong_actions(
+            original,
+            gate=gate,
+            position_status="has_position",
+            buy_level=1,
+            risk_level=2,
+        )
+
+        body = sanitized.split("⚠️ [D-002]", 1)[0]
+        assert original in body
+
+
+def test_price_gate_does_not_preserve_dated_actionable_buy_recommendations():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "昨日买入建议仍然有效。",
+        gate=gate,
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "买入建议仍然有效" not in body
+    assert "等待可执行价格确认" in body
+    assert changes
+
+
+def test_price_gate_still_sanitizes_prospective_priced_purchase():
+    gate = {
+        "passed": False,
+        "failures": ["估值基准价不可用(valuation_price_unavailable)"],
+    }
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "建议用户在20元买入100股。",
+        gate=gate,
+        position_status="no_position",
+        buy_level=1,
+        risk_level=1,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "建议用户在20元买入100股" not in body
+    assert "等待可执行价格确认" in body
+    assert changes
+
+
+def test_percentage_only_holding_counts_as_position_data():
+    from tradingagents.agents.managers.risk_manager import _has_position_data
+
+    assert _has_position_data({"current_position_pct": 35}) is True
+    assert _has_position_data({"current_position_pct": 0}) is True
+    assert _has_position_data({"current_position": 0}) is True
+    assert _has_position_data({"average_cost": 30}) is False

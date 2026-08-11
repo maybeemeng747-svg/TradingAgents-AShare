@@ -68,7 +68,11 @@ def create_volume_price_analyst(llm, data_collector=None):
         # Build data sections with clear availability markers
         data_sections = []
         if has_vpa:
-            data_sections.append(f"以下是 {ticker} 在 {current_date} 的量价分析预计算数据（数据窗口：{data_window}）。\n\n{vpa_data}")
+            data_sections.append(
+                f"以下是 {ticker} 截至 {current_date} 可用的已完成日线量价指标"
+                f"（数据窗口：{data_window}）。盘中最新价只能引用“价格口径”。\n\n"
+                f"{vpa_data}"
+            )
         else:
             data_sections.append(f"⚠️ VPA 预计算指标数据不可用，跳过该部分分析。")
 

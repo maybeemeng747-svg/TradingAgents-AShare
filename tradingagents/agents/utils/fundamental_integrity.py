@@ -828,6 +828,9 @@ def evaluate_fundamental_integrity(
         "status": "NEEDS_REVIEW" if blockers else "VALID",
         "blockers": blockers,
         "is_valid": not blockers,
+        # Verified facts remain visible in the gated report, but any unresolved
+        # integrity blocker removes the module from directional voting.
+        "weight_allowed": not blockers,
         "claims": claims,
     }
 
@@ -1222,6 +1225,13 @@ def build_gated_fundamentals_report(
     claims that could be unsupported causal or accounting explanations.
     """
     blockers = integrity.get("blockers") or []
+    blocker_codes = {str(item.get("code") or "") for item in blockers}
+    if blocker_codes and blocker_codes <= {DERIVATION_CONFLICT}:
+        return _build_partially_gated_fundamentals_report(
+            blockers=blockers,
+            pool=pool,
+        )
+
     blocker_lines = "\n".join(
         f"- {b.get('code')}: {b.get('reason')}" for b in blockers
     )
@@ -1231,6 +1241,27 @@ def build_gated_fundamentals_report(
         f"【保留的可验证财务事实】\n{verified_facts}\n\n"
         f"注意：以上事实仅供参考，不得从中推导因果解释或会计口径结论。\n"
         f"基本面模块不参与方向权重。Bull/Bear 研究不得引用被拒绝的基本面叙事。"
+    )
+
+
+def _build_partially_gated_fundamentals_report(
+    *,
+    blockers: Iterable[Mapping[str, Any]],
+    pool: Mapping[str, Any] | None,
+) -> str:
+    blocker_lines = "\n".join(
+        f"- {item.get('code')}: {item.get('reason')}" for item in blockers
+    )
+    verified_facts = _extract_verified_facts(pool)
+    return (
+        "【基本面语义门禁已触发 — 期间派生项局部降级】\n\n"
+        f"{blocker_lines}\n\n"
+        "原模型基本面叙事已隔离，不参与方向判断；"
+        "仅保留以下结构化、可追溯的原始事实：\n\n"
+        f"【保留的可验证财务事实】\n{verified_facts}\n\n"
+        "基本面门禁仍未完全通过，不得据此新增或加仓；"
+        "方向统一降为中性，等待期间口径补齐。\n"
+        '<!-- VERDICT: {"direction": "中性", "reason": "单季度派生冲突待复核"} -->'
     )
 
 

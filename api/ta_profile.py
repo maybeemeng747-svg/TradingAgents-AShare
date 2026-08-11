@@ -145,6 +145,9 @@ _RESEARCH_QUEUE_PROFILE_MAP: Dict[str, TAProfile] = {
 
 _ANALYSIS_INTENT_PROFILE_MAP: Dict[str, TAProfile] = {
     "holding": TAProfile.POSITION_RISK_LIGHT,
+    "add": TAProfile.POSITION_RISK_LIGHT,
+    "reduce": TAProfile.POSITION_RISK_LIGHT,
+    "stop_loss": TAProfile.POSITION_RISK_LIGHT,
     "entry": TAProfile.MIDLINE_POLICY_LIGHT,
     "watch": TAProfile.SHORT_TECH_LIGHT,
 }

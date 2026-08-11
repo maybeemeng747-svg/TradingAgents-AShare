@@ -55,7 +55,10 @@ def _build_consensus_block(  # [G-003] consensus_weight_fix
     # [FUND-004A] Exclude fundamentals_analyst from consensus when integrity gate fired
     metadata = state.get("metadata") or {}
     fundamental_integrity = metadata.get("fundamental_integrity") or {}
-    fundamentals_gated = not fundamental_integrity.get("is_valid", True)
+    fundamentals_gated = not fundamental_integrity.get(
+        "weight_allowed",
+        fundamental_integrity.get("is_valid", True),
+    )
 
     reports: list[tuple[str, str, str]] = []
     for state_key, analyst_name in _ANALYST_MAP:

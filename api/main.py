@@ -72,8 +72,25 @@ from tradingagents.dataflows.trade_calendar import cn_today_str
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.network_timeout import install_default_network_timeout
-from tradingagents.graph.intent_parser import parse_intent as _parse_intent
-from tradingagents.agents.utils.context_utils import USER_CONTEXT_KEYS, normalize_user_context
+from tradingagents.graph.intent_parser import (
+    _EXPLICIT_NO_POSITION_HOLDING_PATTERN,
+    _has_completed_full_exit_assertion,
+    _has_completed_purchase_assertion,
+    _infer_analysis_intent as _infer_analysis_intent_rule,
+    _is_future_flat_position_goal,
+    _is_position_alternative_question,
+    _is_completed_purchase_reference,
+    _is_completed_sale_reference,
+    _is_failed_sale_reference,
+    _is_action_match_negated,
+    _is_third_party_action_reference,
+    parse_intent as _parse_intent,
+)
+from tradingagents.agents.utils.context_utils import (
+    USER_CONTEXT_KEYS,
+    market_today_str,
+    normalize_user_context,
+)
 from tradingagents.agents.utils.agent_states import current_tracker_var
 
 
@@ -130,14 +147,20 @@ def _resolve_has_position(
     Priority order:
     1. user_intent.position_context.has_position
     2. user_intent.user_context.current_position > 0
-    3. request.current_position > 0
-    4. None (unknown)
+    3. user_intent.user_context.current_position_pct > 0
+    4. request.current_position > 0
+    5. request.current_position_pct > 0
+    6. None (unknown)
     """
     if user_intent:
         # 1. position_context.has_position (nested dict)
         pos_ctx = user_intent.get("position_context")
         if isinstance(pos_ctx, dict) and "has_position" in pos_ctx:
-            return bool(pos_ctx["has_position"])
+            # New parser payloads distinguish an explicit flat position from
+            # the legacy default False used when account state is unknown.
+            # Older payloads without the marker retain their prior behavior.
+            if pos_ctx.get("position_status_explicit") is not False:
+                return bool(pos_ctx["has_position"])
 
         # 2. user_context.current_position > 0
         user_ctx = user_intent.get("user_context")
@@ -145,15 +168,574 @@ def _resolve_has_position(
             cp = user_ctx.get("current_position")
             if cp is not None:
                 return (cp or 0) > 0
+            position_pct = user_ctx.get("current_position_pct")
+            if position_pct is not None:
+                return (position_pct or 0) > 0
 
     # 3. request.current_position > 0
     if request is not None:
         cp = getattr(request, "current_position", None)
         if cp is not None:
             return (cp or 0) > 0
+        position_pct = getattr(request, "current_position_pct", None)
+        if position_pct is not None:
+            return (position_pct or 0) > 0
 
     # 4. Unknown
     return None
+
+
+def _resolve_final_has_position(
+    final_state: Dict[str, Any],
+    request: "AnalyzeRequest",
+) -> Optional[bool]:
+    """Resolve final actions with the same position contract used at intake."""
+    return _resolve_has_position(
+        {
+            "position_context": final_state.get("position_context"),
+            "user_context": final_state.get("user_context") or {},
+        },
+        request,
+    )
+
+
+def _ensure_query_and_user_intent(
+    request: "AnalyzeRequest",
+    symbol: str,
+    *,
+    materialize_missing_intent: bool = True,
+    numeric_position_was_explicit: Optional[bool] = None,
+    position_pct_was_explicit: Optional[bool] = None,
+) -> str:
+    """Fill missing query/intent fields without overwriting explicit values."""
+    query_was_missing = not request.query
+    if query_was_missing:
+        request.query = f"分析{symbol}的短线机会"
+    explicit_numeric_position = (
+        "current_position" in request.model_fields_set
+        if numeric_position_was_explicit is None
+        else numeric_position_was_explicit
+    )
+    explicit_position_pct = (
+        "current_position_pct" in request.model_fields_set
+        if position_pct_was_explicit is None
+        else position_pct_was_explicit
+    )
+    current_position = request.current_position
+    if explicit_numeric_position:
+        has_position = None if current_position is None else current_position > 0
+    elif explicit_position_pct:
+        has_position = (
+            None
+            if request.current_position_pct is None
+            else request.current_position_pct > 0
+        )
+    else:
+        has_position = None if current_position is None else current_position > 0
+    if has_position is None and request.current_position_pct is not None:
+        has_position = request.current_position_pct > 0
+    imported_zero_conflicts_with_explicit_positive_pct = bool(
+        current_position is not None
+        and current_position <= 0
+        and not explicit_numeric_position
+        and explicit_position_pct
+        and request.current_position_pct is not None
+        and request.current_position_pct > 0
+    )
+    if imported_zero_conflicts_with_explicit_positive_pct:
+        # A manually supplied account-level percentage is authoritative. An
+        # imported zero-share row may be stale or partial, so discard that
+        # conflicting share count instead of erasing the explicit percentage.
+        current_position = None
+        request.current_position = None
+    elif current_position is not None and current_position <= 0:
+        current_position = 0
+        request.current_position = 0
+        request.current_position_pct = None
+        request.average_cost = None
+    query_text = str(request.query or "")
+    objective_text = str(request.objective or "")
+
+    def _action_state(text: str, keywords: tuple[str, ...]) -> tuple[bool, bool]:
+        mentioned = False
+        for keyword in keywords:
+            for match in re.finditer(re.escape(keyword), text):
+                if keyword == "要买" and (
+                    (match.start() > 0 and text[match.start() - 1] in "主需")
+                    or text[match.end():].startswith(("方", "盘"))
+                ):
+                    continue
+                if keyword in {"买入", "买"} and _is_completed_purchase_reference(
+                    text, match.start(), match.end()
+                ):
+                    # Historical/completed purchase evidence establishes a
+                    # holding; it is not a request to buy again.
+                    continue
+                if re.search(r"卖出|卖掉|减仓|清仓|离场", keyword) and _is_completed_sale_reference(
+                    text, match.start(), match.end()
+                ):
+                    # A dated/completed sale is account history, not a request
+                    # to execute another reduction.
+                    continue
+                if re.search(r"卖出|卖掉|减仓|清仓|离场", keyword) and _is_failed_sale_reference(
+                    text, match.start(), match.end()
+                ):
+                    # A failed/cancelled historical exit is account history,
+                    # not a request to execute another reduction.
+                    continue
+                if keyword == "止损":
+                    stop_field = text[match.start():match.end() + 12]
+                    entry_plan_present = bool(
+                        has_position is not True
+                        and re.search(
+                            r"(?:建仓|买入|入场|想买|准备买|打算买|计划买|"
+                            r"考虑买|能买吗|能否买|能不能买|可以买|值得买吗)",
+                            text,
+                        )
+                    )
+                    if (
+                        re.match(
+                            r"止损(?:位|价|线|红线|点|阈值|区间|条件)"
+                            r".{0,8}(?:设|设置|设定|定为|多少|怎么|如何|在哪|是什么)",
+                            stop_field,
+                        )
+                        or (
+                            entry_plan_present
+                            and re.match(
+                                r"止损(?:位|价|线|红线|点|阈值|区间|条件)?"
+                                r"\s*(?:(?:设|设置|设定|定为|放在|在|为|到)\s*)?"
+                                r"\d+(?:\.\d+)?\s*(?:元|块)?",
+                                stop_field,
+                            )
+                        )
+                    ):
+                        # An entry plan can contain a proposed stop-loss field.
+                        # That field is a risk parameter, not an instruction to
+                        # exit a position.
+                        continue
+                mentioned = True
+                if _is_third_party_action_reference(text, match.start()):
+                    continue
+                if _is_action_match_negated(text, match.start(), match.end()):
+                    continue
+                return mentioned, True
+        return mentioned, False
+
+    inferred_query_intent = "watch"
+    if not query_was_missing:
+        inferred_query_intent, _ = _infer_analysis_intent_rule(query_text)
+    action_groups = (
+        (
+            "止损", "清仓", "割肉", "认赔", "全部卖出", "全部离场",
+            "卖出全部持仓", "卖掉全部持仓", "全部持仓卖出",
+        ),
+        ("减仓", "止盈", "降低仓位", "部分卖出", "卖出止盈", "卖出"),
+        ("加仓", "补仓", "追加", "买入更多"),
+        (
+            "建仓", "买入", "入场", "想买", "要买", "准备买", "打算买",
+            "计划买", "考虑买", "能买吗", "能否买", "能不能买", "可以买",
+            "要不要买", "该不该买", "是否应该买", "值不值得买", "值得买吗",
+            "什么时候买", "什么时间买", "何时买", "买多少",
+        ),
+        ("持有", "持仓观察"),
+    )
+    query_requests_action = any(
+        _action_state(query_text, keywords)[1] for keywords in action_groups
+    ) or inferred_query_intent != "watch"
+    query_requests_watch = _action_state(
+        query_text,
+        ("观察", "观望", "先看看", "只做研究", "等待"),
+    )[1]
+    query_overrides_saved_intent = query_requests_action or query_requests_watch
+    action_text = (
+        query_text
+        if not query_was_missing and query_overrides_saved_intent
+        else "\n".join(part for part in (objective_text, query_text) if part)
+    )
+
+    def _position_assertion(text: str) -> Optional[bool]:
+        if _has_completed_full_exit_assertion(text):
+            return False
+        positive_pattern = re.compile(
+            r"(?:我|本人)\s*(?:(?:当前|现在|目前)\s*)?的?\s*"
+            r"(?:实际)?(?:持仓|仓位)|"
+            r"(?:(?:(?:我|本人)\s*)(?:(?:当前|现在|目前|已经|已)\s*)?|"
+            r"(?:(?:当前|现在|目前|已经|已)\s*))"
+            r"(?:有|持有)?(?:实际)?(?:持仓|仓位)"
+            r"(?!价值|风险|必要|意义|需求|建议|上限|下限|限制|策略|配置|"
+            r"目标|应该|应当|多少|几成|怎么|如何|\s*(?:为|是|=)\s*(?:0|否\b|false\b))|"
+            r"(?:持仓|仓位)\s*(?:为|是|=|[:：])?\s*[1-9]\d*\s*(?:股|手|%)?|"
+            r"(?:(?:我|本人)\s*(?:已经|已|刚刚|刚)|"
+            r"(?:已经|已|刚刚|刚)\s*)"
+            r"(?:买入|购入|买)(?:了)?\s*[1-9]\d*\s*(?:股|手)?|"
+            r"(?:已持仓|已有持仓|持有实际持仓|持有仓位)"
+            r"(?!价值|风险|必要|意义|需求)|"
+            r"(?:不是|并非|非)\s*(?:空仓|无持仓|未持仓)|"
+            r"(?:当前)?(?:持仓|仓位)\s*(?:为|是|=)\s*(?:有|是|true)\b",
+            re.IGNORECASE,
+        )
+        no_position_pattern = re.compile(
+            r"(?:未|无|没有)(?:任何)?(?:实际)?持仓"
+            r"(?!成本|均价|记录|信息|数据|明细|天数|比例|市值|价值|风险|必要|意义|需求)|"
+            r"(?:(?:我|本人)\s*)?"
+            r"(?:还没(?:有)?|还未|尚未|没(?:有)?|未)"
+            r"(?:买入|买(?!入))(?:该股|这只股票)?"
+            r"(?!\s*(?:更多|额外|计划|信号|建议|条件|机会|必要|需求|打算|意图|动作|理由|资格|能力|方|盘|量|额))|"
+            r"(?:(?:我|本人|当前|现在|目前)\s*)?不(?:再)?持仓"
+            r"(?=\s*(?:了\s*)?(?:[，,。；;！？!?\n]|$))|"
+            rf"{_EXPLICIT_NO_POSITION_HOLDING_PATTERN}|"
+            r"(?:(?:我|本人)\s*)?(?:(?:当前|现在|目前|已经|已)\s*)?"
+            r"(?<!不)(?<!非)(?:是|为|=)\s*空仓|"
+            r"(?:(?:我|本人)\s*)?(?:当前|现在|目前|已经|已)\s*空仓|"
+            r"(?:我|本人)\s*空仓|"
+            r"(?:^|[，,。；;\n])\s*空仓(?=\s*(?:状态|[，,。；;\n]|$))|"
+            r"(?:当前)?(?:持仓|仓位)\s*(?:为|是|=)\s*"
+            r"(?:0(?![\d.])|零|否\b|false\b)"
+        )
+
+        assertions: list[tuple[int, bool]] = []
+        for value, pattern in ((True, positive_pattern), (False, no_position_pattern)):
+            for match in pattern.finditer(text):
+                if not value and re.search(
+                    r"(?:未|不(?:再)?)持有.{0,24}"
+                    r"(?:观点|看法|意见|态度|立场|预期|判断|信心|偏见)",
+                    match.group(),
+                ):
+                    continue
+                prefix = text[max(0, match.start() - 8):match.start()]
+                suffix = text[match.end():match.end() + 2]
+                position_goal_prefix = text[
+                    max(0, match.start() - 20):match.start()
+                ]
+                third_party_prefix = text[max(0, match.start() - 20):match.start()]
+                if (
+                    not re.search(r"(?:我|本人)", match.group())
+                    and re.search(
+                        r"(?:北向资金|主力资金|基金经理|券商分析师|"
+                        r"机构分析师|首席分析师|机构|游资|外资|基金|"
+                        r"券商|股东|大股东|控股股东|公司|市场|"
+                        r"分析师|专家|研究员|研报)"
+                        r"(?:(?:数据|报告|公告|资料|统计)?"
+                        r"(?:显示|表明|称|指出|披露|认为))?"
+                        r"(?:当前|现在|目前|已经|已)?\s*$",
+                        third_party_prefix,
+                    )
+                ):
+                    continue
+                if re.search(
+                    r"(?:如果|假如|假设|若|倘若|是否|有没有)"
+                    r"(?:我|本人|当前|现在)?\s*$",
+                    prefix,
+                ):
+                    continue
+                if (
+                    match.start() > 0
+                    and text[match.start() - 1] == "有"
+                    and match.group().startswith("没有")
+                ):
+                    continue
+                if re.search(r"(?:之前|曾经|过去|原来)(?:我|本人)?\s*$", prefix):
+                    continue
+                if not value and re.search(
+                    r"(?:建议|推荐|应该|应当|最好|考虑|主张|选择|保持)"
+                    r"(?:(?:我|本人|当前|现在|目前|继续|暂时|先)\s*)*$",
+                    prefix,
+                ):
+                    continue
+                if re.match(r"\s*(?:了|着)?(?:吗|么|？|\?)", suffix):
+                    continue
+                if not value and re.search(r"(?:不是|并非|非)\s*$", prefix):
+                    continue
+                if not value and _is_future_flat_position_goal(
+                    text,
+                    match.start(),
+                    match.end(),
+                ):
+                    # Desired/future flat state is an exit objective, not a
+                    # statement that the current holding is already zero.
+                    continue
+                if not value and _is_position_alternative_question(
+                    text,
+                    match.start(),
+                    match.end(),
+                ):
+                    # This is an action choice, not a new account snapshot.
+                    continue
+                if value and re.search(
+                    r"(?:建议|推荐|目标|计划|希望|准备|打算|考虑|预计|理想|拟|"
+                    r"最大|最高|最低|单票|个股|风险预算|预算|仓位上限|仓位下限)"
+                    r"(?:(?:我|本人|当前|现在|目前|最终|初始|试探性)\s*)*$",
+                    position_goal_prefix,
+                ):
+                    # A proposed/target position size is an entry plan, not
+                    # evidence that the user already owns the instrument.
+                    continue
+                assertions.append((match.start(), value))
+
+        if not assertions and _has_completed_purchase_assertion(text):
+            return True
+        if not assertions:
+            if text.strip() == "空仓":
+                return False
+            return None
+        return max(assertions, key=lambda item: item[0])[1]
+
+    query_position = None if query_was_missing else _position_assertion(query_text)
+    objective_position = _position_assertion(objective_text)
+    explicit_query_position = query_position is not None
+    explicit_flat_position = bool(
+        (
+            explicit_numeric_position
+            and current_position is not None
+            and current_position <= 0
+        )
+        or (
+            explicit_position_pct
+            and request.current_position_pct is not None
+            and request.current_position_pct <= 0
+        )
+        or query_position is False
+        or (query_position is None and objective_position is False)
+    )
+
+    # Current request facts outrank imported/saved portfolio context. Clear the
+    # whole position tuple together so downstream gates cannot see a flat
+    # position_context alongside stale shares or cost basis.
+    if explicit_flat_position:
+        has_position = False
+        current_position = 0
+        request.current_position = 0
+        request.current_position_pct = None
+        request.average_cost = None
+
+    # The full intent parser may have extracted numeric position fields from
+    # the query between the first deterministic routing pass and this second
+    # normalization pass. Preserve those richer values unless the current
+    # query explicitly says the user is flat.
+    parsed_intent = request.user_intent or {}
+    parsed_user_context = parsed_intent.get("user_context") or {}
+    parsed_position_context = parsed_intent.get("position_context") or {}
+    if current_position is None and not explicit_flat_position:
+        parsed_current_position = parsed_user_context.get("current_position")
+        if parsed_current_position is None:
+            parsed_current_position = parsed_position_context.get("shares")
+        if parsed_current_position is not None:
+            current_position = float(parsed_current_position)
+            request.current_position = current_position
+            has_position = current_position > 0
+    if request.current_position_pct is None and not explicit_flat_position:
+        parsed_position_pct = parsed_user_context.get("current_position_pct")
+        if parsed_position_pct is None:
+            parsed_position_pct = parsed_position_context.get("position_pct")
+        if parsed_position_pct is not None:
+            request.current_position_pct = float(parsed_position_pct)
+            if request.current_position_pct > 0:
+                has_position = True
+                if current_position == 0 and not explicit_numeric_position:
+                    current_position = None
+                    request.current_position = None
+            elif has_position is None:
+                has_position = request.current_position_pct > 0
+    if has_position:
+        if request.average_cost is None:
+            parsed_average_cost = parsed_user_context.get("average_cost")
+            if parsed_average_cost is None:
+                parsed_average_cost = parsed_position_context.get("avg_cost")
+            if parsed_average_cost is not None:
+                request.average_cost = float(parsed_average_cost)
+
+    inferred_position = query_position
+    if inferred_position is None and current_position is None:
+        inferred_position = objective_position
+
+    if inferred_position is False:
+        has_position = False
+        current_position = 0
+        request.current_position = 0
+        request.current_position_pct = None
+        request.average_cost = None
+    elif inferred_position is True and not explicit_flat_position and not (
+        (explicit_numeric_position and current_position == 0)
+        or (
+            explicit_position_pct
+            and request.current_position_pct is not None
+            and request.current_position_pct <= 0
+        )
+    ):
+        has_position = True
+        if current_position is not None and current_position <= 0:
+            current_position = None
+            request.current_position = None
+
+    stop_loss_objective = _action_state(
+        action_text,
+        (
+            "止损", "清仓", "割肉", "认赔", "全部卖出", "全部离场",
+            "卖出全部持仓", "卖掉全部持仓", "全部持仓卖出",
+        ),
+    )[1]
+    reduce_objective = _action_state(
+        action_text, ("减仓", "止盈", "降低仓位", "部分卖出", "卖出止盈")
+    )[1]
+    generic_sell_objective = _action_state(action_text, ("卖出",))[1]
+    if generic_sell_objective and not stop_loss_objective:
+        reduce_objective = True
+    add_objective = _action_state(
+        action_text, ("加仓", "补仓", "追加", "买入更多")
+    )[1]
+    holding_objective = _action_state(
+        action_text, ("持有", "持仓观察")
+    )[1] or bool(re.search(r"持仓(?:复盘|处理|怎么办|如何)", action_text))
+    entry_objective = _action_state(
+        action_text,
+        (
+            "建仓", "买入", "入场", "想买", "要买", "准备买", "打算买",
+            "计划买", "考虑买", "能买吗", "能否买", "能不能买", "可以买",
+            "要不要买", "该不该买", "是否应该买", "值不值得买", "值得买吗",
+            "什么时候买", "什么时间买", "何时买", "买多少",
+        ),
+    )[1]
+    # English action requests are recognized by the shared deterministic
+    # parser. Mirror that result into the local objective flags before profile
+    # selection, including when chat supplied a stale/incorrect pre-intent.
+    stop_loss_objective = stop_loss_objective or inferred_query_intent == "stop_loss"
+    reduce_objective = reduce_objective or inferred_query_intent == "reduce"
+    add_objective = add_objective or inferred_query_intent == "add"
+    holding_objective = holding_objective or inferred_query_intent == "holding"
+    entry_objective = entry_objective or inferred_query_intent == "entry"
+    if has_position and reduce_objective:
+        default_intent = "reduce"
+    elif has_position and stop_loss_objective:
+        default_intent = "stop_loss"
+    elif has_position and (add_objective or entry_objective):
+        default_intent = "add"
+    elif has_position:
+        default_intent = "holding"
+    elif has_position is None and reduce_objective:
+        default_intent = "reduce"
+    elif has_position is None and stop_loss_objective:
+        default_intent = "stop_loss"
+    elif has_position is None and add_objective:
+        default_intent = "add"
+    elif has_position is None and holding_objective:
+        default_intent = "holding"
+    elif entry_objective:
+        default_intent = "entry"
+    else:
+        default_intent = "watch"
+
+    # Direct natural-language requests select a runtime profile before the
+    # full parser runs. Reuse the parser's deterministic rule so common entry,
+    # holding and exit wording cannot be routed through the watch-only profile.
+    if not query_was_missing and default_intent == "watch":
+        inferred_intent = inferred_query_intent
+        position_only_intents = {"holding", "add", "reduce", "stop_loss"}
+        if inferred_intent != "watch" and not (
+            has_position is False and inferred_intent in position_only_intents
+        ):
+            default_intent = inferred_intent
+
+    default_position_context = None
+    if has_position is not None:
+        default_position_context = {
+            "has_position": has_position,
+            "avg_cost": request.average_cost if has_position else None,
+            "shares": current_position if has_position else None,
+            "position_pct": request.current_position_pct if has_position else None,
+            "holding_days": None,
+        }
+
+    existing = dict(request.user_intent or {})
+    if existing:
+        existing.setdefault("ticker", symbol)
+        existing.setdefault("horizons", request.horizons or ["short"])
+        if explicit_query_position or (
+            not query_was_missing and query_overrides_saved_intent
+        ):
+            existing["analysis_intent"] = default_intent
+        elif (
+            current_position is not None
+            and not has_position
+            and str(existing.get("analysis_intent") or "")
+            in {"holding", "add", "reduce", "stop_loss"}
+        ):
+            existing["analysis_intent"] = default_intent
+        else:
+            existing.setdefault("analysis_intent", default_intent)
+        saved_position_context = existing.get("position_context")
+        clean_flat_context = (
+            current_position == 0
+            and isinstance(saved_position_context, dict)
+            and saved_position_context.get("has_position") is False
+            and not any(
+                saved_position_context.get(key) is not None
+                for key in ("avg_cost", "shares", "position_pct", "holding_days")
+            )
+        )
+        if (
+            explicit_query_position
+            or (current_position is not None and not clean_flat_context)
+            or (
+                has_position is True
+                and request.current_position_pct is not None
+                and request.current_position_pct > 0
+            )
+        ) and default_position_context is not None:
+            existing["position_context"] = default_position_context
+        elif existing.get("position_context") is None and default_position_context is not None:
+            existing["position_context"] = default_position_context
+        elif (
+            has_position is None
+            and isinstance(saved_position_context, dict)
+            and saved_position_context.get("has_position") is False
+            and saved_position_context.get("position_status_explicit") is False
+        ):
+            # The parser initializes unknown account state as false for
+            # compatibility. Do not let that non-explicit sentinel reach
+            # agents as an asserted flat/no-position fact.
+            existing["position_context"] = None
+        user_context = dict(existing.get("user_context") or {})
+        if current_position is not None:
+            user_context["current_position"] = current_position
+        elif explicit_query_position:
+            user_context.pop("current_position", None)
+        elif (
+            has_position is True
+            and request.current_position_pct is not None
+            and request.current_position_pct > 0
+        ):
+            user_context.pop("current_position", None)
+        if request.current_position_pct is not None and has_position:
+            user_context["current_position_pct"] = request.current_position_pct
+        if (explicit_query_position or current_position is not None) and not has_position:
+            user_context.pop("current_position_pct", None)
+            user_context.pop("average_cost", None)
+        existing["user_context"] = user_context
+        existing.setdefault("raw_query", request.query)
+        request.user_intent = existing
+        return default_intent
+
+    # Direct /v1/analyze natural-language requests still need the full intent
+    # parser.  The deterministic pass may normalize explicit position fields
+    # and provide a routing hint, but must not create a placeholder intent that
+    # would make _run_job_inner skip _parse_intent.
+    if not materialize_missing_intent:
+        return default_intent
+
+    user_context = {}
+    if current_position is not None:
+        user_context["current_position"] = current_position
+    if request.current_position_pct is not None and has_position:
+        user_context["current_position_pct"] = request.current_position_pct
+    request.user_intent = {
+        "ticker": symbol,
+        "horizons": request.horizons or ["short"],
+        "analysis_intent": default_intent,
+        "position_context": default_position_context,
+        "user_context": user_context,
+        "raw_query": request.query,
+    }
+    return default_intent
 
 
 def _build_scheduled_analyze_request(
@@ -560,7 +1142,13 @@ def _load_cn_stock_map() -> Dict[str, str]:
                 for _, row in fund_df.iterrows():
                     code = str(row.get("基金代码", "")).strip()
                     name = str(row.get("基金简称", "")).strip()
-                    if name and code and len(code) == 6 and code.isdigit():
+                    if (
+                        name
+                        and code
+                        and len(code) == 6
+                        and code.isdigit()
+                        and code.startswith(("5", "15", "16", "18"))
+                    ):
                         normalized = _normalize_symbol(code)
                         if normalized not in existing_codes:
                             result[name] = normalized
@@ -598,6 +1186,11 @@ def _get_reverse_stock_map_cached_only() -> Dict[str, str]:
     return {code: name for name, code in _cn_stock_map.items()}
 
 
+def _get_cn_stock_map_cached_only() -> Dict[str, str]:
+    """Return name→code entries without triggering a remote cold load."""
+    return dict(_cn_stock_map or {})
+
+
 def _search_cn_stock_by_name(query: str) -> Optional[str]:
     """Look up A-share stock code by company name (exact then partial match)."""
     query = query.strip()
@@ -617,6 +1210,99 @@ def _search_cn_stock_by_name(query: str) -> Optional[str]:
         candidates.sort(key=lambda x: len(x[0]))
         return candidates[0][1]
     return None
+
+
+def _extract_cn_symbol_from_query(text: str) -> Optional[str]:
+    """Resolve exactly one A-share/fund name mentioned in a free-form query.
+
+    Ambiguous multi-instrument queries fail closed instead of silently choosing
+    one symbol. This runs before job/report creation so every downstream
+    artifact has an authoritative non-empty instrument key.
+    """
+    matches = _extract_cn_symbols_from_query(text)
+    if len(matches) != 1:
+        return None
+    symbol = next(iter(matches))
+    if not _is_supported_cn_analysis_symbol(symbol):
+        return None
+    return symbol
+
+
+def _extract_cn_symbols_from_query(
+    text: str,
+    *,
+    stock_map: Optional[Dict[str, str]] = None,
+) -> set[str]:
+    """Return every explicitly mentioned local instrument name.
+
+    Nested aliases are collapsed only when they occupy the same source span.
+    A separate shorter mention therefore remains visible and makes a
+    multi-instrument request fail closed.
+    """
+    query = str(text or "").strip()
+    if not query:
+        return set()
+    name_matches: List[tuple[str, str, int, int]] = []
+    resolved_stock_map = _load_cn_stock_map() if stock_map is None else stock_map
+    for name, code in resolved_stock_map.items():
+        normalized_name = str(name or "").strip()
+        normalized_code = str(code or "").strip().upper()
+        if not normalized_name or not normalized_code:
+            continue
+        for match in re.finditer(re.escape(normalized_name), query):
+            name_matches.append(
+                (normalized_name, normalized_code, match.start(), match.end())
+            )
+    maximal_matches = [
+        candidate
+        for candidate in name_matches
+        if not any(
+            candidate[2] >= other[2]
+            and candidate[3] <= other[3]
+            and (candidate[2], candidate[3]) != (other[2], other[3])
+            for other in name_matches
+        )
+    ]
+    return {
+        code
+        for name, code, _, _ in maximal_matches
+        if _is_explicit_cn_name_mention(query, name)
+    }
+
+
+def _is_explicit_cn_name_mention(query: str, name: str) -> bool:
+    escaped = re.escape(name)
+    prefix_context = (
+        r"(?:分析|研究|查看|看看|跟踪|关注|评估|比较|对比|持有|买入|卖出|"
+        r"加仓|减仓)\s*"
+    )
+    suffix_context = (
+        r"(?:[（(]|的|股票|个股|公司|近期|现在|今日|走势|机会|风险|估值|"
+        r"基本面|技术面|业绩|财报|年报|季报|公告|盈利|收入|利润|现金流|"
+        r"增长|前景|近况|表现|股价|价格|行情|涨跌|涨了|跌了|涨了吗|跌了吗|"
+        r"能买吗|能否买|能不能买|可以买|该不该买|是否应该买|"
+        r"值得(?:买|买入|关注|持有|研究)?吗|值不值得(?:买|买入|关注|持有|研究)|"
+        r"今天|今日|最近(?:如何|怎么样|怎么看)?|如何|怎样|怎么样|怎么看|和|与|vs\.?|"
+        r"[，,。；;！？!?]|$)"
+    )
+    return bool(
+        re.search(prefix_context + escaped, query)
+        or re.search(escaped + suffix_context, query)
+        or query == name
+    )
+
+
+def _is_supported_cn_analysis_symbol(symbol: str) -> bool:
+    normalized = _normalize_symbol(symbol)
+    match = re.fullmatch(r"(\d{6})\.(SH|SZ|BJ)", normalized)
+    if not match:
+        return False
+    code, exchange = match.groups()
+    if exchange == "BJ":
+        return code.startswith(("4", "8", "920"))
+    if exchange == "SH":
+        return code.startswith(("5", "6", "9"))
+    return code.startswith(("000", "001", "002", "003", "20", "300", "301", "15", "16", "18"))
 
 
 def _split_watchlist_batch_text(text: str) -> List[str]:
@@ -1967,7 +2653,7 @@ async def _run_job_inner(
     job_start_t = time.time()
     # Normalize for logic but keep original for display
     display_name = request.symbol
-    normalized_symbol = _normalize_symbol(request.symbol)
+    normalized_symbol = _normalize_analysis_symbol(request.symbol)
 
     # ── Step 0: Initialize report in DB (short-lived session) ──
     def _init_and_configure():
@@ -2003,6 +2689,15 @@ async def _run_job_inner(
     # Ensure request object uses the normalized symbol for internal logic
     request.symbol = normalized_symbol
     user_context_payload = _extract_request_user_context(request)
+    preparsed_user_context = (
+        request.user_intent.get("user_context")
+        if isinstance(request.user_intent, dict)
+        else None
+    )
+    user_context_payload = _merge_user_context_payload(
+        user_context_payload,
+        preparsed_user_context,
+    )
     tracker = AgentProgressTracker(request.selected_analysts, job_id)
     _emit_job_event(job_id, "agent.snapshot", tracker.snapshot())
 
@@ -2047,20 +2742,20 @@ async def _run_job_inner(
             request.horizons = [request.horizons[0]]
 
         # ── Dual-horizon intent-driven path ──────────────────────────────────
-        if not request.query:
-            # No query provided — generate a default query so we always use the
-            # streaming path (which pre-collects data correctly via DualHorizon).
-            # The old `propagate()` path had a data-collection race condition.
-            request.query = f"分析{request.symbol}的短线机会"
-            # Skip intent parsing — we already know the ticker and horizon
-            request.user_intent = {
-                "ticker": request.symbol,
-                "horizons": request.horizons or ["short"],
-                "analysis_intent": "watch",
-                "position_context": None,
-                "user_context": {},
-                "raw_query": request.query,
-            }
+        # Fill missing fields in pre-parsed chat intents, normalize direct API
+        # queries, and generate a fallback query when none was supplied.
+        generated_query = not request.query
+        direct_query_needs_parser = bool(request.query and request.user_intent is None)
+        _ensure_query_and_user_intent(
+            request,
+            request.symbol,
+            materialize_missing_intent=not direct_query_needs_parser,
+        )
+        # The current query can explicitly override a saved holding state.
+        # Refresh the payload after normalization so the stale request
+        # snapshot captured before this block cannot win the later merge.
+        user_context_payload = _extract_request_user_context(request)
+        if generated_query:
             _log(f"[auto-query] No query provided, generated default intent for {request.symbol}")
 
         intent_start_t = time.time()
@@ -2080,6 +2775,11 @@ async def _run_job_inner(
                 if not request.horizons:
                     request.horizons = user_intent["horizons"]
                 user_intent["horizons"] = request.horizons
+                # Preserve the parser's richer fields, then apply deterministic
+                # current-query action/position overrides on top.
+                request.user_intent = dict(user_intent)
+                _ensure_query_and_user_intent(request, request.symbol)
+                user_intent = dict(request.user_intent or user_intent)
             _log(f"[Timer] Intent Parsing took {time.time() - intent_start_t:.2f}s")
 
             inferred_user_context = user_intent.get("user_context") or {}
@@ -2089,8 +2789,17 @@ async def _run_job_inner(
             )
             user_intent["user_context"] = user_context_payload
 
-            # Use normalized ticker from intent parser if available
-            ticker = user_intent.get("ticker") or ticker
+            # The API resolved the authoritative instrument before job/report
+            # creation. The LLM parser may enrich intent fields but must never
+            # redirect an analysis to another ticker.
+            parsed_ticker = _normalize_symbol(str(user_intent.get("ticker") or ""))
+            if parsed_ticker and parsed_ticker != request.symbol:
+                _log(
+                    f"[auto-query] Ignoring parser ticker {parsed_ticker}; "
+                    f"authoritative request symbol is {request.symbol}"
+                )
+            ticker = request.symbol
+            user_intent["ticker"] = ticker
 
             # 2. 一次性采集数据，短线/中线共用缓存
             lookback_label = "14天关键行情" if request.horizons == ["short"] else "90天全量行情、财务、新闻、资金"
@@ -2551,7 +3260,7 @@ async def _run_job_inner(
         if not final_state:
             raise RuntimeError("graph returned empty final state")
 
-        _has_pos = (final_state.get("user_context") or {}).get("current_position", 0) is not None and (final_state.get("user_context") or {}).get("current_position", 0) > 0
+        _has_pos = _resolve_final_has_position(final_state, request)
         decision = graph.process_signal(final_state["final_trade_decision"], has_position=_has_pos) or "UNKNOWN"
         result = _build_result_payload(final_state)
         result["decision"] = decision
@@ -2696,8 +3405,22 @@ async def _run_job_inner(
 
 def _normalize_symbol(raw: str) -> str:
     s = raw.strip().upper()
+    hk_match = re.fullmatch(r"(\d{1,5})\.HK", s)
+    if hk_match:
+        return f"{hk_match.group(1)}.HK"
+    # Never let an invalid HK token fall through to the six-digit CN matcher.
+    # For example, 123456.HK must be rejected, not silently rewritten to
+    # 123456.SH/SZ or truncated to 23456.HK.
+    if re.search(r"\d+\.HK\b", s):
+        return s
+    # Preserve malformed exchange-qualified numeric tokens so the analysis
+    # validator can reject them. Falling through would turn "5.SH" into the
+    # unrelated generic ticker "SH".
+    qualified_cn = re.fullmatch(r"(\d+)\.(SH|SZ|SS|BJ)", s)
+    if qualified_cn and len(qualified_cn.group(1)) != 6:
+        return s
     # Priority: 6-digit CN stock code
-    m = re.search(r"(\d{6})(?:\.(SH|SZ|SS))?", s)
+    m = re.search(r"(\d{6})(?:\.(SH|SZ|SS|BJ))?", s)
     if m:
         code = m.group(1)
         suffix = m.group(2)
@@ -2705,7 +3428,10 @@ def _normalize_symbol(raw: str) -> str:
             if suffix == "SS":
                 return f"{code}.SH"
             return f"{code}.{suffix}"
-        market = "SH" if code.startswith(("5", "6", "9")) else "SZ"
+        if code.startswith(("4", "8", "920")):
+            market = "BJ"
+        else:
+            market = "SH" if code.startswith(("5", "6", "9")) else "SZ"
         return f"{code}.{market}"
     # Fallback: 1-6 letter ticker
     m2 = re.search(r"([A-Z]{1,6}(?:\.[A-Z]{1,3})?)", s)
@@ -2727,22 +3453,1009 @@ def _extract_chat_text(messages: List[ChatMessage]) -> str:
     return _extract_message_text(last.content)
 
 
+def _six_digit_span_is_amount_or_quantity(
+    text: str,
+    start: int,
+    end: int,
+) -> bool:
+    """Exclude six-digit cash/share quantities from bare A-share parsing."""
+    prefix = text[max(0, start - 24):start]
+    suffix = text[end:end + 24]
+    return bool(
+        re.search(
+            r"(?:现金|预算|资金|可用资金|余额|本金)\s*"
+            r"(?:(?:是|为|约(?:为)?|大约(?:为)?|大概(?:为)?|有)\s*)?"
+            r"[:：=]?\s*$|"
+            r"(?:当前持仓|持仓数量|持股数量|仓位数量)\s*"
+            r"(?:(?:是|为|约(?:为)?|大约(?:为)?|大概(?:为)?|有)\s*)?"
+            r"[:：=]?\s*$|"
+            r"(?:budget|cash|funds?|balance|capital)\s*(?:of\s*)?[:=]?\s*\$?\s*$|"
+            r"\$\s*$",
+            prefix,
+            re.IGNORECASE,
+        )
+        or re.match(
+            r"\s*(?:万?元|块(?:钱)?|人民币|现金|预算|资金|股(?!票)|"
+            r"shares?\b|stocks?\b|dollars?\b|USD\b|CNY\b|RMB\b|"
+            r"budget\b|cash\b|funds?\b)",
+            suffix,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _six_digit_token_is_amount_or_quantity(text: str, match: re.Match[str]) -> bool:
+    return _six_digit_span_is_amount_or_quantity(text, match.start(), match.end())
+
+
 def _extract_symbol_and_date(text: str) -> tuple[Optional[str], Optional[str]]:
     # Date extraction (flexible boundaries)
     date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
     date = date_match.group(0) if date_match else None
 
-    # Priority 1: A-Share 6-digit code (even if stuck to Chinese characters)
-    sym_match = re.search(r"(\d{6}(?:\.(?:SH|SZ|SS))?)", text, re.IGNORECASE)
-    if sym_match:
-        return _normalize_symbol(sym_match.group(1)), date
+    # Priority 1: Strict exchange-qualified numeric symbols. SH/SZ/BJ always
+    # use six digits; accepted HK analysis codes use four or five digits.
+    explicit_symbols = {
+        _normalize_symbol(match.group(1))
+        for match in re.finditer(
+            r"(?<![A-Za-z0-9])((?:\d{6}\.(?:SH|SZ|SS|BJ)|\d{4,5}\.HK))"
+            r"(?![A-Za-z0-9])",
+            text,
+            re.IGNORECASE,
+        )
+    }
+    # Bare A-share 6-digit code (even if stuck to Chinese characters). Explicit
+    # and bare forms are evaluated together so mixed-format comparisons fail
+    # closed instead of silently selecting the suffixed code.
+    bare_symbols = set()
+    for sym_match in re.finditer(r"(?<!\d)(\d{6})(?!\d)", text):
+        prefix = text[max(0, sym_match.start() - 12):sym_match.start()]
+        suffix = text[sym_match.end():]
+        # A numeric token followed by any explicit exchange-like suffix must
+        # be handled as one qualified symbol.  An unsupported suffix is not a
+        # safe reason to reinterpret the digits as a bare A-share code.
+        if re.match(r"\.[A-Za-z]{1,5}\b", suffix):
+            continue
+        if _six_digit_token_is_amount_or_quantity(text, sym_match) or (
+            re.search(
+                r"(?:现金|预算|资金|可用资金|余额|本金)\s*[:：=]?\s*$",
+                prefix,
+            )
+            or re.match(
+                r"\s*(?:万?元|块(?:钱)?|人民币|现金|预算|资金|股(?!票))",
+                suffix,
+            )
+        ):
+            continue
+        bare_symbols.add(_normalize_symbol(sym_match.group(1)))
+    numeric_symbols = explicit_symbols | bare_symbols
 
-    # Priority 2: US Stocks or other Tickers (use boundaries for letters to avoid partial words)
-    us_match = re.search(r"\b([A-Z]{1,6}(?:\.[A-Z]{1,3})?)\b", text.upper())
-    if us_match:
-        return us_match.group(1), date
+    # Priority 3: explicit US tickers. Match case-insensitively, then rely on
+    # placement/context checks so ordinary prose is not promoted to a symbol.
+    us_stopwords = {
+        "A", "AN", "AND", "ANALYZE", "ANALYSIS", "BUY", "CHECK", "ENTRY", "EXIT",
+        "ABOUT", "AS", "BALANCE", "BUDGET", "CAPITAL", "CASH", "FOR",
+        "FUNDS", "GIVE",
+        "HAVE", "HELP", "HOLD", "I", "IS", "ME", "MY", "NOW", "OF",
+        "PLEASE", "SELL", "SHOULD", "TELL", "TODAY",
+        "IN", "STOCK", "THE", "THIS", "TO", "WATCH", "WE", "WITH",
+        "YOU", "YOUR",
+        "EVALUATE", "RESEARCH",
+        "EARNINGS", "FUNDAMENTAL", "FUNDAMENTALS", "GROWTH", "MARKET",
+        "MOMENTUM", "NEWS", "OUTLOOK", "PRICE", "PROFIT", "REVENUE",
+        "REWARD", "RISK", "TECHNICAL", "VALUE", "VALUATION",
+    }
+    prose_only_stopwords = {
+        "A", "ABOUT", "ANALYZE", "ANALYSIS", "AS", "BALANCE", "BUDGET",
+        "AT", "BEFORE", "BY", "CAN", "CAPITAL",
+        "CASH", "CHECK", "FOR", "FUNDS", "GIVE", "HAVE", "HELP", "NOW", "OF", "PLEASE",
+        "AFTER", "FROM", "IN", "INTO", "IT", "ITS", "ME", "ON", "SHOULD",
+        "STOCK", "TELL", "THE", "THEM", "THIS", "TO", "TODAY", "WITH", "YOU", "YOUR",
+        "EVALUATE", "RESEARCH",
+    }
+    financial_indicators = {
+        "ATR", "CAGR", "DCF", "EBIT", "EBITDA", "EMA", "EPS", "FCF",
+        "MACD", "NPV", "OCF", "PB", "PE", "PEG", "PS", "ROA", "ROE",
+        "ROI", "RSI", "SMA", "TTM", "VWAP", "VWMA",
+    }
+    analysis_topic_tokens = {
+        "EARNINGS", "FUNDAMENTAL", "FUNDAMENTALS", "GROWTH", "MARKET",
+        "MOMENTUM", "NEWS", "OUTLOOK", "PRICE", "PROFIT", "REVENUE",
+        "REWARD", "RISK", "TECHNICAL", "VALUE", "VALUATION",
+    }
+    category_acronyms = {"AI", "CPU", "ETF", "GPU", "LOF", "ST"}
+    us_symbols: set[str] = set()
+    for us_match in re.finditer(
+        r"(?<![A-Za-z0-9])([A-Z][A-Z0-9.\-]{0,10})(?![A-Za-z0-9])",
+        text,
+        re.IGNORECASE,
+    ):
+        raw_candidate = us_match.group(1).rstrip(".")
+        candidate = raw_candidate.upper()
+        immediate_suffix = text[us_match.end():]
+        if candidate in {"A", "B", "H"} and immediate_suffix.startswith("股"):
+            continue
+        if candidate in analysis_topic_tokens and not raw_candidate.isupper():
+            continue
+        if numeric_symbols and candidate in {
+            "A", "B", "H", "ETF", "LOF", "SH", "SZ", "SS", "BJ", "HK",
+        }:
+            continue
+        prefix = text[:us_match.start()].rstrip()
+        explicit_context = bool(
+            re.search(
+                r"(?:(?:请)?(?:分析|研究|查看|看看|跟踪|关注)(?:一下|下)?|"
+                r"比较|对比|持有|买入|卖出|加仓|减仓|股票|标的|"
+                r"(?:我)?(?:想|要|准备|打算)?(?:买|买入)|能不能买|可以买入?|"
+                r"(?:please\s+)?(?:analyze|analysis|research|evaluate|compare|buy|sell|hold|watch|check)|"
+                r"ticker|symbol|own|about)"
+                r"(?:\s+(?:of|for|the|stock|ticker|symbol))*\s*$",
+                prefix,
+                re.IGNORECASE,
+            )
+            or re.search(
+                r"(?:I\s+)?own\s+\d+(?:\.\d+)?\s+shares?\s+of\s*$",
+                prefix,
+                re.IGNORECASE,
+            )
+            or re.search(
+                r"(?:I\s+)?(?:bought|sold|hold|held|own)\s*$",
+                prefix,
+                re.IGNORECASE,
+            )
+            or re.search(
+                r"(?:I\s+)?(?:want\s+to\s+|plan\s+to\s+)?"
+                r"(?:buy|sell)\s+\d+(?:\.\d+)?\s+shares?\s+of\s*$",
+                prefix,
+                re.IGNORECASE,
+            )
+            or re.search(r"(?:and|or|vs\.?|versus|和|与|及)\s*$", prefix, re.IGNORECASE)
+        )
+        explicit_ticker_label = bool(
+            re.search(r"(?:ticker|symbol|美股代码|股票代码)\s*$", prefix, re.IGNORECASE)
+        )
+        standalone_ticker = text.strip().upper() == candidate
+        explicit_symbol_context = bool(
+            explicit_context or explicit_ticker_label or standalone_ticker
+        )
+        if candidate in prose_only_stopwords and not (
+            raw_candidate.isupper() and explicit_symbol_context
+        ):
+            continue
+        if candidate == "ST" and re.match(r"[\u4e00-\u9fff]", immediate_suffix):
+            continue
+        if candidate in us_stopwords and not explicit_symbol_context:
+            continue
+        if candidate in financial_indicators:
+            continue
+        category_usage = bool(
+            re.match(
+                r"(?:概念|行业|算力|板块|主题|指数|产业|赛道)",
+                immediate_suffix,
+            )
+        )
+        if candidate in category_acronyms and (
+            category_usage or not explicit_symbol_context
+        ):
+            continue
+        # Uppercase financial indicators (PE/ROE/RSI/MACD, etc.) are common
+        # inside Chinese analysis requests.  Only promote a bare uppercase token
+        # to a US symbol when its placement actually identifies the instrument.
+        suffix = text[us_match.end():].lstrip()
+        starts_query = not prefix and (
+            not suffix
+            or re.match(r"[A-Za-z0-9]", suffix) is None
+            or re.match(r"\d{4}-\d{2}-\d{2}\b", suffix) is not None
+        )
+        ticker_first_prose = bool(
+            not prefix
+            and raw_candidate.isupper()
+            and len(candidate) >= 2
+            and re.match(
+                r"(?:is|looks?|seems?|has|had|rose|fell|rises|falls|"
+                r"trades?|reports?|announced)\b",
+                suffix,
+                re.IGNORECASE,
+            )
+        )
+        ticker_first_context = not prefix and bool(
+            re.match(
+                r"(?:stock\s+)?(?:analysis|outlook|price|chart|news|stock)\b",
+                suffix,
+                re.IGNORECASE,
+            )
+        )
+        ticker_followed_by_comparator = not prefix and bool(
+            re.match(r"(?:and|or|vs\.?|versus)\b", suffix, re.IGNORECASE)
+        )
+        ticker_follows_list_separator = bool(
+            re.search(r"(?:[/／、,，])\s*$", prefix)
+        )
+        question_ticker_context = bool(
+            re.search(
+                r"(?:should\s+i\s+(?:hold|buy|sell)|"
+                r"what(?:\s+do\s+you\s+think)?\s+(?:about|of)|"
+                r"what\s+is\s+the\s+(?:pe|pb|price|valuation)\s+of|"
+                r"^is)\s*$",
+                prefix,
+                re.IGNORECASE,
+            )
+            or re.match(
+                r"(?:overvalued|undervalued|worth\s+(?:buying|holding)|"
+                r"a\s+good\s+(?:buy|hold))\b",
+                suffix,
+                re.IGNORECASE,
+            )
+        )
+        command_target_context = bool(
+            re.search(
+                r"(?:please\s+)?(?:analyze|research|evaluate|check|watch)\b"
+                r"(?:\s+(?:the|stock|ticker|symbol|of|for))*\s*$",
+                prefix,
+                re.IGNORECASE,
+            )
+        )
+        lowercase_explicit_context = bool(
+            raw_candidate.islower()
+            and re.fullmatch(
+                r"\s*(?:(?:please\s+)?(?:analyze|analysis|ticker|symbol|stock)|"
+                r"(?:请)?(?:分析|研究|查看|看看|跟踪|关注)(?:一下|下)?)\s*",
+                prefix,
+                re.IGNORECASE,
+            )
+        )
+        # Lower/mixed-case plain words are too ambiguous inside prose. Accept
+        # them only as a standalone ticker; dotted/hyphenated tickers are
+        # distinctive enough when paired with an explicit command.
+        lowercase_target_context = bool(
+            raw_candidate.islower()
+            and (
+                explicit_symbol_context
+                or question_ticker_context
+                or command_target_context
+                or ticker_first_context
+                or ticker_followed_by_comparator
+                or ticker_follows_list_separator
+            )
+        )
+        if (
+            not raw_candidate.isupper()
+            and not re.search(r"[.\-]", raw_candidate)
+            and text.strip().casefold() != raw_candidate.casefold()
+            and not lowercase_explicit_context
+            and not lowercase_target_context
+        ):
+            continue
+        if (
+            not explicit_context
+            and text.strip().upper() != candidate
+            and not starts_query
+            and not ticker_first_prose
+            and not ticker_first_context
+            and not ticker_followed_by_comparator
+            and not ticker_follows_list_separator
+            and not question_ticker_context
+            and not command_target_context
+        ):
+            continue
+        us_symbols.add(candidate)
+
+    all_symbols = numeric_symbols | us_symbols
+    if len(all_symbols) == 1:
+        return next(iter(all_symbols)), date
 
     return None, date
+
+
+def _resolve_query_symbol_and_date(text: str) -> tuple[Optional[str], Optional[str]]:
+    parsed_symbol, parsed_date = _extract_symbol_and_date(text)
+    query = str(text or "")
+    has_cn_text = bool(re.search(r"[\u4e00-\u9fff]", query))
+    cached_stock_map = _get_cn_stock_map_cached_only() if has_cn_text else {}
+    name_symbols = (
+        _extract_cn_symbols_from_query(query, stock_map=cached_stock_map)
+        if cached_stock_map
+        else set()
+    )
+    parsed_latin_name_prefix = bool(
+        parsed_symbol
+        and re.fullmatch(r"[A-Z][A-Z0-9]{0,10}", parsed_symbol)
+        and re.search(
+            rf"{re.escape(parsed_symbol)}"
+            r"(?=(?!(?:的|风险|收益|估值|走势|价格|股价|行情|机会|"
+            r"基本面|技术面|财报|业绩|新闻|公告|能买吗|值得|如何|"
+            r"怎么样|怎么看))[\u4e00-\u9fff])",
+            query,
+            re.IGNORECASE,
+        )
+    )
+    explicit_name_comparison = bool(
+        parsed_symbol
+        and re.fullmatch(
+            r"\d{6}\.(?:SH|SZ|BJ)",
+            _normalize_analysis_symbol(parsed_symbol),
+        )
+        and re.search(
+            r"(?:比较|对比|和|与|及|[/／、]|\b(?:compare|vs\.?|versus)\b)",
+            query,
+            re.IGNORECASE,
+        )
+    )
+    explicit_name_code_pair = _query_has_explicit_cn_name_code_pair(query)
+    if has_cn_text and (
+        (parsed_symbol is None and _query_plausibly_contains_cn_company_name(query))
+        or (parsed_latin_name_prefix and not name_symbols)
+        or explicit_name_code_pair
+        or explicit_name_comparison
+    ):
+        # Pure company-name queries (and Latin-prefixed local names such as
+        # TCL科技) need the full map. Explicit code/ticker queries do not:
+        # their multi-target guard already performs comparison lookup.
+        cached_stock_map = _load_cn_stock_map()
+        name_symbols = _extract_cn_symbols_from_query(
+            query,
+            stock_map=cached_stock_map,
+        )
+    if parsed_symbol and name_symbols and re.fullmatch(
+        r"[A-Z][A-Z0-9]{0,10}", parsed_symbol
+    ):
+        # Local company names may begin with Latin brands (for example
+        # TCL科技).  Once the complete local name resolves uniquely, a Latin
+        # prefix occupying that same name span is not a second US instrument.
+        for local_name, local_symbol in cached_stock_map.items():
+            normalized_name = str(local_name or "").strip()
+            if (
+                str(local_symbol or "").strip().upper() in name_symbols
+                and normalized_name in text
+                and re.match(
+                    rf"{re.escape(parsed_symbol)}(?=[\u4e00-\u9fff])",
+                    normalized_name,
+                    re.IGNORECASE,
+                )
+            ):
+                parsed_symbol = None
+                break
+    if parsed_symbol:
+        combined = {parsed_symbol, *name_symbols}
+        return (next(iter(combined)), parsed_date) if len(combined) == 1 else (None, parsed_date)
+    if _query_contains_instrument_code(text):
+        return None, parsed_date
+    if len(name_symbols) == 1:
+        candidate = next(iter(name_symbols))
+        if _is_supported_cn_analysis_symbol(candidate):
+            return candidate, parsed_date
+    return None, parsed_date
+
+
+def _query_plausibly_contains_cn_company_name(text: str) -> bool:
+    """Avoid a remote name-map load for ordinary supplied-symbol commands."""
+    query = str(text or "")
+    if not re.search(r"[\u4e00-\u9fff]", query):
+        return False
+    if _query_has_explicit_cn_name_code_pair(query):
+        return True
+
+    residual = re.sub(
+        r"(?<![A-Za-z0-9])(?:\d{6}(?:\.(?:SH|SZ|SS|BJ))?|\d{4,5}\.HK)"
+        r"(?![A-Za-z0-9])",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    generic_phrases = (
+        "是否值得买入", "是否值得买", "值不值得买入", "值不值得买",
+        "能不能买入", "能不能买", "可以买入吗", "可以买吗", "能买吗",
+        "是否应该买入", "是否应该买", "该不该买入", "该不该买",
+        "帮我", "请问", "请", "一下", "分析", "研究", "查看", "看看",
+        "跟踪", "关注", "评估", "重点看", "重点", "当前", "现在", "今日",
+        "今天", "最近", "短线", "中线", "长线", "机会", "风险", "收益",
+        "走势", "行情", "价格", "股价", "估值", "技术面", "基本面",
+        "财务", "财报", "业绩", "新闻", "公告", "营收", "利润", "现金流",
+        "买入", "卖出", "买", "卖", "持有", "加仓", "减仓", "止损", "止盈",
+        "怎么样", "怎么看", "如何", "是否", "值得", "股票", "个股", "这只",
+        "这支", "我想", "想要", "继续", "给出", "判断", "建议", "的", "吗",
+    )
+    for phrase in sorted(generic_phrases, key=len, reverse=True):
+        residual = residual.replace(phrase, " ")
+    residual = re.sub(r"\b(?:PE|PB|ROE|ROA|EPS|MACD|RSI|ETF)\b", " ", residual, flags=re.IGNORECASE)
+    residual = re.sub(r"[\d\s，,。；;！？!?：:（）()、/／._+-]+", "", residual)
+    return bool(re.search(r"[\u4e00-\u9fff]{2,}", residual))
+
+
+def _query_has_explicit_cn_name_code_pair(text: str) -> bool:
+    """Detect a local company-name label immediately paired with a code.
+
+    Parentheses are common but optional (``贵州茅台 600519.SH`` is also a
+    name/code assertion). This only decides whether the authoritative name map
+    must be loaded; resolved names and codes are compared by the caller.
+    """
+    query = str(text or "")
+    if re.search(
+        r"[\u4e00-\u9fffA-Za-z*ＳＴｓｔ]{2,24}\s*"
+        r"[（(]\s*\d{6}(?:\.(?:SH|SZ|SS|BJ))?\s*[）)]",
+        query,
+        re.IGNORECASE,
+    ):
+        return True
+
+    for code_match in re.finditer(
+        r"(?<!\d)\d{6}(?:\.(?:SH|SZ|SS|BJ))?(?![A-Za-z0-9])",
+        query,
+        re.IGNORECASE,
+    ):
+        if _six_digit_token_is_amount_or_quantity(query, code_match):
+            continue
+        clause_prefix = re.split(r"[，,。；;！？!?\n]", query[:code_match.start()])[-1]
+        candidate = re.sub(
+            r"^\s*(?:请)?(?:分析|研究|查看|看看|跟踪|关注|评估)"
+            r"(?:一下|下)?\s*",
+            "",
+            clause_prefix,
+            flags=re.IGNORECASE,
+        ).strip(" \t\r\n（(")
+        if re.fullmatch(
+            r"(?=.{2,24}$)(?=.*[\u4e00-\u9fff])"
+            r"[\u4e00-\u9fffA-Za-z*ＳＴｓｔ]+",
+            candidate,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+def _query_has_multiple_explicit_instruments(text: str) -> bool:
+    """Detect comparison prompts that name more than one instrument.
+
+    Chat extraction is allowed to enrich a single target, but it must not let
+    an LLM collapse a multi-instrument request into whichever ticker it emits
+    first. This detector is deliberately conservative and only treats Latin
+    tokens as instruments when the query contains comparison wording.
+    """
+    query = str(text or "").strip()
+    if not query:
+        return False
+
+    candidates: set[str] = set()
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9])(?:\d{6}\.(?:SH|SZ|SS|BJ)|\d{4,5}\.HK)(?![A-Za-z0-9])",
+        query,
+        re.IGNORECASE,
+    ):
+        candidate = _normalize_analysis_symbol(match.group(0))
+        if _is_valid_analysis_symbol(candidate):
+            candidates.add(candidate)
+    for match in re.finditer(r"(?<!\d)\d{6}(?!\d)", query):
+        prefix = query[max(0, match.start() - 12):match.start()]
+        suffix = query[match.end():]
+        if _six_digit_token_is_amount_or_quantity(query, match) or (
+            re.search(r"(?:现金|预算|资金|可用资金|余额|本金)\s*[:：=]?\s*$", prefix)
+            or re.match(r"\.[A-Za-z]{1,5}\b", suffix)
+            or re.match(
+                r"\s*(?:万?元|块(?:钱)?|人民币|现金|预算|股(?!票))",
+                suffix,
+            )
+        ):
+            continue
+        candidate = _normalize_analysis_symbol(match.group(0))
+        if _is_valid_analysis_symbol(candidate):
+            candidates.add(candidate)
+
+    ticker_token = r"[A-Za-z][A-Za-z0-9]{0,10}(?:[.\-][A-Za-z0-9]+)?"
+    non_ticker_tokens = {
+        "A", "AN", "AND", "ANALYSIS", "ANALYZE", "ATR", "BUY", "CAGR",
+        "CHECK", "COMPARE", "DCF", "EBIT", "EBITDA", "EMA", "ENTRY",
+        "EPS", "EXIT", "FCF", "FOR", "HOLD", "I", "IS", "MACD", "MY",
+        "NPV", "OCF", "OF", "OR", "PB", "PE", "PEG", "PLEASE", "PS",
+        "ROA", "ROE", "ROI", "RSI", "SELL", "SHOULD", "SMA", "STOCK",
+        "HE", "HER", "HIS", "ITS", "SHE", "THE", "THEIR", "THEM", "TO",
+        "TTM", "VERSUS", "VS", "VWAP", "VWMA", "WAIT", "WATCH",
+        "WE", "WITH", "EARNINGS", "FUNDAMENTALS", "GROWTH", "MARKET",
+        "NEWS", "OUTLOOK", "PRICE", "REVENUE", "RISK", "VALUATION",
+        "VALUE", "MOMENTUM", "TECHNICAL", "FUNDAMENTAL", "SIGNAL", "SIGNALS",
+        "REPORT", "REVIEW", "SKIP", "TELL",
+        "BENCHMARK", "GROUP", "INDUSTRY", "PEER", "PEERS", "SECTOR",
+    }
+    comparison_pair = re.compile(
+        rf"(?<![A-Za-z0-9])({ticker_token})\s*"
+        rf"(?:\band\b|\bor\b|\bto\b|\bwith\b|\bvs\.?\b|\bversus\b|和|与|及|[/／、,，])\s*"
+        rf"({ticker_token})(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    for pair in comparison_pair.finditer(query):
+        list_prefix = query[:pair.start()]
+        list_suffix = query[pair.end():]
+        connector_text = query[pair.end(1):pair.start(2)]
+        explicit_target_list = bool(
+            not list_suffix.strip(" \t\r\n?.!")
+            and re.search(
+                r"(?:please\s+)?(?:analyze|analysis|compare|check|watch)"
+                r"(?:\s+(?:stock|stocks|ticker|tickers))?\s*$",
+                list_prefix,
+                re.IGNORECASE,
+            )
+        )
+        explicit_comparison = bool(
+            re.search(r"(?:比较|对比|\bcompare)\s*$", list_prefix, re.IGNORECASE)
+            or re.search(
+                r"\b(?:vs\.?|versus)\b",
+                connector_text,
+                re.IGNORECASE,
+            )
+        )
+        for group_index, raw_candidate in enumerate(pair.groups(), start=1):
+            if raw_candidate.upper() in non_ticker_tokens:
+                continue
+            suffix = query[pair.end(group_index):]
+            if re.match(
+                r"\s*(?:行业|板块|产业链?|主题|概念|赛道|市场|指数)",
+                suffix,
+            ):
+                continue
+            distinctive = raw_candidate.isupper() or bool(
+                re.search(r"[.\-]", raw_candidate)
+            )
+            if not distinctive and not (explicit_target_list or explicit_comparison):
+                continue
+            candidate = _normalize_analysis_symbol(raw_candidate)
+            if _is_valid_analysis_symbol(candidate):
+                candidates.add(candidate)
+
+    connector = r"(?:\band\b|\bor\b|\bto\b|\bwith\b|\bvs\.?\b|\bversus\b|和|与|及|[/／、,，])"
+    cn_code_token = r"\d{6}(?:\.(?:SH|SZ|SS|BJ))?"
+    mixed_code_patterns = (
+        re.compile(
+            rf"(?<![A-Za-z0-9])({cn_code_token})\s*{connector}\s*"
+            rf"({ticker_token})(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"(?<![A-Za-z0-9])({ticker_token})\s*{connector}\s*"
+            rf"({cn_code_token})(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in mixed_code_patterns:
+        for pair in pattern.finditer(query):
+            for group_index, raw_candidate in enumerate(pair.groups(), start=1):
+                if raw_candidate.upper() in non_ticker_tokens:
+                    continue
+                if re.fullmatch(r"\d{6}", raw_candidate) and (
+                    _six_digit_span_is_amount_or_quantity(
+                        query,
+                        pair.start(group_index),
+                        pair.end(group_index),
+                    )
+                ):
+                    continue
+                suffix = query[pair.end(group_index):]
+                if re.match(
+                    r"\s*(?:行业|板块|产业链?|主题|概念|赛道|市场|指数)",
+                    suffix,
+                ):
+                    continue
+                candidate = _normalize_analysis_symbol(raw_candidate)
+                if _is_valid_analysis_symbol(candidate):
+                    candidates.add(candidate)
+
+    # Tickers may belong to different action clauses without an adjacent list
+    # connector (for example: "I hold AAPL, I want to buy MSFT").  Resolve
+    # each independently scoped clause so account context from one instrument
+    # can never be applied to another instrument selected by the LLM.
+    clause_boundary = re.compile(
+        r"[，,。；;！？!?\n]+|"
+        r"(?:\band\b|\bbut\b|\bthen\b|但(?:是)?|不过|然后|同时|再)"
+        r"(?=\s*(?:(?:I|we)\s+)?(?:want|plan|consider|hold|own|buy|sell|"
+        r"analy[sz]e|watch|check|想|要|准备|打算|考虑|持有|买|卖|分析|查看|关注))",
+        re.IGNORECASE,
+    )
+    for clause in clause_boundary.split(query):
+        scoped_symbol, _ = _extract_symbol_and_date(clause.strip())
+        normalized_scoped = _normalize_analysis_symbol(scoped_symbol or "")
+        if (
+            normalized_scoped
+            and normalized_scoped not in non_ticker_tokens
+            and _is_valid_analysis_symbol(normalized_scoped)
+        ):
+            candidates.add(normalized_scoped)
+
+    # Explicit code/ticker pairs need no company-name lookup. Resolve them
+    # first so common Chinese command words do not trigger a remote cold load.
+    if len(candidates) > 1:
+        return True
+
+    semantic_name_connector = bool(
+        re.search(
+            r"(?:比较|对比|和|与|及|[/／、]|\b(?:compare|vs\.?|versus)\b)",
+            query,
+            re.IGNORECASE,
+        )
+    )
+    punctuation_only_name_list = bool(
+        not candidates
+        and re.search(r"[\u4e00-\u9fff]", query)
+        and re.search(r"[,，。；;！？!?\n]", query)
+    )
+    query_without_codes = re.sub(
+        r"(?<![A-Za-z0-9])(?:\d{6}(?:\.(?:SH|SZ|SS|BJ))?|\d{4,5}\.HK)"
+        r"(?![A-Za-z0-9])",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    generic_cn_terms = {
+        "分析", "研究", "查看", "看看", "跟踪", "关注", "评估", "比较", "对比",
+        "估值", "风险", "收益", "走势", "行情", "价格", "技术", "基本面", "财务",
+        "营收", "利润", "现金流", "行业", "板块", "主题", "概念", "指数", "市场",
+    }
+    possible_cn_name_fragments = set()
+    for pattern in (
+        r"(?:^|[，,。；;！？!?\s])(?:请)?(?:分析|研究|查看|看看|跟踪|关注|评估|比较|对比)?"
+        r"\s*([\u4e00-\u9fff*ＳＴｓｔ]{2,12})\s*(?=和|与|及|[/／、,，])",
+        r"(?:和|与|及|[/／、,，])\s*([\u4e00-\u9fff*ＳＴｓｔ]{2,12}?)"
+        r"(?=的|[，,。；;！？!?\s]|$)",
+    ):
+        for match in re.finditer(pattern, query_without_codes, re.IGNORECASE):
+            fragment = match.group(1).strip().lstrip("的对")
+            if fragment and fragment not in generic_cn_terms:
+                possible_cn_name_fragments.add(fragment)
+    needs_cn_name_resolution = bool(
+        re.search(r"[\u4e00-\u9fff]", query)
+        and (semantic_name_connector or punctuation_only_name_list)
+        and (not candidates or possible_cn_name_fragments)
+    )
+    cached_cn_map = _load_cn_stock_map() if needs_cn_name_resolution else {}
+    cn_name_symbols = (
+        set(_extract_cn_symbols_from_query(query, stock_map=cached_cn_map))
+        if cached_cn_map
+        else set()
+    )
+    candidates.update(cn_name_symbols)
+
+    # A Latin ticker paired directly with a resolved local company name is
+    # also a multi-target request.  Match only around the connector instead of
+    # scanning every uppercase token: PE/ROE/MACD and English action words are
+    # common in otherwise single-instrument questions.
+    if candidates and cn_name_symbols:
+        for local_name, local_symbol in cached_cn_map.items():
+            normalized_name = str(local_name or "").strip()
+            normalized_local_symbol = str(local_symbol or "").strip().upper()
+            if (
+                not normalized_name
+                or normalized_local_symbol not in candidates
+                or normalized_name not in query
+            ):
+                continue
+            escaped_name = re.escape(normalized_name)
+            cross_market_patterns = (
+                re.compile(
+                    rf"(?<![A-Za-z0-9])({ticker_token})\s*{connector}\s*{escaped_name}",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    rf"{escaped_name}\s*{connector}\s*({ticker_token})(?![A-Za-z0-9])",
+                    re.IGNORECASE,
+                ),
+            )
+            for pattern in cross_market_patterns:
+                for match in pattern.finditer(query):
+                    raw_candidate = match.group(1)
+                    if raw_candidate.upper() in non_ticker_tokens:
+                        continue
+                    distinctive = raw_candidate.isupper() or bool(
+                        re.search(r"[.\-]", raw_candidate)
+                    )
+                    if not distinctive:
+                        continue
+                    candidate = _normalize_analysis_symbol(raw_candidate)
+                    if _is_valid_analysis_symbol(candidate):
+                        candidates.add(candidate)
+
+    return len(candidates) > 1
+
+
+def _query_contains_instrument_code(text: str) -> bool:
+    """Return whether text contains a code-like instrument reference.
+
+    Cash amounts and share counts are excluded so a company-name query with a
+    budget can still be resolved, while multi-instrument comparisons do not
+    fall through to a single company-name match.
+    """
+    if re.search(
+        r"(?<![A-Za-z0-9])\d{1,6}\.(?:SH|SZ|SS|BJ|HK)(?![A-Za-z0-9])",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    for match in re.finditer(r"(?<!\d)\d{6}(?!\d)", text):
+        prefix = text[max(0, match.start() - 12):match.start()]
+        suffix = text[match.end():]
+        is_cash_amount = _six_digit_token_is_amount_or_quantity(text, match) or bool(
+            re.search(
+                r"(?:现金|预算|资金|可用资金|余额|本金)\s*[:：=]?\s*$",
+                prefix,
+            )
+            or re.match(
+                r"\s*(?:万?元|块(?:钱)?|人民币|股(?!票))",
+                suffix,
+            )
+        )
+        if not is_cash_amount:
+            return True
+    return False
+
+
+def _resolve_analysis_trade_date(
+    *,
+    symbol: str,
+    current_trade_date: str,
+    parsed_query_date: Optional[str],
+    trade_date_was_explicit: bool,
+    query_text: Optional[str] = None,
+) -> str:
+    if trade_date_was_explicit:
+        return current_trade_date
+    scoped_query_date = _extract_scoped_analysis_date(query_text, symbol)
+    if scoped_query_date:
+        return scoped_query_date
+    if parsed_query_date and _query_date_is_analysis_date(
+        query_text,
+        parsed_query_date,
+    ):
+        return parsed_query_date
+    return market_today_str(symbol)
+
+
+def _extract_scoped_analysis_date(
+    query_text: Optional[str],
+    symbol: str,
+) -> Optional[str]:
+    """Return the date explicitly scoped to analysis, in market-local time."""
+    text = str(query_text or "")
+    if not text:
+        return None
+
+    try:
+        market_today = datetime.strptime(market_today_str(symbol), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+    date_pattern = re.compile(
+        r"\d{4}-\d{2}-\d{2}|"
+        r"\d{4}年\d{1,2}月\d{1,2}日?|"
+        r"\d{4}[/.]\d{1,2}[/.]\d{1,2}|"
+        r"今天|今日|当天|昨天|昨日|前天|大前天|"
+        r"上个交易日|上一交易日|最近一个交易日|"
+        r"\b(?:previous|last)\s+trading\s+day\b|"
+        r"\btoday\b|\byesterday\b|\bday\s+before\s+yesterday\b",
+        re.IGNORECASE,
+    )
+    relative_offsets = {
+        "今天": 0,
+        "今日": 0,
+        "当天": 0,
+        "today": 0,
+        "昨天": -1,
+        "昨日": -1,
+        "yesterday": -1,
+        "前天": -2,
+        "大前天": -3,
+        "day before yesterday": -2,
+    }
+    previous_trading_day_tokens = {
+        "上个交易日",
+        "上一交易日",
+        "最近一个交易日",
+        "previous trading day",
+        "last trading day",
+    }
+
+    scoped_dates: list[str] = []
+    for match in date_pattern.finditer(text):
+        token = match.group(0)
+        prefix = text[max(0, match.start() - 100):match.start()]
+        suffix = text[match.end():min(len(text), match.end() + 80)]
+        clause_prefix = re.split(r"[，,。；;！？!?\n]", prefix)[-1]
+        clause_suffix = re.split(r"[，,。；;！？!?\n]", suffix)[0]
+
+        explicit_cutoff_scoped = bool(
+            re.search(
+                r"(?:截至|截止|分析日期|交易日|行情日期|as\s+of)\s*$",
+                clause_prefix,
+                re.IGNORECASE,
+            )
+        )
+
+        transaction_scoped = bool(
+            re.search(
+                r"(?:买入|购入|建仓|卖出|成交|成本|持仓成本|"
+                r"bought|purchased|sold|cost(?:\s+basis)?)"
+                r"[^，,。；;！？!?\n]{0,24}(?:在|于|on)?\s*$",
+                clause_prefix,
+                re.IGNORECASE,
+            )
+            or re.match(
+                r"\s*(?:买入|购入|建仓|卖出|成交|成本|"
+                r"bought|purchased|sold|cost(?:\s+basis)?)\b",
+                clause_suffix,
+                re.IGNORECASE,
+            )
+        )
+        if transaction_scoped:
+            continue
+
+        event_scoped = bool(
+            not explicit_cutoff_scoped
+            and (
+                re.search(
+                    r"(?:公告|财报|年报|半年报|季报|业绩预告|业绩快报|"
+                    r"事件|减持|增持|回购|分红|停牌|复牌|发布|披露)"
+                    r"[^，,。；;！？!?\n]{0,24}$",
+                    clause_prefix,
+                    re.IGNORECASE,
+                )
+                or re.match(
+                    r"\s*(?:发布|披露|公告|发生|实施|完成)?\s*"
+                    r"(?:公告|财报|年报|半年报|季报|业绩预告|业绩快报|"
+                    r"事件|减持|增持|回购|分红|停牌|复牌)",
+                    clause_suffix,
+                    re.IGNORECASE,
+                )
+                or re.match(
+                    r"\s*(?:发布|披露)(?:公告|财报|年报|半年报|季报)",
+                    clause_suffix,
+                    re.IGNORECASE,
+                )
+            )
+        )
+        if event_scoped:
+            continue
+
+        analysis_scoped = bool(
+            explicit_cutoff_scoped
+            or re.search(
+                r"(?:分析|研究|查看|评估|回测|复盘|"
+                r"analy[sz]e|research|review|evaluate|backtest|check)"
+                r"[^，,。；;！？!?\n]{0,80}$",
+                clause_prefix,
+                re.IGNORECASE,
+            )
+            or re.match(
+                r"\s*(?:的|时|当日)?\s*(?:表现|走势|行情|收盘|分析|复盘|"
+                r"涨|跌|performance|trend|price|close|analysis|review)",
+                clause_suffix,
+                re.IGNORECASE,
+            )
+        )
+        if not analysis_scoped:
+            continue
+
+        normalized_token = re.sub(r"\s+", " ", token.strip().lower())
+        if normalized_token in previous_trading_day_tokens:
+            market_date = market_today.strftime("%Y-%m-%d")
+            if re.match(r"^\d{6}(?:\.(?:SH|SZ|SS|BJ))?$", symbol, re.IGNORECASE):
+                from tradingagents.dataflows.trade_calendar import previous_cn_trading_day
+
+                scoped_dates.append(previous_cn_trading_day(market_date))
+            else:
+                previous = market_today - timedelta(days=1)
+                while previous.weekday() >= 5:
+                    previous -= timedelta(days=1)
+                scoped_dates.append(previous.strftime("%Y-%m-%d"))
+            continue
+        if normalized_token in relative_offsets:
+            resolved = market_today + timedelta(days=relative_offsets[normalized_token])
+            scoped_dates.append(resolved.strftime("%Y-%m-%d"))
+            continue
+        normalized_explicit = token
+        normalized_explicit = re.sub(r"年|[/.]", "-", normalized_explicit)
+        normalized_explicit = normalized_explicit.replace("月", "-").replace("日", "")
+        try:
+            parsed = datetime.strptime(normalized_explicit, "%Y-%m-%d")
+        except ValueError:
+            try:
+                parts = [int(part) for part in normalized_explicit.split("-")]
+                parsed = datetime(parts[0], parts[1], parts[2])
+            except (TypeError, ValueError, IndexError):
+                # Preserve an explicitly scoped but invalid date so the
+                # request-level date validator can reject it. Silently
+                # dropping it would run the analysis for today instead.
+                scoped_dates.append(normalized_explicit)
+                continue
+        scoped_dates.append(parsed.strftime("%Y-%m-%d"))
+
+    return scoped_dates[-1] if scoped_dates else None
+
+
+def _query_date_is_analysis_date(
+    query_text: Optional[str],
+    parsed_query_date: str,
+) -> bool:
+    """Distinguish an analysis date from a transaction or cost-basis date."""
+    if query_text is None:
+        # Preserve the helper's standalone contract for callers that already
+        # scoped parsed_query_date before invoking it.
+        return True
+
+    text = str(query_text or "")
+    explicit_source_matches: list[re.Match[str]] = list(
+        re.finditer(re.escape(parsed_query_date), text)
+    )
+    try:
+        parsed_dt = datetime.strptime(parsed_query_date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        parsed_dt = None
+    if parsed_dt is not None:
+        localized_patterns = (
+            rf"{parsed_dt.year}年0?{parsed_dt.month}月0?{parsed_dt.day}日?",
+            rf"{parsed_dt.year}[/.]0?{parsed_dt.month}[/.]0?{parsed_dt.day}",
+        )
+        for pattern in localized_patterns:
+            explicit_source_matches.extend(re.finditer(pattern, text))
+    # Relative phrases can explain an LLM-resolved date only when the query
+    # does not also contain a different explicit date (for example a buy date).
+    source_matches = explicit_source_matches or list(
+        re.finditer(
+            r"(?:今天|今日|当天|昨天|昨日|前天|大前天|"
+            r"上个交易日|上一交易日|最近一个交易日|"
+            r"\btoday\b|\byesterday\b|\bday\s+before\s+yesterday\b)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if not source_matches:
+        return False
+    if len(explicit_source_matches) == 1:
+        shorthand_date = re.compile(
+            r"^\s*(?:分析|查看|研究|复盘|analy[sz]e|check|review)?\s*"
+            r"(?:[A-Za-z][A-Za-z0-9.\-]{0,15}|\d{6}(?:\.(?:SH|SZ|BJ))?)"
+            r"\s*(?:on\s*)?"
+            r"(?:\d{4}-\d{2}-\d{2}|\d{4}年\d{1,2}月\d{1,2}日?|"
+            r"\d{4}[/.]\d{1,2}[/.]\d{1,2})\s*$",
+            re.IGNORECASE,
+        )
+        if shorthand_date.fullmatch(text):
+            # A sole code/ticker plus one explicit date is an unambiguous
+            # historical-analysis shorthand. Event and transaction dates carry
+            # additional wording and therefore do not match this narrow form.
+            return True
+    for source_match in source_matches:
+        start = max(0, source_match.start() - 24)
+        end = min(len(text), source_match.end() + 24)
+        context = text[start:end]
+        source_date = re.escape(source_match.group())
+        explicit_analysis_scope = bool(
+            re.search(
+                r"(?:截至|截止|分析日期|交易日|行情日期|as\s+of)\s*"
+                + source_date,
+                context,
+                re.IGNORECASE,
+            )
+            or re.search(
+                r"(?:分析|研究|查看|评估|回测)"
+                r"[^，。；;！？!?\n]{0,60}\s*"
+                + source_date
+                + r"\s*$",
+                text[:source_match.end()],
+                re.IGNORECASE,
+            )
+            or re.search(
+                source_date
+                + r"\s*(?:的|时|当日)?\s*(?:表现|走势|行情|收盘|分析)",
+                context,
+                re.IGNORECASE,
+            )
+        )
+        if explicit_analysis_scope:
+            return True
+    return False
+
+
+def _is_valid_analysis_trade_date(value: str) -> bool:
+    try:
+        datetime.strptime(str(value or ""), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _sse_pack(event: str, data: Dict[str, Any]) -> str:
@@ -2994,9 +4707,69 @@ _RESOLVABLE_SYMBOL_RE = re.compile(
     r"^("
     r"\d{6}\.(SH|SZ|BJ)"          # A 股 / 北交所
     r"|\d{4,5}\.HK"                # 港股
-    r"|[A-Z][A-Z0-9.\-]{0,10}"     # 美股 / 通用 ticker
+    r"|[A-Z][A-Z0-9]{0,10}"         # 美股 ticker（可含数字）
+    r"|[A-Z][A-Z0-9]{0,5}-[A-Z0-9]"  # 美股类股 ticker
+    r"|[A-Z][A-Z0-9]{0,5}\.[A-Z0-9]{1,3}"  # 显式美股交易所后缀
     r")$"
 )
+
+
+def _has_consistent_cn_exchange(symbol: str) -> bool:
+    """Reject CN codes whose explicit exchange suffix contradicts the code."""
+    if _is_cn_index_symbol(str(symbol or "")):
+        return True
+    match = re.fullmatch(r"(\d{6})\.(SH|SZ|BJ)", str(symbol or "").upper())
+    if not match:
+        return True
+    code, suffix = match.groups()
+    if code.startswith(("4", "8", "920")):
+        expected = "BJ"
+    elif code.startswith(("5", "6", "9")):
+        expected = "SH"
+    else:
+        expected = "SZ"
+    return suffix == expected
+
+
+def _is_valid_analysis_symbol(symbol: str) -> bool:
+    return bool(
+        _RESOLVABLE_SYMBOL_RE.fullmatch(str(symbol or ""))
+        and _has_consistent_cn_exchange(symbol)
+    )
+
+
+def _normalize_analysis_symbol(raw: str) -> str:
+    """Normalize an analysis symbol without truncating a valid generic ticker."""
+    candidate = str(raw or "").strip().upper()
+    candidate = re.sub(r"\.SS$", ".SH", candidate)
+    prefixed_cn = re.fullmatch(r"(SH|SZ|BJ)(\d{6})", candidate)
+    if prefixed_cn:
+        exchange, code = prefixed_cn.groups()
+        normalized = f"{code}.{exchange}"
+        return normalized if _is_valid_analysis_symbol(normalized) else candidate
+    if _is_valid_analysis_symbol(candidate):
+        return candidate
+    if re.fullmatch(r"\d{6}", candidate):
+        return _normalize_symbol(candidate)
+    # Malformed explicit symbols must be rejected by the validator, never
+    # truncated by the permissive legacy normalizer (1234567 -> 123456.SZ).
+    return candidate
+
+
+def _resolve_analysis_symbol(raw: str) -> str:
+    """Resolve a direct analysis target without fuzzy company-name guesses."""
+    normalized = _normalize_analysis_symbol(raw)
+    if _is_valid_analysis_symbol(normalized):
+        return normalized
+
+    candidate = str(raw or "").strip()
+    if not re.search(r"[\u4e00-\u9fff]", candidate):
+        return normalized
+    mapped = _load_cn_stock_map().get(candidate)
+    if not mapped:
+        return normalized
+    resolved = _normalize_analysis_symbol(mapped)
+    return resolved if _is_valid_analysis_symbol(resolved) else normalized
 
 
 @app.get("/v1/market/kline", response_model=KlineResponse)
@@ -3016,8 +4789,12 @@ def get_kline(
     else:
         # Normalize symbol (convert "阳光电源" -> "300274.SZ")
         original = symbol
-        symbol = _normalize_symbol(symbol)
-        if not _RESOLVABLE_SYMBOL_RE.match(symbol):
+        symbol = (
+            _normalize_symbol(symbol)
+            if re.search(r"[\u4e00-\u9fff]", symbol)
+            else _normalize_analysis_symbol(symbol)
+        )
+        if not _is_valid_analysis_symbol(symbol):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -3212,6 +4989,89 @@ async def analyze(
         filter_analysts_for_profile,
     )
 
+    # A direct request may omit symbol when the query contains an unambiguous
+    # ticker or A-share/fund name. Resolve it before saved-context lookup and
+    # job creation so reports, holdings and cache keys never use an empty or
+    # model-inferred instrument.
+    trade_date_was_explicit = "trade_date" in request.model_fields_set
+    query_date: Optional[str] = None
+    if request.symbol:
+        request.symbol = await asyncio.to_thread(
+            _resolve_analysis_symbol,
+            request.symbol,
+        )
+    if request.query:
+        if await asyncio.to_thread(
+            _query_has_multiple_explicit_instruments,
+            request.query,
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="一次分析只支持一个明确标的，请拆分多标的请求。",
+            )
+        if request.symbol:
+            query_symbol, query_date = await asyncio.to_thread(
+                _resolve_query_symbol_and_date,
+                request.query,
+            )
+            if query_symbol is None and _query_has_explicit_cn_name_code_pair(
+                request.query
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "查询文本中的公司名称与代码无法确认一致，请只保留一个明确标的。"
+                    ),
+                )
+            if query_symbol is None and _query_contains_instrument_code(
+                request.query
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="查询文本中的代码无法确认，请只保留一个明确标的。",
+                )
+            if (
+                query_symbol
+                and _normalize_analysis_symbol(query_symbol)
+                != _normalize_analysis_symbol(request.symbol)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "请求字段与查询文本中的分析标的不一致，请只保留一个明确标的。"
+                    ),
+                )
+        else:
+            query_symbol, query_date = await asyncio.to_thread(
+                _resolve_query_symbol_and_date,
+                request.query,
+            )
+            if query_symbol:
+                request.symbol = query_symbol
+    if not str(request.symbol or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="无法唯一识别分析标的，请提供股票代码或明确的股票名称。",
+        )
+    request.symbol = _normalize_analysis_symbol(request.symbol)
+    if not _is_valid_analysis_symbol(request.symbol):
+        raise HTTPException(
+            status_code=422,
+            detail="分析标的格式无效，请使用 600519.SH、0700.HK 或 AAPL 等明确格式。",
+        )
+    request.trade_date = _resolve_analysis_trade_date(
+        symbol=request.symbol,
+        current_trade_date=request.trade_date,
+        parsed_query_date=query_date,
+        trade_date_was_explicit=trade_date_was_explicit,
+        query_text=request.query,
+    )
+    if not _is_valid_analysis_trade_date(request.trade_date):
+        raise HTTPException(
+            status_code=422,
+            detail="分析日期无效，请使用真实存在的 YYYY-MM-DD 日期。",
+        )
+
     explicit_context = _extract_request_user_context(request)
 
     tier_value = request.runtime_tier or RuntimeTier.LIGHT_RESEARCH.value
@@ -3238,6 +5098,28 @@ async def analyze(
 
     tier_meta = tier_to_meta(resolved_tier)
 
+    def _load_user_context() -> Dict[str, Any]:
+        with get_db_ctx() as db:
+            return _compose_analysis_user_context(
+                db,
+                current_user.id,
+                request.symbol,
+                explicit_context=explicit_context,
+            )
+
+    # Don't block the event loop on a sync SQLite read while the scheduler
+    # process may be holding write locks.
+    merged_user_context = await asyncio.to_thread(_load_user_context)
+    _apply_user_context_to_request(request, merged_user_context)
+    direct_query_needs_parser = bool(request.query and request.user_intent is None)
+    analysis_intent_hint = _ensure_query_and_user_intent(
+        request,
+        request.symbol,
+        materialize_missing_intent=not direct_query_needs_parser,
+        numeric_position_was_explicit="current_position" in explicit_context,
+        position_pct_was_explicit="current_position_pct" in explicit_context,
+    )
+
     resolved_profile: Optional[TAProfile] = None
     if request.runtime_profile:
         try:
@@ -3245,7 +5127,7 @@ async def analyze(
         except ValueError:
             resolved_profile = None
     if resolved_profile is None and resolved_tier == RuntimeTier.LIGHT_RESEARCH:
-        analysis_intent = ""
+        analysis_intent = analysis_intent_hint
         if request.user_intent and isinstance(request.user_intent, dict):
             analysis_intent = str(request.user_intent.get("analysis_intent", ""))
         resolved_profile = recommend_profile(
@@ -3262,20 +5144,6 @@ async def analyze(
         request.selected_analysts = filter_analysts_for_profile(
             resolved_profile, request.selected_analysts,
         )
-
-    def _load_user_context() -> Dict[str, Any]:
-        with get_db_ctx() as db:
-            return _compose_analysis_user_context(
-                db,
-                current_user.id,
-                request.symbol,
-                explicit_context=explicit_context,
-            )
-
-    # Don't block the event loop on a sync SQLite read while the scheduler
-    # process may be holding write locks.
-    merged_user_context = await asyncio.to_thread(_load_user_context)
-    _apply_user_context_to_request(request, merged_user_context)
 
     job_id = uuid4().hex
     now = _utcnow_iso()
@@ -3386,6 +5254,9 @@ async def _ai_extract_symbol_and_date_streaming(
 
     today = datetime.now().strftime("%Y-%m-%d")
     fast_symbol, fast_date = _extract_symbol_and_date(text)
+    fast_fallback_date = fast_date or (
+        market_today_str(fast_symbol) if fast_symbol else None
+    )
     llm_name: Optional[str] = None
     llm_date: Optional[str] = None
     llm_horizons: List[str] = ["short"]
@@ -3404,7 +5275,7 @@ async def _ai_extract_symbol_and_date_streaming(
 
 字段说明：
 - stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
-- date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
+- date：YYYY-MM-DD 格式。今天是 {today}；用户未提及日期时必须填 null。
 - horizons：分析周期，只能选一个：
   * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
   * 其他所有情况（含未提及）→ ["short"]
@@ -3419,7 +5290,7 @@ async def _ai_extract_symbol_and_date_streaming(
   * user_notes：仅保留重要但未能结构化归类的信息
 
 仅输出 JSON，不要任何其他文字：
-{{"stock_name": "...", "date": "YYYY-MM-DD", "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
+{{"stock_name": "...", "date": null, "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
 
 如果无法识别股票标的：{{"stock_name": null, "date": null, "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
 
@@ -3444,7 +5315,7 @@ async def _ai_extract_symbol_and_date_streaming(
         if m:
             data = _json.loads(m.group(0))
             llm_name = (data.get("stock_name") or "").strip() or None
-            llm_date = data.get("date") or today
+            llm_date = data.get("date") or None
             llm_horizons = data.get("horizons") or ["short"]
             llm_focus_areas = data.get("focus_areas") or []
             llm_specific_questions = data.get("specific_questions") or []
@@ -3455,26 +5326,26 @@ async def _ai_extract_symbol_and_date_streaming(
     if not llm_name:
         if fast_symbol:
             _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
-            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+            return fast_symbol, fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
-    if re.match(r"^\d{6}(?:\.(?:SH|SZ|SS))?$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
-        symbol = _normalize_symbol(llm_name)
-        if symbol:
-            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+    resolved_llm_date = llm_date or fast_date
+    direct_symbol = _normalize_analysis_symbol(llm_name)
+    if _is_valid_analysis_symbol(direct_symbol):
+        return direct_symbol, resolved_llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     local_code = await asyncio.to_thread(_search_cn_stock_by_name, llm_name)
     if local_code:
-        return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        return local_code, resolved_llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
-    fallback = _normalize_symbol(llm_name)
-    if fallback and re.search(r"\d{6}|[A-Za-z]{2,}", fallback):
-        return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+    fallback = _normalize_analysis_symbol(llm_name)
+    if _is_valid_analysis_symbol(fallback):
+        return fallback, resolved_llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     if fast_symbol:
         _log(f"[StockExtract] LLM 名 '{llm_name}' 无法解析为代码，使用 regex 兜底: {fast_symbol}")
-        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        return fast_symbol, llm_date or fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
@@ -3492,6 +5363,9 @@ def _ai_extract_symbol_and_date(
 
     today = datetime.now().strftime("%Y-%m-%d")
     fast_symbol, fast_date = _extract_symbol_and_date(text)
+    fast_fallback_date = fast_date or (
+        market_today_str(fast_symbol) if fast_symbol else None
+    )
 
     llm_name: Optional[str] = None
     llm_date: Optional[str] = None
@@ -3510,7 +5384,7 @@ def _ai_extract_symbol_and_date(
 
 字段说明：
 - stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
-- date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
+- date：YYYY-MM-DD 格式。今天是 {today}；用户未提及日期时必须填 null。
 - horizons：分析周期，只能选一个：
   * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
   * 其他所有情况（含未提及）→ ["short"]
@@ -3525,7 +5399,7 @@ def _ai_extract_symbol_and_date(
   * user_notes：仅保留重要但未能结构化归类的信息
 
 仅输出 JSON，不要任何其他文字：
-{{"stock_name": "...", "date": "YYYY-MM-DD", "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
+{{"stock_name": "...", "date": null, "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
 
 如果无法识别股票标的：{{"stock_name": null, "date": null, "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
 
@@ -3548,7 +5422,7 @@ def _ai_extract_symbol_and_date(
         if m:
             data = _json.loads(m.group(0))
             llm_name = (data.get("stock_name") or "").strip() or None
-            llm_date = data.get("date") or today
+            llm_date = data.get("date") or None
             llm_horizons = data.get("horizons") or ["short"]
             llm_focus_areas = data.get("focus_areas") or []
             llm_specific_questions = data.get("specific_questions") or []
@@ -3559,34 +5433,34 @@ def _ai_extract_symbol_and_date(
     if not llm_name:
         if fast_symbol:
             _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
-            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+            return fast_symbol, fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
         _log(f"[StockExtract] LLM returned no stock name for: '{text[:40]}'")
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] LLM extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
+    resolved_llm_date = llm_date or fast_date
 
     # ── Step 2: If looks like a direct code (digits / letters), normalize it ──
-    if re.match(r"^\d{6}(?:\.(?:SH|SZ|SS))?$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
-        symbol = _normalize_symbol(llm_name)
-        if symbol:
-            _log(f"[StockExtract] Direct code: {symbol}")
-            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+    direct_symbol = _normalize_analysis_symbol(llm_name)
+    if _is_valid_analysis_symbol(direct_symbol):
+        _log(f"[StockExtract] Direct code: {direct_symbol}")
+        return direct_symbol, resolved_llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     # ── Step 3: Search akshare A-share name database ──────────────────────────
     local_code = _search_cn_stock_by_name(llm_name)
     if local_code:
         _log(f"[StockExtract] akshare match: '{llm_name}' → {local_code}")
-        return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        return local_code, resolved_llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     # ── Step 4: Last resort — treat LLM name as a raw code ────────────────────
-    fallback = _normalize_symbol(llm_name)
-    if fallback and re.search(r"\d{6}|[A-Za-z]{2,}", fallback):
+    fallback = _normalize_analysis_symbol(llm_name)
+    if _is_valid_analysis_symbol(fallback):
         _log(f"[StockExtract] Fallback normalize: '{llm_name}' → {fallback}")
-        return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        return fallback, resolved_llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     if fast_symbol:
         _log(f"[StockExtract] LLM 名 '{llm_name}' 无法解析为代码，使用 regex 兜底: {fast_symbol}")
-        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        return fast_symbol, llm_date or fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] Could not resolve '{llm_name}' to a stock code")
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
@@ -3597,6 +5471,11 @@ async def chat_completions(
     current_user: UserDB = Depends(_require_api_user),
 ):
     text = _extract_chat_text(request.messages)
+    if await asyncio.to_thread(_query_has_multiple_explicit_instruments, text):
+        raise HTTPException(
+            status_code=422,
+            detail="一次分析只支持一个明确标的，请拆分多标的请求。",
+        )
     config = await asyncio.to_thread(_build_runtime_config, request.config_overrides, user_id=current_user.id)
 
     # ── 流式模式：立刻返回 SSE 流，在后台异步提取意图再启动任务 ──────────────────
@@ -3612,6 +5491,24 @@ async def chat_completions(
                 if not symbol:
                     _emit_job_event(job_id, "job.failed", {
                         "error": "抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。"
+                    })
+                    return
+                symbol = _normalize_analysis_symbol(symbol)
+                if not _is_valid_analysis_symbol(symbol):
+                    _emit_job_event(job_id, "job.failed", {
+                        "error": "分析标的格式或交易所后缀无效。"
+                    })
+                    return
+                trade_date = _resolve_analysis_trade_date(
+                    symbol=symbol,
+                    current_trade_date=trade_date or market_today_str(symbol),
+                    parsed_query_date=trade_date,
+                    trade_date_was_explicit=False,
+                    query_text=text,
+                )
+                if not _is_valid_analysis_trade_date(trade_date):
+                    _emit_job_event(job_id, "job.failed", {
+                        "error": "分析日期无效，请使用真实存在的 YYYY-MM-DD 日期。"
                     })
                     return
 
@@ -3638,23 +5535,14 @@ async def chat_completions(
                 pre_intent["user_context"] = merged_user_context
                 analyze_req = AnalyzeRequest(
                     symbol=symbol,
-                    trade_date=trade_date or cn_today_str(),
+                    trade_date=trade_date or market_today_str(symbol),
                     selected_analysts=request.selected_analysts,
                     config_overrides=request.config_overrides,
                     dry_run=request.dry_run,
                     query=text,
                     horizons=horizons,
                     user_intent=pre_intent,
-                    objective=merged_user_context.get("objective"),
-                    risk_profile=merged_user_context.get("risk_profile"),
-                    investment_horizon=merged_user_context.get("investment_horizon"),
-                    cash_available=merged_user_context.get("cash_available"),
-                    current_position=merged_user_context.get("current_position"),
-                    current_position_pct=merged_user_context.get("current_position_pct"),
-                    average_cost=merged_user_context.get("average_cost"),
-                    max_loss_pct=merged_user_context.get("max_loss_pct"),
-                    constraints=merged_user_context.get("constraints", []),
-                    user_notes=merged_user_context.get("user_notes"),
+                    **explicit_context,
                     runtime_tier=request.runtime_tier,  # [PERF-004]
                     confirmed_full_ta=request.confirmed_full_ta,  # [PERF-004]
                     runtime_profile=request.runtime_profile,  # [PERF-004]
@@ -3697,6 +5585,21 @@ async def chat_completions(
 
     if not symbol:
         raise HTTPException(status_code=400, detail="抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。")
+    symbol = _normalize_analysis_symbol(symbol)
+    if not _is_valid_analysis_symbol(symbol):
+        raise HTTPException(status_code=400, detail="分析标的格式或交易所后缀无效。")
+    trade_date = _resolve_analysis_trade_date(
+        symbol=symbol,
+        current_trade_date=trade_date or market_today_str(symbol),
+        parsed_query_date=trade_date,
+        trade_date_was_explicit=False,
+        query_text=text,
+    )
+    if not _is_valid_analysis_trade_date(trade_date):
+        raise HTTPException(
+            status_code=422,
+            detail="分析日期无效，请使用真实存在的 YYYY-MM-DD 日期。",
+        )
 
     pre_intent = {
         "raw_query": text,
@@ -3721,23 +5624,14 @@ async def chat_completions(
     pre_intent["user_context"] = merged_user_context
     analyze_req = AnalyzeRequest(
         symbol=symbol,
-        trade_date=trade_date or cn_today_str(),
+        trade_date=trade_date or market_today_str(symbol),
         selected_analysts=request.selected_analysts,
         config_overrides=request.config_overrides,
         dry_run=request.dry_run,
         query=text,
         horizons=horizons,
         user_intent=pre_intent,
-        objective=merged_user_context.get("objective"),
-        risk_profile=merged_user_context.get("risk_profile"),
-        investment_horizon=merged_user_context.get("investment_horizon"),
-        cash_available=merged_user_context.get("cash_available"),
-        current_position=merged_user_context.get("current_position"),
-        current_position_pct=merged_user_context.get("current_position_pct"),
-        average_cost=merged_user_context.get("average_cost"),
-        max_loss_pct=merged_user_context.get("max_loss_pct"),
-        constraints=merged_user_context.get("constraints", []),
-        user_notes=merged_user_context.get("user_notes"),
+        **explicit_context,
         runtime_tier=request.runtime_tier,  # [PERF-004]
         confirmed_full_ta=request.confirmed_full_ta,  # [PERF-004]
         runtime_profile=request.runtime_profile,  # [PERF-004]

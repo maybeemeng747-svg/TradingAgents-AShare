@@ -143,14 +143,121 @@ class TestAnalyzeEndpoint:
         assert result["status"] == "completed"
         assert result["decision"] == "DRY_RUN"
 
-    def test_missing_symbol_accepted_by_schema(self):
-        """symbol is optional in schema; job is created (may fail later without LLM, but 200 on submit)."""
+    def test_query_date_is_honored_when_symbol_field_is_present(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "AAPL",
+            "query": "请分析 AAPL 在 2023-01-01 的表现",
+            "dry_run": True,
+        })
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["trade_date"] == "2023-01-01"
+
+    def test_conflicting_query_and_request_symbols_are_rejected(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SH",
+            "query": "请分析 000001.SZ 的短线机会",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 422
+        assert "分析标的不一致" in r.json()["detail"]
+
+    def test_invalid_query_date_is_rejected_before_job_creation(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SH",
+            "query": "请分析 600519.SH 在 2026-02-30 的表现",
+            "dry_run": True,
+        })
+        assert r.status_code == 422
+        assert "分析日期无效" in r.json()["detail"]
+
+    def test_overlong_hk_symbol_is_rejected_instead_of_redirected(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "123456.HK",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 422
+        assert "分析标的格式无效" in r.json()["detail"]
+
+    def test_mismatched_cn_exchange_suffix_is_rejected(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.BJ",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 422
+        assert "分析标的格式无效" in r.json()["detail"]
+
+    def test_generic_tickers_are_not_truncated_by_analysis_normalization(self):
+        for symbol in ("RDS-A", "BRK-B", "A1"):
+            r = self.client.post("/v1/analyze", headers=self.headers, json={
+                "symbol": symbol,
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            })
+            assert r.status_code == 200
+            result = _wait_job(self.client, self.token, r.json()["job_id"])
+            assert result["status"] == "completed"
+            assert result["result"]["symbol"] == symbol
+
+    def test_unsupported_crypto_pair_is_rejected_without_ticker_truncation(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "BTC-USD",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 422
+        assert "分析标的格式无效" in r.json()["detail"]
+
+    def test_supported_cn_indices_pass_exchange_validation(self):
+        for symbol in ("000001.SH", "000300.SH", "000688.SH"):
+            r = self.client.post("/v1/analyze", headers=self.headers, json={
+                "symbol": symbol,
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            })
+            assert r.status_code == 200
+            result = _wait_job(self.client, self.token, r.json()["job_id"])
+            assert result["status"] == "completed"
+            assert result["result"]["symbol"] == symbol
+
+    def test_short_exchange_qualified_codes_are_rejected(self):
+        for symbol in ("5.SH", "123.SZ", "12.BJ"):
+            r = self.client.post("/v1/analyze", headers=self.headers, json={
+                "symbol": symbol,
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            })
+            assert r.status_code == 422
+            assert "分析标的格式无效" in r.json()["detail"]
+
+    def test_ticker_first_query_without_symbol_preserves_the_instrument(self):
+        for query, symbol in (
+            ("AAPL is rising, should I buy?", "AAPL"),
+            ("RDS-A looks attractive", "RDS-A"),
+        ):
+            r = self.client.post("/v1/analyze", headers=self.headers, json={
+                "query": query,
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            })
+            assert r.status_code == 200
+            result = _wait_job(self.client, self.token, r.json()["job_id"])
+            assert result["status"] == "completed"
+            assert result["result"]["symbol"] == symbol
+
+    def test_missing_symbol_and_query_are_rejected_before_job_creation(self):
+        """An unresolved request must not enqueue provider or LLM work."""
         r = self.client.post("/v1/analyze", headers=self.headers, json={
             "trade_date": "2024-01-15",
             "dry_run": True,
         })
-        assert r.status_code == 200
-        assert "job_id" in r.json()
+        assert r.status_code == 422
+        assert "无法唯一识别分析标的" in r.json()["detail"]
 
     def test_requires_auth(self):
         """Unauthenticated request returns 401/403."""
@@ -232,6 +339,59 @@ class TestChatCompletionsEndpoint:
             })
         assert r.status_code == 400
 
+    def test_invalid_date_is_rejected_before_nonstream_job_creation(self):
+        with (
+            patch(
+                "api.main._ai_extract_symbol_and_date",
+                return_value=("AAPL", "2026-02-30", ["short"], [], [], {}),
+            ),
+            patch("api.main._run_job") as run_job,
+        ):
+            response = self.client.post(
+                "/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "messages": [
+                        {"role": "user", "content": "分析 AAPL 2026-02-30"}
+                    ],
+                    "stream": False,
+                    "dry_run": True,
+                },
+            )
+
+        assert response.status_code == 422
+        assert "分析日期无效" in response.json()["detail"]
+        run_job.assert_not_called()
+
+    def test_invalid_date_fails_stream_before_job_creation(self):
+        async def _extract_invalid_date(*_args, **_kwargs):
+            return "AAPL", "2026-02-30", ["short"], [], [], {}
+
+        with (
+            patch(
+                "api.main._ai_extract_symbol_and_date_streaming",
+                side_effect=_extract_invalid_date,
+            ),
+            patch("api.main._run_job") as run_job,
+        ):
+            with self.client.stream(
+                "POST",
+                "/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "messages": [
+                        {"role": "user", "content": "分析 AAPL 2026-02-30"}
+                    ],
+                    "stream": True,
+                    "dry_run": True,
+                },
+            ) as response:
+                body = "".join(response.iter_text())
+
+        assert response.status_code == 200
+        assert "分析日期无效" in body
+        run_job.assert_not_called()
+
     def test_valid_stock_dry_run_creates_job(self):
         """Valid stock message with dry_run creates and completes a job."""
         with patch("api.main._ai_extract_symbol_and_date", return_value=("600519.SH", "2024-01-15", ["short"], [], [], {})):
@@ -250,6 +410,121 @@ class TestChatCompletionsEndpoint:
         result = _wait_job(self.client, self.token, job_id)
         assert result["status"] == "completed"
         assert result["decision"] == "DRY_RUN"
+
+    def test_chat_rejects_mismatched_cn_exchange_suffix(self):
+        with patch(
+            "api.main._ai_extract_symbol_and_date",
+            return_value=("600519.BJ", "2024-01-15", ["short"], [], [], {}),
+        ):
+            r = self.client.post("/v1/chat/completions", headers=self.headers, json={
+                "messages": [{"role": "user", "content": "分析600519.BJ"}],
+                "stream": False,
+                "dry_run": True,
+            })
+        assert r.status_code == 400
+        assert "交易所后缀无效" in r.json()["detail"]
+
+    def test_chat_rejects_multi_symbol_before_llm_can_choose_one(self):
+        for query in (
+            "Compare AAPL and MSFT",
+            "analyze aapl and msft",
+            "please analyze aapl or msft",
+            "分析600519和BRK.B",
+            "比较AAPL和600519",
+            "分析 AAPL、MSFT",
+            "AAPL/MSFT",
+        ):
+            with patch(
+                "api.main._ai_extract_symbol_and_date",
+                return_value=("AAPL", None, ["short"], [], [], {}),
+            ) as extractor:
+                r = self.client.post("/v1/chat/completions", headers=self.headers, json={
+                    "messages": [{"role": "user", "content": query}],
+                    "stream": False,
+                    "dry_run": True,
+                })
+
+            assert r.status_code == 422
+            assert "一个明确标的" in r.json()["detail"]
+            extractor.assert_not_called()
+
+    def test_chat_imported_zero_position_is_not_marked_explicit(self):
+        captured = {}
+
+        async def _capture_run(_job_id, analyze_request, *_args, **_kwargs):
+            captured["request"] = analyze_request
+
+        with (
+            patch(
+                "api.main._ai_extract_symbol_and_date",
+                return_value=("AAPL", None, ["short"], [], [], {}),
+            ),
+            patch(
+                "api.main._compose_analysis_user_context",
+                return_value={"current_position": 0},
+            ),
+            patch("api.main._run_job", side_effect=_capture_run),
+        ):
+            r = self.client.post("/v1/chat/completions", headers=self.headers, json={
+                "messages": [{"role": "user", "content": "我有持仓，请帮我减仓 AAPL"}],
+                "stream": False,
+                "dry_run": True,
+            })
+
+        assert r.status_code == 200
+        analyze_request = captured["request"]
+        assert "current_position" not in analyze_request.model_fields_set
+        assert analyze_request.current_position is None
+        assert analyze_request.user_intent["user_context"]["current_position"] == 0
+
+    def test_chat_dry_run_reports_imported_and_inferred_context(self):
+        merged_context = {
+            "current_position": 200,
+            "average_cost": 123.45,
+            "current_position_pct": 25,
+            "user_notes": "持仓导入；模型补充",
+        }
+        with (
+            patch(
+                "api.main._ai_extract_symbol_and_date",
+                return_value=(
+                    "AAPL",
+                    None,
+                    ["short"],
+                    [],
+                    [],
+                    {"user_notes": "模型补充"},
+                ),
+            ),
+            patch(
+                "api.main._compose_analysis_user_context",
+                return_value=merged_context,
+            ),
+        ):
+            response = self.client.post(
+                "/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "messages": [{"role": "user", "content": "分析 AAPL"}],
+                    "stream": False,
+                    "dry_run": True,
+                },
+            )
+
+        assert response.status_code == 200
+        job_id = response.json()["id"].replace("chatcmpl-", "")
+        result = _wait_job(self.client, self.token, job_id)
+        assert result["result"]["user_context"] == merged_context
+
+    def test_streaming_chat_rejects_multi_symbol_before_job_creation(self):
+        r = self.client.post("/v1/chat/completions", headers=self.headers, json={
+            "messages": [{"role": "user", "content": "比较 AAPL 和 MSFT"}],
+            "stream": True,
+            "dry_run": True,
+        })
+
+        assert r.status_code == 422
+        assert "一个明确标的" in r.json()["detail"]
 
     def test_requires_auth(self):
         r = self.client.post("/v1/chat/completions", json={
@@ -1022,6 +1297,266 @@ class TestRuntimeTierGate:
         result = _wait_job(self.client, self.token, job_id)
         assert result["status"] == "completed"
         assert result["decision"] == "DRY_RUN"
+
+    def test_direct_query_can_supply_omitted_symbol(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "分析600519.SH的中线建仓机会",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        result = _wait_job(self.client, self.token, job_id)
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600519.SH"
+
+    def test_explicit_ss_alias_is_canonicalized(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SS",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600519.SH"
+
+    def test_company_name_query_is_resolved_before_job_creation(self, monkeypatch):
+        import api.main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "_load_cn_stock_map",
+            lambda: {"贵州茅台": "600519.SH"},
+        )
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "分析贵州茅台的中线机会",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600519.SH"
+
+    def test_direct_company_name_symbol_is_resolved_before_validation(self, monkeypatch):
+        import api.main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "_load_cn_stock_map",
+            lambda: {"贵州茅台": "600519.SH"},
+        )
+        response = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "贵州茅台",
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
+
+        assert response.status_code == 200
+        result = _wait_job(self.client, self.token, response.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600519.SH"
+
+    def test_supplied_symbol_rejects_mismatched_company_name_pair(self, monkeypatch):
+        import api.main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "_load_cn_stock_map",
+            lambda: {"五粮液": "000858.SZ", "贵州茅台": "600519.SH"},
+        )
+        monkeypatch.setattr(main_module, "_cn_stock_map", None)
+
+        response = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "query": "分析五粮液(600519.SH)",
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
+
+        assert response.status_code == 422
+        assert "公司名称与代码" in response.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "query",
+        ("预算100000元", "持仓100000股", "可用资金100000，分析风险"),
+    )
+    def test_supplied_symbol_accepts_six_digit_amounts(self, query):
+        response = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "query": query,
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
+
+        assert response.status_code == 200
+        result = _wait_job(self.client, self.token, response.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600519.SH"
+
+    def test_supplied_symbol_generic_query_does_not_load_stock_map(self, monkeypatch):
+        import api.main as main_module
+
+        def fail_if_loaded():
+            raise AssertionError("generic supplied-symbol query must not load stock map")
+
+        monkeypatch.setattr(main_module, "_load_cn_stock_map", fail_if_loaded)
+        monkeypatch.setattr(main_module, "_cn_stock_map", None)
+        response = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "query": "帮我分析一下是否值得买",
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
+
+        assert response.status_code == 200
+        result = _wait_job(self.client, self.token, response.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600519.SH"
+
+    def test_st_company_name_is_not_ambiguous_with_us_ticker(self, monkeypatch):
+        import api.main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "_load_cn_stock_map",
+            lambda: {"ST华微": "600360.SH"},
+        )
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "分析ST华微的机会",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "600360.SH"
+
+    def test_latin_prefixed_company_name_is_not_ambiguous(self, monkeypatch):
+        import api.main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "_load_cn_stock_map",
+            lambda: {"TCL科技": "000100.SZ"},
+        )
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "分析TCL科技",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "000100.SZ"
+
+    def test_latin_prefixed_company_name_with_question_is_not_ambiguous(
+        self, monkeypatch
+    ):
+        import api.main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "_load_cn_stock_map",
+            lambda: {"TCL科技": "000100.SZ"},
+        )
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "TCL科技值得买吗",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "000100.SZ"
+
+    def test_unresolved_omitted_symbol_is_rejected_without_job(self, monkeypatch):
+        import api.main as main_module
+
+        monkeypatch.setattr(main_module, "_load_cn_stock_map", lambda: {})
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "分析一家未知公司的PE和ROE",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 422
+        assert "无法唯一识别分析标的" in r.json()["detail"]
+
+    def test_unknown_exchange_suffix_is_rejected_without_job(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "分析600519.XX",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 422
+        assert "无法唯一识别分析标的" in r.json()["detail"]
+
+    def test_supplied_symbol_rejects_unresolved_query_code_without_job(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "AAPL",
+            "query": "分析600519.XX",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 422
+        assert "代码无法确认" in r.json()["detail"]
+
+    def test_explicit_wordlike_us_ticker_is_accepted(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "Analyze AI",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "AI"
+
+    def test_lowercase_us_ticker_in_explicit_context_is_accepted(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "analyze aapl",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 200
+        result = _wait_job(self.client, self.token, r.json()["job_id"])
+        assert result["status"] == "completed"
+        assert result["result"]["symbol"] == "AAPL"
+
+    def test_multi_us_ticker_chinese_query_is_rejected(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "query": "比较AAPL和MSFT",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+
+        assert r.status_code == 422
+        assert "一次分析只支持一个明确标的" in r.json()["detail"]
 
     def test_light_research_without_confirmation_passes(self):
         r = self.client.post("/v1/analyze", headers=self.headers, json={

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from api.database import Base, ReportDB
@@ -58,6 +58,73 @@ def test_recover_stale_active_reports_marks_empty_running_report_failed():
         db.close()
 
 
+def test_legacy_avoid_without_execution_action_hides_persisted_target():
+    db = _make_session()
+    try:
+        report = _add_report(db, status="completed")
+        report.research_direction = "偏空"
+        report.execution_action = None
+        report.action_label = "回避"
+        report.target_price = 186.0
+        report.result_data = {
+            "research_direction": "偏空",
+            "action_label": "回避",
+            "target_price": 186.0,
+        }
+        db.commit()
+        report_id = report.id
+
+        normalized = report_service.get_report(db, report_id)
+
+        assert normalized.target_price is None
+        assert normalized.result_data["target_price"] is None
+        persisted_target = db.execute(
+            text("SELECT target_price FROM reports WHERE id = :report_id"),
+            {"report_id": report_id},
+        ).scalar_one()
+        assert persisted_target == 186.0
+    finally:
+        db.close()
+
+
+def test_legacy_reduce_without_execution_action_keeps_trigger_target():
+    report = type(
+        "LegacyReport",
+        (),
+        {
+            "research_direction": "偏空",
+            "execution_action": None,
+            "action_label": "条件减仓",
+            "decision": "SELL",
+            "target_price": 150.0,
+            "result_data": None,
+        },
+    )()
+
+    normalized = report_service.normalize_report_action_label(report)
+
+    assert normalized.target_price == 150.0
+
+
+def test_legacy_exit_keeps_target_even_when_label_says_avoid():
+    report = type(
+        "LegacyReport",
+        (),
+        {
+            "research_direction": "偏空",
+            "execution_action": None,
+            "action_label": "回避",
+            "decision": "SELL",
+            "target_price": 145.0,
+            "result_data": None,
+        },
+    )()
+
+    normalized = report_service.normalize_report_action_label(report)
+
+    assert normalized.target_price == 145.0
+
+
 def test_recover_stale_active_reports_marks_partial_running_report_failed():
     db = _make_session()
     try:
@@ -92,7 +159,7 @@ def test_finalize_orphan_report_marks_pending_report_failed():
         db.close()
 
 
-def test_resolve_report_fields_uses_manager_trade_plan_when_final_has_dash_prices():
+def test_bearish_legacy_wait_does_not_expose_manager_target_as_executable():
     resolved = report_service.resolve_report_fields(
         result_data={
             "final_trade_decision": (
@@ -110,7 +177,9 @@ def test_resolve_report_fields_uses_manager_trade_plan_when_final_has_dash_price
         }
     )
 
-    assert resolved["target_price"] == 126.78
+    assert resolved["research_direction"] == "偏空"
+    assert resolved["execution_action"] == "WAIT"
+    assert resolved["target_price"] is None
     assert resolved["stop_loss_price"] == 133.5
 
 
@@ -147,3 +216,82 @@ def test_resolve_report_fields_ignores_generated_quality_check_and_numbered_risk
 
     assert resolved["target_price"] is None
     assert resolved["stop_loss_price"] is None
+
+
+def test_bearish_wait_suppresses_upstream_bullish_target_price():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": "最终结论：偏空，等待观察。目标价：186.00",
+            "research_direction": "偏空",
+            "execution_action": "WAIT",
+            "action_label": "回避",
+        },
+        has_position=False,
+    )
+
+    assert resolved["execution_action"] == "WAIT"
+    assert resolved["action_label"] == "回避"
+    assert resolved["target_price"] is None
+
+
+def test_bearish_wait_derived_from_legacy_text_suppresses_target_price():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": "最终裁决：偏空，建议回避。目标价：186.00",
+        },
+        has_position=False,
+    )
+
+    assert resolved["research_direction"] == "偏空"
+    assert resolved["execution_action"] == "WAIT"
+    assert resolved["action_label"] == "回避"
+    assert resolved["target_price"] is None
+
+
+def test_legacy_bearish_wait_hides_persisted_target_without_database_mutation():
+    db = _make_session()
+    try:
+        report = _add_report(db, status="completed")
+        report.research_direction = "偏空"
+        report.execution_action = "WAIT"
+        report.action_label = "回避"
+        report.target_price = 186.0
+        report.result_data = {
+            "research_direction": "偏空",
+            "execution_action": "WAIT",
+            "action_label": "回避",
+            "target_price": 186.0,
+        }
+        db.commit()
+        report_id = report.id
+
+        normalized = report_service.get_report(db, report_id)
+
+        assert normalized.target_price is None
+        assert normalized.result_data["target_price"] is None
+        persisted_target = db.execute(
+            text("SELECT target_price FROM reports WHERE id = :report_id"),
+            {"report_id": report_id},
+        ).scalar_one()
+        assert persisted_target == 186.0
+    finally:
+        db.close()
+
+
+def test_explicit_wait_overrides_stale_legacy_sell_when_hiding_target():
+    report = type(
+        "MigratedReport",
+        (),
+        {
+            "research_direction": "偏空",
+            "execution_action": "WAIT",
+            "action_label": "回避",
+            "decision": "SELL",
+            "target_price": 145.0,
+            "result_data": None,
+        },
+    )()
+
+    normalized = report_service.normalize_report_action_label(report)
+
+    assert normalized.target_price is None
