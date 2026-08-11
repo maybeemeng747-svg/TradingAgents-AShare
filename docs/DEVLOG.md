@@ -1,5 +1,31 @@
 # 修改日志
 
+## 2026-08-11 | DATA-TUSHARE-001 — Tushare Pro 结构化财务主源接入
+
+- **目标**：补齐 A 股公司身份、财务三表、财务指标与业绩预告的稳定结构化真源，降低代码/公司错配、年度累计误当 Q4、模型自行猜测财务变动原因等风险。
+- **接入范围**：
+  - 财务主源：`stock_basic`、`stock_company`、`income`、`balancesheet`、`cashflow`、`fina_indicator`、`daily_basic`、`forecast`。
+  - 市场数据主源/交叉验证：`moneyflow`、`top_list`、`margin_detail`；日线 `daily + adj_factor` 仅作 fallback。
+  - 回购 `repurchase` 作为结构化 fallback；实时行情、新闻、公告原文和研报全文未切换到 Tushare。
+- **数据纪律**：
+  - provider 保留 `ann_date/f_ann_date/end_date/report_type/update_flag`，按分析日过滤未来披露并优先合并口径最新修订。
+  - 日线成交量由“手”换算为“股”，成交额由“千元”换算为“元”；个股资金流明确标注“万元、非板块资金流”。
+  - 当前公司资料不进入历史回放；早于上市日或历史分析日改走其他可验证来源。资金流缺少任一大单/超大单分项时不以 0 补齐，空壳财报不阻断 fallback。
+  - Tushare 日线只有在复权因子完整、有效时才进入技术分析；缺失或局部缺失均 fail-closed 转下一个 provider。数值为 0 的合法财务字段保留为有效证据。
+  - `daily_basic/fina_indicator/forecast` 等可选端点调用失败时，报告显式标记 `data_quality=PARTIAL`，与合法空数据区分。
+  - 龙虎榜和两融空表分别输出 `NORMAL_NO_DATA`，与接口失败、未查询状态分离。
+  - 回购接口按日期窗口查询；命中 2000 行上限时递归细分，单日仍触顶则返回 `FAILED` 继续 fallback，禁止把截断结果误报为无回购。
+  - Token 只从 `TUSHARE_TOKEN` 环境变量读取，错误文本强制脱敏；无 token 时不注册 provider，现有 fallback 链仍可运行。
+- **验证**：
+  - provider、source catalog、财务期间口径、raw evidence、资金流/龙虎榜状态矩阵、财务 replay 与 readiness 相关核心回归：**490 passed**。
+  - 数据、证据、provider、资金流、龙虎榜和两融扩展套件：**3063 passed / 6 skipped / 0 failed**。
+  - Codex 对抗 review 补齐：历史资料穿越、缺失资金分项伪造、空壳财报误判成功、合法零值丢失、可选端点静默失败、未复权 K 线混入、回购响应截断、token 全异常路径脱敏、累计合并报表口径过滤、龙虎榜元转万元、线程内 provider 来源隔离与字段级 endpoint 追踪。最终 review 无 correctness finding；聚焦复核 **181 passed**。
+  - 使用本机已配置 token 对 `603629.SH` 完成真实路由冒烟：公司资料、利润表、资产负债表、现金流、个股资金流均由 `cn_tushare` 命中；龙虎榜/两融返回正常无数据四态。
+  - 全库套件在第一轮 review 前曾运行至 98% 后因历史慢测试中断：**11878 passed / 17 skipped / 47 failed**；本次涉及的数据链现已由上述 3063 项零失败回归覆盖。其余失败可在未含本改动的主 checkout 独立复现，主要涉及自动开发 fixture、TradeFlow 禁止词、旧路径假设与知识库 CLI 环境。
+- **约束**：未调用 live LLM、未写生产数据库、未修改 prompts、未提交或输出 token。
+
+---
+
 ## 2026-07-27 | 官方 v0.8.1 选择性吸收 — 数据签名、决策否定与线程池防卡死
 
 - **同步策略**：本地分支相对官方主线已深度分叉，不整包 merge；仅移植可独立验证且不破坏本地证据契约的修复。
