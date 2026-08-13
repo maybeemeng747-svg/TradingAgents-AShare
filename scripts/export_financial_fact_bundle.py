@@ -11,6 +11,8 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -141,26 +143,59 @@ def _publish_verified_bundle(path: Path, bundle: dict[str, object]) -> bool:
     return verified
 
 
+def _available_default_provider_names(registry: object) -> tuple[str, ...]:
+    """Keep optional authenticated sources out of tokenless default runs."""
+    special = {"cn_eastmoney_financial", "cn_cninfo_identity"}
+    return tuple(
+        name
+        for name in DEFAULT_PROVIDER_NAMES
+        if name in special or getattr(registry, "get")(name) is not None
+    )
+
+
 def main() -> int:
+    # Load the repository-local token at runtime only. Importing this module in
+    # tests or from the knowledge bridge must not mutate the caller's process.
+    load_dotenv(ROOT / ".env", override=False)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("symbol")
+    parser.add_argument("symbol", nargs="?")
     parser.add_argument("--as-of", default=date.today().isoformat())
     parser.add_argument(
         "--providers",
-        default=",".join(DEFAULT_PROVIDER_NAMES),
+        default=None,
         help=(
-            "Comma-separated provider names; default: "
-            "cn_astock,cn_eastmoney_financial,cn_cninfo_identity"
+            "Comma-separated provider names; default uses configured sources "
+            "from: " + ",".join(DEFAULT_PROVIDER_NAMES)
         ),
     )
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--list-configured-providers",
+        action="store_true",
+        help="Print the configured provider names without collecting data.",
+    )
     args = parser.parse_args()
 
     registry = build_default_registry()
+    if args.list_configured_providers:
+        print(
+            json.dumps(
+                {"providers": list(_available_default_provider_names(registry))},
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if not args.symbol:
+        parser.error("symbol is required unless --list-configured-providers is used")
+    if args.output is None:
+        parser.error("--output is required unless --list-configured-providers is used")
     providers = []
-    for name in (part.strip() for part in args.providers.split(",")):
-        if not name:
-            continue
+    requested_names = (
+        tuple(part.strip() for part in args.providers.split(",") if part.strip())
+        if args.providers is not None
+        else _available_default_provider_names(registry)
+    )
+    for name in requested_names:
         if name == "cn_eastmoney_financial":
             provider = CnEastmoneyFinancialProvider()
         elif name == "cn_cninfo_identity":

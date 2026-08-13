@@ -122,6 +122,14 @@ class CnTushareProvider(BaseMarketDataProvider):
         return "cn_tushare"
 
     @property
+    def financial_source_id(self) -> str:
+        return "tushare_pro"
+
+    @property
+    def identity_source_id(self) -> str:
+        return "tushare_pro"
+
+    @property
     def configured(self) -> bool:
         return bool(self._token or self._query_fn)
 
@@ -262,7 +270,10 @@ class CnTushareProvider(BaseMarketDataProvider):
         return (
             f"## {title}\n\n"
             f"<!-- source=tushare endpoint={endpoint} as_of={_date_iso(as_of)} unit={unit} -->\n\n"
-            + frame.to_markdown(index=False)
+            # Pandas defaults to roughly six significant digits here. Use the
+            # round-trip-safe width for Python floats so even large bank and
+            # insurer statements survive Markdown transport unchanged.
+            + frame.to_markdown(index=False, floatfmt=".17g")
         )
 
     def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:

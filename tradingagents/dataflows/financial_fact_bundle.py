@@ -36,6 +36,7 @@ SINGLE_SOURCE = "SINGLE_SOURCE"
 CONFLICT = "CONFLICT"
 
 DEFAULT_PROVIDER_NAMES = (
+    "cn_tushare",
     "cn_astock",
     "cn_eastmoney_financial",
     "cn_cninfo_identity",
@@ -45,6 +46,7 @@ _DEFAULT_FINANCIAL_SOURCE_IDS = {
     # statements. They are separate code paths, not independent data sources.
     "cn_akshare": "sina_finance",
     "cn_astock": "sina_finance",
+    "cn_tushare": "tushare_pro",
     "cn_eastmoney_financial": "eastmoney_datacenter",
     "cn_cninfo_identity": "cninfo_identity_only",
     "yfinance": "yahoo_finance",
@@ -53,6 +55,7 @@ _DEFAULT_FINANCIAL_SOURCE_IDS = {
 _DEFAULT_IDENTITY_SOURCE_IDS = {
     "cn_akshare": "eastmoney",
     "cn_astock": "eastmoney",
+    "cn_tushare": "tushare_pro",
     "cn_eastmoney_financial": "eastmoney",
     "cn_cninfo_identity": "cninfo",
     "yfinance": "yahoo_finance",
@@ -62,9 +65,11 @@ _SOURCE_VALUE_PRIORITY = {
     # Eastmoney exposes statement values to cents, while Sina commonly rounds
     # large values in its markdown table. Cross-source verification must not
     # invent a third value by averaging the two.
+    "tushare_pro": 110,
     "eastmoney_datacenter": 100,
     "sina_finance": 90,
 }
+DECISION_WINDOW_FACTS_PER_METRIC = 6
 _STATEMENT_METHODS = {
     "income_statement": "get_income_statement",
     "cashflow": "get_cashflow",
@@ -577,6 +582,50 @@ def reconcile_facts(
     return reconciled
 
 
+def _partition_fact_conflicts(
+    facts: Iterable[Mapping[str, Any]],
+    *,
+    per_metric: int = DECISION_WINDOW_FACTS_PER_METRIC,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Split conflicts into decision-window and older audit-only rows."""
+    if per_metric < 1:
+        raise ValueError("per_metric must be positive")
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for fact in facts:
+        metric = str(fact.get("metric") or "")
+        if metric:
+            grouped.setdefault(metric, []).append(fact)
+
+    blocking: list[Mapping[str, Any]] = []
+    historical: list[Mapping[str, Any]] = []
+    for rows in grouped.values():
+        selected_dates = set(
+            sorted(
+                {str(fact.get("report_date") or "") for fact in rows},
+                reverse=True,
+            )[:per_metric]
+        )
+        for fact in rows:
+            if fact.get("verification_status") != CONFLICT:
+                continue
+            if str(fact.get("report_date") or "") in selected_dates:
+                blocking.append(fact)
+            else:
+                historical.append(fact)
+    return blocking, historical
+
+
+def _fact_conflict_counts(
+    facts: Iterable[Mapping[str, Any]],
+    *,
+    per_metric: int = DECISION_WINDOW_FACTS_PER_METRIC,
+) -> tuple[int, int]:
+    blocking, historical = _partition_fact_conflicts(
+        facts, per_metric=per_metric
+    )
+    return len(blocking), len(historical)
+
+
 def _identity_consensus(captures: Iterable[ProviderCapture]) -> dict[str, Any]:
     materialized = list(captures)
     conflicted = [
@@ -810,19 +859,30 @@ def build_financial_fact_bundle(
     verified_count = sum(
         fact["verification_status"] == VERIFIED_CROSS_SOURCE for fact in facts
     )
-    conflict_count = sum(fact["verification_status"] == CONFLICT for fact in facts)
+    blocking_conflict_rows, historical_conflict_rows = _partition_fact_conflicts(
+        facts
+    )
+    historical_conflict_ids = {id(fact) for fact in historical_conflict_rows}
+    consumable_facts = [
+        fact for fact in facts if id(fact) not in historical_conflict_ids
+    ]
+    blocking_conflicts = len(blocking_conflict_rows)
+    historical_conflicts = len(historical_conflict_rows)
+    conflict_count = blocking_conflicts + historical_conflicts
     if (
         any(capture.status == CONFLICT for capture in captures)
         or identity.get("status") == CONFLICT
-        or conflict_count
+        or blocking_conflicts
     ):
         status = CONFLICT
     elif verified_count:
         status = HAS_DATA
-    elif facts:
+    elif consumable_facts:
         status = SINGLE_SOURCE
     elif any(capture.status == QUERY_FAILED for capture in captures):
         status = QUERY_FAILED
+    elif historical_conflicts:
+        status = CONFLICT
     else:
         status = NORMAL_NO_DATA
 
@@ -835,13 +895,18 @@ def build_financial_fact_bundle(
         "status": status,
         "identity": identity,
         "providers": [capture.to_dict() for capture in captures],
-        "facts": facts,
+        "facts": consumable_facts,
         "summary": {
             "verified_cross_source": verified_count,
             "single_source": sum(
                 fact["verification_status"] == SINGLE_SOURCE for fact in facts
             ),
             "conflicts": conflict_count,
+            "blocking_conflicts": blocking_conflicts,
+            "historical_conflicts": historical_conflicts,
+        },
+        "audit": {
+            "historical_conflicts": [dict(fact) for fact in historical_conflict_rows],
         },
         "limitations": [
             "Structured provider data verifies reported numeric fields, not management explanations.",

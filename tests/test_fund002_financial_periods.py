@@ -90,6 +90,23 @@ def test_disclosure_date_provenance_distinguishes_actual_from_inferred():
     assert by_period["2025-03-31"].disclosure_date_inferred is True
 
 
+def test_actual_announcement_date_wins_regardless_of_column_order():
+    facts = normalize_financial_records(
+        [
+            {
+                "报告日": "2026-03-31",
+                "公告日期": "2026-04-20",
+                "实际公告日期": "2026-04-25",
+                "营业总收入": "10",
+            }
+        ],
+        statement_type="income_statement",
+        source="tushare_pro",
+    )
+    assert facts[0].disclosure_date == "2026-04-25"
+    assert facts[0].disclosure_date_inferred is False
+
+
 def test_balance_sheet_is_point_in_time_not_cumulative():
     assert period_scope_for_date("2025-12-31", "balance_sheet") == POINT_IN_TIME
     facts = normalize_financial_records(
@@ -216,6 +233,23 @@ def test_balance_sheet_accepts_legacy_net_fixed_assets_label():
     fixed_assets = next(fact for fact in facts if fact.metric == "fixed_assets")
     assert fixed_assets.value == 12376602856.87
     assert fixed_assets.period_scope == POINT_IN_TIME
+
+
+def test_balance_sheet_accepts_tushare_fixed_assets_total_label():
+    facts = normalize_financial_records(
+        [
+            {
+                "报告日": "2026-03-31",
+                "实际公告日期": "2026-04-25",
+                "固定资产合计": "12376602856.87",
+            }
+        ],
+        statement_type="balance_sheet",
+        source="tushare_pro",
+    )
+    fixed_assets = next(fact for fact in facts if fact.metric == "fixed_assets")
+    assert fixed_assets.value == 12376602856.87
+    assert fixed_assets.disclosure_date == "2026-04-25"
 
 
 def test_astock_income_fallback_preserves_report_date_for_normalization():
