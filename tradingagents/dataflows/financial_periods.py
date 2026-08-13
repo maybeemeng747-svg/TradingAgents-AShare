@@ -47,7 +47,7 @@ _METRIC_ALIASES = {
     ),
     "accounts_receivable": ("应收账款",),
     "inventory": ("存货",),
-    "fixed_assets": ("固定资产", "固定资产净额"),
+    "fixed_assets": ("固定资产", "固定资产净额", "固定资产合计"),
 }
 
 
@@ -298,18 +298,26 @@ def _record_date(record: Mapping[str, Any]) -> str | None:
 
 
 def _record_disclosure_date(record: Mapping[str, Any]) -> str | None:
-    for key, value in record.items():
-        if str(key).strip() not in {
-            "公告日期",
-            "披露日期",
-            "来源公告日期",
-            "notice_date",
-            "disclosure_date",
-        }:
-            continue
-        match = _DATE_RE.search(str(value or ""))
-        if match:
-            return "-".join(match.groups())
+    # Alias order is semantic priority. Tushare exposes both the first
+    # announcement date and the final announcement date; the latter is the
+    # earliest defensible availability date for the selected revised row.
+    aliases = (
+        "实际公告日期",
+        "f_ann_date",
+        "公告日期",
+        "披露日期",
+        "来源公告日期",
+        "notice_date",
+        "disclosure_date",
+        "ann_date",
+    )
+    for alias in aliases:
+        for key, value in record.items():
+            if alias != str(key).strip():
+                continue
+            match = _DATE_RE.search(str(value or ""))
+            if match:
+                return "-".join(match.groups())
     return None
 
 

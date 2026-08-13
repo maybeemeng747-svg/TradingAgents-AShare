@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
 
+from scripts import export_financial_fact_bundle as exporter_module
 from scripts.export_financial_fact_bundle import (
+    _available_default_provider_names,
     _is_verified_export,
     _persist_export_bundle,
     _publish_verified_bundle,
@@ -22,16 +25,61 @@ from tradingagents.dataflows.financial_fact_bundle import (
     SINGLE_SOURCE,
     VERIFIED_CROSS_SOURCE,
     _identity_source_ids,
+    _fact_conflict_counts,
+    _partition_fact_conflicts,
     build_financial_fact_bundle,
 )
 
 
 def test_default_providers_include_independent_identity_source():
     assert DEFAULT_PROVIDER_NAMES == (
+        "cn_tushare",
         "cn_astock",
         "cn_eastmoney_financial",
         "cn_cninfo_identity",
     )
+
+
+def test_tokenless_default_skips_unregistered_optional_tushare():
+    registry = Mock()
+    registry.get.side_effect = lambda name: (
+        None if name == "cn_tushare" else object()
+    )
+
+    assert _available_default_provider_names(registry) == (
+        "cn_astock",
+        "cn_eastmoney_financial",
+        "cn_cninfo_identity",
+    )
+
+
+def test_configured_default_includes_tushare():
+    registry = Mock()
+    registry.get.return_value = object()
+
+    assert _available_default_provider_names(registry) == DEFAULT_PROVIDER_NAMES
+
+
+def test_list_configured_providers_cli_is_read_only(monkeypatch, capsys):
+    registry = Mock()
+    registry.get.side_effect = lambda name: (
+        None if name == "cn_tushare" else object()
+    )
+    monkeypatch.setattr(exporter_module, "build_default_registry", lambda: registry)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["export_financial_fact_bundle.py", "--list-configured-providers"],
+    )
+
+    assert exporter_module.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "providers": [
+            "cn_astock",
+            "cn_eastmoney_financial",
+            "cn_cninfo_identity",
+        ]
+    }
 
 
 def test_astock_cninfo_fallback_is_not_relabelled_as_eastmoney():
@@ -263,6 +311,112 @@ def test_cross_source_verification_keeps_a_real_source_value():
     assert revenue["verification_status"] == VERIFIED_CROSS_SOURCE
     assert revenue["value"] == 1000000123.45
     assert revenue["value_source_id"] == "eastmoney_datacenter"
+
+
+def test_tushare_is_independent_and_has_value_priority():
+    result = _bundle(
+        FakeProvider(
+            "cn_tushare",
+            revenue="1000000456.78",
+            source_id="tushare_pro",
+            identity_source_id="tushare_pro",
+        ),
+        FakeProvider(
+            "cn_eastmoney_financial",
+            revenue="1000000123.45",
+            source_id="eastmoney_datacenter",
+            identity_source_id="eastmoney",
+        ),
+    )
+    revenue = next(
+        fact
+        for fact in result["facts"]
+        if fact["metric"] == "revenue" and fact["report_date"] == "2026-03-31"
+    )
+    assert result["identity"]["status"] == VERIFIED_CROSS_SOURCE
+    assert revenue["verification_status"] == VERIFIED_CROSS_SOURCE
+    assert revenue["source_ids"] == ["eastmoney_datacenter", "tushare_pro"]
+    assert revenue["value"] == 1000000456.78
+    assert revenue["value_source_id"] == "tushare_pro"
+
+
+def test_old_conflict_is_audited_without_blocking_recent_window():
+    facts = [
+        {
+            "metric": "operating_cost",
+            "report_date": f"202{year}-{month_day}",
+            "period_scope": "FY_YTD",
+            "is_derived": False,
+            "verification_status": VERIFIED_CROSS_SOURCE,
+        }
+        for year, month_day in (
+            (6, "03-31"),
+            (5, "12-31"),
+            (5, "09-30"),
+            (5, "06-30"),
+            (5, "03-31"),
+            (4, "12-31"),
+        )
+    ]
+    facts.append(
+        {
+            "metric": "operating_cost",
+            "report_date": "2023-12-31",
+            "period_scope": "SINGLE_QUARTER",
+            "is_derived": True,
+            "verification_status": CONFLICT,
+        }
+    )
+
+    assert _fact_conflict_counts(facts) == (0, 1)
+    blocking, historical = _partition_fact_conflicts(facts)
+    assert blocking == []
+    assert historical == [facts[-1]]
+
+
+def test_recent_conflict_remains_blocking():
+    facts = [
+        {
+            "metric": "revenue",
+            "report_date": "2026-03-31",
+            "period_scope": "Q1_YTD",
+            "is_derived": False,
+            "verification_status": CONFLICT,
+        }
+    ]
+
+    assert _fact_conflict_counts(facts) == (1, 0)
+
+
+def test_conflict_window_keeps_all_scopes_from_cutoff_period():
+    facts = [
+        {
+            "metric": "revenue",
+            "report_date": report_date,
+            "period_scope": "Q1_YTD",
+            "is_derived": False,
+            "verification_status": VERIFIED_CROSS_SOURCE,
+        }
+        for report_date in (
+            "2026-03-31",
+            "2025-12-31",
+            "2025-09-30",
+            "2025-06-30",
+            "2025-03-31",
+            "2024-12-31",
+        )
+    ]
+    facts.append(
+        {
+            "metric": "revenue",
+            "report_date": "2024-12-31",
+            "period_scope": "SINGLE_QUARTER",
+            "is_derived": True,
+            "verification_status": CONFLICT,
+        }
+    )
+
+    assert _fact_conflict_counts(facts) == (1, 0)
 
 
 def test_material_provider_conflict_fails_closed():

@@ -480,6 +480,33 @@ def test_statement_rejects_metadata_only_rows():
         provider.get_income_statement("603629.SH", curr_date="2026-05-01")
 
 
+def test_statement_markdown_preserves_financial_precision():
+    income = pd.DataFrame(
+        [
+            {
+                "ts_code": "603629.SH",
+                "ann_date": "20260420",
+                "f_ann_date": "20260420",
+                "end_date": "20251231",
+                "report_type": "1",
+                "total_revenue": 1000000456.78,
+                "n_income_attr_p": 12376602856876.87,
+                "update_flag": "1",
+            }
+        ]
+    )
+    provider = CnTushareProvider(query_fn=_query_from({"income": income}))
+
+    payload = provider.get_income_statement("603629.SH", curr_date="2026-05-01")
+    facts = normalize_financial_markdown(
+        payload, statement_type="income_statement", source="cn_tushare"
+    )
+
+    values = {fact.metric: fact.value for fact in facts}
+    assert values["revenue"] == 1000000456.78
+    assert values["net_profit"] == 12376602856876.87
+
+
 def test_statement_preserves_valid_zero_valued_accounting_metrics():
     income = pd.DataFrame(
         [

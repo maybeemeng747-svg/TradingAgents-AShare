@@ -15593,3 +15593,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/B-002-R1-20260812-190004/
+
+## 2026-08-13 | Tushare 财务事实桥接
+
+- 将 `cn_tushare` 纳入财务事实导出器默认来源，并以 `tushare_pro` 标识独立的财务和公司身份血缘。
+- Tushare 结构化数值在多源一致时作为首选精度值；仍保留新浪、东财与巨潮的独立交叉核验。
+- 财务期间归一化新增 `固定资产合计`，并保证 `实际公告日期` 优先于普通公告日期，避免修订报表产生前视偏差。
+- 导出器仅在运行时读取 TA 根目录 `.env`，不会在模块导入、日志或输出中暴露 token。
+- 导出器提供只读的 configured-provider 清单，供知识库在复用同日缓存前核对来源集合；该清单只含 provider 名称，不返回凭据。
+- 数据包新增最近 6 条/指标的决策窗口：窗口内冲突继续整包阻断；更早口径冲突保留在 `historical_conflicts` 审计计数中，冲突事实本身不进入下游 evidence。
+- 603629.SH 真实只读回放：Tushare 三张报表均返回 `HAS_DATA`，210 条事实；191 条事实交叉验证通过，1 条 2023Q4 营业成本差异被记为历史冲突，决策窗口冲突为 0。
+- 验证：219 项财务来源、期间口径、数据目录和收集器回归通过，`git diff --check` 通过。
