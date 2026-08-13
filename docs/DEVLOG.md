@@ -14505,7 +14505,7 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Priority**: P1
 - **Rounds**: 1 (max)
 - **Status**: FAIL NEEDS_HUMAN
-- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Reason**: OpenCode exited before implementation because its configured API key was invalid; Codex review was skipped, so the mandatory review gate remained closed
 - **Run archive**: docs/task_runs/KB-010-20260705-015530/
 
 ## 2026-07-05 | AUTO-002 Auto Dev Loop
@@ -15530,3 +15530,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - 同时收紧语义解析信任边界：只有带应用分隔符且结构完整的系统审计尾部才会从决策语义中排除；旧报告的历史结论行仍被过滤，但模型标题后的真正最终 WAIT/不买入结论继续生效。
 - 最终独立 review 的最后两项补修：报告字段恢复只信任 metadata 中的 `system_diagnostics_offset`，历史 C-005 报告复制的审计标记不能再污染当前字段；退出动作按最后一条明确指令裁决，最终 HOLD 可覆盖前文减仓，而后文真实退出仍然生效。
 - 最终验证：899 项后端动作/门禁回归、143 项前端测试通过；前端生产构建、Python 编译和 `git diff --check` 在提交前复核。最终一次 `codex review --uncommitted` 因账户额度耗尽未能启动，未将其记作通过；此前独立 review 的全部 P0/P1/P2 correctness findings 已逐项修复并由新增对抗测试覆盖。
+
+## 2026-08-12 | AUTO-002 Auto Dev Loop
+
+- **Task**: B-002-R1 - 调度回调报告字段补修（P2）
+- **Priority**: P2
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/B-002-R1-20260812-190004/

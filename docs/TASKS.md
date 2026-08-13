@@ -235,7 +235,7 @@
 ### B-002-R1: 调度回调报告字段补修（P2）
 - **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/B-002-R1-20260812-190004
 - **depends_on**：B-001-R1
 - **auto_release**：true
 
