@@ -52,7 +52,8 @@ def test_symbol_normalization_covers_supported_a_share_boards():
         _normalize_ts_code("prefix603629.SH")
 
 
-def test_provider_requires_token_or_injected_query():
+def test_provider_requires_token_or_injected_query(monkeypatch):
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
     provider = CnTushareProvider(token="")
     assert provider.configured is False
     with pytest.raises(NotImplementedError, match="TUSHARE_TOKEN"):
