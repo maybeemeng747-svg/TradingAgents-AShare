@@ -74,7 +74,7 @@ class DeepTADispatcher:
     trade_date: str = ""
     daily_count: int = 0
     daily_limit: int = 3
-    blocked_models: tuple = ("deepseek",)
+    blocked_models: tuple = ()  # 2026-08-15: 解除 deepseek 黑名单（V4 GA 后恢复使用）
     default_model: str = ""
     max_retries: int = 1
     min_composite_score: float = 40.0

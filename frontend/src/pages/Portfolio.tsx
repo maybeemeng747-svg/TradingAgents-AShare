@@ -28,7 +28,7 @@ import type { WatchlistItem, WatchlistTableItem, ScheduledAnalysis, StockSearchR
 const HORIZON_LABELS: Record<string, string> = { short: '短线', medium: '中线' }
 const WATCHLIST_BATCH_SPLIT_RE = /[,\s，、；;]+/
 const DEFAULT_SCHEDULED_TASKS = [
-    { trigger_time: '14:30', label: '盘中跟踪' },
+    { trigger_time: '13:15', label: '盘中跟踪' },
     { trigger_time: '20:00', label: '盘后复盘' },
 ] as const
 const SCHEDULED_TEST_TOOLTIP =
@@ -1055,7 +1055,7 @@ export default function Portfolio() {
                             添加任务
                         </button>
                     </div>
-                    <p className="text-xs text-slate-400 mb-4">每个交易日在设定时间自动执行，可设置盘中 14:30 或盘后 20:00 等时间</p>
+                    <p className="text-xs text-slate-400 mb-4">每个交易日在设定时间自动执行，可设置盘中 13:15 或盘后 20:00 等时间</p>
 
                     {showScheduledAdd && (
                         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
@@ -1107,7 +1107,7 @@ export default function Portfolio() {
                                     />
                                     <div className="flex h-8 items-center gap-1 rounded-lg border border-emerald-200 bg-white px-2 text-[11px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-300">
                                         <Clock className="h-3 w-3" />
-                                        14:30 盘中 + 20:00 盘后
+                                        13:15 盘中 + 20:00 盘后
                                     </div>
                                     <button
                                         type="button"
