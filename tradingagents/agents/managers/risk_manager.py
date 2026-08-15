@@ -594,17 +594,20 @@ def create_risk_manager(llm, memory):
             evidence_coverage=evidence_coverage,  # [DATA-P0-603629] astock_source_fallback
             fundamental_integrity_valid=fundamental_integrity["is_valid"],
         )
+        readiness_blockers = []
+        if not fundamental_integrity["is_valid"]:
+            readiness_blockers.append("fundamental_semantic_gate")
+        if event_risk_info.get("block_open"):
+            readiness_blockers.append("event_risk_block_open")
         readiness = generate_readiness_score(
             data_completeness,
             confidence,
-            blockers=(
-                []
-                if fundamental_integrity["is_valid"]
-                else ["fundamental_semantic_gate"]
-            ),
+            blockers=readiness_blockers,
         )
-        final_response += format_readiness_score(readiness)
-
+        position_status = get_position_status(
+            user_context,
+            state.get("position_context"),
+        )
         data_sources = [
             ("市场技术数据", has_market),
             ("舆情数据", has_sentiment),
@@ -663,11 +666,6 @@ def create_risk_manager(llm, memory):
         final_response += f"\n\n📊 数据源可用性：\n{checklist}"
 
         # ── D-002 ~ D-004: 证据门禁 + 双等级 + 机会评分 ──
-        position_status = get_position_status(
-            user_context,
-            state.get("position_context"),
-        )
-
         signals = extract_execution_signals(state, final_response, reports_dict)
 
         _llm_body = cleaned_response
@@ -758,6 +756,14 @@ def create_risk_manager(llm, memory):
             buy_result["note"] = "；".join(
                 part for part in (existing_note, integrity_note) if part
             )
+
+        final_response += format_readiness_score(
+            readiness,
+            position_status=position_status,
+            entry_gate_blocked=not gate.get("passed", False),
+            buy_level=buy_result["level"],
+            risk_level=risk_result["level"],
+        )
 
         opp_score = calculate_opportunity_score(
             trend_confirmed=signals["trend_confirmed"],

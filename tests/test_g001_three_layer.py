@@ -615,8 +615,8 @@ class TestP02SanitizerFix:
         # 不应残留半截
         assert "清仓" not in result or "该持仓动作不适用" in result
 
-    def test_has_position_not_sanitized(self):
-        """有持仓时不执行未持仓 sanitizer。"""
+    def test_has_position_low_risk_level_downgrades_exit(self):
+        """有持仓也不能绕过 Risk Level 对退出动作的授权。"""
         from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
         text = "建议止损离场"
         result, changes = sanitize_forbidden_strong_actions(
@@ -626,5 +626,229 @@ class TestP02SanitizerFix:
             buy_level=1,
             risk_level=1,
         )
-        # 有持仓时止损离场不应被替换
-        assert "建议止损离场" in result
+        assert "建议止损离场" not in result
+        assert "等待触发条件，暂不执行强清仓" in result
+        assert changes
+
+    def test_no_position_preserves_explicit_future_holding_scenarios(self):
+        """右侧/左侧持仓预案不应被改写成半截污染文本。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        text = (
+            "- 右侧持仓：若收盘跌破149.50，止损离场。\n"
+            "- 左侧持仓：若跌破144.25减半仓；若跌破143.00止损。\n"
+            "- 任何持仓若出现新增减持，立即降险或离场。"
+        )
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert result == text
+        assert changes == []
+        assert "该持仓动作不适用" not in result
+
+    def test_no_position_sanitizes_current_action_after_future_holding_plan(self):
+        """未来持仓预案不能掩盖同一行后续的当前清仓指令。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        for text, invalid_action in (
+            ("- 右侧持仓：若收盘跌破149.50止损离场；当前操作：清仓。", "当前操作：清仓"),
+            ("- 右侧持仓：若跌破149.50止损，结论：清仓。", "结论：清仓"),
+            ("- 右侧持仓：若跌破149.50止损，下一步：卖出。", "下一步：卖出"),
+            ("- 左侧持仓：若跌破144.25减半仓，执行方案：止损。", "执行方案：止损"),
+            ("- 右侧持仓：若跌破149.50止损，但建议立即清仓。", "建议立即清仓"),
+            ("- 右侧持仓：若跌破149.50止损，不过应该卖出。", "应该卖出"),
+            ("- 左侧持仓：若跌破144.25减半仓，同时立刻清仓。", "立刻清仓"),
+            ("- 右侧持仓：若跌破149.50止损，建议清仓。", "建议清仓"),
+        ):
+            result, changes = sanitize_forbidden_strong_actions(
+                text,
+                gate={"passed": True, "failures": []},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=1,
+            )
+
+            assert "跌破" in result
+            assert invalid_action not in result
+            assert "该持仓动作不适用，保持观察" in result
+            assert changes
+
+    def test_no_position_preserves_conditional_continuation_but_sanitizes_bare_exit(self):
+        """分号后的条件预案保留，裸清仓指令仍须降级。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        text = "- 左侧持仓：若跌破144.25减半仓；若跌破143.00止损；建议清仓。"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert "左侧持仓：若跌破144.25减半仓；若跌破143.00止损" in result
+        assert "建议清仓" not in result
+        assert "该持仓动作不适用，保持观察" in result
+        assert changes
+
+    def test_no_position_does_not_protect_unconditional_or_current_position_exit(self):
+        """只有带真实触发条件的未来预案可以绕过未持仓清洗。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        for text in (
+            "- 右侧持仓：立即清仓。",
+            "- 左侧持仓：当前持有1000股，建议清仓。",
+            "> 右侧持仓：执行清仓。",
+            "- 右侧持仓：股价偏高，立即清仓。",
+            "- 右侧持仓：目前股价已跌破149.50，建议清仓。",
+            "- 右侧持仓：股价跌破149.50，建议清仓。",
+            "- 右侧持仓：收盘跌破149.50，建议清仓。",
+            "- 左侧持仓：收盘价为149.50，建议卖出。",
+            "- 右侧持仓：立即清仓，若后续跌破149.50则继续观察。",
+            "- 右侧持仓：建议清仓，后续若反弹再评估。",
+            "- 左侧持仓：卖出，之后跌破143.00止损。",
+            "- 右侧持仓：先清仓，若跌破149.50止损。",
+            "- 右侧持仓：若反弹则观察但立即清仓。",
+            "- 右侧持仓：若跌破149则观察但建议立即清仓。",
+            "- 右侧持仓：若跌破149则观察同时立即清仓。",
+            "- 右侧持仓：若反弹则观望，立即清仓。",
+            "- 右侧持仓：若反弹则观察，应该卖出。",
+            "- 右侧持仓：若反弹则加仓，立即清仓。",
+            "- 右侧持仓：若反弹则持有，立即清仓。",
+            "- 右侧持仓：若反弹则买入，立即清仓。",
+            "- 右侧持仓：若反弹则增持，建议清仓。",
+            "- 右侧持仓：若跌破149，风险上升，立即清仓。",
+            "- 右侧持仓：若反弹则暂不入场，立即清仓。",
+            "- 右侧持仓：如果消息转好则继续研究，建议清仓。",
+            "- 右侧持仓：若跌破149则发出预警，当前清仓。",
+            "- 右侧持仓：若跌破149，用户当前清仓。",
+            "- 右侧持仓：若跌破149，最终清仓。",
+            "- 右侧持仓：若跌破149，明日卖出。",
+            "- 右侧持仓：若跌破149，转为减仓。",
+            "- 右侧持仓：若跌破149，只止盈。",
+        ):
+            result, changes = sanitize_forbidden_strong_actions(
+                text,
+                gate={"passed": True, "failures": []},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=1,
+            )
+            assert text.rstrip("。") not in result
+            assert "该持仓动作不适用，保持观察" in result
+            assert changes
+
+    def test_no_position_preserves_markdown_conditional_future_plan(self):
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        text = "- **右侧持仓**：若收盘跌破149.50，止损离场。"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=0,
+            risk_level=1,
+        )
+
+        assert result == text
+        assert changes == []
+
+    def test_no_position_preserves_explicit_future_position_plan(self):
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        for text in (
+            "- 右侧持仓：未来持仓后计划减仓。",
+            "- 左侧持仓：买入后建议卖出。",
+            "- 右侧持仓：若未来建仓后考虑止盈。",
+            "- 右侧持仓：触发止损线则清仓。",
+            "- 右侧持仓：跌破149后减仓并止损离场。",
+            "- 右侧持仓：若跌破149，建议减仓或清仓。",
+        ):
+            result, changes = sanitize_forbidden_strong_actions(
+                text,
+                gate={"passed": True, "failures": []},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=1,
+            )
+
+            assert result == text
+            assert changes == []
+
+    def test_no_position_preserves_multistage_future_position_plan(self):
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        for text in (
+            "- 右侧持仓：若跌破149，先减仓，若继续跌破148则清仓。",
+            "- 左侧持仓：若跌破144.25，减半仓，若跌破143.00，止损离场。",
+            "- 右侧持仓：若跌破149，建议减仓，并在跌破148后清仓。",
+            "- 右侧持仓：若跌破149，先减仓，随后清仓。",
+            "- 左侧持仓：若跌破144.25，先减半仓，继而止损离场。",
+            "- 右侧持仓：若跌破149，先减仓，接着清仓。",
+            "- 右侧持仓：若跌破149，先减仓，届时清仓。",
+            "- 左侧持仓：若跌破144.25，先减半仓，之后止损离场。",
+            "- 右侧持仓：若跌破149，先减仓，必要时清仓。",
+            "- 右侧持仓：若跌破149，先减仓，若持续走弱则清仓。",
+            "- 右侧持仓：若基本面恶化则立即清仓。",
+            "- 左侧持仓：若公告出现重大利空，建议减仓。",
+            "- 右侧持仓：若趋势转弱则止损离场。",
+        ):
+            result, changes = sanitize_forbidden_strong_actions(
+                text,
+                gate={"passed": True, "failures": []},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=1,
+            )
+
+            assert result == text
+            assert changes == []
+
+    def test_no_position_does_not_protect_already_triggered_holding_condition(self):
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        for text in (
+            "- 右侧持仓：若目前股价已跌破149.50，建议清仓。",
+            "- 右侧持仓：如果当前已经失守支撑位，应立即止损离场。",
+            "- 左侧持仓：假如今日收盘已跌破144.25，立即减仓。",
+            "- 任何持仓若目前已跌破止损线，立即清仓。",
+            "- 任何持仓若当前风险过高，立即降险或离场。",
+            "- 右侧持仓：昨日跌破149后立即清仓。",
+            "- 左侧持仓：刚跌破144.25后立即减仓。",
+        ):
+            result, changes = sanitize_forbidden_strong_actions(
+                text,
+                gate={"passed": True, "failures": []},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=1,
+            )
+
+            assert text.rstrip("。") not in result
+            assert "该持仓动作不适用，保持观察" in result
+            assert changes
+
+    def test_no_position_preserves_analytical_exit_terminology(self):
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+
+        for text in (
+            "历史回测显示止损离场机制有效。",
+            "止损离场风险仍需评估。",
+            "该模型的止盈退出信号尚未出现。",
+            "止损并离场的历史概率为20%。",
+        ):
+            result, changes = sanitize_forbidden_strong_actions(
+                text,
+                gate={"passed": True, "failures": []},
+                position_status="no_position",
+                buy_level=0,
+                risk_level=1,
+            )
+
+            assert result == text
+            assert changes == []

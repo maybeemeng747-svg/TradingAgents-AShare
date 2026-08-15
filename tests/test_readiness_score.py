@@ -528,6 +528,268 @@ def test_readiness_blocker_downgrades_action_policy():
     assert "置信度降级原因：fundamental_semantic_gate" in block
 
 
+def test_readiness_block_uses_explicit_no_position_policy():
+    score = generate_readiness_score(
+        100,
+        ConfidenceLevel.MEDIUM,
+        blockers=["fundamental_semantic_gate"],
+    )
+
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        entry_gate_blocked=True,
+    )
+
+    assert "中等质量报告 · 未持仓 · 入场门禁未通过" in block
+    assert "持仓状态未知" not in block
+    assert "允许动作：观察" in block
+    assert "条件试仓" in block.split("- 禁止动作：", 1)[1]
+    assert "未持仓且入场门禁未通过，仅允许观察" in block
+
+
+def test_readiness_no_position_buy_level_one_allows_observation_only():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        buy_level=1,
+    )
+
+    assert "允许动作：观察\n" in block
+    forbidden = block.split("- 禁止动作：", 1)[1]
+    assert "条件试仓" in forbidden
+    assert "确认建仓" in forbidden
+
+
+def test_readiness_no_position_buy_level_two_allows_conditional_trial():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        buy_level=2,
+    )
+
+    assert "允许动作：观察, 条件试仓" in block
+    assert "确认建仓" in block.split("- 禁止动作：", 1)[1]
+
+
+def test_readiness_unknown_position_buy_level_two_never_allows_direct_entry():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="unknown",
+        buy_level=2,
+    )
+
+    allowed_line = next(
+        line for line in block.splitlines() if line.startswith("- 允许动作：")
+    )
+    forbidden_line = next(
+        line for line in block.splitlines() if line.startswith("- 禁止动作：")
+    )
+    assert "条件试仓" in allowed_line
+    assert "买入" not in allowed_line
+    assert "加仓" not in allowed_line
+    assert "买入" in forbidden_line
+    assert "加仓" in forbidden_line
+
+
+def test_readiness_existing_position_buy_level_two_does_not_allow_adding():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="has_position",
+        buy_level=2,
+    )
+
+    allowed_line = next(
+        line for line in block.splitlines() if line.startswith("- 允许动作：")
+    )
+    forbidden_line = next(
+        line for line in block.splitlines() if line.startswith("- 禁止动作：")
+    )
+    assert "加仓" not in allowed_line
+    assert "加仓" in forbidden_line
+
+
+def test_readiness_existing_position_buy_level_three_can_allow_adding():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="has_position",
+        buy_level=3,
+    )
+
+    allowed_line = next(
+        line for line in block.splitlines() if line.startswith("- 允许动作：")
+    )
+    assert "加仓" in allowed_line
+
+
+def test_readiness_failed_final_gate_overrides_buy_level_two():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        entry_gate_blocked=True,
+        buy_level=2,
+    )
+
+    assert "允许动作：观察\n" in block
+    assert "条件试仓" in block.split("- 禁止动作：", 1)[1]
+    assert "未持仓且入场门禁未通过，仅允许观察" in block
+
+
+def test_readiness_risk_level_one_overrides_no_position_buy_level_two():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        buy_level=2,
+        risk_level=1,
+    )
+
+    assert "允许动作：观察\n" in block
+    assert "条件试仓" in block.split("- 禁止动作：", 1)[1]
+
+
+def test_readiness_exit_risk_blocks_add_position_permission():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+
+    block = format_readiness_score(
+        score,
+        position_status="has_position",
+        buy_level=3,
+        risk_level=4,
+    )
+
+    allowed_line = next(
+        line for line in block.splitlines() if line.startswith("- 允许动作：")
+    )
+    assert "加仓" not in allowed_line
+
+
+@pytest.mark.parametrize(
+    "text, forbidden",
+    (
+        ("当前操作：条件试仓。", "条件试仓"),
+        ("确认建仓。", "确认建仓"),
+        ("建议轻仓试错。", "轻仓试错"),
+    ),
+)
+def test_generic_failed_gate_sanitizes_all_entry_actions(text, forbidden):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": False, "failures": ["evidence_coverage=62% < 70%"]},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=1,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert forbidden not in body
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+def test_generic_failed_gate_preserves_historical_entry_analysis():
+    text = "回测建议买入时胜率60%。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": False, "failures": ["source_coverage=62% < 70%"]},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=1,
+    )
+
+    assert text in sanitized
+    assert "等待门禁条件满足" not in sanitized
+    assert changes == []
+
+
+def test_risk_manager_passes_final_gate_failure_to_readiness(monkeypatch):
+    from tradingagents.agents.managers import risk_manager as risk_manager_module
+
+    captured = {}
+    original_formatter = risk_manager_module.format_readiness_score
+
+    def _capture_formatter(score, **kwargs):
+        captured.update(kwargs)
+        return original_formatter(score, **kwargs)
+
+    monkeypatch.setattr(
+        risk_manager_module,
+        "get_strong_action_gate",
+        lambda **_kwargs: {
+            "passed": False,
+            "failures": ["fund_flow_unit_unverified"],
+        },
+    )
+    monkeypatch.setattr(
+        risk_manager_module,
+        "format_readiness_score",
+        _capture_formatter,
+    )
+
+    node = risk_manager_module.create_risk_manager(_FakeLLM(), _Memory())
+    asyncio.run(node(_base_state()))
+
+    assert captured["entry_gate_blocked"] is True
+
+
+def test_readiness_event_risk_block_forbids_no_position_entry():
+    score = generate_readiness_score(
+        100,
+        ConfidenceLevel.MEDIUM,
+        blockers=["event_risk_block_open"],
+    )
+
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        entry_gate_blocked=True,
+    )
+
+    assert "允许动作：观察" in block
+    assert "条件试仓" in block.split("- 禁止动作：", 1)[1]
+    assert "置信度降级原因：event_risk_block_open" in block
+
+
+@pytest.mark.parametrize(
+    "position_status, forbidden_allowed",
+    (("has_position", "加仓"), ("unknown", "买入")),
+)
+def test_readiness_entry_gate_removes_entry_for_other_position_states(
+    position_status,
+    forbidden_allowed,
+):
+    score = generate_readiness_score(
+        100,
+        ConfidenceLevel.HIGH,
+        blockers=["event_risk_block_open"],
+    )
+
+    block = format_readiness_score(
+        score,
+        position_status=position_status,
+        entry_gate_blocked=True,
+    )
+
+    allowed_line = next(line for line in block.splitlines() if line.startswith("- 允许动作："))
+    forbidden_line = next(line for line in block.splitlines() if line.startswith("- 禁止动作："))
+    assert forbidden_allowed not in allowed_line
+    assert forbidden_allowed in forbidden_line
+    assert "持仓风控动作仍按 Risk Level 执行" in block
+
+
 def test_execution_block_marks_fundamental_review_state():
     block = format_execution_block(
         source_coverage=87,
@@ -678,11 +940,28 @@ def test_sanitize_noop_when_gate_passes():
     text = "建议重仓买入，立即清仓。### 执行等级与证据门禁\n- foo"
     gate = {"passed": True, "failures": []}
     result, changes = sanitize_forbidden_strong_actions(
-        text, gate, "has_position", 3, 2,
+        text, gate, "has_position", 3, 0,
     )
     assert "重仓买入" in result
-    assert "立即清仓" in result
-    assert changes == []
+    assert "立即清仓" not in result
+    assert "等待触发条件，暂不执行强清仓" in result
+    assert changes
+
+
+def test_existing_position_risk_level_two_blocks_add_in_visible_body():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "建议重仓买入，持有等待。",
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=3,
+        risk_level=2,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "重仓买入" not in body
+    assert "保持原仓位，等待加仓条件确认" in body
+    assert "持有等待" in body
+    assert changes
 
 
 def test_sanitize_warning_not_coexisting_with_original_strong():
@@ -3006,6 +3285,52 @@ def test_sanitizer_preserves_analytical_action_nouns(phrase):
 
 
 @pytest.mark.parametrize(
+    "phrase, residual",
+    (
+        ("立即采取止损离场方案。", "离场方案"),
+        ("当前建议执行止损离场策略。", "离场策略"),
+        ("建议采用止损离场方案。", "离场方案"),
+        ("最终操作：止盈退出策略。", "退出策略"),
+        ("必须采取止损离场方案。", "离场方案"),
+        ("可以采取止损离场方案。", "离场方案"),
+        ("当前操作：将采取止损离场方案。", "离场方案"),
+        ("交易员必须执行止损离场方案。", "离场方案"),
+        ("建议制定止损离场方案。", "离场方案"),
+        ("建议设置严格的止损离场方案。", "离场方案"),
+        ("我们需要建立止损离场机制。", "离场机制"),
+        ("最终决定启动止损离场策略。", "离场策略"),
+        ("请采取止损离场方案。", "离场方案"),
+        ("考虑止损离场策略。", "离场策略"),
+        ("倾向采用止盈退出策略。", "退出策略"),
+        ("首选止损离场方案。", "离场方案"),
+        ("后续可采取止损离场策略。", "离场策略"),
+        ("采取止损离场方案。", "离场方案"),
+        ("采用止损离场策略。", "离场策略"),
+        ("建立严格的止损离场机制。", "离场机制"),
+        ("启动止盈退出策略。", "退出策略"),
+        ("现阶段采取止损离场方案。", "离场方案"),
+        ("保守起见采用止损离场策略。", "离场策略"),
+        ("风险过高，因此采取止损离场方案。", "离场方案"),
+        ("分析认为止损离场方案应立即执行。", "离场方案"),
+        ("模型指出止损离场策略必须启动。", "离场策略"),
+    ),
+)
+def test_imperative_exit_plan_is_not_protected_as_analytical_noun(phrase, residual):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        phrase,
+        gate={"passed": False, "failures": ["evidence_coverage=50% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert residual not in body
+    assert "该持仓动作不适用，保持观察" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
     "phrase",
     (
         "若未来建仓，跌破9元则清仓。",
@@ -4971,4 +5296,1689 @@ def test_no_position_preserves_dated_third_party_exit_transactions(fact):
     )
 
     assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议买入。",
+        "当前操作：建仓。",
+        "建议轻仓买入。",
+        "当前操作：条件试仓。",
+    ),
+)
+def test_generic_gate_failure_removes_ordinary_entry_directives(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "等待门禁条件满足" in body
+    assert directive.rstrip("。") not in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "guardrail_or_fact",
+    (
+        "当前不能确认建仓。",
+        "历史上条件试仓策略失败。",
+        "员工持股计划采用试探性轻仓策略。",
+    ),
+)
+def test_generic_gate_failure_preserves_non_executable_entry_text(
+    guardrail_or_fact,
+):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        guardrail_or_fact,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    assert sanitized == guardrail_or_fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "当前操作：条件试仓。",
+        "建议轻仓买入。",
+        "重仓买入。",
+    ),
+)
+def test_computed_buy_level_one_removes_entry_from_visible_body(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "保持观察，等待入场条件确认" in body
+    assert directive.rstrip("。") not in body
+    assert changes
+
+
+def test_no_position_risk_level_one_vetoes_level_two_entry_in_visible_body():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "当前操作：条件试仓；建议轻仓买入。",
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=1,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert "条件试仓" not in body
+    assert "轻仓买入" not in body
+    assert "保持观察，等待入场条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议买入。",
+        "立即买入。",
+        "当前操作：确认建仓。",
+    ),
+)
+def test_buy_level_two_rejects_direct_entry_but_keeps_trial_scope(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "仅限条件试仓，等待明确触发" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "conditional_trial",
+    (
+        "当前操作：条件试仓。",
+        "建议轻仓试错。",
+        "若突破10元后可轻仓买入。",
+    ),
+)
+def test_buy_level_two_preserves_authorized_conditional_trials(conditional_trial):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        conditional_trial,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    assert sanitized == conditional_trial
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "止损离场方案应尽快执行。",
+        "止损离场方案现已启动。",
+        "止损离场规则今日生效。",
+    ),
+)
+def test_no_position_replaces_full_imperative_exit_plan(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("⚠️ [D-002]", 1)[0]
+    assert body.strip() == "该持仓动作不适用，保持观察。"
+    assert "离场方案" not in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "future_plan",
+    (
+        "### 右侧持仓：若跌破149，止损离场。",
+        "#### 左侧持仓：若跌破144.25，减半仓；若跌破143，止损。",
+    ),
+)
+def test_no_position_preserves_markdown_heading_future_holding_plan(future_plan):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        future_plan,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == future_plan
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive, expected",
+    (
+        ("条件试仓或加仓。", "条件试仓。"),
+        ("先条件试仓再加仓。", "先条件试仓。"),
+        ("条件试仓/加仓。", "条件试仓。"),
+        ("条件试仓然后重仓布局。", "条件试仓。"),
+        ("若突破10元后可轻仓买入并加仓。", "若突破10元后可轻仓买入。"),
+    ),
+)
+def test_buy_level_two_removes_chained_stronger_actions(directive, expected):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body == expected
+    assert all(term not in body for term in ("加仓", "重仓布局"))
+    assert changes == ["Buy Level 2 串联强动作已移除"]
+
+
+def test_no_position_preserves_completed_historical_exit_execution():
+    fact = "回测中止损离场策略执行了5次。"
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        fact,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        {"passed": True, "failures": []},
+        {"passed": False, "failures": ["evidence_coverage=50% < 70%"]},
+    ),
+)
+def test_no_position_does_not_mask_entry_directive_as_future_holding_plan(gate):
+    text = "- 右侧持仓：建议买入后若跌破149元立即清仓。"
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate=gate,
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert text.rstrip("。") not in sanitized
+    assert "建议买入" not in sanitized
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "fact",
+    (
+        "历史回测显示，触发条件后立即清仓可将最大回撤降低5%。",
+        "历史上立即清仓的方案胜率较低。",
+        "策略回测中，全部卖出离场后回撤下降。",
+        "昨日已立即清仓一半，剩余仓位继续观察。",
+        "模型将“立即清仓”定义为 Risk Level 4 动作。",
+    ),
+)
+def test_low_risk_position_preserves_historical_and_analytical_exit_facts(fact):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        fact,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "系统建议采用“立即清仓”作为当前动作。",
+        "系统指令：“立即清仓”作为最终动作。",
+        "模型决定使用“立即清仓”作为当前动作。",
+    ),
+)
+def test_low_risk_position_does_not_mask_quoted_current_exit_directives(directive):
+    """Quoted wording is not a definition when it adopts a current action."""
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即清仓" not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "此前已完成复盘，目前建议立即清仓。",
+        "昨日已经减仓，今日建议立即清仓剩余仓位。",
+        "昨天已经观察，下一步立即清仓。",
+    ),
+)
+def test_low_risk_position_does_not_mask_current_exit_after_historical_preface(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即清仓" not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "Final action: EXIT",
+        "Final action: SELL",
+        "Current action: REDUCE",
+        "最终建议：EXIT",
+        "当前操作：SELL",
+    ),
+)
+def test_low_risk_position_downgrades_explicit_english_exit_labels(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=1,
+        risk_level=1,
+    )
+
+    assert directive not in sanitized
+    assert "等待触发条件，暂不执行强清仓" in sanitized
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "fact",
+    (
+        "历史上建议买入后持有20日。",
+        "过往样本在突破后建仓。",
+        "回测采用轻仓试错并持有。",
+        "策略回测：确认建仓后持有5天。",
+    ),
+)
+def test_failed_gate_preserves_historical_entry_narratives(fact):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        fact,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "future_plan",
+    (
+        "建仓成功后若跌破149则减仓。",
+        "右侧持仓：未来建仓后若跌破149清仓。",
+    ),
+)
+def test_failed_gate_preserves_hypothetical_future_holding_plan(future_plan):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        future_plan,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == future_plan
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "强买。",
+        "强烈买入。",
+        "满仓买入。",
+        "重仓布局。",
+        "强力买入。",
+    ),
+)
+def test_low_buy_level_removes_strong_entry_even_when_gate_passes(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body != directive
+    assert sum(
+        body.count(replacement)
+        for replacement in (
+            "保持观察，等待入场条件确认",
+            "暂不执行强买入，等待条件确认",
+        )
+    ) == 1
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议重仓条件试仓。",
+        "满仓条件试仓。",
+        "立即条件试仓。",
+        "积极条件试仓。",
+    ),
+)
+def test_buy_level_two_rejects_strongly_modified_trial(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "暂不执行强买入，等待条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "历史回测显示策略有效当前建议买入。",
+        "回测结果优秀因此最终建议买入。",
+        "过往样本表现较好所以现在买入。",
+    ),
+)
+def test_failed_gate_does_not_mask_current_entry_after_backtest_preface(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["evidence_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+def test_failed_gate_preserves_multiline_future_position_risk_plans():
+    text = (
+        "风险预案如下：\n"
+        "- 右侧持仓：若跌破149，立即清仓。\n"
+        "- 左侧持仓：若跌破144.25，清仓离场。"
+    )
+
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+def test_failed_gate_downgrades_held_position_future_strong_exit():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "右侧持仓：若跌破149，立即清仓。",
+        gate={"passed": False, "failures": ["evidence_coverage=60% < 70%"]},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即清仓" not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "条件试仓，随后逐步加仓。",
+        "条件试仓；最终加仓。",
+        "若突破10元后可轻仓买入，然后确认建仓。",
+    ),
+)
+def test_buy_level_two_removes_punctuated_stronger_action_chain(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "加仓" not in body
+    assert "确认建仓" not in body
+    assert "条件试仓" in body or "轻仓买入" in body
+    assert changes == ["Buy Level 2 串联强动作已移除"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "并非建议离场。",
+        "历史回测中建议离场策略收益较低。",
+        "模型推荐离场信号尚未出现。",
+        "报告讨论是否应该离场。",
+    ),
+)
+def test_no_position_preserves_negated_and_analytical_exit_text(text):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+def test_buy_level_two_replacement_is_not_recursively_rewritten():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "当前操作：确认建仓。",
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body == "当前操作：仅限条件试仓，等待明确触发。"
+    assert "仅限仅限" not in body
+    assert all("__TA_" not in change for change in changes)
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "历史回测表现优秀建议买入。",
+        "历史上策略有效推荐建仓。",
+        "过往样本表现较好可以入场。",
+    ),
+)
+def test_failed_gate_does_not_hide_unpunctuated_current_recommendation(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待基本面证据复核" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "风险分析：止损离场策略，建议立即执行。",
+        "分析止损离场方案，并建议立即执行。",
+        "评估止损离场策略；结论是立即执行。",
+    ),
+)
+def test_no_position_downgrades_execution_after_analytical_exit_plan(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即执行" not in body
+    assert "该持仓动作不适用，保持观察" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "analysis_text",
+    (
+        "条件试仓；随后买入评级上调。",
+        "条件试仓，并且买入信号增强。",
+        "条件试仓，随后建仓成本下降。",
+    ),
+)
+def test_buy_level_two_preserves_analytical_nouns_after_trial(analysis_text):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        analysis_text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    assert sanitized == analysis_text
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "analysis_text",
+    (
+        "分析立即条件试仓的风险。",
+        "“重仓试仓”属于不合理术语。",
+        "评估直接试仓策略的风险。",
+        "立即轻仓试错的历史胜率为20%。",
+    ),
+)
+def test_strong_trial_sanitizer_preserves_analytical_terms(analysis_text):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        analysis_text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    assert sanitized == analysis_text
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "历史回测建议买入后持有最终建议买入。",
+        "历史回测建议买入并持有明日买入。",
+        "过往样本建议建仓后持有目前可以建仓。",
+    ),
+)
+def test_historical_sequence_does_not_mask_following_current_entry(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body != directive
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "position_status, buy_level, expected",
+    (
+        ("no_position", 1, "保持观察，等待入场条件确认"),
+        ("has_position", 2, "保持原仓位，等待加仓条件确认"),
+    ),
+)
+def test_buy_level_authority_blocks_standalone_replenishment(
+    position_status, buy_level, expected
+):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "补仓。",
+        gate={"passed": True, "failures": []},
+        position_status=position_status,
+        buy_level=buy_level,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body == f"{expected}。"
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "当前操作：“重仓试仓”。",
+        "最终建议：“立即条件试仓”。",
+        '交易计划："满仓试仓"。',
+        "建议执行“重仓试仓”。",
+    ),
+)
+def test_quoted_strong_trial_is_not_masked_in_directive_context(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body != directive
+    assert (
+        "暂不执行强买入，等待条件确认" in body
+        or "保持观察，等待入场条件确认" in body
+    )
+    assert changes
+
+
+@pytest.mark.parametrize("directive", ("离场。", "退出。", "出局。", "降险。"))
+def test_no_position_blocks_standalone_exit_synonyms(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body == "该持仓动作不适用，保持观察。"
+    assert changes
+
+
+def test_entry_gate_preserves_negated_replenishment_guardrail():
+    text = "不建议补仓。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "回测结果：立即买入。",
+        "历史回测结论为强烈买入。",
+        "策略回测建议重仓建仓。",
+    ),
+)
+def test_historical_preface_does_not_protect_explicit_strong_entry(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert all(term not in body for term in ("立即买入", "强烈买入", "重仓建仓"))
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "analysis_text",
+    (
+        "加仓是否合适仍需评估。",
+        "加仓的可行性仍需研究。",
+        "加仓策略需要回测。",
+    ),
+)
+def test_level_two_trial_preserves_following_entry_analysis(analysis_text):
+    text = f"条件试仓。{analysis_text}"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+def test_failed_gate_sanitizes_direct_entry_before_future_stop_plan():
+    text = "立即建仓后若跌破149则止损。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": False, "failures": ["fundamental_semantic_gate"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即建仓" not in body
+    assert "等待基本面证据复核" in body
+    assert "若跌破149则止损" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "历史回测表现优秀现在立即买入后持有。",
+        "过往样本很好下一步立即买入后持有。",
+        "历史上策略有效最终建议立即买入后持有。",
+    ),
+)
+def test_historical_sequence_rejects_embedded_current_markers(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即买入" not in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "条件试仓后逐步加仓。",
+        "条件试仓之后分批加仓。",
+        "轻仓试错以后重仓加仓。",
+    ),
+)
+def test_level_two_blocks_after_delimited_stronger_actions(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert all(term not in body for term in ("逐步加仓", "分批加仓", "重仓加仓"))
+    assert changes
+
+
+def test_no_position_preserves_observed_threshold_future_holding_plan():
+    text = "右侧持仓：若观察到价格跌破149，清仓。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "结论如下：“立即条件试仓”。",
+        "最终结果是“立即条件试仓”。",
+        "交易计划如下：“重仓试仓”。",
+    ),
+)
+def test_quoted_strong_trial_after_extended_action_label_is_sanitized(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即条件试仓" not in body
+    assert "重仓试仓" not in body
+    assert changes
+
+
+def test_unknown_position_elevated_risk_vetoes_level_two_trial_everywhere():
+    score = {
+        "data_completeness": 90,
+        "confidence": ConfidenceLevel.HIGH.value,
+        "summary": "数据完整，置信度高。",
+        "blockers": [],
+    }
+    block = format_readiness_score(
+        score,
+        position_status="unknown",
+        buy_level=2,
+        risk_level=3,
+    )
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "若站稳10元后，轻仓买入。",
+        gate={"passed": True, "failures": []},
+        position_status="unknown",
+        buy_level=2,
+        risk_level=3,
+    )
+
+    allowed_line = next(
+        line for line in block.splitlines() if line.startswith("- 允许动作：")
+    )
+    forbidden_line = next(
+        line for line in block.splitlines() if line.startswith("- 禁止动作：")
+    )
+    assert "条件试仓" not in allowed_line
+    assert "条件试仓" in forbidden_line
+    assert "轻仓买入" not in sanitized.split("\n\n⚠️", 1)[0]
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "满仓执行条件试仓。",
+        "重仓进行条件试仓。",
+        "立即开展轻仓试错。",
+    ),
+)
+def test_level_two_rejects_strong_modifier_before_trial_directive(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "暂不执行强买入，等待条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议以满仓方式执行条件试仓。",
+        "建议用重仓方式进行轻仓试错。",
+        "计划投入全部仓位做条件试仓。",
+        "建议按50%仓位条件试仓。",
+        "建议半仓条件试仓。",
+        "建议大仓位分批执行条件试仓。",
+    ),
+)
+def test_level_two_rejects_non_adjacent_or_explicit_sizing(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "暂不执行强买入，等待条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "满仓，执行条件试仓。",
+        "建议满仓，条件试仓。",
+        "投入50%仓位，条件试仓。",
+        "当前操作：满仓；随后条件试仓。",
+        "用全部仓位，执行轻仓试错。",
+    ),
+)
+def test_level_two_rejects_punctuated_full_size_trial_directives(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body != directive
+    assert "暂不执行强买入，等待条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "若买入后继续持有，但当前建议立即清仓。",
+        "如果买入后计划观察，当前建议立即清仓。",
+        "如果建仓后可持有，否则当前建议立即清仓。",
+    ),
+)
+def test_no_position_keeps_current_exit_outside_future_position_mask(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即清仓" not in body
+    assert "该持仓动作不适用，保持观察" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "当前操作：建立仓位。",
+        "建议买进。",
+        "下一步：建立底仓。",
+        "当前操作：分批布局。",
+        "建议布局10%仓位。",
+        "当前操作：拿先手。",
+    ),
+)
+def test_generic_failed_gate_sanitizes_standard_entry_synonyms(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议配置仓位。",
+        "建议申购该股。",
+        "建议增配该股。",
+        "建议加码该股。",
+        "建议上车。",
+        "建议入市。",
+    ),
+)
+def test_generic_failed_gate_sanitizes_unlabeled_entry_synonyms(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "fact",
+    (
+        "历史回测显示增配该股后持有5天平均收益8%。",
+        "机构今日已增配该股。",
+        "报告讨论是否应该配置仓位。",
+    ),
+)
+def test_failed_gate_preserves_non_executable_entry_synonym_facts(fact):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        fact,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize("risk_level", (0, 1, 2, 3))
+def test_passing_gate_does_not_authorize_immediate_exit_below_level_four(
+    risk_level,
+):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "最终建议：立即清仓。",
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=4,
+        risk_level=risk_level,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即清仓" not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "马上清仓。",
+        "建议立即全部清仓。",
+        "建议清仓。",
+        "立即全部卖出。",
+        "现在全部卖出。",
+        "务必清仓。",
+        "今日清仓。",
+        "下一步清仓。",
+        "全部清仓。",
+        "果断清仓。",
+    ),
+)
+def test_passing_gate_blocks_common_immediate_exits_below_level_four(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=3,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "guardrail",
+    (
+        "不建议立即清仓。",
+        "当前不应立即清仓。",
+        "禁止立即清仓。",
+        "不能全部卖出离场。",
+    ),
+)
+def test_low_risk_level_preserves_negated_immediate_exit_guardrails(guardrail):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        guardrail,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=3,
+        risk_level=3,
+    )
+
+    assert sanitized == guardrail
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议采用“重仓试仓”。",
+        "建议使用“满仓试仓”。",
+        "我们将采用“重仓试仓”。",
+    ),
+)
+def test_low_buy_level_blocks_quoted_trial_after_adoption_verbs(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "重仓试仓" not in body
+    assert "满仓试仓" not in body
+    assert changes
+
+
+def test_buy_level_one_blocks_colloquial_direct_buy():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "现在就买。",
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "现在就买" not in body
+    assert "保持观察，等待入场条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "当前操作：试仓。",
+        "若站稳10元则配置仓位。",
+        "最终建议：试探性建仓。",
+    ),
+)
+def test_low_buy_level_blocks_direct_trial_and_entry_synonyms(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "保持观察，等待入场条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议八成仓位执行条件试仓。",
+        "建议８０％仓位执行条件试仓。",
+        "条件试仓，投入八成仓位。",
+    ),
+)
+def test_buy_level_two_rejects_non_ascii_or_chinese_large_trial_sizes(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "暂不执行强买入，等待条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "此前已完成复盘，建议立即清仓。",
+        "此前已清仓，目前建议立即清仓。",
+    ),
+)
+def test_low_risk_position_does_not_mask_current_exit_after_historical_preamble(statement):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        statement,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=4,
+        risk_level=3,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即清仓" not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议布局该股。",
+        "当前操作：布局该股。",
+        "下一步布局该股。",
+    ),
+)
+def test_blocked_entry_sanitizes_unsized_layout_directives(directive):
+    """布局 is executable entry wording even when no position size is stated."""
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "布局该股" not in body
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "建议立即平仓。",
+        "下一步平仓。",
+        "当前建议务必割肉。",
+        "最终建议：全部抛售。",
+    ),
+)
+def test_low_risk_position_sanitizes_immediate_exit_synonyms(directive):
+    """Only Risk Level 4 may expose an immediate flat-position command."""
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "当前动作：清仓。",
+        "最终建议：清仓。",
+        "当前动作：止损离场。",
+        "最终操作：卖出。",
+    ),
+)
+def test_low_risk_position_sanitizes_chinese_labeled_exit_directives(directive):
+    """Chinese action labels must not bypass Risk Level 4 authority."""
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "当前操作：条件试仓，仓位50%。",
+        "建议条件试仓50%仓位。",
+        "条件试仓，投入半仓。",
+        "条件试仓，投入30%的仓位。",
+        "条件试仓，随后满仓。",
+    ),
+)
+def test_buy_level_two_rejects_trailing_oversized_trial_allocations(directive):
+    """A Level 2 trial cannot carry a trailing full-size allocation."""
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "暂不执行强买入，等待条件确认" in body
+    assert all(term not in body for term in ("50%仓位", "半仓", "30%的仓位", "满仓"))
+    assert changes
+
+
+def test_no_position_preserves_conditional_modal_future_exit_plan():
+    text = "若买入后建议止损离场。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+def test_no_position_preserves_simultaneous_conditional_exit_plan():
+    text = "右侧持仓：若跌破149则同时减仓并清仓。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+def test_risk_level_four_preserves_immediate_exit_when_gate_passes():
+    text = "最终建议：立即清仓。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=4,
+        risk_level=4,
+    )
+
+    assert sanitized == text
+    assert changes == []
+
+
+def test_risk_level_three_preserves_conditional_stop_not_immediate_clear():
+    text = "若跌破10元，建议止损离场。现在就清仓。"
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=3,
+        risk_level=3,
+    )
+
+    assert "若跌破10元，建议止损离场" in sanitized
+    assert "现在就清仓" not in sanitized
+    assert "等待触发条件，暂不执行强清仓" in sanitized
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "条件试仓：买入50%仓位。",
+        "条件试仓：直接买入。",
+    ),
+)
+def test_buy_level_two_removes_colon_delimited_follow_on_buys(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert body == "条件试仓。"
+    assert all(term not in body for term in ("买入", "50%仓位", "直接"))
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "全仓建仓。",
+        "当前动作：止损。",
+        "立即减仓。",
+    ),
+)
+def test_low_execution_levels_remove_full_entry_and_unauthorized_exit(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position" if directive == "全仓建仓。" else "has_position",
+        buy_level=1 if directive == "全仓建仓。" else 2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。").replace("：", "") not in body.replace("：", "")
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "目标仓位50%，执行条件试仓。",
+        "满仓作为目标，执行条件试仓。",
+        "条件试仓，最终增至满仓。",
+    ),
+)
+def test_buy_level_two_rejects_sentence_level_target_sizing(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=2,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "暂不执行强买入，等待条件确认" in body
+    assert all(term not in body for term in ("50%", "满仓", "目标仓位", "最终增至"))
+    assert changes
+
+
+def test_low_risk_position_does_not_mask_current_exit_after_long_backtest():
+    text = (
+        "历史回测显示该策略在过去十年不同市场和多轮牛熊周期以及极端行情中的"
+        "风险控制效果稳定，当前建议立即清仓，策略收益改善。"
+    )
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        text,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=4,
+        risk_level=3,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "当前建议立即清仓" not in body
+    assert "等待触发条件，暂不执行强清仓" in body
+    assert changes
+
+
+def test_risk_level_entry_veto_is_not_rendered_as_gate_failure():
+    score = generate_readiness_score(100, ConfidenceLevel.HIGH)
+    block = format_readiness_score(
+        score,
+        position_status="no_position",
+        buy_level=2,
+        risk_level=1,
+    )
+
+    assert "风险等级限制开仓" in block
+    assert "入场门禁未通过" not in block
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "fundamental_semantic_gate",
+        "event_risk_block_open",
+        "估值基准价不可用(valuation_price_unavailable)",
+    ),
+)
+def test_failed_entry_gate_does_not_hide_buy_as_future_holding_plan(failure):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "买入后建议卖出。",
+        gate={"passed": False, "failures": [failure]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert not body.startswith("买入后")
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "下一步买入。",
+        "下一步建立仓位。",
+        "立即介入。",
+        "将配置仓位。",
+        "增配该股。",
+    ),
+)
+def test_generic_failed_gate_sanitizes_bare_current_entry_directives(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待门禁条件满足" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "fact",
+    (
+        "分析立即买入的风险。",
+        "“立即买入”只是术语。",
+        "评估重仓建仓策略。",
+    ),
+)
+def test_level_authority_preserves_analytical_strong_buy_terms(fact):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        fact,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "最终建议：满仓加仓。",
+        "最终建议：强烈建仓。",
+        "最终建议：确认买入。",
+        "当前操作：建议配置仓位。",
+        "下一步：建立头寸。",
+    ),
+)
+def test_blocked_entry_rejects_modifier_prefixed_directives(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert directive.rstrip("。") not in body
+    assert "等待门禁条件满足" in body or "暂不执行强买入" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "fact",
+    (
+        "策略回测：积极建仓后持有5天，平均收益8%。",
+        "历史回测：满仓买入后持有5天，平均收益8%。",
+        "回测中强烈建仓后持有5天的胜率为70%。",
+    ),
+)
+def test_failed_gate_preserves_aggressive_entry_terms_in_backtest_facts(fact):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        fact,
+        gate={"passed": False, "failures": ["source_coverage=60% < 70%"]},
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    assert sanitized == fact
+    assert changes == []
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        {"passed": True, "failures": []},
+        {"passed": False, "failures": ["evidence_coverage=60% < 70%"]},
+    ),
+)
+def test_current_buy_before_future_exit_plan_cannot_bypass_entry_gate(gate):
+    """A current buy before a hypothetical stop remains subject to Buy Level."""
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "- 右侧持仓：现在买入后若跌破149则清仓。",
+        gate=gate,
+        position_status="no_position",
+        buy_level=0,
+        risk_level=1,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "现在买入" not in body
+    assert "保持观察，等待入场条件确认" in body or "等待门禁条件满足" in body
+    assert "确认后若" not in body
+    assert "；后续持仓若跌破149则清仓" in body
+    assert changes
+
+
+def test_low_buy_level_sanitizes_immediate_entry_synonym():
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        "立即进场。",
+        gate={"passed": True, "failures": []},
+        position_status="no_position",
+        buy_level=1,
+        risk_level=0,
+    )
+
+    body = sanitized.split("\n\n⚠️", 1)[0]
+    assert "立即进场" not in body
+    assert "保持观察，等待入场条件确认" in body
+    assert changes
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "若跌破支撑，建议减仓。",
+        "若主力持续流出，则条件减仓。",
+    ),
+)
+def test_risk_level_two_preserves_authorized_conditional_reductions(directive):
+    sanitized, changes = sanitize_forbidden_strong_actions(
+        directive,
+        gate={"passed": True, "failures": []},
+        position_status="has_position",
+        buy_level=2,
+        risk_level=2,
+    )
+
+    assert sanitized == directive
     assert changes == []

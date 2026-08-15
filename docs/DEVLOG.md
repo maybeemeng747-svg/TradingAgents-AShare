@@ -15604,3 +15604,83 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - 数据包新增最近 6 条/指标的决策窗口：窗口内冲突继续整包阻断；更早口径冲突保留在 `historical_conflicts` 审计计数中，冲突事实本身不进入下游 evidence。
 - 603629.SH 真实只读回放：Tushare 三张报表均返回 `HAS_DATA`，210 条事实；191 条事实交叉验证通过，1 条 2023Q4 营业成本差异被记为历史冲突，决策窗口冲突为 0。
 - 验证：219 项财务来源、期间口径、数据目录和收集器回归通过，`git diff --check` 通过。
+
+### 2026-08-13 - 603256.SH DeepSeek production replay closeout
+
+- Ran one medium-horizon FULL_TA analysis for `603256.SH` with
+  `deepseek-chat` / `deepseek-reasoner`; the production job completed in
+  1160.7 seconds with final action `WAIT`, Buy Level 0 and Risk Level 1.
+- Fixed C-008 readiness rendering to consume the parsed position status. An
+  explicit no-position request now renders the no-position action policy
+  instead of the stale `持仓未知` policy.
+- Protected the hypothetical clauses in `右侧持仓` / `左侧持仓` / `任何持仓若`
+  future-risk bullets from no-position sanitation, preventing hybrid text such
+  as `该持仓动作不适用，保持观察离场` without allowing a later current action
+  on the same line to bypass the WAIT gate.
+- C-008 now consumes the final computed Buy Level. For an explicit no-position
+  request, Buy Level 0/1 permits observation only and Buy Level 2 permits a
+  conditional trial; completeness alone can no longer publish a contradictory
+  entry action. Any failed final entry gate, including evidence coverage,
+  provenance, conflict, fundamental and event-risk failures, forces the
+  stricter observation-only policy.
+- Future-position masking now protects only the risk action or directly joined
+  risk-action chain governed by the trigger. Comma- or contrast-separated
+  current directives such as `结论：清仓` and `但建议立即清仓` remain visible
+  to the no-position sanitizer.
+- Final review also separated imperative exit plans such as
+  `立即采取止损离场方案` from analytical terminology, so those directives
+  cannot bypass the no-position sanitizer while genuine risk descriptions
+  remain intact.
+- The closing adversarial review expanded imperative vocabulary and preserved
+  comma-delimited multi-stage future holding exits without shielding unrelated
+  present-state directives.
+- The final policy pass requires Buy Level 3 before an existing position may
+  display an add-position action, downgrades bare imperative exit-plan phrases,
+  and preserves sequential future actions that inherit one explicit trigger.
+- Any failed final entry gate now sanitizes ordinary and conditional entry
+  wording in the model body, while preserving analytical facts and the existing
+  specialized strong-buy downgrade text. Already-triggered `任何持仓若` clauses
+  are no longer treated as future plans.
+- C-008 now consumes Risk Level as well as Buy Level: no-position Risk Level 1
+  cannot advertise a conditional trial, and held-position exit risk cannot
+  advertise adding. Generic gate failures now use the same clause-aware entry
+  sanitizer as named gates, so ordinary buy directives are removed while
+  negations, historical/backtest analysis and third-party facts remain intact.
+- The final review pass also made computed Buy/Risk levels authoritative over
+  the visible model body and consumes complete imperative exit-plan phrases,
+  avoiding contradictory fragments after no-position sanitation.
+- Buy Level 2 now preserves only explicit conditional-trial wording and
+  downgrades direct buy/confirm-entry commands. Markdown heading forms such as
+  `### 右侧持仓` are recognized as future holding-risk plans.
+- The final adversarial pass removes stronger actions chained after an
+  authorized Buy Level 2 trial, preserves completed and narrative backtest
+  facts, and keeps hypothetical future-position risk plans intact even when
+  the aggregate gate fails.
+- The closing review fixes also cover strong-buy synonyms at low Buy Levels,
+  current directives after backtest/history prefaces, and multiline future-risk
+  sections without recursively rewriting the standardized downgrade message.
+- The final adversarial review now distinguishes historical narratives from
+  unpunctuated current recommendations, preserves analytical trial/rating
+  terminology, and still downgrades execution instructions linked to an exit
+  plan in the following punctuation-delimited clause.
+- The last review closed three additional authority gaps: elevated Risk Level
+  now vetoes entry when position status is unknown, strong sizing before a
+  nominal Level 2 trial is rejected, and common entry synonyms such as
+  `建立仓位` are sanitized on generic gate failures.
+- The closing review also rejects non-adjacent or explicit position sizing
+  before a nominal Level 2 trial and sanitizes unlabeled entry synonyms such
+  as `配置仓位`, `申购`, `增配`, `加码`, `上车` and `入市` on failed gates.
+- The final authority pass requires Risk Level 4 for visible immediate-clear
+  wording, prevents a current buy directive from being hidden inside a future
+  holding plan, covers bare current-action forms such as `下一步买入` and
+  `立即介入`, and preserves quoted or analytical strong-buy terminology.
+- The closing adversarial review also blocks colloquial direct buys such as
+  `现在就买` below Buy Level 2, covers common immediate-exit wording below Risk
+  Level 4, and preserves conditional modal or simultaneous future-position
+  risk plans instead of rewriting them as current actions.
+- The second closing review preserves negated immediate-exit guardrails and
+  treats quoted trial phrases after adoption verbs such as `采用` or `使用` as
+  executable instructions rather than analytical terminology.
+- Validation: 1012 focused readiness, G-001, P0/P1 acceptance, event-risk,
+  valuation-sanity and report-execution tests passed;
+  Python compilation and `git diff --check` passed.
