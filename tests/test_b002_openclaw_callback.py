@@ -313,6 +313,71 @@ class TestBuildCallbackPayload:
         assert len(payload["key_metrics"]) == 1
         assert payload["key_metrics"][0]["name"] == "ok"
 
+    def test_report_obj_prefers_report_fields(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        payload = build_callback_payload(
+            report_id="rpt-018",
+            symbol="002409.SZ",
+            trade_date="2026-07-23",
+            report_obj={
+                "action_label": "条件确认",
+                "research_direction": "偏空",
+                "execution_action": "REDUCE",
+                "confidence": 66,
+                "final_trade_decision": "优先等待止损。",
+                "risk_items": [{"name": "来自 report_obj", "level": "high"}],
+                "key_metrics": [{"name": "PE", "value": "99", "status": "warning"}],
+                "readiness_score": {
+                    "data_completeness": 91,
+                    "confidence": "中",
+                },
+            },
+            result_data={
+                "action_label": "条件入场",
+                "research_direction": "偏多",
+                "execution_action": "ENTER",
+                "confidence": 88,
+                "final_trade_decision": "来自 result_data",
+                "risk_items": [{"name": "来自 result_data", "level": "low"}],
+                "key_metrics": [{"name": "ROE", "value": "12", "status": "good"}],
+                "readiness_score": {"data_completeness": 10, "confidence": "低"},
+            },
+        )
+
+        assert payload["decision"]["action"] == "条件确认"
+        assert payload["decision"]["direction"] == "偏空"
+        assert payload["decision"]["execution_action"] == "REDUCE"
+        assert payload["decision"]["confidence"] == 66
+        assert "优先等待止损" in payload["summary"]
+        assert payload["risk_items"][0]["name"] == "来自 report_obj"
+        assert payload["key_metrics"][0]["name"] == "PE"
+        assert payload["readiness_score"]["data_completeness"] == 91
+        assert payload["readiness_score"]["confidence"] == "中"
+
+    def test_report_obj_empty_falls_back_to_result_data(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        payload = build_callback_payload(
+            report_id="rpt-019",
+            symbol="002409.SZ",
+            trade_date="2026-07-23",
+            report_obj={},
+            result_data={
+                "action_label": "条件入场",
+                "research_direction": "偏多",
+                "execution_action": "ENTER",
+                "confidence": 77,
+                "final_trade_decision": "来自 result_data",
+            },
+        )
+
+        assert payload["decision"]["action"] == "条件入场"
+        assert payload["decision"]["direction"] == "偏多"
+        assert payload["decision"]["execution_action"] == "ENTER"
+        assert payload["decision"]["confidence"] == 77
+        assert "来自 result_data" in payload["summary"]
+
 
 # ---------------------------------------------------------------------------
 # Test: is_openclaw_callback_enabled

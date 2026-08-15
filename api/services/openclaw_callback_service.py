@@ -35,6 +35,26 @@ _RETRY_DELAY_SECONDS = 10
 _REQUEST_TIMEOUT_SECONDS = 15
 
 
+def _pick(*values):
+    """Return first non-null value, allowing explicit empty-string fallback."""
+    for value in values:
+        if value is None:
+            continue
+        return value
+    return None
+
+
+def _extract(source: Any, key: str, default: Any = None) -> Any:
+    """Extract field from dict-like/ORM-like source."""
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(key, default)
+    if hasattr(source, key):
+        return getattr(source, key, default)
+    return default
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -61,6 +81,7 @@ def build_callback_payload(
     symbol: str,
     trade_date: str,
     *,
+    report_obj: dict | None = None,
     user_id: str = "",
     horizon: str = "short",
     source: str = "scheduled",
@@ -83,32 +104,55 @@ def build_callback_payload(
     Returns:
         Structured callback payload dict.
     """
+    report_data = report_obj or {}
     result = result_data or {}
 
     # Extract semantic fields from result_data (same priority as wecom service)
-    action = (
-        result.get("action_label")
-        or result.get("decision")
-        or ""
+    action = _pick(
+        _extract(report_data, "action_label"),
+        _extract(result, "action_label"),
+        _extract(report_data, "decision"),
+        _extract(result, "decision"),
+        "",
     )
-    direction = (
-        result.get("research_direction")
-        or result.get("direction")
-        or ""
+    direction = _pick(
+        _extract(report_data, "research_direction"),
+        _extract(result, "research_direction"),
+        _extract(report_data, "direction"),
+        _extract(result, "direction"),
+        "",
     )
-    execution_action = result.get("execution_action") or ""
-    confidence = result.get("confidence")
+    execution_action = _pick(
+        _extract(report_data, "execution_action"),
+        _extract(result, "execution_action"),
+        "",
+    )
+    confidence = _pick(_extract(report_data, "confidence"), _extract(result, "confidence"))
 
     # Build summary from available text fields
     summary = _clip_text(
-        result.get("final_trade_decision")
-        or result.get("trader_investment_plan")
-        or result.get("investment_plan")
-        or ""
+        _pick(
+            _extract(report_data, "final_trade_decision"),
+            _extract(result, "final_trade_decision"),
+            _extract(report_data, "trader_investment_plan"),
+            _extract(result, "trader_investment_plan"),
+            _extract(report_data, "investment_plan"),
+            _extract(result, "investment_plan"),
+            "",
+        )
     )
 
-    # Extract risk items (compact)
-    risk_items = result.get("risk_items") or []
+    risk_items = _pick(
+        _extract(report_data, "risk_items"),
+        _extract(result, "risk_items"),
+        [],
+    )
+    key_metrics = _pick(
+        _extract(report_data, "key_metrics"),
+        _extract(result, "key_metrics"),
+        [],
+    )
+
     risk_summary = []
     for item in risk_items[:5]:  # Cap at 5
         if isinstance(item, dict):
@@ -117,8 +161,6 @@ def build_callback_payload(
                 "level": item.get("level", "unknown"),
             })
 
-    # Extract key metrics (compact)
-    key_metrics = result.get("key_metrics") or []
     metrics_summary = []
     for metric in key_metrics[:8]:  # Cap at 8
         if isinstance(metric, dict):
@@ -128,8 +170,12 @@ def build_callback_payload(
                 "status": metric.get("status", "unknown"),
             })
 
-    # Readiness score
-    readiness = result.get("readiness_score") or {}
+    # Readiness score (prefer report object snapshot, fallback to result_data)
+    readiness = _pick(
+        _extract(report_data, "readiness_score"),
+        _extract(result, "readiness_score"),
+        {},
+    )
     readiness_score = None
     if isinstance(readiness, dict):
         dc = readiness.get("data_completeness")
@@ -250,6 +296,7 @@ def notify_openclaw_on_report_completion(
     symbol: str,
     trade_date: str,
     *,
+    report_obj: dict | None = None,
     user_id: str = "",
     horizon: str = "short",
     source: str = "scheduled",
@@ -267,6 +314,7 @@ def notify_openclaw_on_report_completion(
         user_id: User who owns the scheduled task.
         horizon: Analysis horizon.
         source: How the analysis was triggered.
+        report_obj: Full report object as fallback/overrides for key fields.
         result_data: Full report result_data dict.
     """
     if not is_openclaw_callback_enabled():
@@ -279,6 +327,7 @@ def notify_openclaw_on_report_completion(
         user_id=user_id,
         horizon=horizon,
         source=source,
+        report_obj=report_obj,
         result_data=result_data,
     )
 

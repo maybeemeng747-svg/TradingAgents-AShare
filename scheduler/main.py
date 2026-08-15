@@ -229,14 +229,37 @@ async def _send_openclaw_callback(
         if not is_openclaw_callback_enabled():
             return
 
-        def _load_result_data() -> dict | None:
+        def _load_report_payload() -> dict | None:
             with get_db_ctx() as db:
                 report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
-                if report and isinstance(report.result_data, dict):
-                    return report.result_data
+                if report:
+                    if not isinstance(report.result_data, dict):
+                        report.result_data = {}
+                    # detach ORM object to keep session-safe transfer
+                    return {
+                        "id": report.id,
+                        "symbol": report.symbol,
+                        "trade_date": report.trade_date,
+                        "horizon": report.horizon,
+                        "result_data": report.result_data,
+                        "analysis_summary": report.analysis_summary,
+                        "opinion": report.opinion,
+                        "decision": report.decision,
+                        "action_label": getattr(report, "action_label", None),
+                        "research_direction": getattr(report, "research_direction", None),
+                        "execution_action": getattr(report, "execution_action", None),
+                        "confidence": getattr(report, "confidence", None),
+                        "readiness_score": getattr(report, "readiness_score", None),
+                        "risk_items": getattr(report, "risk_items", None),
+                        "key_metrics": getattr(report, "key_metrics", None),
+                        "final_trade_decision": getattr(report, "final_trade_decision", None),
+                        "trader_investment_plan": getattr(report, "trader_investment_plan", None),
+                        "investment_plan": getattr(report, "investment_plan", None),
+                    }
                 return None
 
-        result_data = await asyncio.to_thread(_load_result_data)
+        report_obj = await asyncio.to_thread(_load_report_payload)
+        result_data = report_obj.get("result_data") if isinstance(report_obj, dict) else None
         notify_openclaw_on_report_completion(
             report_id=report_id,
             symbol=symbol,
@@ -244,6 +267,7 @@ async def _send_openclaw_callback(
             user_id=user_id,
             horizon=horizon,
             source=source,
+            report_obj=report_obj if isinstance(report_obj, dict) else None,
             result_data=result_data,
         )
         _log(f"[Scheduler] OpenClaw callback queued for {symbol}")
