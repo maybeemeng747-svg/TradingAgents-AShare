@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-07-28
+> 最后更新：2026-08-16
 
 ---
 
@@ -22,7 +22,7 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-07-28）
+### 当前执行队列（2026-08-16）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -46,8 +46,13 @@
 16. `SCORE-001-R1`：快照 loader 验收档案修正（done，第 6 轮最终复审通过）。
 17. `B-001-R1`：MiMo provider 配置与凭据路由补修（done，最终 Codex review 无 correctness finding）。
 18. `SCORE-001C-R1`：v1.2 快照消费与主工作树门禁补修（done，本轮人工开发与对抗验收）。
-19. `B-002-R1`：调度回调报告字段补修（P2，ready）。
-20. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+19. `TA-TUSHARE-2000-001A`：现有 2000 积分权限真实矩阵（P0，ready）。
+20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，blocked-auto）。
+21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，blocked-auto）。
+22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，blocked-auto）。
+23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，blocked-auto）。
+24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
+25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -231,6 +236,82 @@
 - **状态**：done — MiMo scope、旧 key fallback/清除、旧 OpenAI preset 与后端运行时迁移已完成；252 项组合回归、6 项前端测试与 build 通过；最终 Codex review 无 P0/P1/P2 correctness finding
 - **depends_on**：SCORE-001-R1
 - **auto_release**：true
+
+### TA-TUSHARE-2000-001A: 现有 2000 积分权限真实矩阵（P0）
+- **描述**：基于用户当前真实 Tushare 2000 积分权限，对明确列出的 endpoint 各执行一次最小、单股票、低频查询，生成脱敏且可复核的权限矩阵。不得根据文档或积分等级推测权限，不得做全市场批量抓取。
+- **优先级**：P0
+- **状态**：ready
+- **depends_on**：
+- **auto_release**：false
+- **预计耗时**：35-55 分钟
+- **允许修改**：`tradingagents/dataflows/providers/cn_tushare_provider.py`、新增 Tushare capability 模块、`scripts/` 下专用审计脚本、Tushare 专项测试、脱敏示例与文档、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：知识库仓库、海瑞仓库、生产数据库、真实 Token、实盘交易执行逻辑、非 Tushare provider、`tradingagents/prompts/`、`eval_results/`。
+- **接口范围**：
+  - 财务：`income`、`balancesheet`、`cashflow`、`fina_indicator`、`forecast`、`express`、`dividend`、`fina_audit`、`fina_mainbz`。
+  - 治理事件：`top10_holders`、`top10_floatholders`、`pledge_stat`、`pledge_detail`、`repurchase`、`share_float`、`stk_holdernumber`、`stk_holdertrade`。
+  - 市场行为：`daily`、`adj_factor`、`daily_basic`、`moneyflow`、`margin`、`top_list`、`block_trade`。
+  - 明确排除并标记为额外付费/未知：5000 积分 VIP 全市场批量接口、`top_inst`、实时行情、历史分钟行情、新闻、公告全文、券商研报、董秘问答及未实测接口。
+- **实现要求**：每项记录 endpoint、查询参数摘要、权限状态、单次/分钟限制（仅记录已验证或官方已知值）、可查询时间范围、空数据与权限错误差异、原始响应 SHA-256、测试时间、是否额外付费。Token 只能从 Git ignored 环境文件读取，日志和产物只允许 `HAS_KEY/NO_KEY`。
+- **验收方式**：
+  - 使用一只股票完成财务、治理事件、市场行为三类最小真实查询；每个 endpoint 最多一次正常探测，必要重试需有原因记录。
+  - 输出机器可读 JSON 与人读 Markdown 权限矩阵；矩阵不得包含真实响应正文、Token、Cookie 或 Authorization。
+  - `PERMISSION_DENIED`、`NORMAL_NO_DATA` 和通用查询失败至少各有一条真实或脱敏 fixture 证据；无法真实触发的状态必须明确标为未验证。
+  - 检查 `git diff`、日志、fixture 和任务回执，证明没有凭据进入 Git。
+  - 不购买权限，不执行全市场高频查询，不把历史已有的静态 `SOURCE_CAPABILITY_MATRIX` 当作本任务真实结果。
+
+### TA-TUSHARE-2000-001B: Tushare 统一状态与错误分类契约（P0）
+- **描述**：为 Tushare endpoint 建立结构化查询结果，消除 `_optional_query()` 把权限不足、限流和上游失败统一压成空表的问题；保留现有 provider 的兼容文本出口，但结构化状态必须成为审计真源。
+- **优先级**：P0
+- **状态**：blocked-auto
+- **depends_on**：TA-TUSHARE-2000-001A
+- **auto_release**：true
+- **预计耗时**：40-60 分钟
+- **允许修改**：Tushare provider、Tushare schema/normalizer、Tushare 专项测试、脱敏文档、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：知识库/海瑞仓库、真实 Token、生产数据库、非 Tushare provider、提示词、实盘交易逻辑。
+- **状态契约**：`HAS_DATA`、`NORMAL_NO_DATA`、`QUERY_FAILED`、`PERMISSION_DENIED`、`RATE_LIMITED`、`FIELD_MISSING`、`NOT_QUERIED`、`STALE`。
+- **实现要求**：所有结果携带 endpoint、查询参数摘要、query time、data period、response hash、cache metadata 和脱敏 error；未查询、失败、字段缺失、权限不足不得写成数值 `0`。合法业务数值 `0` 必须继续保留为数据。
+- **验收方式**：mock/fixture 覆盖全部八态；权限、限流、空数据和字段缺失不能互相误判；现有财务、资金流、龙虎榜、两融、回购调用保持兼容；Tushare 配置缺失时 fail closed 且不泄露 Token。
+
+### TA-TUSHARE-2000-001C: 知识库研究证据包补齐（P1）
+- **描述**：在现有只读 `financial_fact_bundle` 基础上补齐 Tushare 研究证据内容，但 TA 只负责采集、标准化和导出，不计算知识库研究分、不写知识库目录。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：TA-TUSHARE-2000-001B
+- **auto_release**：true
+- **预计耗时**：35-55 分钟
+- **允许修改**：财务事实/证据包、专用只读导出脚本、schema、测试、脱敏示例、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：知识库仓库及正式快照、研究评分公式、海瑞仓库、生产数据库、提示词、真实 Token。
+- **输出范围**：财务三表、财务指标、业绩预告、业绩快报、主营业务构成、审计意见、分红，以及查询参数、查询时间、数据期间、响应哈希和权限等级。
+- **验收方式**：输出规范化 JSON；缺失接口使用统一状态，不以空数组冒充成功；只读导出目标路径必须由调用方显式指定且拒绝覆盖；示例使用脱敏 fixture，真实运行只保存哈希和元数据。
+
+### TA-TUSHARE-2000-001D: 海瑞治理事件包只读出口（P1）
+- **描述**：新增面向海瑞消费的治理事件 JSON 包。TradingAgents 只提供导出命令或调用接口，不直接写海瑞目录，不生成海瑞正式审判记录。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：TA-TUSHARE-2000-001B
+- **auto_release**：true
+- **预计耗时**：40-60 分钟
+- **允许修改**：Tushare 治理事件标准化模块、schema、只读导出脚本、测试、脱敏示例、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：海瑞仓库、知识库仓库、生产数据库、真实 Token、提示词、实盘交易逻辑。
+- **输出范围**：股东人数、前十大股东、前十大流通股东、股权质押、股东增减持、限售股解禁、股票回购、数据新鲜度和异常状态。
+- **验收方式**：同一股票可生成治理包；无事件与查询失败严格区分；事件必须保留公告/报告日期和 source endpoint；输出不包含交易动作词；脚本不得接受知识库或海瑞目录作为默认写入目标。
+
+### TA-TUSHARE-2000-001E: 缓存、退避、动作降级与端到端验收（P1）
+- **描述**：收口 2000 积分能力扩展：增加限流退避和可审计缓存，并证明 Tushare 不可用时最终结构化动作按风险规则真实降级，而不是只追加警告。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：TA-TUSHARE-2000-001C, TA-TUSHARE-2000-001D
+- **auto_release**：true
+- **预计耗时**：45-70 分钟
+- **允许修改**：Tushare provider/缓存、数据标准化出口、数据收集与 readiness/risk 的最小必要接线、Tushare 与动作门禁集成测试、脱敏文档、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：知识库/海瑞仓库、真实 Token、生产数据库、提示词、与 Tushare 无关的 provider、用户未授权的数据购买、实盘下单逻辑。
+- **实现要求**：限流使用有界退避；缓存记录查询时间、数据期间和 endpoint；旧缓存返回 `STALE`，不得冒充最新；实时/分钟/新闻/研报等无权限能力继续明确排除。
+- **验收方式**：
+  - 真实小范围运行至少覆盖一只股票的财务、治理事件和市场行为数据。
+  - fixture 证明权限不足、无数据、字段缺失、限流、查询失败和旧缓存可区分。
+  - 集成测试证明关键 Tushare 证据失败会限制 Buy Level/强动作，最终响应 action 已降级。
+  - 输出最终权限矩阵、知识库证据包示例、海瑞治理事件包示例、真实运行证据和仍未知接口清单。
+  - 运行 Tushare 专项测试、相关数据收集/门禁回归、静态检查与独立 Codex review；无 P0/P1/P2 correctness finding 后方可提交。
 
 ### B-002-R1: 调度回调报告字段补修（P2）
 - **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。

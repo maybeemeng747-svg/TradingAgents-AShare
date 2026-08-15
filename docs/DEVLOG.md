@@ -15605,6 +15605,13 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - 603629.SH 真实只读回放：Tushare 三张报表均返回 `HAS_DATA`，210 条事实；191 条事实交叉验证通过，1 条 2023Q4 营业成本差异被记为历史冲突，决策窗口冲突为 0。
 - 验证：219 项财务来源、期间口径、数据目录和收集器回归通过，`git diff --check` 通过。
 
+## 2026-08-16 | Tushare 2000 积分扩展任务拆分
+
+- 将 `TA-TUSHARE-2000-001` 拆为 5 个可独立验收的 OpenCode 任务：真实权限矩阵、统一八态契约、知识库研究证据包、海瑞治理事件包、缓存/退避/动作降级端到端验收。
+- 首项 `TA-TUSHARE-2000-001A` 标记为 `ready`；其余任务按依赖设为 `blocked-auto`，避免在真实权限未知时先实现空壳出口。
+- 任务明确复用现有 `d844b31` Tushare provider 与 `299f12e` 财务事实桥接，不重做已落地能力；同时禁止写知识库/海瑞目录、生产数据库、提示词、真实 Token 和无关 provider。
+- 本次仅更新任务池与开发日志；主工作区现有 OpenClaw/前端/TradeFlow 未提交改动不属于本任务，未纳入或修改。
+
 ### 2026-08-13 - 603256.SH DeepSeek production replay closeout
 
 - Ran one medium-horizon FULL_TA analysis for `603256.SH` with
