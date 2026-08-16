@@ -47,7 +47,7 @@
 17. `B-001-R1`：MiMo provider 配置与凭据路由补修（done，最终 Codex review 无 correctness finding）。
 18. `SCORE-001C-R1`：v1.2 快照消费与主工作树门禁补修（done，本轮人工开发与对抗验收）。
 19. `TA-TUSHARE-2000-001A`：现有 2000 积分权限真实矩阵（P0，done — 真实运行档案 `docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/`，24 endpoint 全部 allowed，待 Codex review）。
-20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，blocked-auto）。
+20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，ready）。
 21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，blocked-auto）。
 22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，blocked-auto）。
 23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，blocked-auto）。
@@ -262,7 +262,7 @@
 ### TA-TUSHARE-2000-001B: Tushare 统一状态与错误分类契约（P0）
 - **描述**：为 Tushare endpoint 建立结构化查询结果，消除 `_optional_query()` 把权限不足、限流和上游失败统一压成空表的问题；保留现有 provider 的兼容文本出口，但结构化状态必须成为审计真源。
 - **优先级**：P0
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：TA-TUSHARE-2000-001A
 - **auto_release**：true
 - **预计耗时**：40-60 分钟
