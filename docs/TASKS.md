@@ -50,7 +50,7 @@
 20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，done — 八态契约与 provider 审计真源落地，334 passed）。
 21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，done — 九端点证据包与只读导出落地，216 passed）。
 22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，done — 八端点治理包与 denylist 只读导出落地，175 passed）。
-23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，blocked-auto）。
+23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，done — 有界退避+可审计缓存+STALE 出口+动作真实降级与 24 endpoint 真实运行，393+770 passed）。
 24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
 25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，ready）。
@@ -302,7 +302,7 @@
 ### TA-TUSHARE-2000-001E: 缓存、退避、动作降级与端到端验收（P1）
 - **描述**：收口 2000 积分能力扩展：增加限流退避和可审计缓存，并证明 Tushare 不可用时最终结构化动作按风险规则真实降级，而不是只追加警告。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — 限流有界退避（仅 RATE_LIMITED 重试、单次封顶、attempts/retry_reason 入审计）、可审计缓存（wall time/数据期间/endpoint/TTL）与 `read_cache` STALE 只读出口；fixture 证明证据失败→Buy Level 受限→最终动作真实降级；真实小范围运行 24 endpoint（财务 9 + 治理 8 + 市场行为 7）全部成功，专项 16 passed、相关回归 393+770 passed；运行档案 `docs/task_runs/TA-TUSHARE-2000-001E-20260816-095043/`，待 Codex review
 - **depends_on**：TA-TUSHARE-2000-001C, TA-TUSHARE-2000-001D
 - **auto_release**：true
 - **预计耗时**：45-70 分钟

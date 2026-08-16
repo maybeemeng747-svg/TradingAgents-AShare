@@ -1,5 +1,31 @@
 # 修改日志
 
+## 2026-08-16 | TA-TUSHARE-2000-001E：退避、可审计缓存与动作降级收口（P1）
+
+- `CnTushareProvider` 限流有界退避：仅 RATE_LIMITED 触发重试，指数退避单次
+  sleep 封顶（默认 8s）、总次数封顶（默认 3 次），权限拒绝/通用失败绝不重试；
+  退避可注入（sleep_fn）可配置，非法配置构造即拒绝；`attempts`/`retry_reason`
+  （rate_limit_backoff_recovered/exhausted）进入 001B 结构化审计。
+- 可审计缓存：条目升级为 (monotonic, wall_time, frame)，`cache_audit_records()`
+  输出 endpoint/参数/查询时间/数据期间/TTL/age/expired 的脱敏审计；旧 2 元组
+  条目向后兼容。新增 `read_cache()` STALE 只读出口——永不触发上游调用，新鲜
+  命中返回 HAS_DATA（cache.hit），过期条目返回 STALE（stale_served=true，保留
+  旧帧行数/哈希但不冒充最新）。
+- 契约扩展：`TushareQueryResult` 增加 attempts/retry_reason 并进入 to_dict。
+- 动作降级集成链（新增专项测试证明，健康基线对照）：Tushare 关键证据失败
+  （资金流限流耗尽、两融/回购权限拒绝）→ raw_evidence FAILED →
+  evidence_coverage < 70 → 强动作门禁不通过 + Buy Level 受限 → D-002 清洗器
+  真实移除最终响应中的"立即买入"，而非只追加警告。
+- 真实小范围运行（603629.SH，24 endpoint：财务 9 + 治理 8 + 市场行为 7，
+  0.6s 间隔）：全部成功（HAS_DATA 22 + NORMAL_NO_DATA 2——express 无快报、
+  top_list 非上榜日），未触发限流重试；真实 pack 全文只写 /tmp 调用方目录，
+  run archive 只存哈希与元数据 + 9 项仍未知接口清单。凭据扫描 clean。
+- 验证：新增专项 **16 passed**；Tushare 相关回归 **393 passed**；readiness/
+  collector 回归 **770 passed**。运行档案
+  `docs/task_runs/TA-TUSHARE-2000-001E-20260816-095043/`。
+
+---
+
 ## 2026-08-16 | TA-TUSHARE-2000-001D：海瑞治理事件包只读出口（P1）
 
 - 新增 `tradingagents/dataflows/tushare_governance_events.py`：面向海瑞消费的

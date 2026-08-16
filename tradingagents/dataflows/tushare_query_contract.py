@@ -126,6 +126,8 @@ class TushareQueryResult:
     error: str | None = None
     error_type: str | None = None
     missing_fields: tuple[str, ...] = ()
+    attempts: int = 1
+    retry_reason: str | None = None
     frame: pd.DataFrame | None = None
     exception: BaseException | None = None
 
@@ -172,6 +174,8 @@ class TushareQueryResult:
             "error": self.error,
             "error_type": self.error_type,
             "missing_fields": list(self.missing_fields),
+            "attempts": self.attempts,
+            "retry_reason": self.retry_reason,
         }
         return record
 
@@ -207,6 +211,8 @@ def frame_result(
     *,
     required_fields: Sequence[str] = (),
     cache: TushareCacheMetadata | None = None,
+    attempts: int = 1,
+    retry_reason: str | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> TushareQueryResult:
     normalized = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
@@ -225,6 +231,8 @@ def frame_result(
         error=None,
         error_type=None,
         missing_fields=missing,
+        attempts=attempts,
+        retry_reason=retry_reason,
         frame=normalized,
         exception=None,
     )
@@ -239,6 +247,8 @@ def error_result(
     state: str | None = None,
     cache: TushareCacheMetadata | None = None,
     raise_as: BaseException | None = None,
+    attempts: int = 1,
+    retry_reason: str | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> TushareQueryResult:
     resolved = state or classify_error_message(str(exc))
@@ -263,6 +273,8 @@ def error_result(
         error=text or None,
         error_type=type(exc).__name__,
         missing_fields=(),
+        attempts=attempts,
+        retry_reason=retry_reason,
         frame=None,
         exception=raise_as if raise_as is not None else exc,
     )
@@ -279,6 +291,8 @@ def stale_result(
     error: str = "",
     token: str = "",
     raise_as: BaseException | None = None,
+    attempts: int = 1,
+    retry_reason: str | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> TushareQueryResult:
     """Build a STALE result: only an expired cached copy is available."""
@@ -306,6 +320,8 @@ def stale_result(
         error=text or None,
         error_type=type(exc).__name__ if exc is not None else None,
         missing_fields=(),
+        attempts=attempts,
+        retry_reason=retry_reason,
         frame=normalized,
         exception=raise_as if raise_as is not None else exc,
     )

@@ -412,9 +412,10 @@ class TestProviderIntegration:
         provider = CnTushareProvider(query_fn=succeed_then_fail())
         first = provider._query("daily_basic", ts_code="603629.SH")
         assert not first.empty
-        # Force the cached entry to be expired.
-        for key, (_ts, cached_frame) in list(provider._cache.items()):
-            provider._cache[key] = (time.monotonic() - 1000.0, cached_frame)
+        # Force the cached entry to be expired (3-tuple cache shape).
+        for key, entry in list(provider._cache.items()):
+            _ts, _wall, cached_frame = CnTushareProvider._cache_entry_parts(entry)
+            provider._cache[key] = (time.monotonic() - 1000.0, None, cached_frame)
 
         unavailable: list[str] = []
         result = provider._optional_query(

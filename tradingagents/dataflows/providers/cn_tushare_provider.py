@@ -14,13 +14,16 @@ import re
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
+from ..tushare_capability import extract_time_range
 from ..tushare_query_contract import (
     STATE_NOT_QUERIED,
+    STATE_RATE_LIMITED,
     STATE_STALE,
     TushareCacheMetadata,
     TushareQueryResult,
@@ -127,14 +130,39 @@ class CnTushareProvider(BaseMarketDataProvider):
         token: str | None = None,
         *,
         query_fn: Callable[..., pd.DataFrame] | None = None,
+        rate_limit_backoff_base_seconds: float = 1.0,
+        rate_limit_max_attempts: int = 3,
+        rate_limit_max_backoff_seconds: float = 8.0,
+        sleep_fn: Callable[[float], None] | None = None,
     ) -> None:
         self._token = (token or os.getenv("TUSHARE_TOKEN", "")).strip()
         self._query_fn = query_fn
         self._client = None
-        self._cache: dict[tuple[Any, ...], tuple[float, pd.DataFrame]] = {}
+        self._cache: dict[tuple[Any, ...], tuple[Any, ...]] = {}
         self._structured_audit: deque[TushareQueryResult] = deque(
             maxlen=_STRUCTURED_AUDIT_MAX_ENTRIES
         )
+        # [TA-TUSHARE-2000-001E] bounded rate-limit backoff.  Total worst-case
+        # sleep stays bounded: base + 2*base capped per attempt, at most
+        # (max_attempts - 1) sleeps.  Only RATE_LIMITED is retried; permission
+        # denials and generic failures are never retried here.
+        if rate_limit_max_attempts < 1:
+            raise ValueError("rate_limit_max_attempts must be >= 1")
+        self._backoff_base = max(0.0, float(rate_limit_backoff_base_seconds))
+        self._backoff_max_attempts = int(rate_limit_max_attempts)
+        self._backoff_cap = max(0.0, float(rate_limit_max_backoff_seconds))
+        self._sleep = sleep_fn or time.sleep
+
+    def _backoff_delay_seconds(self, attempt: int) -> float:
+        return min(self._backoff_base * (2 ** (attempt - 1)), self._backoff_cap)
+
+    @staticmethod
+    def _cache_entry_parts(entry: tuple[Any, ...]) -> tuple[float, str | None, pd.DataFrame]:
+        # Cache values migrated in 001E from (monotonic, frame) to
+        # (monotonic, wall_iso, frame); both shapes must stay readable.
+        if len(entry) == 3:
+            return float(entry[0]), str(entry[1]), entry[2]
+        return float(entry[0]), None, entry[1]
 
     @property
     def name(self) -> str:
@@ -184,84 +212,119 @@ class CnTushareProvider(BaseMarketDataProvider):
         )
         monotonic_now = time.monotonic()
         cached = self._cache.get(cache_key)
-        if cached is not None and monotonic_now - cached[0] <= self._cache_ttl_seconds:
-            result = contract_frame_result(
-                endpoint,
-                params_summary,
-                cached[1],
-                required_fields=required_fields,
-                cache=TushareCacheMetadata(
-                    hit=True,
-                    expired=False,
-                    stale_served=False,
-                    upstream_called=False,
-                    age_seconds=monotonic_now - cached[0],
-                    ttl_seconds=self._cache_ttl_seconds,
-                ),
-            )
-            self._structured_audit.append(result)
-            return result
-        try:
-            with _TUSHARE_CALL_LOCK:
-                if self._query_fn is not None:
-                    frame = self._query_fn(endpoint, **kwargs)
-                else:
-                    try:
-                        client = self._pro()
-                    except NotImplementedError as setup_exc:
-                        raise _TushareSetupFailure(setup_exc) from None
-                    frame = client.query(endpoint, **kwargs)
-        except _TushareSetupFailure as failure:
-            setup_exc = failure.args[0]
-            wrapped = RuntimeError(_safe_error(setup_exc, self._token))
-            wrapped.__suppress_context__ = True
-            result = contract_error_result(
-                endpoint,
-                params_summary,
-                setup_exc,
-                token=self._token,
-                state=STATE_NOT_QUERIED,
-                cache=TushareCacheMetadata(
-                    hit=False,
-                    expired=False,
-                    stale_served=False,
-                    upstream_called=False,
-                ),
-                raise_as=wrapped,
-            )
-            self._structured_audit.append(result)
-            return result
-        except Exception as exc:
-            wrapped = RuntimeError(_safe_error(exc, self._token))
-            wrapped.__suppress_context__ = True
-            if cached is not None:
-                # Upstream failed now but an expired cached copy exists: the
-                # audit truth is STALE, never a fresh-looking empty table.
-                result = contract_stale_result(
+        if cached is not None:
+            cached_ts, _cached_wall, cached_frame = self._cache_entry_parts(cached)
+            if monotonic_now - cached_ts <= self._cache_ttl_seconds:
+                result = contract_frame_result(
                     endpoint,
                     params_summary,
-                    cached[1],
-                    age_seconds=monotonic_now - cached[0],
-                    ttl_seconds=self._cache_ttl_seconds,
-                    exc=exc,
-                    token=self._token,
-                    raise_as=wrapped,
+                    cached_frame,
+                    required_fields=required_fields,
+                    cache=TushareCacheMetadata(
+                        hit=True,
+                        expired=False,
+                        stale_served=False,
+                        upstream_called=False,
+                        age_seconds=monotonic_now - cached_ts,
+                        ttl_seconds=self._cache_ttl_seconds,
+                    ),
                 )
-            else:
+                self._structured_audit.append(result)
+                return result
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                with _TUSHARE_CALL_LOCK:
+                    if self._query_fn is not None:
+                        frame = self._query_fn(endpoint, **kwargs)
+                    else:
+                        try:
+                            client = self._pro()
+                        except NotImplementedError as setup_exc:
+                            raise _TushareSetupFailure(setup_exc) from None
+                        frame = client.query(endpoint, **kwargs)
+                break
+            except _TushareSetupFailure as failure:
+                setup_exc = failure.args[0]
+                wrapped = RuntimeError(_safe_error(setup_exc, self._token))
+                wrapped.__suppress_context__ = True
                 result = contract_error_result(
                     endpoint,
                     params_summary,
-                    exc,
+                    setup_exc,
                     token=self._token,
+                    state=STATE_NOT_QUERIED,
+                    cache=TushareCacheMetadata(
+                        hit=False,
+                        expired=False,
+                        stale_served=False,
+                        upstream_called=False,
+                    ),
                     raise_as=wrapped,
+                    attempts=attempts,
                 )
-            self._structured_audit.append(result)
-            return result
+                self._structured_audit.append(result)
+                return result
+            except Exception as exc:
+                error_state = contract_error_result(
+                    endpoint, params_summary, exc, token=self._token
+                ).state
+                if (
+                    error_state == STATE_RATE_LIMITED
+                    and attempts < self._backoff_max_attempts
+                ):
+                    delay = self._backoff_delay_seconds(attempts)
+                    if delay > 0:
+                        self._sleep(delay)
+                    continue
+                wrapped = RuntimeError(_safe_error(exc, self._token))
+                wrapped.__suppress_context__ = True
+                if cached is not None:
+                    # Upstream failed now but an expired cached copy exists: the
+                    # audit truth is STALE, never a fresh-looking empty table.
+                    _, stale_wall, stale_frame = self._cache_entry_parts(cached)
+                    result = contract_stale_result(
+                        endpoint,
+                        params_summary,
+                        stale_frame,
+                        age_seconds=monotonic_now - cached_ts,
+                        ttl_seconds=self._cache_ttl_seconds,
+                        exc=exc,
+                        token=self._token,
+                        raise_as=wrapped,
+                        attempts=attempts,
+                        retry_reason=(
+                            "rate_limit_backoff_exhausted"
+                            if error_state == STATE_RATE_LIMITED
+                            else None
+                        ),
+                    )
+                else:
+                    result = contract_error_result(
+                        endpoint,
+                        params_summary,
+                        exc,
+                        token=self._token,
+                        raise_as=wrapped,
+                        attempts=attempts,
+                        retry_reason=(
+                            "rate_limit_backoff_exhausted"
+                            if error_state == STATE_RATE_LIMITED
+                            else None
+                        ),
+                    )
+                self._structured_audit.append(result)
+                return result
         if frame is None:
             frame = pd.DataFrame()
         if not isinstance(frame, pd.DataFrame):
             frame = pd.DataFrame(frame)
-        self._cache[cache_key] = (monotonic_now, frame.copy())
+        self._cache[cache_key] = (
+            monotonic_now,
+            datetime.now().astimezone().isoformat(timespec="seconds"),
+            frame.copy(),
+        )
         result = contract_frame_result(
             endpoint,
             params_summary,
@@ -274,6 +337,12 @@ class CnTushareProvider(BaseMarketDataProvider):
                 upstream_called=True,
                 age_seconds=0.0,
                 ttl_seconds=self._cache_ttl_seconds,
+            ),
+            attempts=attempts,
+            retry_reason=(
+                "rate_limit_backoff_recovered"
+                if attempts > 1
+                else None
             ),
         )
         self._structured_audit.append(result)
@@ -335,6 +404,89 @@ class CnTushareProvider(BaseMarketDataProvider):
             if result.endpoint == endpoint:
                 return result.to_dict()
         return None
+
+    def read_cache(self, endpoint: str, **kwargs: Any) -> TushareQueryResult | None:
+        """Read the auditable cache without any upstream call.
+
+        A fresh entry returns its data state with ``cache.hit=True``; an
+        expired entry returns ``STALE`` with ``stale_served=True`` so old
+        data can be consumed for degraded analysis but never masquerades as
+        a fresh query result.  Missing entries return ``None``.
+        """
+
+        cache_key = (
+            endpoint,
+            tuple(sorted((name, str(value)) for name, value in kwargs.items())),
+        )
+        entry = self._cache.get(cache_key)
+        if entry is None:
+            return None
+        cached_ts, cached_wall, cached_frame = self._cache_entry_parts(entry)
+        params_summary = {name: str(value) for name, value in kwargs.items()}
+        monotonic_now = time.monotonic()
+        age = monotonic_now - cached_ts
+        if age <= self._cache_ttl_seconds:
+            return contract_frame_result(
+                endpoint,
+                params_summary,
+                cached_frame,
+                cache=TushareCacheMetadata(
+                    hit=True,
+                    expired=False,
+                    stale_served=False,
+                    upstream_called=False,
+                    age_seconds=age,
+                    ttl_seconds=self._cache_ttl_seconds,
+                ),
+            )
+        stale = contract_stale_result(
+            endpoint,
+            params_summary,
+            cached_frame,
+            age_seconds=age,
+            ttl_seconds=self._cache_ttl_seconds,
+            error="cache entry expired; served as STALE without upstream refresh",
+        )
+        return replace(
+            stale,
+            cache=TushareCacheMetadata(
+                hit=True,
+                expired=True,
+                stale_served=True,
+                upstream_called=False,
+                age_seconds=age,
+                ttl_seconds=self._cache_ttl_seconds,
+            ),
+        )
+
+    def cache_audit_records(self) -> list[dict[str, Any]]:
+        """Credential-free audit records for every cached endpoint query."""
+
+        records: list[dict[str, Any]] = []
+        monotonic_now = time.monotonic()
+        for (endpoint, param_items), entry in self._cache.items():
+            cached_ts, cached_wall, cached_frame = self._cache_entry_parts(entry)
+            age = monotonic_now - cached_ts
+            normalized = (
+                cached_frame
+                if isinstance(cached_frame, pd.DataFrame)
+                else pd.DataFrame()
+            )
+            records.append(
+                {
+                    "endpoint": endpoint,
+                    "params": dict(param_items),
+                    "cached_at": cached_wall,
+                    "age_seconds": age,
+                    "ttl_seconds": self._cache_ttl_seconds,
+                    "expired": age > self._cache_ttl_seconds,
+                    "row_count": int(len(normalized)),
+                    "data_period": extract_time_range(normalized)
+                    if not normalized.empty
+                    else None,
+                }
+            )
+        return records
 
     @staticmethod
     def _filter_as_of(frame: pd.DataFrame, as_of: str) -> pd.DataFrame:
