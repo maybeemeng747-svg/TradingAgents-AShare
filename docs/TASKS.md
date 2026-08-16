@@ -48,7 +48,7 @@
 18. `SCORE-001C-R1`：v1.2 快照消费与主工作树门禁补修（done，本轮人工开发与对抗验收）。
 19. `TA-TUSHARE-2000-001A`：现有 2000 积分权限真实矩阵（P0，done — 真实运行档案 `docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/`，24 endpoint 全部 allowed，待 Codex review）。
 20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，done — 八态契约与 provider 审计真源落地，334 passed）。
-21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，blocked-auto）。
+21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，done — 九端点证据包与只读导出落地，216 passed）。
 22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，blocked-auto）。
 23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，blocked-auto）。
 24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
@@ -275,7 +275,7 @@
 ### TA-TUSHARE-2000-001C: 知识库研究证据包补齐（P1）
 - **描述**：在现有只读 `financial_fact_bundle` 基础上补齐 Tushare 研究证据内容，但 TA 只负责采集、标准化和导出，不计算知识库研究分、不写知识库目录。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — `tushare_research_evidence` 九端点证据包 + 只读导出脚本（显式 output、拒绝覆盖、NO_KEY fail closed）；fixture 验收 30 passed，相关回归 216 passed；运行档案 `docs/task_runs/TA-TUSHARE-2000-001C-20260816-093609/`，待 Codex review
 - **depends_on**：TA-TUSHARE-2000-001B
 - **auto_release**：true
 - **预计耗时**：35-55 分钟

@@ -1,5 +1,30 @@
 # 修改日志
 
+## 2026-08-16 | TA-TUSHARE-2000-001C：Tushare 知识库研究证据包（P1）
+
+- 新增 `tradingagents/dataflows/tushare_research_evidence.py`：面向知识库消费的
+  九端点研究证据包（财务三表、fina_indicator、forecast、express、dividend、
+  fina_audit、fina_mainbz），全部经 001B 八态契约分类；每条 endpoint 记录携带
+  查询参数、query time、data period、response SHA-256、cache metadata、脱敏
+  error、权限等级与 eligible_row_count；records 按 as_of 过滤未来披露，NaN→null
+  规范化。失败/未查询/字段缺失/过期端点 records=None，不以空数组冒充成功；
+  NORMAL_NO_DATA 保持 records=[]+row_count=0；`validate_evidence_pack` fail closed。
+- 新增 `scripts/export_tushare_research_evidence.py`：只读导出命令。`--output`
+  必须显式指定（无默认目标）、已存在文件绝不覆盖（临时文件+硬链接原子创建）；
+  NO_KEY 且无 `--fixture` 时退出码 2 fail closed；fixture 模式标记
+  collection_mode=fixture 不发起网络；权限等级（tier/matrix_ref/逐端点
+  permission_status）来自 001A 真实矩阵；stdout 只输出无正文的脱敏 summary。
+- 新增脱敏合成 fixture 与示例产物（见
+  `docs/task_runs/TA-TUSHARE-2000-001C-20260816-093609/`）：九端点示例 pack
+  覆盖 HAS_DATA/NORMAL_NO_DATA/PERMISSION_DENIED/FIELD_MISSING 四态与
+  as_of 未来披露过滤。TA 只采集/标准化/导出，不计算知识库研究分、不写知识库
+  目录。
+- 验证：新增专项 **30 passed**；Tushare 相关回归合计 **216 passed**。凭据自检
+  clean（64 位十六进制命中均为 SHA-256 摘要）。未发起真实网络请求（fixture
+  模式）、未调用 live LLM、未写生产数据库。
+
+---
+
 ## 2026-08-16 | TA-TUSHARE-2000-001B：Tushare 统一八态错误契约（P0）
 
 - 新增 `tradingagents/dataflows/tushare_query_contract.py`：Tushare endpoint 查询
