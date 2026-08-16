@@ -46,7 +46,7 @@
 16. `SCORE-001-R1`：快照 loader 验收档案修正（done，第 6 轮最终复审通过）。
 17. `B-001-R1`：MiMo provider 配置与凭据路由补修（done，最终 Codex review 无 correctness finding）。
 18. `SCORE-001C-R1`：v1.2 快照消费与主工作树门禁补修（done，本轮人工开发与对抗验收）。
-19. `TA-TUSHARE-2000-001A`：现有 2000 积分权限真实矩阵（P0，ready）。
+19. `TA-TUSHARE-2000-001A`：现有 2000 积分权限真实矩阵（P0，done — 真实运行档案 `docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/`，24 endpoint 全部 allowed，待 Codex review）。
 20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，blocked-auto）。
 21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，blocked-auto）。
 22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，blocked-auto）。
@@ -240,7 +240,7 @@
 ### TA-TUSHARE-2000-001A: 现有 2000 积分权限真实矩阵（P0）
 - **描述**：基于用户当前真实 Tushare 2000 积分权限，对明确列出的 endpoint 各执行一次最小、单股票、低频查询，生成脱敏且可复核的权限矩阵。不得根据文档或积分等级推测权限，不得做全市场批量抓取。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — 真实运行档案与脱敏矩阵见 `docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/`；24/24 实测 allowed（22 HAS_DATA + 2 NORMAL_NO_DATA），`PERMISSION_DENIED/QUERY_FAILED/RATE_LIMITED` 未在真实运行触发、已按 fixture 证据标注未验证；001B 的 depends_on 已满足，状态迁移由依赖解析器执行
 - **depends_on**：
 - **auto_release**：false
 - **预计耗时**：35-55 分钟

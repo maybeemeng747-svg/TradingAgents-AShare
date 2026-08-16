@@ -1,5 +1,31 @@
 # 修改日志
 
+## 2026-08-16 | TA-TUSHARE-2000-001A：Tushare 2000 积分真实权限矩阵（P0）
+
+- 新增 `tradingagents/dataflows/tushare_capability.py`：任务范围 24 个 endpoint 的声明式注册表
+  （财务 9 / 治理事件 8 / 市场行为 7，外加 9 项明确排除的 unknown 能力）、查询结果五态分类
+  （HAS_DATA/NORMAL_NO_DATA/PERMISSION_DENIED/RATE_LIMITED/QUERY_FAILED + NOT_QUERIED）、
+  凭据脱敏清洗（Token 子串、Authorization/Cookie/Session 头、40+ 位不透明 blob）、
+  响应 SHA-256 与日期范围提取、单探测+受控重试执行器（权限拒绝与限流绝不重试；
+  仅瞬态网络错误或日期型空结果允许一次带原因重试）、矩阵 JSON/Markdown 渲染与 2000 行
+  上限命中自动标注。模块不读取静态 `SOURCE_CAPABILITY_MATRIX`。
+- 新增 `scripts/audit_tushare_capability.py`：Token 只从 git-ignored `.env` 读取，
+  NO_KEY 一律 fail closed（退出码 2、零探测）；`--dry-run` 不发网络请求；探测间隔 0.6s。
+- 真实运行（603629.SH，探测日 20260814）：24/24 endpoint 全部 allowed——22 HAS_DATA +
+  2 NORMAL_NO_DATA（express 窗口内无快报、top_list 非上榜日且回退日重试一次有原因记录）；
+  `repurchase` 市场窗口单次查询命中 2000 行上限，已标注不影响权限结论、不代表窗口完整覆盖。
+  `PERMISSION_DENIED/QUERY_FAILED/RATE_LIMITED` 未在真实运行触发，按任务要求以脱敏 fixture
+  证据（`tests/fixtures/tushare_capability/`）标注为未验证。
+- 产物：`docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/` 下机器可读 JSON、人读
+  Markdown 矩阵与运行回执；不含真实响应正文、Token、Cookie 或 Authorization，凭据自检
+  clean。静态能力矩阵未被当作本任务真实结果。
+- 验证：Tushare capability 专项 **44 passed**；既有 provider 回归 **40 passed**；静态矩阵
+  契约 **31 passed**；API smoke **87 passed**；`py_compile` 与 `git diff --check` 通过；
+  对全部新增文件做真实 Token 泄漏扫描 clean。未调用 live LLM、未写生产数据库、未修改
+  prompts、未购买任何权限、未做全市场高频查询。
+
+---
+
 ## 2026-07-31 | 自动财务事实导出与历史时点防穿越
 
 - 新增跨源财务事实导出：公司身份、利润表、现金流量表和资产负债表统一为可追溯
