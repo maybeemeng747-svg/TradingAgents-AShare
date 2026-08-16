@@ -53,6 +53,9 @@
 23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，blocked-auto）。
 24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
 25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
+26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，ready）。
+27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，ready）。
+28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，ready）。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -312,6 +315,51 @@
   - 集成测试证明关键 Tushare 证据失败会限制 Buy Level/强动作，最终响应 action 已降级。
   - 输出最终权限矩阵、知识库证据包示例、海瑞治理事件包示例、真实运行证据和仍未知接口清单。
   - 运行 Tushare 专项测试、相关数据收集/门禁回归、静态检查与独立 Codex review；无 P0/P1/P2 correctness finding 后方可提交。
+
+### TA-TUSHARE-2000-001A-R1: 权限矩阵补修与真实重跑（P0）
+- **描述**：修复 Codex review（2026-08-16，gpt-5.6-sol high）在 c73ed4f 发现的 3×P1+2×P2，并重新生成真实权限矩阵。001A 的 24/24 allowed 仅视为运行结果，验收以本任务重跑产物为准。
+- **优先级**：P0
+- **状态**：ready
+- **depends_on**：
+- **auto_release**：false
+- **预计耗时**：40-60 分钟
+- **修复清单**：
+  - P1 环境变量继承可能覆盖指定 `.env` 的 Tushare Token，权限矩阵归属可能错误：显式加载并记录 Token 来源，杜绝继承覆盖。
+  - P1 `repurchase` 实际抓取全市场 2000 行，违反单股最小查询约束：改为单 ts_code 最小查询。
+  - P1 凭据泄漏扫描发现问题仍返回成功：改为 fail-closed，发现即非零退出。
+  - P2 北交所 `.BJ` 被错误映射为上交所。
+  - P2 自定义输出目录写入后 `relative_to(ROOT)` 可能崩溃。
+- **验收方式**：全部修复有测试覆盖（含泄漏扫描真实触发用例）；重跑产物进入 `docs/task_runs/` 新档案；`repurchase` 单股查询的参数与行数记录在案；新旧矩阵差异说明。
+- **允许修改**：Tushare capability 模块、`scripts/audit_tushare_capability.py`、专项测试、`docs/task_runs/` 档案、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：真实 Token、非 Tushare provider、知识库/海瑞仓库、生产数据库、实盘交易逻辑。
+
+### B-002-R2: OpenClaw 回调 ORM 字段与 readiness 真源修复（P1）
+- **描述**：修复 e40147c review 发现：`scheduler/main.py:243` 读取 `ReportDB` 不存在的 `horizon/analysis_summary/opinion` 字段，启用回调即抛异常、回调不发送；`readiness_score` 无真实持久化来源恒为空。
+- **优先级**：P1
+- **状态**：ready
+- **depends_on**：
+- **auto_release**：false
+- **预计耗时**：25-40 分钟
+- **修复清单**：
+  - P1 回调 payload 字段映射改为 `ReportDB` 真实 schema 字段（或补齐 ORM 字段），启用回调不再抛异常。
+  - P2 `readiness_score` 接真实持久化来源；无来源时按契约输出明确状态，不得以空值冒充。
+- **验收方式**：回调 payload 全字段单测断言（与真实 ORM schema 对齐）；启用回调路径集成测试通过。
+- **允许修改**：`scheduler/main.py`、`api/services/openclaw_callback_service.py`、相关测试、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：OpenClaw 侧配置、非回调链路、生产数据库。
+
+### CONFIG-DS-SCHEDULE-R1: DeepSeek 显式授权门禁与 13:15 前后端统一（P1）
+- **描述**：修复 72f31be review 发现：`strategy_config.py:184` 默认解除 DeepSeek 黑名单，绕过显式授权与付费模型保护，破坏回归测试契约；`Portfolio.tsx` 只改前端默认 13:15，后端仍 14:30，自动建任务时间不一致甚至重复。
+- **优先级**：P1
+- **状态**：ready
+- **depends_on**：
+- **auto_release**：false
+- **预计耗时**：25-40 分钟
+- **修复清单**：
+  - P1 DeepSeek 解禁改为显式授权配置（明确开关+文档说明），不再默认绕过；修复被破坏的回归测试契约。
+  - P2 后端默认盘中时间 14:30→13:15 与前端统一；存量定时任务迁移，避免自动导入持仓时重复建任务。
+- **验收方式**：相关回归测试全绿；显式授权配置有单测；前后端默认时间断言一致。
+- **允许修改**：`tradingagents/tradeflow/strategy_config.py`、`gated_deep_ta.py`、后端定时任务创建/迁移逻辑、`Portfolio.tsx`、相关测试、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：实盘下单逻辑、用户数据。
 
 ### B-002-R1: 调度回调报告字段补修（P2）
 - **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。
