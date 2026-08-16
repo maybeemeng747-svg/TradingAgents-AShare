@@ -275,7 +275,7 @@
 ### TA-TUSHARE-2000-001C: 知识库研究证据包补齐（P1）
 - **描述**：在现有只读 `financial_fact_bundle` 基础上补齐 Tushare 研究证据内容，但 TA 只负责采集、标准化和导出，不计算知识库研究分、不写知识库目录。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：TA-TUSHARE-2000-001B
 - **auto_release**：true
 - **预计耗时**：35-55 分钟
@@ -287,7 +287,7 @@
 ### TA-TUSHARE-2000-001D: 海瑞治理事件包只读出口（P1）
 - **描述**：新增面向海瑞消费的治理事件 JSON 包。TradingAgents 只提供导出命令或调用接口，不直接写海瑞目录，不生成海瑞正式审判记录。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：TA-TUSHARE-2000-001B
 - **auto_release**：true
 - **预计耗时**：40-60 分钟
