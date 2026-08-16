@@ -1,5 +1,32 @@
 # 修改日志
 
+## 2026-08-16 | TA-TUSHARE-2000-001B：Tushare 统一八态错误契约（P0）
+
+- 新增 `tradingagents/dataflows/tushare_query_contract.py`：Tushare endpoint 查询
+  统一八态结构化结果（HAS_DATA/NORMAL_NO_DATA/QUERY_FAILED/PERMISSION_DENIED/
+  RATE_LIMITED/FIELD_MISSING/NOT_QUERIED/STALE），复用 001A 的脱敏、哈希与日期
+  范围原语；每条结果携带 endpoint、参数摘要、query time、data period、response
+  SHA-256、cache metadata 与脱敏 error，`to_dict()` 可直接 JSON 审计。
+- 契约 fail-closed 校验：QUERY_FAILED/PERMISSION_DENIED/RATE_LIMITED/NOT_QUERIED
+  不得携带数值 row_count/data_period（禁止把失败写成 0）；FIELD_MISSING 必须列出
+  missing_fields 且 row_count ≥ 1；STALE 必须附带过期帧证据；row_count 必须与
+  附带 frame 一致；合法业务数值 0 继续保留在数据帧中不被丢弃。
+- `cn_tushare_provider` 全部查询改经 `_run_structured_query`：真实状态写入有界
+  （128 条）审计队列，`structured_results()`/`last_structured_result()` 为审计
+  真源；`_optional_query` 的"权限/限流/失败一律空表"崩塌被消除；上游失败 +
+  过期缓存副本 → 审计记 STALE 不冒充最新；本地未配置 → NOT_QUERIED 且
+  upstream_called=false；lhb force=False → NOT_QUERIED；moneyflow 缺大单字段 →
+  FIELD_MISSING。兼容文本出口（财务/资金流/龙虎榜/两融/回购）与异常语义逐条
+  保持不变（既有 84 项 provider/capability 回归全绿）。
+- 验证：新增契约专项 **33 passed**（八态全覆盖 + 权限/限流/空数据/字段缺失互不
+  误判 + token 全链路脱敏 + 缓存元数据/STALE/审计有界）；Tushare 相关回归合计
+  **334 passed**。凭据自检：新增文件对真实 TUSHARE_TOKEN（HAS_KEY）包含性检查
+  CLEAN，产物只含 HAS_KEY/NO_KEY 级别状态。运行档案
+  `docs/task_runs/TA-TUSHARE-2000-001B-20260816-092845/`。未调用 live LLM、未写
+  生产数据库、未做真实网络查询。
+
+---
+
 ## 2026-08-16 | TA-TUSHARE-2000-001A：Tushare 2000 积分真实权限矩阵（P0）
 
 - 新增 `tradingagents/dataflows/tushare_capability.py`：任务范围 24 个 endpoint 的声明式注册表

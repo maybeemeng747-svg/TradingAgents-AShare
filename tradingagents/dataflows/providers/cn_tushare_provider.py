@@ -13,17 +13,33 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
+from ..tushare_query_contract import (
+    STATE_NOT_QUERIED,
+    STATE_STALE,
+    TushareCacheMetadata,
+    TushareQueryResult,
+    error_result as contract_error_result,
+    frame_result as contract_frame_result,
+    not_queried_result as contract_not_queried_result,
+    stale_result as contract_stale_result,
+)
 from .base import BaseMarketDataProvider
 
 
 _TUSHARE_CALL_LOCK = threading.Lock()
 _DATE_RE = re.compile(r"^\d{8}$")
 _REPURCHASE_ROW_LIMIT = 2000
+_STRUCTURED_AUDIT_MAX_ENTRIES = 128
+
+
+class _TushareSetupFailure(Exception):
+    """Internal sentinel: local client setup failed, upstream never called."""
 
 
 def _date_digits(value: str | None, *, default: str | None = None) -> str:
@@ -116,6 +132,9 @@ class CnTushareProvider(BaseMarketDataProvider):
         self._query_fn = query_fn
         self._client = None
         self._cache: dict[tuple[Any, ...], tuple[float, pd.DataFrame]] = {}
+        self._structured_audit: deque[TushareQueryResult] = deque(
+            maxlen=_STRUCTURED_AUDIT_MAX_ENTRIES
+        )
 
     @property
     def name(self) -> str:
@@ -145,27 +164,130 @@ class CnTushareProvider(BaseMarketDataProvider):
         self._client = ts.pro_api(self._token)
         return self._client
 
-    def _query(self, endpoint: str, **kwargs: Any) -> pd.DataFrame:
-        key = (endpoint, tuple(sorted((name, str(value)) for name, value in kwargs.items())))
-        cached = self._cache.get(key)
-        now = time.monotonic()
-        if cached and now - cached[0] <= self._cache_ttl_seconds:
-            return cached[1].copy()
+    def _run_structured_query(
+        self,
+        endpoint: str,
+        *,
+        required_fields: Sequence[str] = (),
+        **kwargs: Any,
+    ) -> TushareQueryResult:
+        """Execute one query under the TA-TUSHARE-2000-001B eight-state contract.
 
-        with _TUSHARE_CALL_LOCK:
-            try:
+        The structured result is recorded in the provider audit trail (the
+        source of truth for downstream audits) while caller-facing behavior
+        (exceptions / returned frames) stays identical to the legacy path.
+        """
+        params_summary = {name: str(value) for name, value in kwargs.items()}
+        cache_key = (
+            endpoint,
+            tuple(sorted((name, str(value)) for name, value in kwargs.items())),
+        )
+        monotonic_now = time.monotonic()
+        cached = self._cache.get(cache_key)
+        if cached is not None and monotonic_now - cached[0] <= self._cache_ttl_seconds:
+            result = contract_frame_result(
+                endpoint,
+                params_summary,
+                cached[1],
+                required_fields=required_fields,
+                cache=TushareCacheMetadata(
+                    hit=True,
+                    expired=False,
+                    stale_served=False,
+                    upstream_called=False,
+                    age_seconds=monotonic_now - cached[0],
+                    ttl_seconds=self._cache_ttl_seconds,
+                ),
+            )
+            self._structured_audit.append(result)
+            return result
+        try:
+            with _TUSHARE_CALL_LOCK:
                 if self._query_fn is not None:
                     frame = self._query_fn(endpoint, **kwargs)
                 else:
-                    frame = self._pro().query(endpoint, **kwargs)
-            except Exception as exc:
-                raise RuntimeError(_safe_error(exc, self._token)) from None
+                    try:
+                        client = self._pro()
+                    except NotImplementedError as setup_exc:
+                        raise _TushareSetupFailure(setup_exc) from None
+                    frame = client.query(endpoint, **kwargs)
+        except _TushareSetupFailure as failure:
+            setup_exc = failure.args[0]
+            wrapped = RuntimeError(_safe_error(setup_exc, self._token))
+            wrapped.__suppress_context__ = True
+            result = contract_error_result(
+                endpoint,
+                params_summary,
+                setup_exc,
+                token=self._token,
+                state=STATE_NOT_QUERIED,
+                cache=TushareCacheMetadata(
+                    hit=False,
+                    expired=False,
+                    stale_served=False,
+                    upstream_called=False,
+                ),
+                raise_as=wrapped,
+            )
+            self._structured_audit.append(result)
+            return result
+        except Exception as exc:
+            wrapped = RuntimeError(_safe_error(exc, self._token))
+            wrapped.__suppress_context__ = True
+            if cached is not None:
+                # Upstream failed now but an expired cached copy exists: the
+                # audit truth is STALE, never a fresh-looking empty table.
+                result = contract_stale_result(
+                    endpoint,
+                    params_summary,
+                    cached[1],
+                    age_seconds=monotonic_now - cached[0],
+                    ttl_seconds=self._cache_ttl_seconds,
+                    exc=exc,
+                    token=self._token,
+                    raise_as=wrapped,
+                )
+            else:
+                result = contract_error_result(
+                    endpoint,
+                    params_summary,
+                    exc,
+                    token=self._token,
+                    raise_as=wrapped,
+                )
+            self._structured_audit.append(result)
+            return result
         if frame is None:
             frame = pd.DataFrame()
         if not isinstance(frame, pd.DataFrame):
             frame = pd.DataFrame(frame)
-        self._cache[key] = (now, frame.copy())
-        return frame
+        self._cache[cache_key] = (monotonic_now, frame.copy())
+        result = contract_frame_result(
+            endpoint,
+            params_summary,
+            frame,
+            required_fields=required_fields,
+            cache=TushareCacheMetadata(
+                hit=False,
+                expired=False,
+                stale_served=False,
+                upstream_called=True,
+                age_seconds=0.0,
+                ttl_seconds=self._cache_ttl_seconds,
+            ),
+        )
+        self._structured_audit.append(result)
+        return result
+
+    def _query(
+        self, endpoint: str, *, required_fields: Sequence[str] = (), **kwargs: Any
+    ) -> pd.DataFrame:
+        result = self._run_structured_query(
+            endpoint, required_fields=required_fields, **kwargs
+        )
+        if result.exception is not None:
+            raise result.exception
+        return result.frame.copy()
 
     def _optional_query(
         self,
@@ -176,17 +298,43 @@ class CnTushareProvider(BaseMarketDataProvider):
     ) -> pd.DataFrame:
         """Return an empty frame when an enrichment endpoint is unavailable.
 
-        Identity and statement routing must not fail only because an optional
-        valuation, indicator or forecast endpoint is temporarily gated.
-        Required identity and statement endpoints use ``_query`` directly so
-        the normal provider fallback chain can handle their failures.
+        Compatibility text behavior is unchanged, but the true structured
+        state (PERMISSION_DENIED / RATE_LIMITED / QUERY_FAILED / STALE /
+        NOT_QUERIED) is recorded in the provider audit trail instead of being
+        collapsed into an indistinguishable empty table.
         """
-        try:
-            return self._query(endpoint, **kwargs)
-        except Exception:
+        result = self._run_structured_query(endpoint, **kwargs)
+        if result.exception is not None:
             if unavailable is not None:
                 unavailable.append(endpoint)
             return pd.DataFrame()
+        return result.frame.copy()
+
+    def _record_not_queried(
+        self, endpoint: str, params: Mapping[str, Any], reason: str
+    ) -> TushareQueryResult:
+        result = contract_not_queried_result(
+            endpoint, {key: str(value) for key, value in params.items()}, reason
+        )
+        self._structured_audit.append(result)
+        return result
+
+    def structured_results(
+        self, *, endpoint: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Credential-free audit records of the most recent Tushare queries."""
+
+        return [
+            record
+            for record in (result.to_dict() for result in self._structured_audit)
+            if endpoint is None or record["endpoint"] == endpoint
+        ]
+
+    def last_structured_result(self, endpoint: str) -> dict[str, Any] | None:
+        for result in reversed(self._structured_audit):
+            if result.endpoint == endpoint:
+                return result.to_dict()
+        return None
 
     @staticmethod
     def _filter_as_of(frame: pd.DataFrame, as_of: str) -> pd.DataFrame:
@@ -709,13 +857,20 @@ class CnTushareProvider(BaseMarketDataProvider):
         ts_code = _normalize_ts_code(symbol)
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+        required = {"buy_lg_amount", "sell_lg_amount", "buy_elg_amount", "sell_elg_amount"}
         frame = self._filter_as_of(
-            self._query("moneyflow", ts_code=ts_code, start_date=start, end_date=end), end
+            self._query(
+                "moneyflow",
+                required_fields=required,
+                ts_code=ts_code,
+                start_date=start,
+                end_date=end,
+            ),
+            end,
         )
         if frame.empty:
             return f"{ts_code} [DATA-TUSHARE] FUND_FLOW_NORMAL_NO_DATA: 近期无个股资金流记录。"
         frame = frame.copy()
-        required = {"buy_lg_amount", "sell_lg_amount", "buy_elg_amount", "sell_elg_amount"}
         if not required.issubset(frame.columns):
             raise NotImplementedError(
                 "cn_tushare moneyflow lacks large/extra-large order fields required for main-force flow"
@@ -761,6 +916,11 @@ class CnTushareProvider(BaseMarketDataProvider):
     def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
         ts_code = _normalize_ts_code(symbol)
         if not force:
+            self._record_not_queried(
+                "top_list",
+                {"ts_code": ts_code, "trade_date": str(date or "")},
+                "LHB query not triggered (force=False)",
+            )
             return (
                 f"{ts_code} [G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）。"
                 "龙虎榜仅在资金/事件异动时按需查询。"
