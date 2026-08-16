@@ -1,5 +1,28 @@
 # 修改日志
 
+## 2026-08-16 | TA-TUSHARE-2000-001D：海瑞治理事件包只读出口（P1）
+
+- 新增 `tradingagents/dataflows/tushare_governance_events.py`：面向海瑞消费的
+  八端点治理事件包（股东人数、前十大股东、前十大流通股东、质押统计/明细、
+  股东增减持、限售解禁、回购），基于 001B 八态契约；repurchase 市场窗口查询
+  后本地按 ts_code 过滤（hash scope=frame_symbol_filtered，不携带其他标的行）；
+  无事件与查询失败严格区分；事件保留公告/报告日期与 source endpoint；pack 级
+  freshness 与 anomalies；`validate_governance_pack` fail closed——状态混淆、
+  无日期事件、缺 source endpoint、交易动作词（买入/卖出/加仓/止盈止损/做多
+  做空等）全部拒绝，股东"增持/减持"治理事实不误伤。
+- 新增 `scripts/export_tushare_governance_events.py`：只读导出命令。无默认
+  写入目标、已存在文件拒绝覆盖、路径段命中知识库/海瑞 denylist
+  （tree_work/knowledge*/haigui/hairui/海瑞/judgement/verdicts）直接拒绝；
+  NO_KEY 无 fixture 退出 2 fail closed；stdout 只输出脱敏 summary。
+- 新增脱敏合成 fixture 与示例产物（见
+  `docs/task_runs/TA-TUSHARE-2000-001D-20260816-094025/`）：8 端点示例包
+  HAS_DATA 7 + NORMAL_NO_DATA 1，跨标的回购行被本地过滤。
+- 验证：新增专项 **28 passed**；Tushare 相关回归合计 **175 passed**。凭据自检
+  clean。未发起真实网络请求（fixture 模式）、未调用 live LLM、未写生产数据
+  库、未写海瑞/知识库目录。
+
+---
+
 ## 2026-08-16 | TA-TUSHARE-2000-001C：Tushare 知识库研究证据包（P1）
 
 - 新增 `tradingagents/dataflows/tushare_research_evidence.py`：面向知识库消费的

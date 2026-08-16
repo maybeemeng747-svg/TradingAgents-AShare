@@ -49,7 +49,7 @@
 19. `TA-TUSHARE-2000-001A`：现有 2000 积分权限真实矩阵（P0，done — 真实运行档案 `docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/`，24 endpoint 全部 allowed，待 Codex review）。
 20. `TA-TUSHARE-2000-001B`：Tushare 统一状态与错误分类契约（P0，done — 八态契约与 provider 审计真源落地，334 passed）。
 21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，done — 九端点证据包与只读导出落地，216 passed）。
-22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，blocked-auto）。
+22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，done — 八端点治理包与 denylist 只读导出落地，175 passed）。
 23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，blocked-auto）。
 24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
 25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
@@ -287,7 +287,7 @@
 ### TA-TUSHARE-2000-001D: 海瑞治理事件包只读出口（P1）
 - **描述**：新增面向海瑞消费的治理事件 JSON 包。TradingAgents 只提供导出命令或调用接口，不直接写海瑞目录，不生成海瑞正式审判记录。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — `tushare_governance_events` 八端点治理包 + 只读导出脚本（无默认目标、拒绝覆盖、知识库/海瑞目录 denylist、动作词禁令）；fixture 验收 28 passed，相关回归 175 passed；运行档案 `docs/task_runs/TA-TUSHARE-2000-001D-20260816-094025/`，待 Codex review
 - **depends_on**：TA-TUSHARE-2000-001B
 - **auto_release**：true
 - **预计耗时**：40-60 分钟
