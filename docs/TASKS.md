@@ -53,7 +53,7 @@
 23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，done — 有界退避+可审计缓存+STALE 出口+动作真实降级与 24 endpoint 真实运行，393+770 passed）。
 24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
 25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
-26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，ready）。
+26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，done — `3812306`，round1/round2/round3 三轮 Codex review 收口）。
 27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，ready）。
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，ready）。
 
@@ -319,7 +319,7 @@
 ### TA-TUSHARE-2000-001A-R1: 权限矩阵补修与真实重跑（P0）
 - **描述**：修复 Codex review（2026-08-16，gpt-5.6-sol high）在 c73ed4f 发现的 3×P1+2×P2，并重新生成真实权限矩阵。001A 的 24/24 allowed 仅视为运行结果，验收以本任务重跑产物为准。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — `3812306`（含 R1A/R1B 两轮追加修复：R1A 关闭终审 2×P1+1×P2，R1B 关闭 round2 1×P1 dotenv 插值 + 1×P2 BJ→BSE）；round3 Codex review 无 actionable finding；真实重跑真源 `docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/`，review 档案 `docs/reviews/TA-TUSHARE-2000-001A-R1-20260816-round{1,2}.txt`、`-20260817-round3.txt`
 - **depends_on**：
 - **auto_release**：false
 - **预计耗时**：40-60 分钟
