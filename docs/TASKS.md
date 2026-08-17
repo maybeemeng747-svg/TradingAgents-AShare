@@ -336,7 +336,7 @@
 ### B-002-R2: OpenClaw 回调 ORM 字段与 readiness 真源修复（P1）
 - **描述**：修复 e40147c review 发现：`scheduler/main.py:243` 读取 `ReportDB` 不存在的 `horizon/analysis_summary/opinion` 字段，启用回调即抛异常、回调不发送；`readiness_score` 无真实持久化来源恒为空。
 - **优先级**：P1
-- **状态**：in_progress — claimed B-002-R2-20260817-200225
+- **状态**：done — `7f1890d`（round2 两项 P2 + round3 追加 1×P2/1×P3 全部关闭：显式 `system_diagnostics_offset: null` fail-closed 不回退启发式、`available` 前强制校验 completeness/confidence、legacy 回退只认系统确定性结构拒绝行内 `[C-008]` 提及、round3 测试证据归档）；round3 Codex review 零 findings；运行档案 `docs/task_runs/B-002-R2-20260817-200225/`，review 档案 `docs/reviews/B-002-R2-20260817-round{1,2,3}.txt`
 - **depends_on**：
 - **auto_release**：false
 - **预计耗时**：25-40 分钟
