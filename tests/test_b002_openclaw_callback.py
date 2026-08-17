@@ -75,7 +75,7 @@ class TestBuildCallbackPayload:
         )
 
         # Top-level structure
-        assert payload["schema_version"] == "1.0.0"
+        assert payload["schema_version"] == "1.1.0"
         assert payload["source"] == "tradingagents-scheduler"
         assert payload["event"] == "scheduled_analysis_completed"
         assert "timestamp" in payload
@@ -108,8 +108,10 @@ class TestBuildCallbackPayload:
         assert payload["key_metrics"][0]["value"] == "32.5x"
 
         # Readiness score
+        assert payload["readiness_score"]["status"] == "available"
         assert payload["readiness_score"]["data_completeness"] == 85
         assert payload["readiness_score"]["confidence"] == "高"
+        assert payload["readiness_score"]["source"] == "readiness_score"
 
     def test_minimal_result_data(self):
         from api.services.openclaw_callback_service import build_callback_payload
@@ -127,7 +129,8 @@ class TestBuildCallbackPayload:
         assert payload["summary"] == ""  # no trade decision text
         assert payload["risk_items"] == []
         assert payload["key_metrics"] == []
-        assert "readiness_score" not in payload  # no readiness → omitted
+        # [B-002-R2] no source → explicit status, never omitted/empty-faked
+        assert payload["readiness_score"] == {"status": "not_available"}
 
     def test_none_result_data(self):
         from api.services.openclaw_callback_service import build_callback_payload
@@ -352,6 +355,7 @@ class TestBuildCallbackPayload:
         assert "优先等待止损" in payload["summary"]
         assert payload["risk_items"][0]["name"] == "来自 report_obj"
         assert payload["key_metrics"][0]["name"] == "PE"
+        assert payload["readiness_score"]["status"] == "available"
         assert payload["readiness_score"]["data_completeness"] == 91
         assert payload["readiness_score"]["confidence"] == "中"
 
@@ -673,7 +677,7 @@ class TestNotifyOpenclawOnReportCompletion:
 class TestConstants:
     def test_schema_version(self):
         from api.services.openclaw_callback_service import CALLBACK_SCHEMA_VERSION
-        assert CALLBACK_SCHEMA_VERSION == "1.0.0"
+        assert CALLBACK_SCHEMA_VERSION == "1.1.0"
 
     def test_source(self):
         from api.services.openclaw_callback_service import CALLBACK_SOURCE
@@ -699,3 +703,783 @@ class TestExports:
             "CALLBACK_SOURCE",
         }
         assert set(mod.__all__) == expected
+
+
+# ---------------------------------------------------------------------------
+# [B-002-R2] Test: readiness_score real persisted sources
+# ---------------------------------------------------------------------------
+
+_C008_TEXT = (
+    "综合技术面突破与基本面支撑，建议逢低分批建仓。\n\n"
+    "📋 [C-008] 执行就绪度评分\n"
+    "- 数据完整度：87%\n"
+    "- 置信度：高\n"
+    "- 报告等级：高质量报告 · 已持仓\n"
+    "- 允许动作：持有, 加仓\n"
+    "- 禁止动作：追涨\n"
+    "- 总结：数据完整，置信度高。"
+)
+
+
+class TestReadinessScoreSources:
+    """[B-002-R2] readiness_score must come from a real persisted source."""
+
+    def test_parsed_from_c008_block_in_report_obj_text(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        payload = build_callback_payload(
+            report_id="rpt-r2-1",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            report_obj={"final_trade_decision": _C008_TEXT},
+            result_data={},
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+        assert readiness["source"] == "final_trade_decision"
+
+    def test_parsed_from_c008_block_in_result_data_text(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        payload = build_callback_payload(
+            report_id="rpt-r2-2",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": _C008_TEXT},
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+
+    def test_structured_field_preferred_over_text(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        payload = build_callback_payload(
+            report_id="rpt-r2-3",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            report_obj={
+                "final_trade_decision": _C008_TEXT,
+                "readiness_score": {"data_completeness": 40, "confidence": "低"},
+            },
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 40
+        assert readiness["confidence"] == "低"
+        assert readiness["source"] == "readiness_score"
+
+    def test_text_without_c008_marker_is_not_trusted(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # Numbers appear outside the official block — must not be used.
+        text = "数据完整度：99%，置信度：高，但这是正文描述而非评分块。"
+        payload = build_callback_payload(
+            report_id="rpt-r2-4",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_fallback_rejects_inline_prose_c008_mention(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # [B-002-R2-round3] codex review example: a bare inline [C-008]
+        # mention with valid-looking inline values (no persisted offset, no
+        # deterministic heading/bullet structure) must not be published.
+        text = "模型结论：参考 [C-008] 数据完整度：99% 置信度：高，建议执行。"
+        payload = build_callback_payload(
+            report_id="rpt-r2-4b",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_fallback_rejects_heading_with_inline_values(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # Heading present but values inline on the same line (not bullet
+        # field rows) → not the deterministic system-block structure.
+        text = "📋 [C-008] 执行就绪度评分 数据完整度：99% 置信度：高"
+        payload = build_callback_payload(
+            report_id="rpt-r2-4c",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_offset_out_of_range_completeness_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # v1.1 contract: available requires a valid (0-100 int) completeness
+        # AND a valid confidence; out-of-range values fail closed.
+        text = (
+            "📋 [C-008] 执行就绪度评分\n"
+            "- 数据完整度：150%\n"
+            "- 置信度：中\n"
+            "- 总结：数据基本完整，置信度中等。"
+        )
+        payload = build_callback_payload(
+            report_id="rpt-r2-5",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_empty_structured_dict_falls_through_to_text(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        payload = build_callback_payload(
+            report_id="rpt-r2-6",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            report_obj={"readiness_score": {}, "final_trade_decision": _C008_TEXT},
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["source"] == "final_trade_decision"
+
+    def test_malformed_marker_only_block_is_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text = "📋 [C-008] 执行就绪度评分\n（内容缺失）"
+        payload = build_callback_payload(
+            report_id="rpt-r2-7",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_readiness_key_always_present_and_json_serializable(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        for result_data in (None, {}, {"direction": "中性"}):
+            payload = build_callback_payload(
+                report_id="rpt-r2-8",
+                symbol="600519.SH",
+                trade_date="2026-08-17",
+                result_data=result_data,
+            )
+            assert "readiness_score" in payload
+            json.dumps(payload, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# [B-002-R2-fix] Test: readiness parsing restricted to the trusted system tail
+# ---------------------------------------------------------------------------
+
+# Model-authored body mentions [C-008] with fabricated values BEFORE the
+# system-appended diagnostics (production order in risk_manager).
+_MODEL_BODY_FAKE_C008 = (
+    "模型正文引用 [C-008] 并声称数据完整度：12%，置信度：低。\n"
+    "该引用并非系统评分块。"
+)
+
+_SYSTEM_TAIL = (
+    "📋 [C-008] 执行就绪度评分\n"
+    "- 数据完整度：87%\n"
+    "- 置信度：高\n"
+    "- 报告等级：高质量报告 · 已持仓\n"
+    "- 总结：数据完整，置信度高。"
+)
+
+
+def _persisted_decision_text() -> tuple[str, int]:
+    """Production-shaped text: model body + system tail, with persisted offset."""
+    text = _MODEL_BODY_FAKE_C008 + "\n\n" + _SYSTEM_TAIL
+    offset = len(_MODEL_BODY_FAKE_C008) + 2  # risk_manager: len(visible_body) + 2
+    assert text[offset:].startswith("📋 [C-008]")
+    return text, offset
+
+
+class TestReadinessTrustedOffset:
+    """[B-002-R2-fix] model-authored [C-008] mentions must never be published."""
+
+    def test_valid_offset_publishes_authoritative_tail_values(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text, offset = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-1",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={
+                "final_trade_decision": text,
+                "metadata": {"system_diagnostics_offset": offset},
+            },
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87  # not the fabricated 12
+        assert readiness["confidence"] == "高"  # not the fabricated 低
+        assert readiness["source"] == "final_trade_decision"
+
+    def test_valid_offset_via_report_obj_result_data(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text, offset = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-2",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            report_obj={
+                "final_trade_decision": text,
+                "result_data": {
+                    "final_trade_decision": text,
+                    "metadata": {"system_diagnostics_offset": offset},
+                },
+            },
+            result_data={},
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+
+    def test_valid_offset_but_tail_has_no_marker_is_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # Offset points at a system tail without a C-008 block (e.g. legacy
+        # diagnostics); the model-authored mention must not be published.
+        text = _MODEL_BODY_FAKE_C008 + "\n\n📊 数据源可用性：\n- 全部正常"
+        offset = len(_MODEL_BODY_FAKE_C008) + 2
+        payload = build_callback_payload(
+            report_id="rpt-r2f-3",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={
+                "final_trade_decision": text,
+                "metadata": {"system_diagnostics_offset": offset},
+            },
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_offset_out_of_range_is_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text, _ = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-4",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={
+                "final_trade_decision": text,
+                "metadata": {"system_diagnostics_offset": len(text) + 50},
+            },
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_offset_non_int_is_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text, _ = _persisted_decision_text()
+        for bad in ("42", 1.5, True):
+            payload = build_callback_payload(
+                report_id="rpt-r2f-5",
+                symbol="600519.SH",
+                trade_date="2026-08-17",
+                result_data={
+                    "final_trade_decision": text,
+                    "metadata": {"system_diagnostics_offset": bad},
+                },
+            )
+            assert payload["readiness_score"] == {"status": "not_available"}, repr(bad)
+
+    def test_offset_explicit_null_fails_closed(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # [B-002-R2-round2] explicit system_diagnostics_offset: null means the
+        # persisted metadata is inconsistent with the text: present-but-invalid
+        # must NOT fall back to the legacy last-[C-008] heuristic — otherwise a
+        # malformed report whose model body ends with a fake [C-008] block
+        # could publish fabricated readiness.
+        text, _ = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-5b",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={
+                "final_trade_decision": text,
+                "metadata": {"system_diagnostics_offset": None},
+            },
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_offset_explicit_null_via_report_obj_result_data_fails_closed(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text, _ = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-5c",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            report_obj={
+                "final_trade_decision": text,
+                "result_data": {
+                    "final_trade_decision": text,
+                    "metadata": {"system_diagnostics_offset": None},
+                },
+            },
+            result_data={},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_offset_absent_metadata_dict_still_legacy_fallback(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # metadata dict persisted WITHOUT the offset key = true absence
+        # (legacy) → last-[C-008] fallback still applies.
+        text, _ = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-5d",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={
+                "final_trade_decision": text,
+                "metadata": {"other_key": 1},
+            },
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+
+    def test_offset_zero_parses_whole_text_as_system_tail(self):
+        from api.services.openclaw_callback_service import _parse_readiness_from_text
+
+        text = _SYSTEM_TAIL
+        parsed = _parse_readiness_from_text(text, trusted_offset=0)
+        assert parsed == {"data_completeness": 87, "confidence": "高"}
+
+    def test_legacy_no_metadata_falls_back_to_last_c008_heading(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # Legacy report without persisted offset: the system block is appended
+        # last, so the last [C-008] heading is the authoritative one.
+        text, _ = _persisted_decision_text()
+        payload = build_callback_payload(
+            report_id="rpt-r2f-6",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+
+    def test_legacy_no_metadata_malformed_last_block_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # The system-appended block is malformed; the earlier model-authored
+        # mention with values must NOT be selected by the fallback.
+        text = _MODEL_BODY_FAKE_C008 + "\n\n📋 [C-008] 执行就绪度评分\n（内容缺失）"
+        payload = build_callback_payload(
+            report_id="rpt-r2f-7",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_parser_direct_trusted_tail_semantics(self):
+        from api.services.openclaw_callback_service import _parse_readiness_from_text
+
+        text, offset = _persisted_decision_text()
+        assert _parse_readiness_from_text(text, trusted_offset=offset) == {
+            "data_completeness": 87,
+            "confidence": "高",
+        }
+        # Trusted window without any [C-008] marker → None
+        no_marker_text = "正文没有任何标记。\n\n📊 数据源可用性"
+        assert (
+            _parse_readiness_from_text(
+                no_marker_text, trusted_offset=len("正文没有任何标记。\n\n")
+            )
+            is None
+        )
+        # No offset info → last-heading fallback
+        assert _parse_readiness_from_text(text) == {
+            "data_completeness": 87,
+            "confidence": "高",
+        }
+
+
+# ---------------------------------------------------------------------------
+# [B-002-R2-round2] Test: available requires a fully valid readiness score
+# ---------------------------------------------------------------------------
+
+
+class TestReadinessAvailableValidation:
+    """[B-002-R2-round2] truncated/invalid candidates must not be `available`."""
+
+    def test_truncated_block_completeness_only_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text = "📋 [C-008] 执行就绪度评分\n- 数据完整度：87%\n（后续内容被截断）"
+        payload = build_callback_payload(
+            report_id="rpt-r2v-1",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_truncated_block_confidence_only_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        text = "📋 [C-008] 执行就绪度评分\n- 置信度：中\n（数据完整度缺失）"
+        payload = build_callback_payload(
+            report_id="rpt-r2v-2",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            result_data={"final_trade_decision": text},
+        )
+
+        assert payload["readiness_score"] == {"status": "not_available"}
+
+    def test_structured_wrong_types_not_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        for dc, conf in (
+            ("87", "高"),  # string completeness
+            (87.5, "高"),  # float completeness
+            (True, "高"),  # bool masquerading as int
+            (87, None),  # null confidence
+            (87, "中等"),  # invalid confidence value
+            (None, "高"),  # null completeness
+            (-1, "高"),  # below range
+            (101, "高"),  # above range
+        ):
+            payload = build_callback_payload(
+                report_id="rpt-r2v-3",
+                symbol="600519.SH",
+                trade_date="2026-08-17",
+                result_data={"readiness_score": {"data_completeness": dc, "confidence": conf}},
+            )
+            assert payload["readiness_score"] == {"status": "not_available"}, (dc, conf)
+
+    def test_structured_partial_does_not_block_valid_text_source(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # A partial/invalid structured snapshot (forward-compat field with no
+        # production writer) must neither be published nor mask the
+        # authoritative persisted text block.
+        payload = build_callback_payload(
+            report_id="rpt-r2v-4",
+            symbol="600519.SH",
+            trade_date="2026-08-17",
+            report_obj={
+                "readiness_score": {"confidence": "中"},
+                "final_trade_decision": _C008_TEXT,
+            },
+        )
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+        assert readiness["source"] == "final_trade_decision"
+
+    def test_structured_boundary_completeness_values_available(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        for dc in (0, 100):
+            payload = build_callback_payload(
+                report_id="rpt-r2v-5",
+                symbol="600519.SH",
+                trade_date="2026-08-17",
+                result_data={
+                    "readiness_score": {"data_completeness": dc, "confidence": "低"}
+                },
+            )
+            readiness = payload["readiness_score"]
+            assert readiness["status"] == "available", dc
+            assert readiness["data_completeness"] == dc
+            assert readiness["confidence"] == "低"
+
+    def test_available_payload_never_carries_null_fields(self):
+        from api.services.openclaw_callback_service import build_callback_payload
+
+        # Fuzz-ish sweep: whatever the inputs, an available score always has
+        # int completeness + valid confidence; otherwise it is not_available.
+        cases = (
+            {"readiness_score": {"data_completeness": 85, "confidence": "高"}},
+            {"readiness_score": {"data_completeness": 85}},
+            {"readiness_score": {"confidence": "高"}},
+            {"readiness_score": {}},
+            {"final_trade_decision": _C008_TEXT},
+            {"final_trade_decision": "📋 [C-008] 执行就绪度评分\n- 数据完整度：87%"},
+            {"final_trade_decision": None},
+            {},
+        )
+        for result_data in cases:
+            payload = build_callback_payload(
+                report_id="rpt-r2v-6",
+                symbol="600519.SH",
+                trade_date="2026-08-17",
+                result_data=result_data,
+            )
+            readiness = payload["readiness_score"]
+            assert "readiness_score" in payload
+            if readiness["status"] == "available":
+                assert isinstance(readiness["data_completeness"], int)
+                assert not isinstance(readiness["data_completeness"], bool)
+                assert 0 <= readiness["data_completeness"] <= 100
+                assert readiness["confidence"] in ("高", "中", "低")
+                assert readiness["source"] in ("readiness_score", "final_trade_decision")
+            else:
+                assert readiness == {"status": "not_available"}
+
+
+# ---------------------------------------------------------------------------
+# [B-002-R2] Test: scheduler callback path aligned with real ReportDB schema
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulerCallbackOrmAlignment:
+    """Enabled-callback path must not read non-existent ORM columns."""
+
+    @pytest.fixture
+    def db(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        from api.database import Base
+
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        yield session
+        session.close()
+
+    @staticmethod
+    def _make_report(**overrides):
+        from api.database import ReportDB
+
+        fields = {
+            "id": "rpt-b002r2-orm",
+            "user_id": "user-1",
+            "symbol": "600519.SH",
+            "trade_date": "2026-08-14",
+            "status": "completed",
+            "decision": "BUY",
+            "direction": "偏多",
+            "research_direction": "看多",
+            "execution_action": "ENTER",
+            "action_label": "条件入场",
+            "confidence": 72,
+            "result_data": {"decision": "BUY", "confidence": 72},
+            "risk_items": [{"name": "估值偏高", "level": "medium", "description": "PE 高"}],
+            "key_metrics": [{"name": "PE", "value": "32.5x", "status": "neutral"}],
+            "final_trade_decision": _C008_TEXT,
+            "trader_investment_plan": "第一笔 1/4 仓试探。",
+            "investment_plan": None,
+        }
+        fields.update(overrides)
+        return ReportDB(**fields)
+
+    @staticmethod
+    def _fake_db_ctx(db):
+        class FakeDbCtx:
+            def __enter__(self):
+                return db
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type is not None:
+                    db.rollback()
+
+        return FakeDbCtx()
+
+    def test_report_payload_keys_match_reportdb_schema(self, db, monkeypatch):
+        import sqlalchemy
+        from api.database import ReportDB
+        import scheduler.main as scheduler_main
+
+        db.add(self._make_report())
+        db.commit()
+
+        captured = {}
+
+        def fake_notify(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setenv("OPENCLAW_CALLBACK_ENABLED", "true")
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+
+        from unittest.mock import patch
+
+        with patch(
+            "api.services.openclaw_callback_service.notify_openclaw_on_report_completion",
+            side_effect=fake_notify,
+        ), patch(
+            "scheduler.main.get_db_ctx", return_value=self._fake_db_ctx(db)
+        ):
+            asyncio.run(
+                scheduler_main._send_openclaw_callback(
+                    "user-1", "rpt-b002r2-orm", "600519.SH", "2026-08-14", "short", "scheduled"
+                )
+            )
+
+        report_obj = captured["report_obj"]
+        assert isinstance(report_obj, dict)
+        real_columns = set(sqlalchemy.inspect(ReportDB).columns.keys())
+        assert set(report_obj.keys()) <= real_columns
+        for removed in ("horizon", "analysis_summary", "opinion", "readiness_score"):
+            assert removed not in report_obj
+        for expected in (
+            "id",
+            "symbol",
+            "trade_date",
+            "result_data",
+            "decision",
+            "direction",
+            "research_direction",
+            "execution_action",
+            "action_label",
+            "confidence",
+            "risk_items",
+            "key_metrics",
+            "final_trade_decision",
+            "trader_investment_plan",
+            "investment_plan",
+        ):
+            assert expected in report_obj
+        assert captured["horizon"] == "short"
+        assert captured["result_data"] == {"decision": "BUY", "confidence": 72}
+
+    def test_enabled_callback_sends_full_payload(self, db, monkeypatch):
+        import scheduler.main as scheduler_main
+
+        db.add(self._make_report())
+        db.commit()
+
+        payloads = []
+
+        async def fake_send_async(payload):
+            payloads.append(payload)
+            return True
+
+        monkeypatch.setenv("OPENCLAW_CALLBACK_ENABLED", "true")
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+
+        from unittest.mock import patch
+
+        async def _scenario():
+            await scheduler_main._send_openclaw_callback(
+                "user-1", "rpt-b002r2-orm", "600519.SH", "2026-08-14", "short", "scheduled"
+            )
+            for _ in range(4):
+                await asyncio.sleep(0)
+
+        with patch(
+            "api.services.openclaw_callback_service.send_callback_async",
+            side_effect=fake_send_async,
+        ), patch(
+            "scheduler.main.get_db_ctx", return_value=self._fake_db_ctx(db)
+        ):
+            asyncio.run(_scenario())
+
+        assert len(payloads) == 1
+        payload = payloads[0]
+
+        assert payload["schema_version"] == "1.1.0"
+        assert payload["source"] == "tradingagents-scheduler"
+        assert payload["event"] == "scheduled_analysis_completed"
+        assert payload["user_id"] == "user-1"
+
+        report = payload["report"]
+        assert report["id"] == "rpt-b002r2-orm"
+        assert report["symbol"] == "600519.SH"
+        assert report["trade_date"] == "2026-08-14"
+        assert report["horizon"] == "short"
+        assert report["source"] == "scheduled"
+
+        decision = payload["decision"]
+        assert decision["action"] == "条件入场"
+        assert decision["direction"] == "看多"
+        assert decision["execution_action"] == "ENTER"
+        assert decision["confidence"] == 72
+
+        assert "逢低分批建仓" in payload["summary"]
+        assert payload["risk_items"][0]["name"] == "估值偏高"
+        assert payload["risk_items"][0]["level"] == "medium"
+        assert payload["key_metrics"][0]["name"] == "PE"
+        assert payload["key_metrics"][0]["value"] == "32.5x"
+
+        readiness = payload["readiness_score"]
+        assert readiness["status"] == "available"
+        assert readiness["data_completeness"] == 87
+        assert readiness["confidence"] == "高"
+        assert readiness["source"] == "final_trade_decision"
+
+        json.dumps(payload, ensure_ascii=False)
+
+    def test_missing_report_row_still_sends_explicit_not_available(self, db, monkeypatch):
+        import scheduler.main as scheduler_main
+
+        payloads = []
+
+        async def fake_send_async(payload):
+            payloads.append(payload)
+            return True
+
+        monkeypatch.setenv("OPENCLAW_CALLBACK_ENABLED", "true")
+        monkeypatch.setenv("OPENCLAW_CALLBACK_URL", "https://openclaw.example.com/webhook")
+
+        from unittest.mock import patch
+
+        async def _scenario():
+            await scheduler_main._send_openclaw_callback(
+                "user-1", "rpt-missing", "600519.SH", "2026-08-14", "short", "scheduled"
+            )
+            for _ in range(4):
+                await asyncio.sleep(0)
+
+        with patch(
+            "api.services.openclaw_callback_service.send_callback_async",
+            side_effect=fake_send_async,
+        ), patch(
+            "scheduler.main.get_db_ctx", return_value=self._fake_db_ctx(db)
+        ):
+            asyncio.run(_scenario())
+
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["report"]["symbol"] == "600519.SH"
+        assert payload["decision"]["action"] == ""
+        assert payload["readiness_score"] == {"status": "not_available"}

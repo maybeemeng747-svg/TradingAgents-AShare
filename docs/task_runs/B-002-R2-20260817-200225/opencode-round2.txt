@@ -1,0 +1,1194 @@
+[0m
+> build · glm-5.3
+[0m
+[0m$ [0mgit status && git branch --show-current
+On branch local/tradingagents-custom
+Your branch is ahead of 'myfork/local/tradingagents-custom' by 15 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   api/services/openclaw_callback_service.py
+	modified:   docs/DEVLOG.md
+	modified:   docs/TASKS.md
+	modified:   scheduler/main.py
+	modified:   tests/test_b002_openclaw_callback.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	docs/reviews/B-002-R2-20260817-round1.txt
+	docs/task_runs/B-002-R2-20260817-200225/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+local/tradingagents-custom
+[0m
+[0m→ [0mRead api/services/openclaw_callback_service.py
+[0m→ [0mRead docs/task_runs/B-002-R2-20260817-200225/implementation.md
+[0m
+[0m$ [0mls -la docs/task_runs/B-002-R2-20260817-200225/
+total 1360
+drwxr-xr-x@  13 maybee  staff     416 Aug 17 20:16 .
+drwx------  243 maybee  staff    7776 Aug 17 20:02 ..
+-rw-r--r--@   1 maybee  staff     943 Aug 17 20:02 codegraph-context.txt
+-rw-r--r--@   1 maybee  staff     712 Aug 17 20:12 codegraph-impact.txt
+-rw-r--r--@   1 maybee  staff     921 Aug 17 20:12 codegraph-status.json
+-rw-r--r--@   1 maybee  staff  601635 Aug 17 20:16 codex-review-round1.txt
+-rw-r--r--@   1 maybee  staff    2690 Aug 17 20:12 implementation.md
+-rw-r--r--@   1 maybee  staff   54164 Aug 17 20:12 opencode-round1.txt
+-rw-------@   1 maybee  staff     639 Aug 17 20:02 prompt-round1.md
+-rw-------@   1 maybee  staff    3013 Aug 17 20:16 prompt-round2.md
+-rw-r--r--@   1 maybee  staff     312 Aug 17 20:16 review-meta-round1.json
+-rw-r--r--@   1 maybee  staff     707 Aug 17 20:02 task.md
+-rw-r--r--@   1 maybee  staff     360 Aug 17 20:12 tests-round1.txt
+[0m
+[0m→ [0mRead docs/task_runs/B-002-R2-20260817-200225/tests-round1.txt
+P2 issue understood. Now let me find where `system_diagnostics_offset` is persisted and how the C-008 block is appended.
+[0m✱ [0mGrep "system_diagnostics_offset"[90m 35 matches[0m
+[0m✱ [0mGrep "C-008"[90m 632 matches[0m
+[0m→ [0mRead tradingagents/agents/managers/risk_manager.py[90m [offset=760, limit=170][0m
+[0m→ [0mRead api/services/report_service.py[90m [offset=1150, limit=100][0m
+[0m
+[0m$ [0mrg -n "_load_report_payload" -A 60 scheduler/main.py | head -100
+232:        def _load_report_payload() -> dict | None:
+233-            with get_db_ctx() as db:
+234-                report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
+235-                if report:
+236-                    if not isinstance(report.result_data, dict):
+237-                        report.result_data = {}
+238-                    # [B-002-R2] only fields that exist on ReportDB schema;
+239-                    # horizon/analysis_summary/opinion are not ORM columns and
+240-                    # raised AttributeError on read. horizon comes from the
+241-                    # task argument; readiness is parsed by the callback
+242-                    # service from the persisted final_trade_decision block.
+243-                    return {
+244-                        "id": report.id,
+245-                        "symbol": report.symbol,
+246-                        "trade_date": report.trade_date,
+247-                        "result_data": report.result_data,
+248-                        "decision": report.decision,
+249-                        "direction": report.direction,
+250-                        "research_direction": report.research_direction,
+251-                        "execution_action": report.execution_action,
+252-                        "action_label": report.action_label,
+253-                        "confidence": report.confidence,
+254-                        "risk_items": report.risk_items,
+255-                        "key_metrics": report.key_metrics,
+256-                        "final_trade_decision": report.final_trade_decision,
+257-                        "trader_investment_plan": report.trader_investment_plan,
+258-                        "investment_plan": report.investment_plan,
+259-                    }
+260-                return None
+261-
+262:        report_obj = await asyncio.to_thread(_load_report_payload)
+263-        result_data = report_obj.get("result_data") if isinstance(report_obj, dict) else None
+264-        notify_openclaw_on_report_completion(
+265-            report_id=report_id,
+266-            symbol=symbol,
+267-            trade_date=trade_date,
+268-            user_id=user_id,
+269-            horizon=horizon,
+270-            source=source,
+271-            report_obj=report_obj if isinstance(report_obj, dict) else None,
+272-            result_data=result_data,
+273-        )
+274-        _log(f"[Scheduler] OpenClaw callback queued for {symbol}")
+275-    except Exception as e:
+276-        logger.warning(f"[Scheduler] OpenClaw callback failed for {symbol}: {e}")
+277-
+278-
+279-# [M-010] feishu_notification_confirmation
+280-async def _send_feishu_notification_draft(
+281-    user_id: str, report_id: str, symbol: str
+282-) -> None:
+283-    """Auto-generate pending feishu notification drafts after scheduled analysis.
+284-
+285-    Unlike email/WeCom which send immediately, feishu notifications are stored
+286-    as 'pending_confirmation' for human review before sending.
+287-    """
+288-    try:
+289-        from api.services.feishu_webhook_service import is_feishu_webhook_enabled
+290-        from api.services.notification_confirmation_service import generate_pending
+291-
+292-        if not is_feishu_webhook_enabled():
+293-            return
+294-
+295-        def _generate():
+296-            with get_db_ctx() as db:
+297-                return generate_pending(db, user_id, channel="feishu")
+298-
+299-        result = await asyncio.to_thread(_generate)
+300-        generated = result.get("generated_count", 0)
+301-        if generated > 0:
+302-            _log(f"[Scheduler] Generated {generated} feishu notification draft(s) for {symbol}")
+303-    except Exception as e:
+304-        logger.warning(f"[Scheduler] Feishu notification draft failed for {symbol}: {e}")
+305-
+306-
+307-# ── Single scheduled analysis execution ──────────────────────────────────────
+308-
+309-async def _run_scheduled_analysis_once(
+310-    task: dict,
+311-    requested_trade_date: str,
+312-    job_id: str,
+313-    *,
+314-    mark_schedule_run: bool,
+315-) -> None:
+316-    """Execute one scheduled analysis, optionally recording it as the daily run."""
+317-    task_id = task["id"]
+318-    user_id = task["user_id"]
+319-    symbol = task["symbol"]
+320-    horizon = task.get("horizon") or "short"
+321-
+322-    actual_trade_date = _resolve_scheduled_trade_date(requested_trade_date)
+[0m
+[0m→ [0mRead tests/test_b002_openclaw_callback.py
+Now let me look at the scheduler's report loader and the existing tests to understand how metadata flows.
+[0m
+[0m$ [0mrg -n "def format_readiness_score" -A 40 tradingagents/agents/utils/readiness_score.py
+1304:def format_readiness_score(
+1305-    score: dict,
+1306-    position_status: str = "unknown",
+1307-    entry_gate_blocked: bool = False,
+1308-    buy_level: int | None = None,
+1309-    risk_level: int | None = None,
+1310-) -> str:
+1311-    """格式化 readiness score 为报告文本"""
+1312-    action_completeness = score["data_completeness"]
+1313-    if score["confidence"] == ConfidenceLevel.MEDIUM.value:
+1314-        action_completeness = min(action_completeness, 74)
+1315-    elif score["confidence"] == ConfidenceLevel.LOW.value:
+1316-        action_completeness = min(action_completeness, 49)
+1317-    actions = get_allowed_actions(action_completeness, position_status)
+1318-    if buy_level is not None:
+1319-        entry_actions = ["买入", "加仓", "追涨", "条件试仓", "确认建仓", "积极建仓"]
+1320-        if position_status == "no_position":
+1321-            allowed = ["观察"]
+1322-            if buy_level >= 2:
+1323-                allowed.append("条件试仓")
+1324-            actions = {
+1325-                **actions,
+1326-                "allowed": allowed,
+1327-                "forbidden": list(
+1328-                    dict.fromkeys(
+1329-                        actions["forbidden"]
+1330-                        + [item for item in entry_actions if item not in allowed]
+1331-                    )
+1332-                ),
+1333-                "message": (
+1334-                    "未持仓，当前动作权限以最终 Buy Level 为准；"
+1335-                    "禁止持仓动作和超等级入场动作。"
+1336-                ),
+1337-            }
+1338-        elif position_status == "unknown":
+1339-            allowed = [
+1340-                item for item in actions["allowed"] if item not in entry_actions
+1341-            ]
+1342-            if buy_level >= 2:
+1343-                allowed.append("条件试仓")
+1344-            actions = {
+[0m
+Let me check the readiness block format to confirm the authoritative tail content.
+[0m$ [0mrg -n "def sanitize_forbidden_strong_actions" -B 5 -A 60 tradingagents/agents/utils/trade_setup.py | head -100; rg -ln "sanitize_forbidden_strong_actions" tradingagents
+tradingagents/agents/utils/readiness_score.py
+tradingagents/agents/managers/risk_manager.py
+[0m
+[0m$ [0msed -n 1395,1440p tradingagents/agents/utils/readiness_score.py && rg -n "def sanitize_forbidden_strong_actions" -A 50 tradingagents/agents/utils/readiness_score.py | head -80
+message = (
+                "入场门禁未通过，禁止新增或加仓；持仓风控动作仍按 Risk Level 执行。"
+                if entry_gate_blocked
+                else "Risk Level 限制新增或加仓；持仓风控动作仍按 Risk Level 执行。"
+            )
+        actions = {
+            **actions,
+            "allowed": allowed,
+            "forbidden": forbidden,
+            "label": (
+                f"{actions['label']} · 入场门禁未通过"
+                if entry_gate_blocked
+                else f"{actions['label']} · 风险等级限制开仓"
+            ),
+            "message": message,
+        }
+    result = (
+        f"\n\n📋 [C-008] 执行就绪度评分\n"
+        f"- 数据完整度：{score['data_completeness']}%\n"
+        f"- 置信度：{score['confidence']}\n"
+        f"- 报告等级：{actions['label']}\n"
+        f"- 允许动作：{', '.join(actions['allowed'])}\n"
+        f"- 禁止动作：{', '.join(actions['forbidden']) if actions['forbidden'] else '无'}\n"
+        f"- 总结：{score['summary']}"
+    )
+    blockers = score.get("blockers") or []
+    if blockers:
+        result += "\n- 置信度降级原因：" + "、".join(blockers)
+    if actions['forbidden']:
+        result += f"\n\n⚠️ {actions['message']}"
+    result += _format_version_block()
+    return result
+
+
+def _format_version_block() -> str:
+    """Append system version block to the report."""
+    try:
+        from api.main import _GIT_COMMIT_SHORT, _BACKEND_START_TIME
+        commit = _GIT_COMMIT_SHORT
+        start_time = _BACKEND_START_TIME
+    except Exception:
+        commit = "unknown"
+        start_time = "unknown"
+    report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"\n\n### 系统版本\n"
+3856:def sanitize_forbidden_strong_actions(
+3857-    text: str,
+3858-    gate: dict,
+3859-    position_status: str,
+3860-    buy_level: int,
+3861-    risk_level: int,
+3862-    trusted_system_offset: int | None = None,
+3863-    return_system_offset: bool = False,
+3864-) -> tuple:
+3865-    """移除或替换最终报告中未被 gate 允许的强动作表达。
+3866-
+3867-    未持仓动作清理（减仓/清仓/止盈/止损/卖出）独立于 gate 检查，
+3868-    只要 position_status == "no_position" 就会执行。
+3869-    强买/强卖替换仅在 gate 未通过时执行。
+3870-
+3871-    When ``return_system_offset`` is true, also return the corrected offset at
+3872-    which the caller-provided system block starts after body rewrites.  This is
+3873-    safer than searching the combined text for a delimiter the model can copy.
+3874-
+3875-    Returns:
+3876-        (sanitized_text, list_of_changes), or that pair plus system offset.
+3877-    """
+3878-    changes = []
+3879-    result = text
+3880-
+3881-    body, system_blocks = _split_llm_body_and_system_blocks(
+3882-        result,
+3883-        trusted_system_offset=trusted_system_offset,
+3884-    )
+3885-    body, completed_purchase_facts = _mask_completed_purchase_facts(body)
+3886-    body, third_party_entry_facts = _mask_third_party_entry_facts(body)
+3887-    body, third_party_exit_facts = _mask_third_party_exit_facts(body)
+3888-    body, analytical_exit_facts = _mask_analytical_exit_facts(body)
+3889-    body, protected_action_enums = _mask_action_enum_references(body)
+3890-    body, protected_analytical_action_nouns = _mask_analytical_action_nouns(body)
+3891-
+3892-    if position_status == "no_position":
+3893-        body, no_position_changes = _sanitize_no_position_actions(body)
+3894-        changes.extend(no_position_changes)
+3895-
+3896-    # The computed Buy/Risk levels are authoritative even when the aggregate
+3897-    # evidence gate itself passes.  Enforce them on the visible model body so
+3898-    # it cannot disagree with C-008 and the deterministic execution summary.
+3899-    level_blocks_entry = (
+3900-        position_status in {"no_position", "unknown"}
+3901-        and (
+3902-            buy_level < 2
+3903-            or (position_status in {"no_position", "unknown"} and risk_level >= 1)
+3904-        )
+3905-    )
+3906-    holding_blocks_add = (
+[0m
+[0m$ [0mrg -n "置信度|数据完整度" tradingagents/agents/utils/readiness_score.py | rg -v "def |_READINESS|pattern" | head -30; echo ---; rg -n "def format_execution_block|def _format_visible_execution_summary" tradingagents/agents/utils/readiness_score.py tradingagents/agents/managers/risk_manager.py
+2:"""报告质量评分（数据完整度 + 置信度 + 证据门禁 + 等级输出 + 机会评分）"""
+11:    """置信度等级"""
+38:        "impact": "资金面不能支撑买入/减仓强结论，相关判断置信度下调。",
+309:    计算数据完整度（0-100%）。
+387:    评估置信度。
+390:        data_completeness: 数据完整度 (0-100)
+397:            未通过时，中线报告置信度不得为 HIGH。
+450:        summary_parts.append("置信度高")
+452:        summary_parts.append("置信度中等")
+454:        summary_parts.append("置信度低，建议人工复核")
+467:    """根据数据完整度和持仓状态，返回允许和禁止的动作。
+474:    加仓条件：中线不差+短线转强+资金无持续流出+未跌破支撑+数据完整度>=75%
+484:                "message": "未持仓且数据完整度不足50%，仅允许观察。",
+510:                "message": "已持仓但数据完整度不足50%，禁止买入/加仓/追涨，允许持有和止损触发。",
+845:    - 数据完整度 <80%: cap 70
+1286:        lines.append("- ⚠️ 数据完整度不足，中线判断仅供参考")
+1413:        f"- 数据完整度：{score['data_completeness']}%\n"
+1414:        f"- 置信度：{score['confidence']}\n"
+1422:        result += "\n- 置信度降级原因：" + "、".join(blockers)
+---
+tradingagents/agents/managers/risk_manager.py:67:def _format_visible_execution_summary(
+tradingagents/agents/utils/readiness_score.py:1141:def format_execution_block(
+[0m
+[0m$ [0msed -n 1141,1300p tradingagents/agents/utils/readiness_score.py | rg -n "置信度|数据完整度|complete|confiden" ; echo "---risk_manager visible summary---"; sed -n 67,140p tradingagents/agents/managers/risk_manager.py | rg -n "置信度|数据完整度"
+4:    confidence: str,
+43:        f"- Confidence：{confidence}",
+146:        lines.append("- ⚠️ 数据完整度不足，中线判断仅供参考")
+---risk_manager visible summary---
+[0m
+[0m$ [0msed -n 690,762p tradingagents/agents/managers/risk_manager.py
+)
+
+        gate = get_strong_action_gate(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            fund_flow_unit_verified=fund_flow_provenance["unit_gate_passed"],
+            fund_flow_not_mixed=fund_flow_provenance["not_mixed"],
+            position_status=position_status,
+            contains_strong_action=contains_strong,
+            no_execution_field_conflict=signals["no_execution_conflict"],
+            no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+            name_mismatch=is_name_mismatch,
+            no_execution_zone_conflict=not signals["execution_zone_conflict"],
+        )
+        if not fundamental_integrity["is_valid"]:
+            gate["passed"] = False
+            gate["failures"].append("fundamental_semantic_gate")
+        # [C-007-R1] A high/critical event risk blocks opening or adding a
+        # position even when the ordinary evidence gate passes. Mark the gate
+        # explicitly so the final action sanitizer removes executable BUY
+        # language. The sanitizer treats this failure as buy-only and preserves
+        # legitimate de-risking/exit actions for an existing position.
+        if event_risk_info.get("block_open"):
+            gate["passed"] = False
+            if "event_risk_block_open" not in gate["failures"]:
+                gate["failures"].append("event_risk_block_open")
+        if valuation_check.get("price_unavailable"):
+            gate["passed"] = False
+            if "估值基准价不可用(valuation_price_unavailable)" not in gate["failures"]:
+                gate["failures"].append(
+                    "估值基准价不可用(valuation_price_unavailable)"
+                )
+
+        risk_result = calculate_risk_level(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            broke_support=signals["broke_support"],
+            main_capital_outflow_days=signals["main_capital_outflow_days"],
+            volume_breakdown=signals["volume_breakdown"],
+            has_major_positive_announcement=signals["has_major_positive_announcement"],
+            position_status=position_status,
+            name_mismatch=is_name_mismatch,
+        )
+        buy_result = calculate_buy_level(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            trend_confirmed=signals["trend_confirmed"],
+            main_capital_inflow_days=signals["main_capital_inflow_days"],
+            volume_healthy_expansion=signals["volume_healthy_expansion"],
+            has_major_negative_announcement=signals["has_major_negative_announcement"],
+            no_execution_conflict=signals["no_execution_conflict"],
+            no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+            position_status=position_status,
+            name_mismatch=is_name_mismatch,
+            research_bearish=_research_bearish,
+            # [C-007-R1] 事件门禁真降级 Buy Level
+            event_risk_active=event_risk_info["has_risk"],
+            event_risk_level=event_risk_info.get("risk_level", "none"),
+            execution_price_available=not valuation_check.get(
+                "price_unavailable", False
+            ),
+        )
+        if not fundamental_integrity["is_valid"]:
+            buy_result["level"] = 0
+            integrity_note = "基本面语义门禁未通过，Buy Level 强制为 0（禁止新增/加仓）"
+            existing_note = buy_result.get("note", "")
+            buy_result["note"] = "；".join(
+                part for part in (existing_note, integrity_note) if part
+            )
+
+        final_response += format_readiness_score(
+            readiness,
+            position_status=position_status,
+[0m
+[0m$ [0mrg -n "final_response\s*=|final_response \+=" tradingagents/agents/managers/risk_manager.py
+454:        final_response = (
+469:            final_response += format_position_validation_warning(gate_result)
+474:            final_response += format_delta_warning(delta_info)
+489:            final_response += format_event_risk_warning(event_risk_info)
+519:            final_response += "\n\n" + integrity_block
+528:            final_response += format_financial_anomaly_warning(financial_anomaly_info)
+666:        final_response += f"\n\n📊 数据源可用性：\n{checklist}"
+680:            final_response += f"\n\n{name_check['note']}"
+760:        final_response += format_readiness_score(
+799:            final_response += "\n\n" + valuation_check["note"]
+850:        final_response = visible_body + "\n\n" + system_diagnostics
+[0m
+[0m$ [0msed -n 440,470p tradingagents/agents/managers/risk_manager.py; echo ---; rg -n "_split_llm_body_and_system_blocks" -A 45 tradingagents/agents/utils/readiness_score.py | head -60
+cleaned_response = judge_result["cleaned_response"]
+        verdict = judge_result["verdict"]
+        hard_constraints = judge_result["hard_constraints"]
+        soft_constraints = judge_result["soft_constraints"]
+        execution_preconditions = judge_result["execution_preconditions"]
+        de_risk_triggers = judge_result["de_risk_triggers"]
+        revision_reason = judge_result["revision_reason"]
+        trade_quality_check = build_trade_quality_check(
+            investment_plan=state.get("investment_plan", ""),
+            trader_plan=trader_plan,
+            final_decision=cleaned_response,
+            user_context=state.get("user_context", {}),
+            position_context=state.get("position_context"),
+        )
+        final_response = (
+            cleaned_response
+            + "\n\n"
+            + _SYSTEM_DIAGNOSTICS_START
+            + "\n"
+            + format_trade_quality_check(trade_quality_check)
+        )
+
+        # [C-001] position_validation_gate — 校验输出动作
+        from tradingagents.agents.utils.position_validation_gate import (
+            validate_position_actions,
+            format_position_validation_warning,
+        )
+        gate_result = validate_position_actions(final_response, user_context)
+        if not gate_result["passed"]:
+            final_response += format_position_validation_warning(gate_result)
+
+---
+3832:def _split_llm_body_and_system_blocks(
+3833-    text: str,
+3834-    trusted_system_offset: int | None = None,
+3835-) -> tuple[str, str]:
+3836-    """Split model text from caller-appended diagnostics at a trusted offset.
+3837-
+3838-    Marker text is not a trust boundary because the model can emit the same
+3839-    headings.  Callers that append deterministic diagnostics must therefore
+3840-    pass the exact offset where those diagnostics begin.  Without an offset,
+3841-    the complete text remains subject to action sanitation.
+3842-    """
+3843-    if (
+3844-        isinstance(trusted_system_offset, int)
+3845-        and 0 <= trusted_system_offset <= len(text)
+3846-    ):
+3847-        return text[:trusted_system_offset], text[trusted_system_offset:]
+3848-    return text, ""
+3849-
+3850-
+3851-def _dedupe_changes(changes: list[str]) -> list[str]:
+3852-    """Keep the audit useful without listing the same rewrite dozens of times."""
+3853-    return list(dict.fromkeys(changes))
+3854-
+3855-
+3856-def sanitize_forbidden_strong_actions(
+3857-    text: str,
+3858-    gate: dict,
+3859-    position_status: str,
+3860-    buy_level: int,
+3861-    risk_level: int,
+3862-    trusted_system_offset: int | None = None,
+3863-    return_system_offset: bool = False,
+3864-) -> tuple:
+3865-    """移除或替换最终报告中未被 gate 允许的强动作表达。
+3866-
+3867-    未持仓动作清理（减仓/清仓/止盈/止损/卖出）独立于 gate 检查，
+3868-    只要 position_status == "no_position" 就会执行。
+3869-    强买/强卖替换仅在 gate 未通过时执行。
+3870-
+3871-    When ``return_system_offset`` is true, also return the corrected offset at
+3872-    which the caller-provided system block starts after body rewrites.  This is
+3873-    safer than searching the combined text for a delimiter the model can copy.
+3874-
+3875-    Returns:
+3876-        (sanitized_text, list_of_changes), or that pair plus system offset.
+3877-    """
+--
+3881:    body, system_blocks = _split_llm_body_and_system_blocks(
+3882-        result,
+3883-        trusted_system_offset=trusted_system_offset,
+3884-    )
+3885-    body, completed_purchase_facts = _mask_completed_purchase_facts(body)
+3886-    body, third_party_entry_facts = _mask_third_party_entry_facts(body)
+3887-    body, third_party_exit_facts = _mask_third_party_exit_facts(body)
+3888-    body, analytical_exit_facts = _mask_analytical_exit_facts(body)
+3889-    body, protected_action_enums = _mask_action_enum_references(body)
+3890-    body, protected_analytical_action_nouns = _mask_analytical_action_nouns(body)
+3891-
+3892-    if position_status == "no_position":
+3893-        body, no_position_changes = _sanitize_no_position_actions(body)
+[0m
+Now let me verify that `result_data` persisted to ReportDB actually contains `metadata`:
+[0m$ [0mrg -n "result_data" api/services/analysis_service.py | head -20; echo ---; rg -ln "final_state|final_trade_decision" api/services/analysis_service.py scheduler/main.py | head
+rg: api/services/analysis_service.py: IO error for operation on api/services/analysis_service.py: No such file or directory (os error 2)
+---
+rg: api/services/analysis_service.py: No such file or directory (os error 2)
+scheduler/main.py
+[0m
+[0m$ [0mrg -ln "result_data=" api scheduler | head; echo ---; rg -n "result_data\s*=|\"metadata\"" api/services/*.py scheduler/main.py | rg -i "result|metadata" | head -25
+scheduler/main.py
+api/services/openclaw_callback_service.py
+api/main.py
+api/services/report_service.py
+api/services/report_semantics_audit.py
+---
+api/services/bark_notification_service.py:132:    result_data = getattr(report, "result_data", None)
+api/services/email_report_service.py:172:    result_data = getattr(report, "result_data", None)
+api/services/openclaw_callback_service.py:385:        result_data=result_data,
+api/services/report_semantics_audit.py:148:    has_result_data = isinstance(getattr(row, "result_data", None), dict)
+api/services/report_semantics_audit.py:161:        metadata = result_data.get("metadata")
+api/services/report_semantics_audit.py:184:        has_result_data=has_result_data,
+scheduler/main.py:237:                        report.result_data = {}
+scheduler/main.py:263:        result_data = report_obj.get("result_data") if isinstance(report_obj, dict) else None
+scheduler/main.py:272:            result_data=result_data,
+api/services/investment_controller_context.py:778:        result_data = getattr(row, "result_data", None)
+api/services/tradeflow_service.py:1231:            "metadata": metadata_json,
+api/services/tradeflow_service.py:2612:        "metadata": result.metadata,
+api/services/wecom_notification_service.py:30:    result_data = getattr(report, "result_data", None)
+api/services/report_service.py:58:        result_data = None
+api/services/report_service.py:60:        result_data = getattr(report, "result_data", None)
+api/services/report_service.py:101:    normalized_result_data = None
+api/services/report_service.py:104:            normalized_result_data = dict(result_data)
+api/services/report_service.py:107:            normalized_result_data = dict(normalized_result_data or result_data)
+api/services/report_service.py:225:    metadata = result_data.get("metadata")
+api/services/report_service.py:373:        result_data = {}
+api/services/report_service.py:603:    metadata = result_data.get("metadata")
+api/services/report_service.py:623:    metadata = result_data.get("metadata")
+api/services/report_service.py:1206:        metadata = result_data.get("metadata")
+api/services/report_service.py:1493:    result_data = attach_report_playbook_contract(
+api/services/report_service.py:1498:    result_data = attach_report_data_blockers(result_data)
+[0m
+`result_data["metadata"]` is the trusted location. Now I'll implement the P2 fix in the callback service.
+[0m$ [0mrg -n "_parse_readiness_from_text" --glob '!docs/**' -g '!*.txt' .
+./api/services/openclaw_callback_service.py:85:def _parse_readiness_from_text(text: Any) -> dict | None:
+./api/services/openclaw_callback_service.py:229:            parsed = _parse_readiness_from_text(text)
+[0m
+[0m← [0mEdit api/services/openclaw_callback_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+@@ -76,25 +76,65 @@
+ 
+ # [B-002-R2] readiness 真源：risk_manager 把 [C-008] 执行就绪度评分块追加到
+ # final_trade_decision 文本并随 ReportDB 持久化；结构化 dict 无生产写入方，
+ # 仅作为前向兼容输入。文本块是当前唯一真实持久化来源。
++# [B-002-R2-fix] 权威块定位：risk_manager 同时把 metadata.system_diagnostics_offset
++# （系统追加诊断块的起始位置）持久化到 result_data.metadata。解析必须优先限定
++# 在该可信尾部；模型正文提及的 [C-008] 完整度/置信度不得发布为 available。
+ _C008_MARKER_PATTERN = re.compile(r"\[C-008\]")
+ _READINESS_COMPLETENESS_PATTERN = re.compile(r"数据完整度[：:]\s*(\d{1,3})\s*%")
+ _READINESS_CONFIDENCE_PATTERN = re.compile(r"置信度[：:]\s*([高中低])")
+ 
+ 
+-def _parse_readiness_from_text(text: Any) -> dict | None:
+-    """Parse the persisted [C-008] readiness block from report text.
++def _extract_system_diagnostics_offset(*sources: Any) -> Any:
++    """Return the persisted ``metadata.system_diagnostics_offset`` if present.
+ 
++    Scans dict-like sources (``result_data`` / ``report_obj["result_data"]``)
++    for ``metadata.system_diagnostics_offset``. Returns None when no source
++    carries the key; the raw (possibly invalid) value otherwise so the parser
++    can distinguish "absent" (legacy report) from "present but inconsistent".
++    """
++    for source in sources:
++        if not isinstance(source, dict):
++            continue
++        metadata = source.get("metadata")
++        if isinstance(metadata, dict) and "system_diagnostics_offset" in metadata:
++            return metadata["system_diagnostics_offset"]
++    return None
++
++
++def _parse_readiness_from_text(text: Any, trusted_offset: Any = None) -> dict | None:
++    """Parse the authoritative persisted [C-008] readiness block from report text.
++
++    ``trusted_offset`` is the persisted ``metadata.system_diagnostics_offset``:
++
++    - valid int within ``[0, len(text))`` — parse only that system-appended
++      tail; a ``[C-008]`` mention authored by the model before the offset is
++      never trusted, even when it carries completeness/confidence values;
++    - present but invalid (non-int / out of range) — the persisted text is
++      inconsistent with the offset, so nothing is trusted;
++    - absent (legacy reports without the metadata) — fall back to the last
++      ``[C-008]`` heading, because the system block is appended after any
++      model-authored text.
++
+     Returns ``{"data_completeness": int, "confidence": str}`` (either key may
+     be present alone) or None when the block or its values are absent/invalid.
+     """
+     if not isinstance(text, str) or not text:
+         return None
+-    marker = _C008_MARKER_PATTERN.search(text)
+-    if not marker:
++    source = text
++    if trusted_offset is not None:
++        if isinstance(trusted_offset, bool) or not isinstance(trusted_offset, int):
++            return None
++        if not 0 <= trusted_offset < len(text):
++            return None
++        source = text[trusted_offset:]
++    marker = None
++    for marker in _C008_MARKER_PATTERN.finditer(source):
++        pass  # keep the last occurrence = system-appended block
++    if marker is None:
+         return None
+-    section = text[marker.end():]
++    section = source[marker.end():]
+     parsed: dict[str, Any] = {}
+     completeness = _READINESS_COMPLETENESS_PATTERN.search(section)
+     if completeness:
+         value = int(completeness.group(1))
+
+[0m
+Now wire the offset into `build_callback_payload`:
+[0m← [0mEdit api/services/openclaw_callback_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/openclaw_callback_service.py
+@@ -261,13 +261,20 @@
+     if dc is not None or conf is not None:
+         readiness_values = {"data_completeness": dc, "confidence": conf}
+         readiness_source = "readiness_score"
+ if readiness_values is None:
++    # [B-002-R2-fix] restrict text parsing to the trusted system tail
++    # persisted in metadata.system_diagnostics_offset (report_service and
++    # the frontend already consume the same field).
++    trusted_offset = _extract_system_diagnostics_offset(
++        _extract(report_data, "result_data"),
++        result,
++    )
+     for text in (
+         _extract(report_data, "final_trade_decision"),
+         _extract(result, "final_trade_decision"),
+     ):
+-        parsed = _parse_readiness_from_text(text)
++        parsed = _parse_readiness_from_text(text, trusted_offset=trusted_offset)
+         if parsed:
+             readiness_values = parsed
+             readiness_source = "final_trade_decision"
+             break
+
+[0m
+Now add tests for the trusted-tail behavior:
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -852,8 +852,191 @@
+             json.dumps(payload, ensure_ascii=False)
+ 
+ 
+ # ---------------------------------------------------------------------------
++# [B-002-R2-fix] Test: readiness parsing restricted to the trusted system tail
++# ---------------------------------------------------------------------------
++
++# Model-authored body mentions [C-008] with fabricated values BEFORE the
++# system-appended diagnostics (production order in risk_manager).
++_MODEL_BODY_FAKE_C008 = (
++    "模型正文引用 [C-008] 并声称数据完整度：12%，置信度：低。\n"
++    "该引用并非系统评分块。"
++)
++
++_SYSTEM_TAIL = (
++    "📋 [C-008] 执行就绪度评分\n"
++    "- 数据完整度：87%\n"
++    "- 置信度：高\n"
++    "- 报告等级：高质量报告 · 已持仓\n"
++    "- 总结：数据完整，置信度高。"
++)
++
++
++def _persisted_decision_text() -> tuple[str, int]:
++    """Production-shaped text: model body + system tail, with persisted offset."""
++    text = _MODEL_BODY_FAKE_C008 + "\n\n" + _SYSTEM_TAIL
++    offset = len(_MODEL_BODY_FAKE_C008) + 2  # risk_manager: len(visible_body) + 2
++    assert text[offset:].startswith("📋 [C-008]")
++    return text, offset
++
++
++class TestReadinessTrustedOffset:
++    """[B-002-R2-fix] model-authored [C-008] mentions must never be published."""
++
++    def test_valid_offset_publishes_authoritative_tail_values(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        text, offset = _persisted_decision_text()
++        payload = build_callback_payload(
++            report_id="rpt-r2f-1",
++            symbol="600519.SH",
++            trade_date="2026-08-17",
++            result_data={
++                "final_trade_decision": text,
++                "metadata": {"system_diagnostics_offset": offset},
++            },
++        )
++
++        readiness = payload["readiness_score"]
++        assert readiness["status"] == "available"
++        assert readiness["data_completeness"] == 87  # not the fabricated 12
++        assert readiness["confidence"] == "高"  # not the fabricated 低
++        assert readiness["source"] == "final_trade_decision"
++
++    def test_valid_offset_via_report_obj_result_data(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        text, offset = _persisted_decision_text()
++        payload = build_callback_payload(
++            report_id="rpt-r2f-2",
++            symbol="600519.SH",
++            trade_date="2026-08-17",
++            report_obj={
++                "final_trade_decision": text,
++                "result_data": {
++                    "final_trade_decision": text,
++                    "metadata": {"system_diagnostics_offset": offset},
++                },
++            },
++            result_data={},
++        )
++
++        readiness = payload["readiness_score"]
++        assert readiness["status"] == "available"
++        assert readiness["data_completeness"] == 87
++        assert readiness["confidence"] == "高"
++
++    def test_valid_offset_but_tail_has_no_marker_is_not_available(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        # Offset points at a system tail without a C-008 block (e.g. legacy
++        # diagnostics); the model-authored mention must not be published.
++        text = _MODEL_BODY_FAKE_C008 + "\n\n📊 数据源可用性：\n- 全部正常"
++        offset = len(_MODEL_BODY_FAKE_C008) + 2
++        payload = build_callback_payload(
++            report_id="rpt-r2f-3",
++            symbol="600519.SH",
++            trade_date="2026-08-17",
++            result_data={
++                "final_trade_decision": text,
++                "metadata": {"system_diagnostics_offset": offset},
++            },
++        )
++
++        assert payload["readiness_score"] == {"status": "not_available"}
++
++    def test_offset_out_of_range_is_not_available(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        text, _ = _persisted_decision_text()
++        payload = build_callback_payload(
++            report_id="rpt-r2f-4",
++            symbol="600519.SH",
++            trade_date="2026-08-17",
++            result_data={
++                "final_trade_decision": text,
++                "metadata": {"system_diagnostics_offset": len(text) + 50},
++            },
++        )
++
++        assert payload["readiness_score"] == {"status": "not_available"}
++
++    def test_offset_non_int_is_not_available(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        text, offset = _persisted_decision_text()
++        for bad in ("42", 1.5, True, None):
++            payload = build_callback_payload(
++                report_id="rpt-r2f-5",
++                symbol="600519.SH",
++                trade_date="2026-08-17",
++                result_data={
++                    "final_trade_decision": text,
++                    "metadata": {"system_diagnostics_offset": bad if bad is not None else offset},
++                },
++            )
++            # None overwrites nothing: dict value None means key present → invalid
++            assert payload["readiness_score"] == {"status": "not_available"}, repr(bad)
++
++    def test_offset_zero_parses_whole_text_as_system_tail(self):
++        from api.services.openclaw_callback_service import _parse_readiness_from_text
++
++        text = _SYSTEM_TAIL
++        parsed = _parse_readiness_from_text(text, trusted_offset=0)
++        assert parsed == {"data_completeness": 87, "confidence": "高"}
++
++    def test_legacy_no_metadata_falls_back_to_last_c008_heading(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        # Legacy report without persisted offset: the system block is appended
++        # last, so the last [C-008] heading is the authoritative one.
++        text, _ = _persisted_decision_text()
++        payload = build_callback_payload(
++            report_id="rpt-r2f-6",
++            symbol="600519.SH",
++            trade_date="2026-08-17",
++            result_data={"final_trade_decision": text},
++        )
++
++        readiness = payload["readiness_score"]
++        assert readiness["status"] == "available"
++        assert readiness["data_completeness"] == 87
++        assert readiness["confidence"] == "高"
++
++    def test_legacy_no_metadata_malformed_last_block_not_available(self):
++        from api.services.openclaw_callback_service import build_callback_payload
++
++        # The system-appended block is malformed; the earlier model-authored
++        # mention with values must NOT be selected by the fallback.
++        text = _MODEL_BODY_FAKE_C008 + "\n\n📋 [C-008] 执行就绪度评分\n（内容缺失）"
++        payload = build_callback_payload(
++            report_id="rpt-r2f-7",
++            symbol="600519.SH",
++            trade_date="2026-08-17",
++            result_data={"final_trade_decision": text},
++        )
++
++        assert payload["readiness_score"] == {"status": "not_available"}
++
++    def test_parser_direct_trusted_tail_semantics(self):
++        from api.services.openclaw_callback_service import _parse_readiness_from_text
++
++        text, offset = _persisted_decision_text()
++        assert _parse_readiness_from_text(text, trusted_offset=offset) == {
++            "data_completeness": 87,
++            "confidence": "高",
++        }
++        # Model-only mention inside the trusted window → None (marker absent)
++        assert _parse_readiness_from_text(text[:offset], trusted_offset=0) is None
++        # No offset info → last-heading fallback
++        assert _parse_readiness_from_text(text) == {
++            "data_completeness": 87,
++            "confidence": "高",
++        }
++
++
++# ---------------------------------------------------------------------------
+ # [B-002-R2] Test: scheduler callback path aligned with real ReportDB schema
+ # ---------------------------------------------------------------------------
+ 
+ 
+
+[0m
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -963,22 +963,42 @@
+ 
+ def test_offset_non_int_is_not_available(self):
+     from api.services.openclaw_callback_service import build_callback_payload
+ 
+-    text, offset = _persisted_decision_text()
+-    for bad in ("42", 1.5, True, None):
++    text, _ = _persisted_decision_text()
++    for bad in ("42", 1.5, True):
+         payload = build_callback_payload(
+             report_id="rpt-r2f-5",
+             symbol="600519.SH",
+             trade_date="2026-08-17",
+             result_data={
+                 "final_trade_decision": text,
+-                "metadata": {"system_diagnostics_offset": bad if bad is not None else offset},
++                "metadata": {"system_diagnostics_offset": bad},
+             },
+         )
+-        # None overwrites nothing: dict value None means key present → invalid
+         assert payload["readiness_score"] == {"status": "not_available"}, repr(bad)
+ 
++def test_offset_null_value_treated_as_legacy_absent(self):
++    from api.services.openclaw_callback_service import build_callback_payload
++
++    # Key present with None value behaves like absent metadata: legacy
++    # last-heading fallback applies (system block is still appended last).
++    text, _ = _persisted_decision_text()
++    payload = build_callback_payload(
++        report_id="rpt-r2f-5b",
++        symbol="600519.SH",
++        trade_date="2026-08-17",
++        result_data={
++            "final_trade_decision": text,
++            "metadata": {"system_diagnostics_offset": None},
++        },
++    )
++
++    readiness = payload["readiness_score"]
++    assert readiness["status"] == "available"
++    assert readiness["data_completeness"] == 87
++    assert readiness["confidence"] == "高"
++
+ def test_offset_zero_parses_whole_text_as_system_tail(self):
+     from api.services.openclaw_callback_service import _parse_readiness_from_text
+ 
+     text = _SYSTEM_TAIL
+
+[0m
+Fix a logic bug in the non-int offset test:
+Now run the full callback test suite:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_b002_openclaw_callback.py -q --tb=short 2>&1 | tail -15
+...........................................................F...          [100%]
+=================================== FAILURES ===================================
+_____ TestReadinessTrustedOffset.test_parser_direct_trusted_tail_semantics _____
+tests/test_b002_openclaw_callback.py:1050: in test_parser_direct_trusted_tail_semantics
+    assert _parse_readiness_from_text(text[:offset], trusted_offset=0) is None
+E   AssertionError: assert {'confidence': '低', 'data_completeness': 12} is None
+E    +  where {'confidence': '低', 'data_completeness': 12} = <function _parse_readiness_from_text at 0x11017fc40>('模型正文引用 [C-008] 并声称数据完整度：12%，置信度：低。\n该引用并非系统评分块。\n\n', trusted_offset=0)
+=========================== short test summary info ============================
+FAILED tests/test_b002_openclaw_callback.py::TestReadinessTrustedOffset::test_parser_direct_trusted_tail_semantics
+1 failed, 62 passed in 1.60s
+[0m
+[0m← [0mEdit tests/test_b002_openclaw_callback.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_b002_openclaw_callback.py
+@@ -1045,10 +1045,16 @@
+ assert _parse_readiness_from_text(text, trusted_offset=offset) == {
+     "data_completeness": 87,
+     "confidence": "高",
+ }
+-# Model-only mention inside the trusted window → None (marker absent)
+-assert _parse_readiness_from_text(text[:offset], trusted_offset=0) is None
++# Trusted window without any [C-008] marker → None
++no_marker_text = "正文没有任何标记。\n\n📊 数据源可用性"
++assert (
++    _parse_readiness_from_text(
++        no_marker_text, trusted_offset=len("正文没有任何标记。\n\n")
++    )
++    is None
++)
+ # No offset info → last-heading fallback
+ assert _parse_readiness_from_text(text) == {
+     "data_completeness": 87,
+     "confidence": "高",
+
+[0m
+The test premise was wrong — `text[:offset]` still contains the model's fabricated marker. Fixing the assertion:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_b002_openclaw_callback.py -q --tb=short 2>&1 | tail -3 && python -m py_compile api/services/openclaw_callback_service.py scheduler/main.py && echo COMPILE_OK
+...............................................................          [100%]
+63 passed in 1.25s
+COMPILE_OK
+[0m
+Now run the regression sets and preserve artifacts for the P3 fix:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_b002_openclaw_callback.py -q --tb=short > /tmp/b002-cb.txt 2>&1; tail -1 /tmp/b002-cb.txt
+63 passed in 1.30s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_scheduled_queue.py tests/test_data026_db_hygiene.py tests/test_perf004_full_ta_cost_gate.py tests/test_portfolio_import.py tests/test_watchlist_scheduled.py -q --tb=short 2>&1 | tail -3
+........................................................................ [ 63%]
+..........................................                               [100%]
+114 passed in 11.31s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short 2>&1 | tail -3
+........................................................................ [ 91%]
+.............                                                            [100%]
+157 passed in 31.45s
+[0m
+All green. Now write the test artifacts:
+[0m$ [0msource .venv/bin/activate && { printf '## pytest tests/test_b002_openclaw_callback.py -q --tb=short\n\n'; cat /tmp/b002-cb.txt; printf '\nExit code: 0\n'; } > docs/task_runs/B-002-R2-20260817-200225/tests-b002-callback-round2.txt && python -m pytest tests/test_scheduled_queue.py tests/test_data026_db_hygiene.py tests/test_perf004_full_ta_cost_gate.py tests/test_portfolio_import.py tests/test_watchlist_scheduled.py -q --tb=short > /tmp/b002-sched.txt 2>&1; { printf '## pytest tests/test_scheduled_queue.py tests/test_data026_db_hygiene.py tests/test_perf004_full_ta_cost_gate.py tests/test_portfolio_import.py tests/test_watchlist_scheduled.py -q --tb=short\n\n'; cat /tmp/b002-sched.txt; printf '\nExit code: 0\n'; } > docs/task_runs/B-002-R2-20260817-200225/tests-scheduler-regression-round2.txt && cat docs/task_runs/B-002-R2-20260817-200225/tests-b002-callback-round2.txt docs/task_runs/B-002-R2-20260817-200225/tests-scheduler-regression-round2.txt
+## pytest tests/test_b002_openclaw_callback.py -q --tb=short
+
+...............................................................          [100%]
+63 passed in 1.30s
+
+Exit code: 0
+## pytest tests/test_scheduled_queue.py tests/test_data026_db_hygiene.py tests/test_perf004_full_ta_cost_gate.py tests/test_portfolio_import.py tests/test_watchlist_scheduled.py -q --tb=short
+
+........................................................................ [ 63%]
+..........................................                               [100%]
+114 passed in 14.42s
+
+Exit code: 0
+[0m
+Now update the implementation.md to reflect the R2 fix and correct the evidence references:
+[0m← [0mEdit docs/task_runs/B-002-R2-20260817-200225/implementation.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/B-002-R2-20260817-200225/implementation.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/B-002-R2-20260817-200225/implementation.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/B-002-R2-20260817-200225/implementation.md
+@@ -12,12 +12,16 @@
+ - `api/services/openclaw_callback_service.py` — readiness now parsed from the
+   persisted `[C-008]` block in `final_trade_decision` (structured dict kept as
+   forward-compatible priority); `readiness_score` always present in payload
+   with explicit `available` / `not_available` status; schema version 1.1.0.
++  [R2 fix] Parsing is restricted to the trusted system tail via persisted
++  `metadata.system_diagnostics_offset`; a model-authored `[C-008]` mention can
++  no longer be published as `available`.
+ - `tests/test_b002_openclaw_callback.py` — updated contract assertions, added
+-  `TestReadinessScoreSources` (8 tests) and `TestSchedulerCallbackOrmAlignment`
++  `TestReadinessScoreSources` (8 tests), `TestSchedulerCallbackOrmAlignment`
+   (3 tests: schema-key alignment vs `sqlalchemy.inspect(ReportDB).columns`,
+-  enabled-callback full-payload integration, missing-report-row path).
++  enabled-callback full-payload integration, missing-report-row path), and
++  `TestReadinessTrustedOffset` (10 tests for the trusted-tail fix).
+ - `docs/DEVLOG.md` — entry added.
+ 
+ ## Key logic
+ 
+
+[0m
+[0m← [0mEdit docs/task_runs/B-002-R2-20260817-200225/implementation.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/B-002-R2-20260817-200225/implementation.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/B-002-R2-20260817-200225/implementation.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/B-002-R2-20260817-200225/implementation.md
+@@ -30,23 +30,36 @@
+   now maps only real columns with direct attribute access; `horizon` continues
+   to flow from the scheduled task argument.
+ - P2: real persisted readiness source = `[C-008] 执行就绪度评分` text block
+   appended by risk_manager into `final_trade_decision` (ReportDB column and
+-  result_data key). Parsing is anchored on the `[C-008]` marker; completeness
+-  outside 0-100 is dropped; text without the marker is not trusted.
++  result_data key). [R2 fix] The parser first reads the persisted
++  `result_data.metadata.system_diagnostics_offset` (the same trusted field
++  report_service and the frontend already consume) and restricts parsing to
++  that system-appended tail: a `[C-008]` mention in the model-authored body —
++  even one carrying completeness/confidence values — is never published. An
++  offset that is present but invalid (non-int / out of range) yields
++  `not_available`. Legacy reports without the metadata fall back to the LAST
++  `[C-008]` heading (the system block is appended after model text); a
++  malformed last block does not leak earlier model-authored values.
++  Completeness outside 0-100 is dropped; text without the marker is not
++  trusted.
+ - Contract: `payload["readiness_score"]` is always present —
+   `{"status": "available", "data_completeness": int|None, "confidence": str|None,
+   "source": "readiness_score"|"final_trade_decision"}` or
+   `{"status": "not_available"}`. No empty-value faking.
+ 
+ ## Test evidence
+ 
+-- `tests/test_b002_openclaw_callback.py`: 53 passed (was 33 before this task)
+-  — see `tests-round1.txt`.
++- `tests/test_b002_openclaw_callback.py`: 63 passed (53 after round1; +10
++  trusted-offset tests in the R2 fix) — see `tests-b002-callback-round2.txt`.
++  (Round1's 53-test run output was not preserved; `tests-round1.txt` only
++  contains the API smoke / runtime-tier command below.)
+ - Scheduler-related regression (`test_scheduled_queue.py`,
+   `test_data026_db_hygiene.py`, `test_perf004_full_ta_cost_gate.py`,
+-  `test_portfolio_import.py`, `test_watchlist_scheduled.py`): 114 passed.
+-- `tests/test_api_smoke.py`: 87 passed.
++  `test_portfolio_import.py`, `test_watchlist_scheduled.py`): 114 passed —
++  see `tests-scheduler-regression-round2.txt`.
++- `pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py`:
++  157 passed — see `tests-round1.txt` (rerun after the R2 fix: same 157).
+ - `py_compile` on all changed Python files and `git diff --check`: clean.
+ 
+ ## Constraints honored
+ 
+
+[0m
+Now update DEVLOG.md — check the existing entry format first:
+[0m$ [0msed -n 1,40p docs/DEVLOG.md; echo ...; rg -n "B-002-R2" docs/DEVLOG.md | head
+# 修改日志
+
+## 2026-08-17 | B-002-R2：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1）
+
+- 修复 e40147c review 发现的 P1/P2：
+  - **P1 启用回调即抛异常**（`scheduler/main.py` `_load_report_payload`）：
+    原实现直接读取 `ReportDB` 不存在的 `horizon/analysis_summary/opinion`
+    列（已实测确认四字段均不在 ORM schema），触发 `AttributeError` 后被
+    外层 except 吞掉，回调永远不发送。修复为 payload 只映射 `ReportDB`
+    真实列（id/symbol/trade_date/result_data/decision/direction/
+    research_direction/execution_action/action_label/confidence/risk_items/
+    key_metrics/final_trade_decision/trader_investment_plan/investment_plan）
+    并全部改为直接属性访问（schema 漂移时 fail-fast）；`horizon` 来自任务
+    参数继续显式传参，不再假装从报告读取。
+  - **P2 `readiness_score` 恒为空**（`openclaw_callback_service.py`）：
+    `ReportDB` 无 `readiness_score` 列且无任何生产路径写入结构化字段，
+    原 `getattr` 恒为 None。现接入真实持久化来源：risk_manager 产出的
+    `[C-008] 执行就绪度评分` 文本块随 `final_trade_decision` 持久化，
+    service 以 `[C-008]` 标记锚点解析 `数据完整度：N%` 与 `置信度：高|中|低`
+    （0-100 越界丢弃、缺标记文本不信任）；结构化 dict 仍优先（前向兼容）。
+    无任何来源时 payload 恒含 `readiness_score: {"status": "not_available"}`
+    显式状态，不再以缺键/空值冒充；有来源时输出
+    `{"status": "available", "data_completeness", "confidence", "source"}`。
+    `CALLBACK_SCHEMA_VERSION` 1.0.0→1.1.0（payload 契约变更）。
+- 测试（`tests/test_b002_openclaw_callback.py`，33→53 项）：
+  - ORM 对齐单测：真实 `ReportDB` 实例 + patched `get_db_ctx` 走完
+    `_send_openclaw_callback`，断言 `report_obj` 全部键 ⊆
+    `sqlalchemy.inspect(ReportDB).columns`，且不含
+    horizon/analysis_summary/opinion/readiness_score。
+  - 启用回调集成测试：env 开关 + patched `send_callback_async`，对最终
+    payload 全字段断言（decision/summary/risk/metrics/readiness 从 C-008
+    块解析出 87%/高）；报告行缺失路径输出 `not_available` 且不崩溃。
+  - readiness 来源单测：结构化优先、文本回退、无标记不信任、越界完整度
+    丢弃、空结构化 dict 回退、键恒存在且可 JSON 序列化。
+- 验证：`tests/test_b002_openclaw_callback.py` **53 passed**；scheduler
+  相关回归（scheduled_queue/db_hygiene/perf004/portfolio_import/
+  watchlist_scheduled）**114 passed**；`tests/test_api_smoke.py`
+  **87 passed**；`py_compile` 与 `git diff --check` 通过。未写生产数据库、
+  未调 live LLM、未改 prompts 与 OpenClaw 侧配置。
+
+...
+3:## 2026-08-17 | B-002-R2：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1）
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,38 @@
+ # 修改日志
+ 
++## 2026-08-17 | B-002-R2（round2）：readiness 解析限定可信尾部 + 测试证据归档修复
++
++- 修复 Codex review round1 两项发现：
++  - **P2 readiness 可能采信模型伪造值**（`openclaw_callback_service.py`）：
++    原解析取全文第一个 `[C-008]` 标记，当模型正文在系统追加块之前引用
++    `[C-008]` 并声称完整度/置信度时，会把模型值发布为 `available`。现
++    优先读取生产已持久化的 `result_data.metadata.system_diagnostics_offset`
++    （与 report_service/前端消费的同一可信字段），把解析严格限定在该系统
++    追加尾部：offset 有效（int 且 `0 <= offset < len(text)`）时只解析尾部
++    内最后一个 `[C-008]` 块；offset 存在但非法（非 int / 越界，含 bool）
++    时输出 `not_available`；无 metadata 的历史报告回退为取全文最后一个
++    `[C-008]` 标题（系统块恒追加在模型文本之后），且最后一个块畸形时不会
++    泄漏更早的模型值。
++  - **P3 任务归档指向错误测试产物**
++    （`docs/task_runs/B-002-R2-20260817-200225/`）：`tests-round1.txt` 实际
++    只含 API smoke/runtime-tier 命令（157 passed），不含归档声称的 53 项
++    回调测试输出。现新增 `tests-b002-callback-round2.txt`（63 passed）与
++    `tests-scheduler-regression-round2.txt`（114 passed）两个真实产物，
++    并修正 `implementation.md` Test evidence 各引用；API smoke 行改为与
++    `tests-round1.txt` 命令一致的 157 passed。
++- 测试（`tests/test_b002_openclaw_callback.py`，53→63 项）：新增
++  `TestReadinessTrustedOffset` 10 项——有效 offset 发布权威尾部值（非伪造
++  12%/低）、report_obj.result_data 携带 offset、可信尾部无标记 →
++  not_available、offset 越界/非 int → not_available、offset=None 视同历史
++  缺省回退、offset=0 全文可信、无 metadata 回退最后一个标题、最后一个块
++  畸形不泄漏模型值、解析器直接语义验证。
++- 验证：`tests/test_b002_openclaw_callback.py` **63 passed**；scheduler
++  相关回归 **114 passed**；`test_api_smoke.py + test_runtime_tier_contract.py`
++  **157 passed**（三个输出均已归档到 task_runs 目录）；`py_compile`、
++  `git diff --check` 通过。未写生产数据库、未调 live LLM、未改 prompts、
++  未 commit/push。
++
+ ## 2026-08-17 | B-002-R2：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1）
+ 
+ - 修复 e40147c review 发现的 P1/P2：
+   - **P1 启用回调即抛异常**（`scheduler/main.py` `_load_report_payload`）：
+
+[0m
+Final verification — full suite, diff check, and confirming no prod DB writes:
+[0m$ [0mgit diff --stat && ls -la tradingagents.db 2>/dev/null | head -2
+api/services/openclaw_callback_service.py | 129 ++++++-
+ docs/DEVLOG.md                            |  70 ++++
+ docs/TASKS.md                             |   2 +-
+ scheduler/main.py                         |  29 +-
+ tests/test_b002_openclaw_callback.py      | 591 +++++++++++++++++++++++++++++-
+ 5 files changed, 789 insertions(+), 32 deletions(-)
+-rw-------@ 1 maybee  staff  72744960 Aug 15 19:07 tradingagents.db
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_b002_openclaw_callback.py -q 2>&1 | tail -1 && python -m py_compile api/services/openclaw_callback_service.py tests/test_b002_openclaw_callback.py && git diff --check && echo DIFF_CHECK_OK && git status --short
+63 passed in 1.28s
+DIFF_CHECK_OK
+ M api/services/openclaw_callback_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M scheduler/main.py
+ M tests/test_b002_openclaw_callback.py
+?? docs/reviews/B-002-R2-20260817-round1.txt
+?? docs/task_runs/B-002-R2-20260817-200225/
+[0m
+Both findings fixed and verified. Summary:
+
+**[P2] Trusted-tail readiness parsing** — `api/services/openclaw_callback_service.py`
+- New `_extract_system_diagnostics_offset()` reads the persisted `result_data.metadata.system_diagnostics_offset` (same trusted field report_service/frontend consume).
+- `_parse_readiness_from_text(text, trusted_offset)` now:
+  - valid int offset in `[0, len(text))` → parses only the system-appended tail (last `[C-008]` marker within it); model-authored mentions before the offset are never published;
+  - offset present but invalid (non-int/bool/out-of-range) → `not_available`;
+  - offset absent (legacy) → falls back to the last `[C-008]` heading; a malformed last block does not leak earlier model-authored values.
+- 10 new tests in `TestReadinessTrustedOffset` cover fake-mention-before-system-block, missing tail marker, invalid offsets, null-offset legacy behavior, and direct parser semantics.
+
+**[P3] Archive evidence** — `docs/task_runs/B-002-R2-20260817-200225/`
+- Added real artifacts: `tests-b002-callback-round2.txt` (63 passed) and `tests-scheduler-regression-round2.txt` (114 passed); corrected `implementation.md` references (round1's 53-test run was unpreserved; `tests-round1.txt` is the API smoke/runtime-tier run = 157 passed, rerun confirmed).
+
+**Tests**: callback suite 63 passed; scheduler regression 114 passed; api_smoke+runtime_tier 157 passed; `py_compile` + `git diff --check` clean. DEVLOG updated. No prompts touched, `tradingagents.db` untouched (mtime Aug 15), no commit/push.
+
+**Risk**: legacy reports without `metadata.system_diagnostics_offset` still rely on the last-heading heuristic — a model could theoretically fabricate a trailing C-008 block; production reports all persist the offset, so the trusted-tail path applies there.

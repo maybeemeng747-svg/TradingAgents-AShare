@@ -7,6 +7,14 @@
 设计契约：
 - ``OPENCLAW_CALLBACK_URL``  环境变量：OpenClaw 接收 webhook 的地址。
 - ``OPENCLAW_CALLBACK_ENABLED`` 环境变量：是否启用回调（默认 false）。
+- ``readiness_score`` 恒出现在 payload 中（v1.1.0 起）：
+  - 有真实来源时 ``{"status": "available", "data_completeness": int,
+    "confidence": "高|中|低", "source": "readiness_score|final_trade_decision"}``；
+  - 无来源时 ``{"status": "not_available"}``，不以空值或缺键冒充。
+  - fail-closed：仅当 data_completeness 为 0-100 整数且 confidence ∈ {高,中,低}
+    时才发布 available；截断/越界/类型错误的候选值一律视为无效，不降级发布。
+    无 offset 的 legacy 文本仅在匹配系统确定性结构（``[C-008] 执行就绪度评分``
+    标题 + 字段行）时采信，正文行内提及的 [C-008] 值不发布。
 - 不读取 / 打印任何 API key / token（与 notification_draft_service 一致）。
 - 失败时静默降级，不阻塞主流程。
 - 不写数据库、不调 LLM、不改 prompts。
@@ -18,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -26,7 +35,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-CALLBACK_SCHEMA_VERSION = "1.0.0"
+CALLBACK_SCHEMA_VERSION = "1.1.0"
 CALLBACK_SOURCE = "tradingagents-scheduler"
 
 # Retry config
@@ -67,6 +76,128 @@ def _clip_text(text: str | None, limit: int = 500) -> str:
         return ""
     compact = " ".join(str(text).split()).strip()
     return compact[:limit]
+
+
+# [B-002-R2] readiness 真源：risk_manager 把 [C-008] 执行就绪度评分块追加到
+# final_trade_decision 文本并随 ReportDB 持久化；结构化 dict 无生产写入方，
+# 仅作为前向兼容输入。文本块是当前唯一真实持久化来源。
+# [B-002-R2-fix] 权威块定位：risk_manager 同时把 metadata.system_diagnostics_offset
+# （系统追加诊断块的起始位置）持久化到 result_data.metadata。解析必须优先限定
+# 在该可信尾部；模型正文提及的 [C-008] 完整度/置信度不得发布为 available。
+_C008_HEADING_PATTERN = re.compile(r"\[C-008\][ \t]*执行就绪度评分")
+# Field lines are deterministic bullet rows in format_readiness_score output
+# (tradingagents/agents/utils/readiness_score.py); line-anchoring rejects
+# inline prose mentions such as "参考 [C-008] 数据完整度：99% 置信度：高".
+_READINESS_COMPLETENESS_PATTERN = re.compile(
+    r"(?m)^-[ \t]*数据完整度[：:][ \t]*(\d{1,3})[ \t]*%[ \t]*$"
+)
+_READINESS_CONFIDENCE_PATTERN = re.compile(
+    r"(?m)^-[ \t]*置信度[：:][ \t]*([高中低])[ \t]*$"
+)
+_READINESS_CONFIDENCE_VALUES = frozenset({"高", "中", "低"})
+
+# Sentinel distinguishing "metadata.system_diagnostics_offset was never
+# persisted" (legacy reports → last-[C-008] fallback) from "the key is
+# present but its value is invalid" (incl. explicit null → fail closed).
+_OFFSET_ABSENT = object()
+
+
+def _is_valid_completeness(value: Any) -> bool:
+    """v1.1 contract: data_completeness must be an int in [0, 100]."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100
+
+
+def _is_valid_confidence(value: Any) -> bool:
+    """v1.1 contract: confidence must be one of 高/中/低."""
+    return isinstance(value, str) and value in _READINESS_CONFIDENCE_VALUES
+
+
+def _validated_readiness_values(mapping: Any) -> dict | None:
+    """Return a publishable readiness values dict, or None if invalid.
+
+    ``status: available`` requires BOTH a valid ``data_completeness`` and a
+    valid ``confidence``; partial / wrongly-typed / out-of-range candidates
+    fail closed (caller then emits ``not_available`` or tries the next
+    source).
+    """
+    if not isinstance(mapping, dict):
+        return None
+    dc = mapping.get("data_completeness")
+    conf = mapping.get("confidence")
+    if _is_valid_completeness(dc) and _is_valid_confidence(conf):
+        return {"data_completeness": dc, "confidence": conf}
+    return None
+
+
+def _extract_system_diagnostics_offset(*sources: Any) -> Any:
+    """Return the persisted ``metadata.system_diagnostics_offset`` if present.
+
+    Scans dict-like sources (``result_data`` / ``report_obj["result_data"]``)
+    for ``metadata.system_diagnostics_offset``. Returns the raw value whenever
+    any source carries the key — including an explicit ``None`` or another
+    invalid value — so the parser can fail closed on "present but
+    inconsistent". Returns the ``_OFFSET_ABSENT`` sentinel only when no source
+    carries the key at all (legacy reports without the metadata).
+    """
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        metadata = source.get("metadata")
+        if isinstance(metadata, dict) and "system_diagnostics_offset" in metadata:
+            return metadata["system_diagnostics_offset"]
+    return _OFFSET_ABSENT
+
+
+def _parse_readiness_from_text(
+    text: Any, trusted_offset: Any = _OFFSET_ABSENT
+) -> dict | None:
+    """Parse the authoritative persisted [C-008] readiness block from report text.
+
+    ``trusted_offset`` is the persisted ``metadata.system_diagnostics_offset``:
+
+    - valid int within ``[0, len(text))`` — parse only that system-appended
+      tail; a ``[C-008]`` mention authored by the model before the offset is
+      never trusted, even when it carries completeness/confidence values;
+    - present but invalid (explicit null / non-int / out of range) — the
+      persisted text is inconsistent with the offset, so nothing is trusted
+      (fail closed, no legacy fallback);
+    - absent (legacy reports without the metadata) — fall back to the last
+      ``[C-008]`` heading, because the system block is appended after any
+      model-authored text. The fallback only accepts the deterministic
+      system-block structure (``[C-008] 执行就绪度评分`` heading followed by
+      bullet field lines), so a bare inline ``[C-008]`` mention carrying
+      valid-looking inline values is never trusted.
+
+    Returns a partial ``{"data_completeness": int, "confidence": str}`` dict
+    (either key may be missing when the block is truncated or out of range)
+    or None when no block/values are found; the caller validates completeness
+    AND confidence before publishing ``status: available``.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    source = text
+    if trusted_offset is not _OFFSET_ABSENT:
+        if isinstance(trusted_offset, bool) or not isinstance(trusted_offset, int):
+            return None
+        if not 0 <= trusted_offset < len(text):
+            return None
+        source = text[trusted_offset:]
+    marker = None
+    for marker in _C008_HEADING_PATTERN.finditer(source):
+        pass  # keep the last occurrence = system-appended block
+    if marker is None:
+        return None
+    section = source[marker.end():]
+    parsed: dict[str, Any] = {}
+    completeness = _READINESS_COMPLETENESS_PATTERN.search(section)
+    if completeness:
+        value = int(completeness.group(1))
+        if 0 <= value <= 100:
+            parsed["data_completeness"] = value
+    confidence = _READINESS_CONFIDENCE_PATTERN.search(section)
+    if confidence:
+        parsed["confidence"] = confidence.group(1)
+    return parsed or None
 
 
 def is_openclaw_callback_enabled() -> bool:
@@ -170,21 +301,48 @@ def build_callback_payload(
                 "status": metric.get("status", "unknown"),
             })
 
-    # Readiness score (prefer report object snapshot, fallback to result_data)
-    readiness = _pick(
+    # [B-002-R2] readiness_score：优先结构化字段（前向兼容），否则从已持久化
+    # 的 [C-008] 文本块解析；仅在候选值通过 v1.1 契约校验（completeness 为
+    # 0-100 整数且 confidence ∈ {高,中,低}）时发布 available，否则尝试下一
+    # 来源；全部无效/缺失时输出明确 not_available 状态（fail-closed）。
+    readiness_raw = _pick(
         _extract(report_data, "readiness_score"),
         _extract(result, "readiness_score"),
-        {},
     )
-    readiness_score = None
-    if isinstance(readiness, dict):
-        dc = readiness.get("data_completeness")
-        conf = readiness.get("confidence")
-        if dc is not None or conf is not None:
-            readiness_score = {
-                "data_completeness": dc,
-                "confidence": conf,
-            }
+    readiness_values: dict | None = None
+    readiness_source: str | None = None
+    if isinstance(readiness_raw, dict):
+        values = _validated_readiness_values(readiness_raw)
+        if values is not None:
+            readiness_values = values
+            readiness_source = "readiness_score"
+    if readiness_values is None:
+        # [B-002-R2-fix] restrict text parsing to the trusted system tail
+        # persisted in metadata.system_diagnostics_offset (report_service and
+        # the frontend already consume the same field).
+        trusted_offset = _extract_system_diagnostics_offset(
+            _extract(report_data, "result_data"),
+            result,
+        )
+        for text in (
+            _extract(report_data, "final_trade_decision"),
+            _extract(result, "final_trade_decision"),
+        ):
+            parsed = _parse_readiness_from_text(text, trusted_offset=trusted_offset)
+            values = _validated_readiness_values(parsed)
+            if values is not None:
+                readiness_values = values
+                readiness_source = "final_trade_decision"
+                break
+    if readiness_values is not None:
+        readiness_score: dict[str, Any] = {
+            "status": "available",
+            "data_completeness": readiness_values["data_completeness"],
+            "confidence": readiness_values["confidence"],
+            "source": readiness_source,
+        }
+    else:
+        readiness_score = {"status": "not_available"}
 
     now = datetime.now(timezone.utc)
 
@@ -211,8 +369,7 @@ def build_callback_payload(
         "key_metrics": metrics_summary,
     }
 
-    if readiness_score:
-        payload["readiness_score"] = readiness_score
+    payload["readiness_score"] = readiness_score
 
     if user_id:
         payload["user_id"] = user_id

@@ -1,5 +1,116 @@
 # 修改日志
 
+## 2026-08-17 | B-002-R2（round3 收口）：readiness fail-closed 语义补全 + 结构化防伪
+
+- 修复 Codex review round2 两项 P2（评审档案
+  `docs/reviews/B-002-R2-20260817-round2.txt`）：
+  - **P2 显式 `system_diagnostics_offset: null` 与键缺失混同**（
+    `openclaw_callback_service.py` `_extract_system_diagnostics_offset`）：
+    原实现两者都返回 None，解析会回退 legacy last-`[C-008]` 启发式，可能给
+    畸形报告发布伪造 readiness。现引入 `_OFFSET_ABSENT` 哨兵区分"键缺失"
+    （legacy 回退）与"键存在但值非法"（含显式 null → fail-closed 输出
+    `not_available`，不回退启发式）；`offset=None 视同历史缺省回退` 的
+    round2 语义被本条废止。
+  - **P2 `available` 未校验字段完整性**（`build_callback_payload`）：原实现
+    只要 readiness_values 非空就发 `status: available`，截断块/越界完整度/
+    结构化快照字段缺失或类型错误时会带 null/invalid 字段发布，违反 v1.1
+    契约。现新增 `_validated_readiness_values`：仅当 `data_completeness`
+    为 0-100 整数（拒 bool/float/str）且 `confidence` ∈ {高,中,低} 时才发布
+    `available`，否则尝试下一来源，全部无效输出 `not_available`。
+- 修复 round3 Codex review 追加发现（档案
+  `docs/reviews/B-002-R2-20260817-round3.txt`）：
+  - **P2 legacy 回退接受裸 `[C-008]` 行内提及**：正文如"参考 [C-008]
+    数据完整度：99% 置信度：高"在无 offset 时会被发布。现解析只认系统
+    确定性结构：`[C-008] 执行就绪度评分` 标题（`_C008_HEADING_PATTERN`）+
+    行锚定字段行（`^-[ \t]*数据完整度…%$` / `^-[ \t]*置信度…$`，与
+    `readiness_score.py:format_readiness_score` 的输出格式一致），行内
+    prose 提及一律拒绝。
+  - **P3 测试证据过期**：归档与 DEVLOG 仍称 63 项。现新增
+    `tests-b002-callback-round3.txt`（73 passed）、`tests-round3.txt`
+    （157 passed）、`tests-scheduler-regression-round3.txt`（114 passed），
+    并同步修正 `implementation.md` Test evidence。
+- 测试（`tests/test_b002_openclaw_callback.py`，63→73 项）：新增
+  `TestReadinessAvailableValidation` 6 项（截断仅完整度/仅置信度 →
+  not_available、结构化 8 组错误类型矩阵、部分结构化不遮蔽有效文本源、
+  边界值 0/100、available 恒不带 null 字段的总括断言）、显式 null
+  fail-closed 2 项、metadata 无键仍走 legacy 回退 1 项、行内 prose 拒绝
+  2 项；改写越界完整度用例为 not_available。
+- 验证：`tests/test_b002_openclaw_callback.py` **73 passed**；
+  `test_api_smoke.py + test_runtime_tier_contract.py` **157 passed**；
+  scheduler 相关回归 **114 passed**（三个输出均归档 round3 产物）；
+  `codex review --uncommitted` 连续两次 **零 findings**。未写生产数据库、
+  未调 live LLM、未改 prompts。
+
+## 2026-08-17 | B-002-R2（round2）：readiness 解析限定可信尾部 + 测试证据归档修复
+
+- 修复 Codex review round1 两项发现：
+  - **P2 readiness 可能采信模型伪造值**（`openclaw_callback_service.py`）：
+    原解析取全文第一个 `[C-008]` 标记，当模型正文在系统追加块之前引用
+    `[C-008]` 并声称完整度/置信度时，会把模型值发布为 `available`。现
+    优先读取生产已持久化的 `result_data.metadata.system_diagnostics_offset`
+    （与 report_service/前端消费的同一可信字段），把解析严格限定在该系统
+    追加尾部：offset 有效（int 且 `0 <= offset < len(text)`）时只解析尾部
+    内最后一个 `[C-008]` 块；offset 存在但非法（非 int / 越界，含 bool）
+    时输出 `not_available`；无 metadata 的历史报告回退为取全文最后一个
+    `[C-008]` 标题（系统块恒追加在模型文本之后），且最后一个块畸形时不会
+    泄漏更早的模型值。
+  - **P3 任务归档指向错误测试产物**
+    （`docs/task_runs/B-002-R2-20260817-200225/`）：`tests-round1.txt` 实际
+    只含 API smoke/runtime-tier 命令（157 passed），不含归档声称的 53 项
+    回调测试输出。现新增 `tests-b002-callback-round2.txt`（63 passed）与
+    `tests-scheduler-regression-round2.txt`（114 passed）两个真实产物，
+    并修正 `implementation.md` Test evidence 各引用；API smoke 行改为与
+    `tests-round1.txt` 命令一致的 157 passed。
+- 测试（`tests/test_b002_openclaw_callback.py`，53→63 项）：新增
+  `TestReadinessTrustedOffset` 10 项——有效 offset 发布权威尾部值（非伪造
+  12%/低）、report_obj.result_data 携带 offset、可信尾部无标记 →
+  not_available、offset 越界/非 int → not_available、offset=None 视同历史
+  缺省回退、offset=0 全文可信、无 metadata 回退最后一个标题、最后一个块
+  畸形不泄漏模型值、解析器直接语义验证。
+- 验证：`tests/test_b002_openclaw_callback.py` **63 passed**；scheduler
+  相关回归 **114 passed**；`test_api_smoke.py + test_runtime_tier_contract.py`
+  **157 passed**（三个输出均已归档到 task_runs 目录）；`py_compile`、
+  `git diff --check` 通过。未写生产数据库、未调 live LLM、未改 prompts、
+  未 commit/push。
+
+## 2026-08-17 | B-002-R2：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1）
+
+- 修复 e40147c review 发现的 P1/P2：
+  - **P1 启用回调即抛异常**（`scheduler/main.py` `_load_report_payload`）：
+    原实现直接读取 `ReportDB` 不存在的 `horizon/analysis_summary/opinion`
+    列（已实测确认四字段均不在 ORM schema），触发 `AttributeError` 后被
+    外层 except 吞掉，回调永远不发送。修复为 payload 只映射 `ReportDB`
+    真实列（id/symbol/trade_date/result_data/decision/direction/
+    research_direction/execution_action/action_label/confidence/risk_items/
+    key_metrics/final_trade_decision/trader_investment_plan/investment_plan）
+    并全部改为直接属性访问（schema 漂移时 fail-fast）；`horizon` 来自任务
+    参数继续显式传参，不再假装从报告读取。
+  - **P2 `readiness_score` 恒为空**（`openclaw_callback_service.py`）：
+    `ReportDB` 无 `readiness_score` 列且无任何生产路径写入结构化字段，
+    原 `getattr` 恒为 None。现接入真实持久化来源：risk_manager 产出的
+    `[C-008] 执行就绪度评分` 文本块随 `final_trade_decision` 持久化，
+    service 以 `[C-008]` 标记锚点解析 `数据完整度：N%` 与 `置信度：高|中|低`
+    （0-100 越界丢弃、缺标记文本不信任）；结构化 dict 仍优先（前向兼容）。
+    无任何来源时 payload 恒含 `readiness_score: {"status": "not_available"}`
+    显式状态，不再以缺键/空值冒充；有来源时输出
+    `{"status": "available", "data_completeness", "confidence", "source"}`。
+    `CALLBACK_SCHEMA_VERSION` 1.0.0→1.1.0（payload 契约变更）。
+- 测试（`tests/test_b002_openclaw_callback.py`，33→53 项）：
+  - ORM 对齐单测：真实 `ReportDB` 实例 + patched `get_db_ctx` 走完
+    `_send_openclaw_callback`，断言 `report_obj` 全部键 ⊆
+    `sqlalchemy.inspect(ReportDB).columns`，且不含
+    horizon/analysis_summary/opinion/readiness_score。
+  - 启用回调集成测试：env 开关 + patched `send_callback_async`，对最终
+    payload 全字段断言（decision/summary/risk/metrics/readiness 从 C-008
+    块解析出 87%/高）；报告行缺失路径输出 `not_available` 且不崩溃。
+  - readiness 来源单测：结构化优先、文本回退、无标记不信任、越界完整度
+    丢弃、空结构化 dict 回退、键恒存在且可 JSON 序列化。
+- 验证：`tests/test_b002_openclaw_callback.py` **53 passed**；scheduler
+  相关回归（scheduled_queue/db_hygiene/perf004/portfolio_import/
+  watchlist_scheduled）**114 passed**；`tests/test_api_smoke.py`
+  **87 passed**；`py_compile` 与 `git diff --check` 通过。未写生产数据库、
+  未调 live LLM、未改 prompts 与 OpenClaw 侧配置。
+
 ## 2026-08-17 | TA-TUSHARE-2000-001A-R1B：round2 review findings 修复并收口（P0）
 
 - 修复 001A-R1 round2 Codex review（gpt-5.6-sol high）1×P1+1×P2，并复核

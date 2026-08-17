@@ -235,26 +235,27 @@ async def _send_openclaw_callback(
                 if report:
                     if not isinstance(report.result_data, dict):
                         report.result_data = {}
-                    # detach ORM object to keep session-safe transfer
+                    # [B-002-R2] only fields that exist on ReportDB schema;
+                    # horizon/analysis_summary/opinion are not ORM columns and
+                    # raised AttributeError on read. horizon comes from the
+                    # task argument; readiness is parsed by the callback
+                    # service from the persisted final_trade_decision block.
                     return {
                         "id": report.id,
                         "symbol": report.symbol,
                         "trade_date": report.trade_date,
-                        "horizon": report.horizon,
                         "result_data": report.result_data,
-                        "analysis_summary": report.analysis_summary,
-                        "opinion": report.opinion,
                         "decision": report.decision,
-                        "action_label": getattr(report, "action_label", None),
-                        "research_direction": getattr(report, "research_direction", None),
-                        "execution_action": getattr(report, "execution_action", None),
-                        "confidence": getattr(report, "confidence", None),
-                        "readiness_score": getattr(report, "readiness_score", None),
-                        "risk_items": getattr(report, "risk_items", None),
-                        "key_metrics": getattr(report, "key_metrics", None),
-                        "final_trade_decision": getattr(report, "final_trade_decision", None),
-                        "trader_investment_plan": getattr(report, "trader_investment_plan", None),
-                        "investment_plan": getattr(report, "investment_plan", None),
+                        "direction": report.direction,
+                        "research_direction": report.research_direction,
+                        "execution_action": report.execution_action,
+                        "action_label": report.action_label,
+                        "confidence": report.confidence,
+                        "risk_items": report.risk_items,
+                        "key_metrics": report.key_metrics,
+                        "final_trade_decision": report.final_trade_decision,
+                        "trader_investment_plan": report.trader_investment_plan,
+                        "investment_plan": report.investment_plan,
                     }
                 return None
 
