@@ -1,0 +1,1445 @@
+[0m
+> build · glm-5.3
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=100][0m
+[0m
+[0m$ [0mgit status && git log --oneline -5
+On branch local/tradingagents-custom
+Your branch is ahead of 'myfork/local/tradingagents-custom' by 13 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   docs/TASKS.md
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	docs/task_runs/TA-TUSHARE-2000-001A-R1-20260816-200324/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+212e477 feat(data): bounded backoff, auditable cache and action downgrade for Tushare [TA-TUSHARE-2000-001E]
+2845977 docs(tasks): queue review repair batch 001A-R1 / B-002-R2 / CONFIG-DS-SCHEDULE-R1
+e98b906 docs(tasks): release TA-TUSHARE-2000-001E after 001D done
+9617d42 feat(data): add read-only Tushare governance event pack export [TA-TUSHARE-2000-001D]
+abdbf9c feat(data): add Tushare research evidence pack export [TA-TUSHARE-2000-001C]
+[0m
+[0m✱ [0mGlob "tradingagents/dataflows/*tushare*"[90m 4 matches[0m
+[0m✱ [0mGlob "scripts/*tushare*"[90m 3 matches[0m
+[0m✱ [0mGlob "docs/task_runs/TA-TUSHARE-2000-001A*/*"[90m 7 matches[0m
+[0m→ [0mRead tradingagents/dataflows/tushare_capability.py
+[0m→ [0mRead scripts/audit_tushare_capability.py
+[0m→ [0mRead docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/tushare_permission_matrix.md
+[0m→ [0mRead docs/task_runs/TA-TUSHARE-2000-001A-R1-20260816-200324/task.md
+[0m✱ [0mGlob "tests/**/*tushare*"[90m 6 matches[0m
+[0m→ [0mRead tests/test_tushare_capability.py
+[0m✱ [0mGrep "_normalize_ts_code|def _normalize"[90m in tradingagents/dataflows/providers/cn_tushare_provider.py · 11 matches[0m
+[0m✱ [0mGrep "repurchase"[90m in tradingagents/dataflows · 14 matches[0m
+现在让我检查一下 provider 的 symbol normalizer 以及 repurchase 在其他地方是如何查询的：
+[0m→ [0mRead tradingagents/dataflows/providers/cn_tushare_provider.py[90m [limit=60, offset=60][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_tushare_provider.py[90m [limit=80, offset=1130][0m
+该任务要求修复 5 个评审问题。让我验证一下 Tushare `repurchase` API 是否接受 `ts_code` 参数（评审意见说应该使用单只股票查询）：
+[0m% [0mWebFetch https://tushare.pro/document/2?doc_id=122
+[0m% [0mWebFetch https://tushare.pro/document/2?doc_id=124
+[0m✱ [0mGrep "spec_from_file_location|module_from_spec"[90m in tests · 2 matches[0m
+现在让我检查一下导出脚本的现有测试模式，以及 fixture 的证据文件：
+[0m
+[0m$ [0mls tests/fixtures/tushare_capability/ && cat docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/run-receipt.md && ls -la .env 2>/dev/null && grep -c "TUSHARE_TOKEN" .env 2>/dev/null; echo "---env check---"; if [ -n "$TUSHARE_TOKEN" ]; then echo "SHELL_HAS_TOKEN"; else echo "SHELL_NO_TOKEN"; fi
+normal_no_data.json
+permission_denied.json
+query_failed.json
+rate_limited.json
+# Run receipt — TA-TUSHARE-2000-001A
+
+- 运行时间：2026-08-16T04:17:09+08:00
+- Token 来源：git-ignored `.env`（TUSHARE_TOKEN），状态 `HAS_KEY`，任何产物不包含 Token 明文
+- 探测标的：`603629.SH`；探测日 `20260814`；回退日 `20260813`
+- 实测 endpoint 数：24；状态分布：{"HAS_DATA": 22, "NORMAL_NO_DATA": 2}
+
+## 重试记录
+
+- `top_list`：attempts=2，reason=`probe_date_no_rows_retry_on_fallback_trading_date`
+
+## 凭据自检
+
+- 对 tushare_permission_matrix.json 与 tushare_permission_matrix.md 扫描 Token/Authorization/Cookie：clean
+- 本回执与矩阵均不含真实响应正文，只含结构化元数据与 SHA-256 摘要
+-rw-------@ 1 maybee  staff  1305 Aug 11 15:20 .env
+1
+---env check---
+SHELL_NO_TOKEN
+[0m
+[0m→ [0mRead tests/test_h016_mandate_daily_cli.py[90m [limit=30, offset=195][0m
+[0m
+[0m$ [0mpython3 -c "
+import json
+m = json.load(open('docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/tushare_permission_matrix.json'))
+for e in m['endpoints']:
+    if e['endpoint'] == 'repurchase':
+        print(json.dumps({k: e[k] for k in ('endpoint','params','row_count','scope','state','note')}, ensure_ascii=False, indent=2))
+"
+{
+  "endpoint": "repurchase",
+  "params": {
+    "start_date": "20250101",
+    "end_date": "20260814"
+  },
+  "row_count": 2000,
+  "scope": "market_window_filtered",
+  "state": "HAS_DATA",
+  "note": "repurchase 按公告日窗口单次查询后本地按 ts_code 过滤；该接口不支持 ts_code 参数"
+}
+[0m
+[0m✱ [0mGrep "market_window_filtered|MATRIX_SCHEMA_VERSION|tushare_capability|annotate_row_cap_hits"[90m in . · 23 matches[0m
+现在我来检查代码库的影响范围——谁在使用 capability 模块或旧的 matrix JSON：
+[0m
+[0m$ [0mrg -l "TA-TUSHARE-2000-001A" --type py; echo ---; rg -n "tushare_permission_matrix" tradingagents/ scripts/ | head -20
+scripts/export_tushare_governance_events.py
+scripts/audit_tushare_capability.py
+scripts/export_tushare_research_evidence.py
+tradingagents/dataflows/tushare_capability.py
+---
+scripts/export_tushare_governance_events.py:50:    / "tushare_permission_matrix.json"
+scripts/export_tushare_research_evidence.py:49:    / "tushare_permission_matrix.json"
+scripts/audit_tushare_capability.py:46:MATRIX_JSON_NAME = "tushare_permission_matrix.json"
+scripts/audit_tushare_capability.py:47:MATRIX_MD_NAME = "tushare_permission_matrix.md"
+[0m
+[0m$ [0mrg -n -B3 -A15 "tushare_permission_matrix" scripts/export_tushare_research_evidence.py scripts/export_tushare_governance_events.py | head -60
+scripts/export_tushare_governance_events.py-47-    / "docs"
+scripts/export_tushare_governance_events.py-48-    / "task_runs"
+scripts/export_tushare_governance_events.py-49-    / "TA-TUSHARE-2000-001A-20260816-041709"
+scripts/export_tushare_governance_events.py:50:    / "tushare_permission_matrix.json"
+scripts/export_tushare_governance_events.py-51-)
+scripts/export_tushare_governance_events.py-52-
+scripts/export_tushare_governance_events.py-53-# Best-effort denylist: the export must not accept knowledge-base or HaiRui
+scripts/export_tushare_governance_events.py-54-# directories as a write target.  Combined with the no-default-output rule
+scripts/export_tushare_governance_events.py-55-# this keeps TA read-only with respect to those repositories.
+scripts/export_tushare_governance_events.py-56-_FORBIDDEN_PATH_SEGMENTS = (
+scripts/export_tushare_governance_events.py-57-    "tree_work",
+scripts/export_tushare_governance_events.py-58-    "knowledge",
+scripts/export_tushare_governance_events.py-59-    "knowledge_base",
+scripts/export_tushare_governance_events.py-60-    "knowledgebase",
+scripts/export_tushare_governance_events.py-61-    "haigui",
+scripts/export_tushare_governance_events.py-62-    "hairui",
+scripts/export_tushare_governance_events.py-63-    "海瑞",
+scripts/export_tushare_governance_events.py-64-    "judgement",
+scripts/export_tushare_governance_events.py-65-    "verdicts",
+--
+scripts/export_tushare_research_evidence.py-46-    / "docs"
+scripts/export_tushare_research_evidence.py-47-    / "task_runs"
+scripts/export_tushare_research_evidence.py-48-    / "TA-TUSHARE-2000-001A-20260816-041709"
+scripts/export_tushare_research_evidence.py:49:    / "tushare_permission_matrix.json"
+scripts/export_tushare_research_evidence.py-50-)
+scripts/export_tushare_research_evidence.py-51-
+scripts/export_tushare_research_evidence.py-52-
+scripts/export_tushare_research_evidence.py-53-def _write_json_immutable(path: Path, payload: object) -> None:
+scripts/export_tushare_research_evidence.py-54-    path.parent.mkdir(parents=True, exist_ok=True)
+scripts/export_tushare_research_evidence.py-55-    file_descriptor, temporary_name = tempfile.mkstemp(
+scripts/export_tushare_research_evidence.py-56-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+scripts/export_tushare_research_evidence.py-57-    )
+scripts/export_tushare_research_evidence.py-58-    temporary_path = Path(temporary_name)
+scripts/export_tushare_research_evidence.py-59-    try:
+scripts/export_tushare_research_evidence.py-60-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+scripts/export_tushare_research_evidence.py-61-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+scripts/export_tushare_research_evidence.py-62-            handle.write("\n")
+scripts/export_tushare_research_evidence.py-63-            handle.flush()
+scripts/export_tushare_research_evidence.py-64-            os.fsync(handle.fileno())
+[0m
+[0m# [0mTodos
+[•] Fix tushare_capability.py: repurchase single ts_code spec, generic row-cap flag, token_source fields, schema 1.1
+[ ] Fix audit script: token source resolution (.env wins over inherited env), BJ exchange map, display_path, leak-scan fail-closed exit 3, receipt with token source + repurchase record
+[ ] Update/extend tests/test_tushare_capability.py covering all 5 fixes incl. real leak trigger
+[ ] Run Tushare test suites (capability + related regressions)
+[ ] Real rerun of permission matrix into new docs/task_runs/ archive
+[ ] Write old-vs-new matrix diff explanation in new archive; update docs/DEVLOG.md
+[0m
+旧矩阵存档保持不变（固定路径消费者），因此新增字段是安全的。现在我已经掌握了全貌。让我来计划并实施：
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -21,11 +21,14 @@
+ from typing import Any, Callable, Mapping, Sequence
+ 
+ import pandas as pd
+ 
+-MATRIX_SCHEMA_VERSION = "1.0"
++MATRIX_SCHEMA_VERSION = "1.1"
+ TASK_ID = "TA-TUSHARE-2000-001A"
+ 
++TOKEN_SOURCE_DOTENV = "dotenv_file"
++TOKEN_SOURCE_INHERITED_ENV = "inherited_environment"
++
+ STATE_HAS_DATA = "HAS_DATA"
+ STATE_NORMAL_NO_DATA = "NORMAL_NO_DATA"
+ STATE_QUERY_FAILED = "QUERY_FAILED"
+ STATE_PERMISSION_DENIED = "PERMISSION_DENIED"
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -95,10 +95,10 @@
+ PARAM_KIND_EXCHANGE_PROBE_DATE = "exchange_probe_date"
+ 
+ ROW_CAP_DEFAULT = 2000
+ _ROW_CAP_NOTE = (
+-    "repurchase 为市场窗口接口，单次探测命中 {cap} 行返回上限：权限结论（allowed）不受影响，"
+-    "但该行数不代表窗口完整覆盖，也不构成全市场批量抓取"
++    "endpoint 单次探测命中 {cap} 行返回上限：权限结论（allowed）不受影响，但该行数不代表"
++    "完整窗口或最小单股结果，需核对查询参数是否被上游忽略"
+ )
+ 
+ 
+ @dataclass(frozen=True)
+
+[0m
+Fix 1 — capability module: repurchase spec → single ts_code, generalized row-cap flag:
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -127,11 +127,10 @@
+ EndpointSpec("pledge_detail", CATEGORY_GOVERNANCE, (PARAM_KIND_TS_CODE,)),
+ EndpointSpec(
+     "repurchase",
+     CATEGORY_GOVERNANCE,
+-    (PARAM_KIND_STATEMENT_WINDOW,),
+-    scope="market_window_filtered",
+-    note="repurchase 按公告日窗口单次查询后本地按 ts_code 过滤；该接口不支持 ts_code 参数",
++    (PARAM_KIND_TS_CODE,),
++    note="repurchase 单 ts_code 最小查询（001A-R1 修复：原公告日窗口查询命中全市场行数上限，违反单股最小探测约束）",
+ ),
+ EndpointSpec("share_float", CATEGORY_GOVERNANCE, (PARAM_KIND_TS_CODE,)),
+ EndpointSpec("stk_holdernumber", CATEGORY_GOVERNANCE, (PARAM_KIND_TS_CODE,)),
+ EndpointSpec("stk_holdertrade", CATEGORY_GOVERNANCE, (PARAM_KIND_TS_CODE,)),
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -578,20 +578,20 @@
+     return text.replace("|", "\\|").replace("\n", " ")
+ 
+ 
+ def annotate_row_cap_hits(matrix: Mapping[str, Any], *, cap: int = ROW_CAP_DEFAULT) -> None:
+-    """Flag market-window records that reached the upstream row cap."""
++    """Flag any record that reached the upstream row cap.
+ 
+-    note = _ROW_CAP_NOTE.format(cap=cap)
++    Scope-agnostic on purpose (001A-R1): even a symbol-scoped probe can hit
++    the cap when upstream ignores filter params, and that must stay visible.
++    """
++
+     for record in matrix["endpoints"]:
+-        if (
+-            record.get("scope") == "market_window_filtered"
+-            and record.get("row_count") is not None
+-            and record["row_count"] >= cap
+-        ):
++        if record.get("row_count") is not None and record["row_count"] >= cap:
+             record["row_cap_suspected"] = True
+     if any(record.get("row_cap_suspected") for record in matrix["endpoints"]):
+         notes = matrix["notes"]
++        note = _ROW_CAP_NOTE.format(cap=cap)
+         if note not in notes:
+             notes.append(note)
+ 
+ 
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -491,8 +491,10 @@
+ probe_context: Mapping[str, str],
+ records: Sequence[Mapping[str, Any]],
+ *,
+ token_status: str,
++token_source: str = "",
++token_env_override_applied: bool | None = None,
+ generated_at: str | None = None,
+ excluded: Sequence[Mapping[str, str]] = EXCLUDED_ENDPOINTS,
+ state_evidence: Mapping[str, Mapping[str, Any]] | None = None,
+ notes: Sequence[str] = (),
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -538,9 +538,10 @@
+ "task_id": TASK_ID,
+ "generated_at": generated_at
+ or datetime.now().astimezone().isoformat(timespec="seconds"),
+ "token_status": token_status,
+-"probe": {
++"token_source": token_source or None,
++"token_env_override_applied": token_env_override_applied,
+     "symbol": probe_context["ts_code"],
+     "exchange": probe_context.get("exchange"),
+     "probe_date": probe_context["probe_date"],
+     "fallback_date": probe_context.get("fallback_date"),
+
+[0m
+The last edit dropped the `"probe": {` line — let me verify and repair:
+[0m→ [0mRead tradingagents/dataflows/tushare_capability.py[90m [limit=35, offset=535][0m
+[0m
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -540,8 +540,9 @@
+ or datetime.now().astimezone().isoformat(timespec="seconds"),
+ "token_status": token_status,
+ "token_source": token_source or None,
+ "token_env_override_applied": token_env_override_applied,
++"probe": {
+     "symbol": probe_context["ts_code"],
+     "exchange": probe_context.get("exchange"),
+     "probe_date": probe_context["probe_date"],
+     "fallback_date": probe_context.get("fallback_date"),
+
+[0m
+现在更新 `render_markdown` 以显示 Token 来源：
+[0m← [0mEdit tradingagents/dataflows/tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/tushare_capability.py
+@@ -606,8 +606,19 @@
+ lines.append(f"# Tushare 2000 积分真实权限矩阵（{matrix['task_id']}）")
+ lines.append("")
+ lines.append(f"- 生成时间：{matrix['generated_at']}")
+ lines.append(f"- Token 状态：`{matrix['token_status']}`（不记录 Token 任何明文信息）")
++token_source = matrix.get("token_source")
++if token_source:
++    source_label = (
++        "git-ignored .env 文件"
++        if token_source == TOKEN_SOURCE_DOTENV
++        else "继承环境变量"
++    )
++    source_line = f"- Token 来源：`{token_source}`（{source_label}）"
++    if matrix.get("token_env_override_applied"):
++        source_line += "；继承环境变量中的 TUSHARE_TOKEN 已被显式 .env 值覆盖，矩阵归属以 .env 为准"
++    lines.append(source_line)
+ lines.append(
+     f"- 探测标的：`{probe['symbol']}`（{probe['exchange']}），"
+     f"探测日 `{probe['probe_date']}`，回退日 `{probe['fallback_date']}`"
+ )
+
+[0m
+现在开始修复 audit script — 2 (token source), 4 (BJ mapping), 5 (display_path), 3 (leak fail-closed)：
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -3,9 +3,13 @@
+ Runs one minimal, single-stock, low-frequency probe per endpoint listed in
+ the task scope and writes a sanitized permission matrix (JSON + Markdown)
+ plus a run receipt into a ``docs/task_runs/TA-TUSHARE-2000-001A-*``
+ archive.  The Tushare token is read exclusively from the git-ignored
+-``.env`` file; every artifact only records ``HAS_KEY``/``NO_KEY``.
++``.env`` file (or, with ``--no-dotenv``, from the inherited environment for
++test isolation only); every artifact only records ``HAS_KEY``/``NO_KEY``.
++
++Exit codes: 0 success; 2 NO_KEY fail-closed; 3 credential leak detected in
++composed artifacts (nothing is written, fail closed).
+ """
+ 
+ from __future__ import annotations
+ 
+@@ -20,14 +24,16 @@
+ ROOT = Path(__file__).resolve().parent.parent
+ if str(ROOT) not in sys.path:
+     sys.path.insert(0, str(ROOT))
+ 
+-from dotenv import load_dotenv
++from dotenv import dotenv_values
+ 
+ from tradingagents.dataflows.tushare_capability import (
+     ENDPOINT_SPECS,
+     EXCLUDED_ENDPOINTS,
+     TASK_ID,
++    TOKEN_SOURCE_DOTENV,
++    TOKEN_SOURCE_INHERITED_ENV,
+     TOKEN_STATUS_HAS_KEY,
+     TOKEN_STATUS_NO_KEY,
+     annotate_row_cap_hits,
+     build_matrix,
+
+[0m
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -53,13 +53,17 @@
+ MATRIX_MD_NAME = "tushare_permission_matrix.md"
+ RECEIPT_NAME = "run-receipt.md"
+ 
+ 
++_SUFFIX_TO_EXCHANGE = {"SH": "SSE", "SZ": "SZSE", "BJ": "BJSE"}
++
++
+ def exchange_for_ts_code(ts_code: str) -> str:
+     suffix = ts_code.rsplit(".", 1)[-1].upper()
+-    if suffix == "SZ":
+-        return "SZSE"
+-    return "SSE"
++    try:
++        return _SUFFIX_TO_EXCHANGE[suffix]
++    except KeyError:
++        raise ValueError(f"unknown exchange suffix in ts_code: {ts_code!r}") from None
+ 
+ 
+ def normalize_symbol(symbol: str) -> str:
+     from tradingagents.dataflows.providers.cn_tushare_provider import _normalize_ts_code
+
+[0m
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -70,8 +70,48 @@
+ 
+     return _normalize_ts_code(symbol)
+ 
+ 
++def resolve_token(
++    *,
++    environ: Mapping[str, str],
++    dotenv_path: Path | None,
++    allow_dotenv: bool = True,
++) -> tuple[str, str, bool]:
++    """Resolve TUSHARE_TOKEN with explicit, auditable precedence.
++
++    001A-R1 fix (c73ed4f P1#1): the explicitly specified git-ignored ``.env``
++    file always wins over an inherited process environment variable, so the
++    permission matrix can never be silently attributed to a foreign token.
++    Returns ``(token, token_source, env_override_applied)`` where source is
++    ``dotenv_file``/``inherited_environment``/``""`` (NO_KEY).
++    """
++
++    dotenv_token = ""
++    if allow_dotenv and dotenv_path is not None:
++        try:
++            values: Mapping[str, str | None] = dotenv_values(dotenv_path)
++        except OSError:
++            values = {}
++        dotenv_token = str(values.get("TUSHARE_TOKEN", "") or "").strip()
++    inherited = str(environ.get("TUSHARE_TOKEN", "") or "").strip()
++    if dotenv_token:
++        overridden = bool(inherited) and inherited != dotenv_token
++        return dotenv_token, TOKEN_SOURCE_DOTENV, overridden
++    if inherited:
++        return inherited, TOKEN_SOURCE_INHERITED_ENV, False
++    return "", "", False
++
++
++def display_path(path: Path, *, root: Path = ROOT) -> str:
++    """Relative display path that never crashes for paths outside root."""
++
++    try:
++        return str(path.resolve().relative_to(root.resolve()))
++    except ValueError:
++        return str(path)
++
++
+ def build_probe_context(args: argparse.Namespace) -> dict[str, str]:
+     ts_code = normalize_symbol(args.symbol)
+     return {
+         "ts_code": ts_code,
+
+[0m
+Now the leak scan + fail-closed `write_outputs` and receipt with token source + repurchase record:
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -158,8 +158,26 @@
+     lowered = text.lower()
+     return "authorization:" in lowered or "cookie:" in lowered
+ 
+ 
++def scan_artifacts_for_secret(
++    texts: Mapping[str, str], token: str
++) -> list[tuple[str, str]]:
++    """Return ``(artifact_name, reason)`` leak findings; empty means clean."""
++
++    leaks: list[tuple[str, str]] = []
++    for name, text in texts.items():
++        if token and token in text:
++            leaks.append((name, "token_substring"))
++            continue
++        lowered = text.lower()
++        if "authorization:" in lowered:
++            leaks.append((name, "authorization_header"))
++        if "cookie:" in lowered:
++            leaks.append((name, "cookie_header"))
++    return leaks
++
++
+ def run_probes(query_fn, probe_context: Mapping[str, str], *, token: str, sleep_seconds: float):
+     records = []
+     for index, spec in enumerate(ENDPOINT_SPECS):
+         if index:
+
+[0m
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -199,32 +199,66 @@
+         )
+     return records
+ 
+ 
+-def write_outputs(matrix: dict[str, Any], output_dir: Path, *, token: str) -> list[Path]:
+-    output_dir.mkdir(parents=True, exist_ok=True)
+-    json_path = output_dir / MATRIX_JSON_NAME
+-    md_path = output_dir / MATRIX_MD_NAME
+-    receipt_path = output_dir / RECEIPT_NAME
+-    json_path.write_text(
+-        json.dumps(matrix, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+-        encoding="utf-8",
+-    )
++def write_outputs(
++    matrix: dict[str, Any],
++    output_dir: Path,
++    *,
++    token: str,
++    token_source: str = "",
++    env_override_applied: bool = False,
++) -> tuple[list[Path], list[tuple[str, str]]]:
++    """Compose, scan, then write artifacts. Fail closed on credential leaks.
++
++    001A-R1 fix (c73ed4f P1#3): when any composed artifact trips the
++    credential scan, nothing is written and the leak findings are returned
++    so the caller exits non-zero.
++    """
++
++    json_text = json.dumps(matrix, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
+     markdown = render_markdown(matrix)
+-    md_path.write_text(markdown, encoding="utf-8")
+-    scanned = [json_path, md_path]
+-    clean = not any(scan_text_for_secret(path.read_text(encoding="utf-8"), token) for path in scanned)
++    leaks = scan_artifacts_for_secret(
++        {MATRIX_JSON_NAME: json_text, MATRIX_MD_NAME: markdown}, token
++    )
++    if leaks:
++        return [], leaks
++    source_label = (
++        "git-ignored .env 文件（TUSHARE_TOKEN）"
++        if token_source == TOKEN_SOURCE_DOTENV
++        else "继承环境变量（TUSHARE_TOKEN）"
++        if token_source == TOKEN_SOURCE_INHERITED_ENV
++        else "未知来源"
++    )
+     retry_lines = [
+         f"- `{record['endpoint']}`：attempts={record['attempts']}，reason=`{record['retry_reason']}`"
+         for record in matrix["endpoints"]
+         if record.get("attempts", 1) > 1
+     ]
++    repurchase_lines = ["- 本矩阵未包含 repurchase 记录"]
++    for record in matrix["endpoints"]:
++        if record["endpoint"] == "repurchase":
++            repurchase_lines = [
++                f"- 查询参数：`{json.dumps(record.get('params', {}), ensure_ascii=False)}`",
++                f"- 返回行数：{record.get('row_count') if record.get('row_count') is not None else '-'}"
++                f"（state=`{record['state']}`）",
++                f"- scope：`{record.get('scope')}`；row_cap_suspected="
++                f"`{record.get('row_cap_suspected', False)}`",
++            ]
++            break
++    token_source_line = (
++        f"- Token 来源：{source_label}，来源标识 `{token_source or 'unknown'}`，"
++        f"状态 `{matrix['token_status']}`，任何产物不包含 Token 明文"
++    )
++    if env_override_applied:
++        token_source_line += (
++            "；继承环境变量中的 TUSHARE_TOKEN 已被显式 .env 值覆盖（env_override_applied=true）"
++        )
+     receipt = [
+         f"# Run receipt — {TASK_ID}",
+         "",
+         f"- 运行时间：{matrix['generated_at']}",
+-        f"- Token 来源：git-ignored `.env`（TUSHARE_TOKEN），状态 `{matrix['token_status']}`，"
+-        "任何产物不包含 Token 明文",
++        token_source_line,
+         f"- 探测标的：`{matrix['probe']['symbol']}`；探测日 `{matrix['probe']['probe_date']}`；"
+         f"回退日 `{matrix['probe']['fallback_date']}`",
+         f"- 实测 endpoint 数：{matrix['summary']['probed_endpoints']}；"
+         f"状态分布：{json.dumps(matrix['summary']['by_state'], ensure_ascii=False)}",
+@@ -232,17 +266,31 @@
+         "## 重试记录",
+         "",
+         *(retry_lines or ["- 无重试"]),
+         "",
++        "## repurchase 单股查询记录（001A-R1）",
++        "",
++        *repurchase_lines,
++        "",
+         "## 凭据自检",
+         "",
+-        f"- 对 {MATRIX_JSON_NAME} 与 {MATRIX_MD_NAME} 扫描 Token/Authorization/Cookie："
+-        f"{'clean' if clean else 'LEAK DETECTED'}",
++        f"- 对 {MATRIX_JSON_NAME}、{MATRIX_MD_NAME} 与本回执扫描 Token/Authorization/Cookie：clean"
++        "（发现泄漏即拒绝写盘并以退出码 3 fail closed）",
+         "- 本回执与矩阵均不含真实响应正文，只含结构化元数据与 SHA-256 摘要",
+         "",
+     ]
+-    receipt_path.write_text("\n".join(receipt), encoding="utf-8")
+-    return [*scanned, receipt_path]
++    receipt_text = "\n".join(receipt)
++    receipt_leaks = scan_artifacts_for_secret({RECEIPT_NAME: receipt_text}, token)
++    if receipt_leaks:
++        return [], receipt_leaks
++    output_dir.mkdir(parents=True, exist_ok=True)
++    json_path = output_dir / MATRIX_JSON_NAME
++    md_path = output_dir / MATRIX_MD_NAME
++    receipt_path = output_dir / RECEIPT_NAME
++    json_path.write_text(json_text, encoding="utf-8")
++    md_path.write_text(markdown, encoding="utf-8")
++    receipt_path.write_text(receipt_text, encoding="utf-8")
++    return [json_path, md_path, receipt_path], []
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(description="Tushare 2000-point real permission matrix audit")
+
+[0m
+现在，`--dotenv` 参数和新的 `main` 函数：
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -305,11 +305,16 @@
+     default=None,
+     help="default: docs/task_runs/TA-TUSHARE-2000-001A-<YYYYMMDD-HHMMSS>",
+ )
+ parser.add_argument(
++    "--dotenv",
++    default=None,
++    help="显式指定 .env 文件路径（默认 <repo>/.env）；该文件的 TUSHARE_TOKEN 优先于继承环境变量",
++)
++parser.add_argument(
+     "--no-dotenv",
+     action="store_true",
+-    help="跳过 .env 加载（仅供测试隔离使用；Token 只能来自环境）",
++    help="跳过 .env 加载（仅供测试隔离使用；Token 只能来自环境，来源将记录为继承环境变量）",
+ )
+ parser.add_argument("--dry-run", action="store_true", help="打印探测计划，不发起网络请求")
+ return parser
+ 
+
+[0m
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -325,21 +325,35 @@
+     environ: Mapping[str, str] | None = None,
+     dotenv_path: Path | None = None,
+ ) -> int:
+     args = build_parser().parse_args(argv)
+-    if not args.no_dotenv:
+-        load_dotenv(dotenv_path if dotenv_path is not None else ROOT / ".env", override=False)
+     import os
+ 
+     env = os.environ if environ is None else environ
+-    token = str(env.get("TUSHARE_TOKEN", "") or "").strip()
++    resolved_dotenv = (
++        Path(args.dotenv)
++        if args.dotenv
++        else (dotenv_path if dotenv_path is not None else ROOT / ".env")
++    )
++    token, token_source, env_override_applied = resolve_token(
++        environ=env,
++        dotenv_path=resolved_dotenv,
++        allow_dotenv=not args.no_dotenv,
++    )
+     token_status = TOKEN_STATUS_HAS_KEY if token else TOKEN_STATUS_NO_KEY
+     probe_context = build_probe_context(args)
+     if token_status == TOKEN_STATUS_NO_KEY:
+-        print("[audit] TUSHARE_TOKEN NO_KEY：拒绝探测（fail closed），Token 只允许来自 git-ignored .env")
++        print(
++            "[audit] TUSHARE_TOKEN NO_KEY：拒绝探测（fail closed），"
++            f"Token 只允许来自 git-ignored .env（本次来源解析：{resolved_dotenv}）"
++        )
+         return 2
+     if args.dry_run:
+-        print(f"[audit] token={token_status} symbol={probe_context['ts_code']} probe_date={args.probe_date}")
++        print(
++            f"[audit] token={token_status} token_source={token_source or 'unknown'} "
++            f"env_override_applied={str(env_override_applied).lower()} "
++            f"symbol={probe_context['ts_code']} probe_date={args.probe_date}"
++        )
+         for spec in ENDPOINT_SPECS:
+             print(f"[dry-run] {spec.endpoint:<20} category={spec.category:<10} kinds={spec.param_kinds}")
+         print(f"[dry-run] excluded items: {len(EXCLUDED_ENDPOINTS)}")
+         return 0
+@@ -350,26 +364,42 @@
+         if args.output_dir
+         else ROOT / "docs" / "task_runs" / f"{TASK_ID}-{stamp}"
+     )
+     print(
+-        f"[audit] token={token_status} symbol={probe_context['ts_code']} "
+-        f"probe_date={args.probe_date} output={output_dir}"
++        f"[audit] token={token_status} token_source={token_source or 'unknown'} "
++        f"env_override_applied={str(env_override_applied).lower()} "
++        f"symbol={probe_context['ts_code']} "
++        f"probe_date={args.probe_date} output={display_path(output_dir)}"
+     )
+     query_fn = make_query_fn(token)
+     records = run_probes(query_fn, probe_context, token=token, sleep_seconds=args.sleep_seconds)
+     matrix = build_matrix(
+         probe_context,
+         records,
+         token_status=token_status,
++        token_source=token_source,
++        token_env_override_applied=env_override_applied,
+         generated_at=started,
+         state_evidence=state_evidence_from_fixtures(),
+         notes=[
+             f"探测脚本：scripts/audit_tushare_capability.py，探测间隔 {args.sleep_seconds}s",
++            f"Token 来源标识：{token_source or 'unknown'}（显式解析并记录，杜绝继承环境变量静默覆盖）",
+         ],
+     )
+     annotate_row_cap_hits(matrix)
+-    written = write_outputs(matrix, output_dir, token=token)
+-    print(f"[audit] wrote {', '.join(str(path.relative_to(ROOT)) for path in written)}")
++    written, leaks = write_outputs(
++        matrix,
++        output_dir,
++        token=token,
++        token_source=token_source,
++        env_override_applied=env_override_applied,
++    )
++    if leaks:
++        for name, reason in leaks:
++            print(f"[audit] credential leak detected in {name} ({reason})")
++        print("[audit] 拒绝写盘并 fail closed（退出码 3）")
++        return 3
++    print(f"[audit] wrote {', '.join(display_path(path) for path in written)}")
+     return 0
+ 
+ 
+ if __name__ == "__main__":
+
+[0m
+[0m← [0mEdit scripts/audit_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/scripts/audit_tushare_capability.py
+@@ -151,15 +151,8 @@
+ 
+     return query
+ 
+ 
+-def scan_text_for_secret(text: str, token: str) -> bool:
+-    if token and token in text:
+-        return True
+-    lowered = text.lower()
+-    return "authorization:" in lowered or "cookie:" in lowered
+-
+-
+ def scan_artifacts_for_secret(
+     texts: Mapping[str, str], token: str
+ ) -> list[tuple[str, str]]:
+     """Return ``(artifact_name, reason)`` leak findings; empty means clean."""
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m py_compile scripts/audit_tushare_capability.py tradingagents/dataflows/tushare_capability.py && python -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('audit', 'scripts/audit_tushare_capability.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print('exchange:', m.exchange_for_ts_code('603629.SH'), m.exchange_for_ts_code('000001.SZ'), m.exchange_for_ts_code('430047.BJ'))
+print('display outside root:', m.display_path(__import__('pathlib').Path('/tmp/xyz/out')))
+tok, src, ov = m.resolve_token(environ={'TUSHARE_TOKEN': 'env-tok'}, dotenv_path=None, allow_dotenv=False)
+print('no-dotenv inherited:', tok, src, ov)
+"
+exchange: SSE SZSE BJSE
+display outside root: /tmp/xyz/out
+no-dotenv inherited: env-tok inherited_environment False
+[0m
+两个文件均已编译，helpers 运行正常。现在更新测试文件：
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -1,7 +1,8 @@
+ from __future__ import annotations
+ 
+ import hashlib
++import importlib.util
+ import json
+ import math
+ import subprocess
+ import sys
+@@ -24,13 +25,16 @@
+     STATE_NOT_QUERIED,
+     STATE_PERMISSION_DENIED,
+     STATE_QUERY_FAILED,
+     STATE_RATE_LIMITED,
++    TOKEN_SOURCE_DOTENV,
++    TOKEN_SOURCE_INHERITED_ENV,
+     TOKEN_STATUS_HAS_KEY,
+-    canonical_frame_payload,
+-    classify_error_message,
++    annotate_row_cap_hits,
+     build_matrix,
+     build_params,
++    canonical_frame_payload,
++    classify_error_message,
+     is_transient_network_error,
+     not_queried_record,
+     payload_sha256,
+     probe_endpoint,
+
+[0m
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -199,12 +199,13 @@
+     assert build_params(specs["top_list"], PROBE_CONTEXT) == {
+         "ts_code": "603629.SH",
+         "trade_date": "20260814",
+     }
+-    assert build_params(specs["repurchase"], PROBE_CONTEXT) == {
+-        "start_date": "20250101",
+-        "end_date": "20260814",
+-    }
++    # 001A-R1: repurchase must be a minimal single ts_code query, not a
++    # full-market announcement-window fetch.
++    repurchase = specs["repurchase"]
++    assert repurchase.scope == "symbol"
++    assert build_params(repurchase, PROBE_CONTEXT) == {"ts_code": "603629.SH"}
+ 
+ def test_fallback_date_replaces_only_trade_date(self):
+     updated = with_fallback_date({"ts_code": "603629.SH", "trade_date": "20260814"}, "20260813")
+     assert updated == {"ts_code": "603629.SH", "trade_date": "20260813"}
+
+[0m
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -342,9 +342,26 @@
+         assert record["state"] == STATE_NOT_QUERIED
+         assert record["permission_status"] == PERMISSION_UNKNOWN
+         assert record["attempts"] == 1
+ 
++    def test_repurchase_probe_sends_single_ts_code_only(self):
++        seen: list[dict] = []
+ 
++        def query(endpoint, **kwargs):
++            seen.append({"endpoint": endpoint, **kwargs})
++            return _frame(
++                [{"ts_code": "603629.SH", "ann_date": "20260810", "proc": "实施", "amount": 1.0}]
++            )
++
++        spec = next(s for s in ENDPOINT_SPECS if s.endpoint == "repurchase")
++        record = probe_endpoint(query, spec, PROBE_CONTEXT, token=TOKEN)
++        assert seen == [{"endpoint": "repurchase", "ts_code": "603629.SH"}]
++        assert record["state"] == STATE_HAS_DATA
++        assert record["scope"] == "symbol"
++        assert record["row_count"] == 1
++        assert record["row_cap_suspected"] is not True
++
++
+ class TestCanonicalPayload:
+     def test_nan_and_none_normalized(self):
+         frame = _frame(
+             [
+
+[0m
+现在，在 `TestMatrix` 中扩展 `token-source` 字段和通用的 `row-cap` 测试：
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -440,8 +440,38 @@
+ def test_matrix_json_has_no_token(self):
+     matrix = build_matrix(PROBE_CONTEXT, self._records(), token_status=TOKEN_STATUS_HAS_KEY)
+     assert TOKEN not in json.dumps(matrix, ensure_ascii=False)
+ 
++def test_matrix_records_token_source_and_env_override(self):
++    matrix = build_matrix(
++        PROBE_CONTEXT,
++        self._records(),
++        token_status=TOKEN_STATUS_HAS_KEY,
++        token_source=TOKEN_SOURCE_DOTENV,
++        token_env_override_applied=True,
++    )
++    assert matrix["schema_version"] == "1.1"
++    assert matrix["token_source"] == TOKEN_SOURCE_DOTENV
++    assert matrix["token_env_override_applied"] is True
++    markdown = render_markdown(matrix)
++    assert "Token 来源：`dotenv_file`" in markdown
++    assert "已被显式 .env 值覆盖" in markdown
++    default = build_matrix(PROBE_CONTEXT, self._records(), token_status=TOKEN_STATUS_HAS_KEY)
++    assert default["token_source"] is None
++    assert default["token_env_override_applied"] is None
++    assert "Token 来源" not in render_markdown(default)
++
++def test_row_cap_annotation_is_scope_agnostic(self):
++    records = self._records()
++    for record in records:
++        if record["endpoint"] == "income":
++            record["row_count"] = 2000
++    matrix = build_matrix(PROBE_CONTEXT, records, token_status=TOKEN_STATUS_HAS_KEY)
++    annotate_row_cap_hits(matrix)
++    income = next(r for r in matrix["endpoints"] if r["endpoint"] == "income")
++    assert income["row_cap_suspected"] is True
++    assert any("行返回上限" in note for note in matrix["notes"])
++
+ def test_markdown_renders_without_secrets(self):
+     matrix = build_matrix(PROBE_CONTEXT, self._records(), token_status=TOKEN_STATUS_HAS_KEY)
+     markdown = render_markdown(matrix)
+     assert "Tushare 2000 积分真实权限矩阵" in markdown
+
+[0m
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -497,28 +497,40 @@
+             assert frame.empty
+             assert payload["expected_state"] == STATE_NORMAL_NO_DATA
+ 
+ 
++def _load_audit_module():
++    """Import the audit CLI as a module without invoking ``__main__``."""
++    spec = importlib.util.spec_from_file_location("audit_tushare_capability", SCRIPT)
++    assert spec and spec.loader, "unable to build spec for audit module"
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
+ class TestScript:
+     def test_dry_run_lists_plan_without_network(self, tmp_path):
+         result = subprocess.run(
+             [
+                 sys.executable,
+                 str(SCRIPT),
+                 "--dry-run",
++                "--dotenv",
++                str(tmp_path / "absent.env"),
+                 "--output-dir",
+-                str(tmp_path),
++                str(tmp_path / "out"),
+             ],
+             capture_output=True,
+             text=True,
+             env={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": "dummy-token-for-dry-run"},
+             cwd=str(ROOT),
+         )
+         assert result.returncode == 0
+         assert "HAS_KEY" in result.stdout
++        assert "token_source=inherited_environment" in result.stdout
+         assert "603629.SH" in result.stdout
+         assert result.stdout.count("category=") == 24
+-        assert not any(tmp_path.iterdir())
++        assert not any((tmp_path / "out").iterdir())
+ 
+     def test_no_key_fails_closed_without_probes(self, tmp_path):
+         result = subprocess.run(
+             [sys.executable, str(SCRIPT), "--no-dotenv", "--output-dir", str(tmp_path)],
+@@ -529,4 +541,152 @@
+         )
+         assert result.returncode == 2
+         assert "NO_KEY" in result.stdout
+         assert not any(tmp_path.iterdir())
++
++
++class TestScriptRepairsR1:
++    """001A-R1: token source attribution, BJ exchange, display path, leak fail-closed."""
++
++    def test_dotenv_token_overrides_inherited_env(self, tmp_path):
++        dotenv_file = tmp_path / "custom.env"
++        dotenv_file.write_text("TUSHARE_TOKEN=token-from-dotenv\n", encoding="utf-8")
++        result = subprocess.run(
++            [
++                sys.executable,
++                str(SCRIPT),
++                "--dry-run",
++                "--dotenv",
++                str(dotenv_file),
++                "--output-dir",
++                str(tmp_path / "out"),
++            ],
++            capture_output=True,
++            text=True,
++            env={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": "token-from-inherited-env"},
++            cwd=str(ROOT),
++        )
++        assert result.returncode == 0
++        assert "token_source=dotenv_file" in result.stdout
++        assert "env_override_applied=true" in result.stdout
++        assert "token-from-dotenv" not in result.stdout
++        assert "token-from-inherited-env" not in result.stdout
++
++    def test_resolve_token_precedence_matrix(self, tmp_path):
++        audit = _load_audit_module()
++        dotenv_file = tmp_path / ".env"
++        dotenv_file.write_text("TUSHARE_TOKEN=dotenv-token\n", encoding="utf-8")
++        resolved = audit.resolve_token(
++            environ={"TUSHARE_TOKEN": "env-token"}, dotenv_path=dotenv_file
++        )
++        assert resolved == ("dotenv-token", TOKEN_SOURCE_DOTENV, True)
++        same = audit.resolve_token(
++            environ={"TUSHARE_TOKEN": "dotenv-token"}, dotenv_path=dotenv_file
++        )
++        assert same == ("dotenv-token", TOKEN_SOURCE_DOTENV, False)
++        inherited = audit.resolve_token(
++            environ={"TUSHARE_TOKEN": "env-token"}, dotenv_path=dotenv_file, allow_dotenv=False
++        )
++        assert inherited == ("env-token", TOKEN_SOURCE_INHERITED_ENV, False)
++        empty_dotenv = tmp_path / "empty.env"
++        empty_dotenv.write_text("OTHER=1\n", encoding="utf-8")
++        fallback = audit.resolve_token(environ={"TUSHARE_TOKEN": "env-token"}, dotenv_path=empty_dotenv)
++        assert fallback == ("env-token", TOKEN_SOURCE_INHERITED_ENV, False)
++        missing = audit.resolve_token(environ={}, dotenv_path=tmp_path / "absent.env")
++        assert missing == ("", "", False)
++
++    def test_exchange_mapping_covers_bj_and_fails_closed_on_unknown(self):
++        audit = _load_audit_module()
++        assert audit.exchange_for_ts_code("603629.SH") == "SSE"
++        assert audit.exchange_for_ts_code("000001.SZ") == "SZSE"
++        assert audit.exchange_for_ts_code("430047.BJ") == "BJSE"
++        with pytest.raises(ValueError):
++            audit.exchange_for_ts_code("603629.XX")
++
++    def test_display_path_never_crashes_outside_root(self, tmp_path):
++        audit = _load_audit_module()
++        outside = tmp_path / "deep" / "archive"
++        assert audit.display_path(outside) == str(outside)
++        inside = audit.ROOT / "docs" / "task_runs" / "x"
++        assert audit.display_path(inside) == str(Path("docs/task_runs/x"))
++
++    def test_write_outputs_fail_closed_on_real_leak(self, tmp_path):
++        audit = _load_audit_module()
++        records = [
++            not_queried_record(spec, PROBE_CONTEXT, "fixture")
++            for spec in ENDPOINT_SPECS
++        ]
++        records[0]["error"] = f"sanitizer bypass leaked token {TOKEN}"
++        matrix = build_matrix(PROBE_CONTEXT, records, token_status=TOKEN_STATUS_HAS_KEY)
++        written, leaks = audit.write_outputs(matrix, tmp_path, token=TOKEN)
++        assert written == []
++        assert {name for name, _ in leaks} >= {"tushare_permission_matrix.json"}
++        assert any(reason == "token_substring" for _, reason in leaks)
++        assert not tmp_path.exists() or not any(tmp_path.iterdir())
++
++    def test_write_outputs_clean_matrix_writes_all_artifacts(self, tmp_path):
++        audit = _load_audit_module()
++        records = [
++            not_queried_record(spec, PROBE_CONTEXT, "fixture")
++            for spec in ENDPOINT_SPECS
++        ]
++        matrix = build_matrix(
++            PROBE_CONTEXT,
++            records,
++            token_status=TOKEN_STATUS_HAS_KEY,
++            token_source=TOKEN_SOURCE_DOTENV,
++            token_env_override_applied=True,
++        )
++        written, leaks = audit.write_outputs(
++            matrix, tmp_path, token=TOKEN, token_source=TOKEN_SOURCE_DOTENV, env_override_applied=True
++        )
++        assert leaks == []
++        assert [path.name for path in written] == [
++            "tushare_permission_matrix.json",
++            "tushare_permission_matrix.md",
++            "run-receipt.md",
++        ]
++        receipt = (tmp_path / "run-receipt.md").read_text(encoding="utf-8")
++        assert "Token 来源" in receipt and "dotenv_file" in receipt
++        assert "env_override_applied=true" in receipt
++        assert "repurchase 单股查询记录" in receipt
++        for line in receipt.splitlines():
++            if line.startswith("- 查询参数：") and "repurchase" not in line:
++                continue
++        repurchase = next(r for r in matrix["endpoints"] if r["endpoint"] == "repurchase")
++        assert repurchase["params"] == {"ts_code": "603629.SH"}
++
++    def test_main_returns_3_and_writes_nothing_when_probe_leaks_token(self, tmp_path, monkeypatch):
++        audit = _load_audit_module()
++
++        def fake_probe(query_fn, spec, probe_context, *, token="", now=None):
++            record = not_queried_record(spec, probe_context, "fixture")
++            if spec.endpoint == "income":
++                record["error"] = f"dirty error containing {TOKEN}"
++            return record
++
++        monkeypatch.setattr(audit, "make_query_fn", lambda token: object())
++        monkeypatch.setattr(audit, "probe_endpoint", fake_probe)
++        out_dir = tmp_path / "custom-outside-root"
++        rc = audit.main(
++            ["--no-dotenv", "--sleep-seconds", "0", "--output-dir", str(out_dir)],
++            environ={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": TOKEN},
++        )
++        assert rc == 3
++        assert not out_dir.exists()
++
++    def test_main_success_writes_artifacts_to_custom_dir(self, tmp_path, monkeypatch):
++        audit = _load_audit_module()
++
++        def fake_probe(query_fn, spec, probe_context, *, token="", now=None):
++            return not_queried_record(spec, probe_context, "fixture probe")
++
++        monkeypatch.setattr(audit, "make_query_fn", lambda token: object())
++        monkeypatch.setattr(audit, "probe_endpoint", fake_probe)
++        out_dir = tmp_path / "custom-outside-root"
++        rc = audit.main(
++            ["--no-dotenv", "--sleep-seconds", "0", "--output-dir", str(out_dir)],
++            environ={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": TOKEN},
++        )
++        assert rc == 0
++        assert (out_dir / "tushare_permission_matrix.json").is_file()
++        assert (out_dir / "run-receipt.md").is_file()
+
+[0m
+现在将 `TestScript` 类替换为确定性版本，并加上完整的 R1 修复测试套件：
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -648,13 +648,12 @@
+     receipt = (tmp_path / "run-receipt.md").read_text(encoding="utf-8")
+     assert "Token 来源" in receipt and "dotenv_file" in receipt
+     assert "env_override_applied=true" in receipt
+     assert "repurchase 单股查询记录" in receipt
+-    for line in receipt.splitlines():
+-        if line.startswith("- 查询参数：") and "repurchase" not in line:
+-            continue
+-    repurchase = next(r for r in matrix["endpoints"] if r["endpoint"] == "repurchase")
++    matrix_json = json.loads((tmp_path / "tushare_permission_matrix.json").read_text(encoding="utf-8"))
++    repurchase = next(r for r in matrix_json["endpoints"] if r["endpoint"] == "repurchase")
+     assert repurchase["params"] == {"ts_code": "603629.SH"}
++    assert TOKEN not in receipt
+ 
+ def test_main_returns_3_and_writes_nothing_when_probe_leaks_token(self, tmp_path, monkeypatch):
+     audit = _load_audit_module()
+ 
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tushare_capability.py -q --tb=short 2>&1 | tail -15
+assert record["row_cap_suspected"] is not True
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'row_cap_suspected'
+______________ TestScript.test_dry_run_lists_plan_without_network ______________
+tests/test_tushare_capability.py:532: in test_dry_run_lists_plan_without_network
+    assert not any((tmp_path / "out").iterdir())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/pathlib.py:1056: in iterdir
+    for name in os.listdir(self):
+                ^^^^^^^^^^^^^^^^
+E   FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/r9/2qykv_gx0_9fs2jb0zkccf8w0000gn/T/pytest-of-maybee/pytest-1/test_dry_run_lists_plan_withou0/out'
+=========================== short test summary info ============================
+FAILED tests/test_tushare_capability.py::TestProbe::test_repurchase_probe_sends_single_ts_code_only
+FAILED tests/test_tushare_capability.py::TestScript::test_dry_run_lists_plan_without_network
+2 failed, 53 passed in 1.37s
+[0m
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -357,9 +357,9 @@
+         assert seen == [{"endpoint": "repurchase", "ts_code": "603629.SH"}]
+         assert record["state"] == STATE_HAS_DATA
+         assert record["scope"] == "symbol"
+         assert record["row_count"] == 1
+-        assert record["row_cap_suspected"] is not True
++        assert record.get("row_cap_suspected") is not True
+ 
+ 
+ class TestCanonicalPayload:
+     def test_nan_and_none_normalized(self):
+
+[0m
+[0m← [0mEdit tests/test_tushare_capability.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tushare_capability.py
+@@ -528,9 +528,9 @@
+     assert "HAS_KEY" in result.stdout
+     assert "token_source=inherited_environment" in result.stdout
+     assert "603629.SH" in result.stdout
+     assert result.stdout.count("category=") == 24
+-    assert not any((tmp_path / "out").iterdir())
++    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+ 
+ def test_no_key_fails_closed_without_probes(self, tmp_path):
+     result = subprocess.run(
+         [sys.executable, str(SCRIPT), "--no-dotenv", "--output-dir", str(tmp_path)],
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tushare_capability.py -q --tb=short 2>&1 | tail -3
+.......................................................                  [100%]
+55 passed in 1.27s
+[0m
+55 个已通过。现在进行更广泛的 Tushare 回归测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tushare_capability.py tests/test_cn_tushare_provider.py tests/test_tushare_query_contract.py tests/test_tushare_governance_events.py tests/test_tushare_research_evidence.py tests/test_tushare_resilience_and_downgrade.py -q --tb=short 2>&1 | tail -5
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+..........................................................               [100%]
+202 passed in 27.37s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short 2>&1 | tail -3
+........................................................................ [ 91%]
+.............                                                            [100%]
+157 passed in 33.47s
+[0m
+[0m# [0mTodos
+[✓] Fix tushare_capability.py: repurchase single ts_code spec, generic row-cap flag, token_source fields, schema 1.1
+[✓] Fix audit script: token source resolution (.env wins over inherited env), BJ exchange map, display_path, leak-scan fail-closed exit 3, receipt with token source + repurchase record
+[✓] Update/extend tests/test_tushare_capability.py covering all 5 fixes incl. real leak trigger
+[✓] Run Tushare test suites (capability + related regressions)
+[•] Real rerun of permission matrix into new docs/task_runs/ archive
+[ ] Write old-vs-new matrix diff explanation in new archive; update docs/DEVLOG.md
+[0m
+All green (202 + 157). Now the real rerun — ~24 single-probe Tushare data API calls (data API, not LLM; exactly what this task mandates), token from git-ignored `.env`, output to a new R1 archive:
+[0m$ [0msource .venv/bin/activate && STAMP=$(date +%Y%m%d-%H%M%S) && echo "ARCHIVE=docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-$STAMP" && python scripts/audit_tushare_capability.py --output-dir "docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-$STAMP"
+ARCHIVE=docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237
+[audit] token=HAS_KEY token_source=dotenv_file env_override_applied=false symbol=603629.SH probe_date=20260814 output=docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237
+[probe] income               HAS_DATA           rows=6 attempts=1
+[probe] balancesheet         HAS_DATA           rows=8 attempts=1
+[probe] cashflow             HAS_DATA           rows=11 attempts=1
+[probe] fina_indicator       HAS_DATA           rows=6 attempts=1
+[probe] forecast             HAS_DATA           rows=2 attempts=1
+[probe] express              NORMAL_NO_DATA     rows=0 attempts=1
+[probe] dividend             HAS_DATA           rows=37 attempts=1
+[probe] fina_audit           HAS_DATA           rows=12 attempts=1
+[probe] fina_mainbz          HAS_DATA           rows=150 attempts=1
+[probe] top10_holders        HAS_DATA           rows=322 attempts=1
+[probe] top10_floatholders   HAS_DATA           rows=231 attempts=1
+[probe] pledge_stat          HAS_DATA           rows=336 attempts=1
+[probe] pledge_detail        HAS_DATA           rows=18 attempts=1
+[probe] repurchase           HAS_DATA           rows=6 attempts=1
+[probe] share_float          HAS_DATA           rows=72 attempts=1
+[probe] stk_holdernumber     HAS_DATA           rows=64 attempts=1
+[probe] stk_holdertrade      HAS_DATA           rows=35 attempts=1
+[probe] daily                HAS_DATA           rows=10 attempts=1
+[probe] adj_factor           HAS_DATA           rows=10 attempts=1
+[probe] daily_basic          HAS_DATA           rows=10 attempts=1
+[probe] moneyflow            HAS_DATA           rows=10 attempts=1
+[probe] margin               HAS_DATA           rows=1 attempts=1
+[probe] top_list             NORMAL_NO_DATA     rows=0 attempts=2
+[probe] block_trade          HAS_DATA           rows=62 attempts=1
+[audit] wrote docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.json, docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.md, docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
+[0m
+Rerun succeeded — key result: **repurchase now returns 6 rows** (single-stock query works upstream; was 2000 full-market rows). Let me verify artifacts and the credential scan:
+[0m$ [0mTOKEN=$(python3 -c "
+from dotenv import dotenv_values
+print(dotenv_values('.env').get('TUSHARE_TOKEN',''))")
+echo "token length: ${#TOKEN}"
+for f in docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/*; do
+  if grep -qF "$TOKEN" "$f" 2>/dev/null; then echo "LEAK: $f"; else echo "clean: $(basename $f)"; fi
+done
+echo "--- repurchase record ---"
+python3 -c "
+import json
+m = json.load(open('docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.json'))
+e = next(r for r in m['endpoints'] if r['endpoint']=='repurchase')
+print(json.dumps({k: e[k] for k in ('endpoint','params','row_count','scope','state','note','time_range')}, ensure_ascii=False, indent=1))
+print('token_source:', m['token_source'], '| override:', m['token_env_override_applied'], '| schema:', m['schema_version'])
+print('summary:', json.dumps(m['summary'], ensure_ascii=False))"
+token length: 56
+clean: run-receipt.md
+clean: tushare_permission_matrix.json
+clean: tushare_permission_matrix.md
+--- repurchase record ---
+{
+ "endpoint": "repurchase",
+ "params": {
+  "ts_code": "603629.SH"
+ },
+ "row_count": 6,
+ "scope": "symbol",
+ "state": "HAS_DATA",
+ "note": "repurchase 单 ts_code 最小查询（001A-R1 修复：原公告日窗口查询命中全市场行数上限，违反单股最小探测约束）",
+ "time_range": {
+  "field": "ann_date",
+  "min": "20240207",
+  "max": "20260326"
+ }
+}
+token_source: dotenv_file | override: False | schema: 1.1
+summary: {"probed_endpoints": 24, "by_state": {"HAS_DATA": 22, "NORMAL_NO_DATA": 2}, "by_permission": {"allowed": 24}}
+[0m
+所有产物已针对真实 token 进行安全清洗。现在计算精确的 old-vs-new diff 并将其追加到 receipt 中：
+[0m$ [0mpython3 -c "
+import json
+old = json.load(open('docs/task_runs/TA-TUSHARE-2000-001A-20260816-041709/tushare_permission_matrix.json'))
+new = json.load(open('docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.json'))
+o = {e['endpoint']: e for e in old['endpoints']}; n = {e['endpoint']: e for e in new['endpoints']}
+for ep in o:
+    if o[ep]['state'] != n[ep]['state'] or o[ep].get('row_count') != n[ep].get('row_count'):
+        print(f'{ep}: state {o[ep][\"state\"]}->{n[ep][\"state\"]}  rows {o[ep].get(\"row_count\")}->{n[ep].get(\"row_count\")}')
+    elif o[ep].get('response_sha256') != n[ep].get('response_sha256'):
+        print(f'{ep}: rows same ({o[ep].get(\"row_count\")}) but digest changed')
+"
+pledge_stat: state HAS_DATA->HAS_DATA  rows 335->336
+repurchase: state HAS_DATA->HAS_DATA  rows 2000->6
+[0m
+[0m→ [0mRead docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
+Only two endpoints changed: repurchase (the fix) and pledge_stat (+1 row data drift). Append the diff explanation to the receipt:
+[0m
+[0m← [0mEdit docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
+@@ -18,4 +18,20 @@
+ ## 凭据自检
+ 
+ - 对 tushare_permission_matrix.json、tushare_permission_matrix.md 与本回执扫描 Token/Authorization/Cookie：clean（发现泄漏即拒绝写盘并以退出码 3 fail closed）
+ - 本回执与矩阵均不含真实响应正文，只含结构化元数据与 SHA-256 摘要
++
++## 新旧矩阵差异（vs `TA-TUSHARE-2000-001A-20260816-041709`）
++
++本档案为 TA-TUSHARE-2000-001A-R1 修复 c73ed4f review findings（3×P1+2×P2）后的重跑真源；
++001A 旧档案的 24/24 allowed 仅视为历史运行结果。逐 endpoint 对比：
++
++| 差异项 | 旧矩阵（041709） | 新矩阵（本档案） | 说明 |
++|---|---|---|---|
++| `repurchase` 行数 | 2000（公告日窗口全市场抓取，scope=`market_window_filtered`，命中行数上限） | 6（单 `ts_code` 最小查询，scope=`symbol`，公告日 20240207~20260326） | P1 修复生效：上游接受 `ts_code` 参数，单股最小查询成立，不再抓取全市场；权限结论不变（allowed） |
++| `pledge_stat` 行数 | 335 | 336 | 上游数据自然漂移（上次运行后新增一条质押统计），与本修复无关；digest 相应变化 |
++| 其余 22 个 endpoint | — | — | 状态、行数、响应 SHA-256 摘要全部一致 |
++| Token 来源记录 | 无来源字段（继承环境变量可能静默覆盖 `.env`，归属不可审计） | `token_source=dotenv_file`，`token_env_override_applied=false`（脚本显式解析，`.env` 恒优先） | P1 修复生效 |
++| 矩阵 schema | 1.0 | 1.1 | 新增 token_source / token_env_override_applied 字段 |
++| 行数上限标注 | 仅限 market_window_filtered scope | 任意 scope 命中 2000 行上限都标注 `row_cap_suspected` | 本轮 24 个 endpoint 均未命中 |
++
++本次运行环境无继承 `TUSHARE_TOKEN`（`env_override_applied=false` 为真实观测值，非默认占位）。
+
+[0m
+现在更新 DEVLOG：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,37 @@
+ # 修改日志
+ 
++## 2026-08-16 | TA-TUSHARE-2000-001A-R1：权限矩阵补修与真实重跑（P0）
++
++- 修复 c73ed4f Codex review（gpt-5.6-sol high）3×P1+2×P2：
++  - **P1 Token 归属**：`scripts/audit_tushare_capability.py` 不再用
++    `load_dotenv(override=False)`（继承环境变量可静默压过指定 `.env`）。新增
++    `resolve_token()` 显式解析并记录来源：`.env` 恒优先于继承环境变量，返回
++    `(token, dotenv_file/inherited_environment, env_override_applied)`；矩阵新增
++    `token_source`/`token_env_override_applied` 字段（schema 1.0→1.1），Markdown、
++    receipt 与 dry-run 输出均展示来源标识；新增 `--dotenv` 参数支持显式指定文件。
++  - **P1 repurchase 全市场抓取**：`ENDPOINT_SPECS` 中 repurchase 由公告日窗口
++    （scope=market_window_filtered，实测命中 2000 行上限）改为单 `ts_code` 最小查询
++    （scope=symbol）。真实重跑验证上游接受 `ts_code`：2000 行→6 行（603629.SH，
++    公告日 20240207~20260326），receipt 新增“repurchase 单股查询记录”章节。
++  - **P1 泄漏扫描不阻断**：`write_outputs` 改为先组装 JSON/Markdown/receipt 全文，
++    `scan_artifacts_for_secret()` 命中即**拒绝写盘**并由 `main` 以退出码 3 fail
++    closed（0 成功 / 2 NO_KEY / 3 泄漏）。
++  - **P2 北交所映射**：`exchange_for_ts_code` 改为 SH→SSE、SZ→SZSE、BJ→BJSE，
++    未知后缀抛 ValueError fail closed（原逻辑 `.BJ` 误判 SSE）。
++  - **P2 自定义输出目录崩溃**：`relative_to(ROOT)` 改为 `display_path()`，root 外
++    路径回退绝对路径字符串，不再抛异常。
++- 附带加固：`annotate_row_cap_hits` 不再限定 market_window_filtered scope——任意
++  endpoint 命中行数上限都标注 `row_cap_suspected`（防止上游忽略过滤参数时失明）。
++- 真实重跑（603629.SH，24 endpoint，.env Token，来源 dotenv_file）：24/24 allowed
++  （HAS_DATA 22 + NORMAL_NO_DATA 2：express 无快报、top_list 非上榜日）；与旧矩阵
++  逐 endpoint 对比仅 repurchase（修复生效）与 pledge_stat（335→336，上游数据漂移）
++  变化，其余 22 项 digest 完全一致；产物对真实 Token 包含性扫描 clean。运行档案与
++  差异说明见 `docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/`。
++- 验证：专项 **55 passed**（含泄漏真实触发→退出码 3、Token 来源优先级、BJ 映射、
++  root 外输出目录四类新用例）；Tushare 相关回归 **202 passed**；runner 基线
++  smoke **157 passed**。未调用 live LLM、未写生产数据库、未修改 001A 旧档案。
++
+ ## 2026-08-16 | TA-TUSHARE-2000-001E：退避、可审计缓存与动作降级收口（P1）
+ 
+ - `CnTushareProvider` 限流有界退避：仅 RATE_LIMITED 触发重试，指数退避单次
+   sleep 封顶（默认 8s）、总次数封顶（默认 3 次），权限拒绝/通用失败绝不重试；
+
+[0m
+针对所有已更改文件进行最终的凭据扫描，并确认变更集：
+[0m$ [0mTOKEN=$(python3 -c "
+from dotenv import dotenv_values
+print(dotenv_values('.env').get('TUSHARE_TOKEN',''))")
+for f in tradingagents/dataflows/tushare_capability.py scripts/audit_tushare_capability.py tests/test_tushare_capability.py docs/DEVLOG.md docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.json docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.md; do
+  grep -qF "$TOKEN" "$f" && echo "LEAK: $f" || echo "clean: $f"
+done
+echo "---"
+git status --short
+echo "---"
+source .venv/bin/activate && python -m pytest tests/test_tushare_capability.py -q 2>&1 | tail -1
+clean: tradingagents/dataflows/tushare_capability.py
+clean: scripts/audit_tushare_capability.py
+clean: tests/test_tushare_capability.py
+clean: docs/DEVLOG.md
+clean: docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/run-receipt.md
+clean: docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.json
+clean: docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/tushare_permission_matrix.md
+---
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M scripts/audit_tushare_capability.py
+ M tests/test_tushare_capability.py
+ M tradingagents/dataflows/tushare_capability.py
+?? docs/task_runs/TA-TUSHARE-2000-001A-R1-20260816-200324/
+?? docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/
+---
+55 passed in 1.26s
+[0m
+[0m# [0mTodos
+[✓] Fix tushare_capability.py: repurchase single ts_code spec, generic row-cap flag, token_source fields, schema 1.1
+[✓] Fix audit script: token source resolution (.env wins over inherited env), BJ exchange map, display_path, leak-scan fail-closed exit 3, receipt with token source + repurchase record
+[✓] Update/extend tests/test_tushare_capability.py covering all 5 fixes incl. real leak trigger
+[✓] Run Tushare test suites (capability + related regressions)
+[✓] Real rerun of permission matrix into new docs/task_runs/ archive
+[✓] Write old-vs-new matrix diff explanation in new archive; update docs/DEVLOG.md
+[0m
+TA-TUSHARE-2000-001A-R1 complete. All 5 review findings fixed, real matrix rerun verified.
+
+## Files changed
+- `tradingagents/dataflows/tushare_capability.py` — repurchase spec → single `ts_code` (scope=symbol); `annotate_row_cap_hits` now scope-agnostic; `build_matrix` gains `token_source`/`token_env_override_applied` (schema 1.0→1.1); markdown renders Token 来源
+- `scripts/audit_tushare_capability.py` — `resolve_token()` (.env 恒优先于继承环境变量，来源显式记录)； `--dotenv` arg; `exchange_for_ts_code` SH→SSE/SZ→SZSE/BJ→BJSE, unknown raises; `display_path()` (no `relative_to` crash); fail-closed leak scan (exit 0/2/3), receipt with token source + repurchase params/rows section
+- `tests/test_tushare_capability.py` — updated + new `TestScriptRepairsR1` (12 new/updated cases)
+- `docs/DEVLOG.md` — R1 entry; `docs/TASKS.md` untouched (outer-script claim preserved)
+- New archive `docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/` (matrix JSON/MD + receipt with old-vs-new diff)
+
+## Key logic
+- Token attribution: `dotenv_values` explicit read, `.env` always wins; source + override flag flow into matrix/receipt/dry-run
+- Real rerun (603629.SH, token_source=`dotenv_file`): **repurchase 2000→6 rows** (upstream accepts ts_code; params + rows in receipt); 24/24 allowed (HAS_DATA 22 + NORMAL_NO_DATA 2); diff vs old matrix: only repurchase (fix) and pledge_stat 335→336 (upstream data drift), other 22 digests identical
+- Leak scan composes all artifact texts first; any hit → nothing written, exit 3
+
+## Test results
+- 专项 55 passed (incl. real leak trigger → exit 3, token precedence, BJ mapping, outside-root output dir)
+- Tushare regressions 202 passed; runner baseline smoke 157 passed; real-token containment scan on all artifacts clean

@@ -33,6 +33,7 @@ if str(ROOT) not in sys.path:
 
 from dotenv import load_dotenv
 
+from tradingagents.dataflows.tushare_capability import contains_credential_header_hint
 from tradingagents.dataflows.tushare_research_evidence import (
     TASK_ID,
     TOKEN_STATUS_HAS_KEY,
@@ -41,11 +42,13 @@ from tradingagents.dataflows.tushare_research_evidence import (
     validate_evidence_pack,
 )
 
+# 001A-R1A (final review P2): default to the audited R1 rerun truth source;
+# the original 041709 archive is superseded history only.
 DEFAULT_PERMISSION_MATRIX = (
     ROOT
     / "docs"
     / "task_runs"
-    / "TA-TUSHARE-2000-001A-20260816-041709"
+    / "TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237"
     / "tushare_permission_matrix.json"
 )
 
@@ -153,8 +156,7 @@ def sanitize_summary(pack: Mapping[str, Any]) -> dict[str, Any]:
 def scan_text_for_secret(text: str, token: str) -> bool:
     if token and token in text:
         return True
-    lowered = text.lower()
-    return "authorization:" in lowered or "cookie:" in lowered
+    return bool(contains_credential_header_hint(text))
 
 
 def build_parser() -> argparse.ArgumentParser:

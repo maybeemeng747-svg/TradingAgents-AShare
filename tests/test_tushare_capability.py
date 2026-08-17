@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import subprocess
@@ -25,11 +26,15 @@ from tradingagents.dataflows.tushare_capability import (
     STATE_PERMISSION_DENIED,
     STATE_QUERY_FAILED,
     STATE_RATE_LIMITED,
+    TOKEN_SOURCE_DOTENV,
+    TOKEN_SOURCE_INHERITED_ENV,
     TOKEN_STATUS_HAS_KEY,
-    canonical_frame_payload,
-    classify_error_message,
+    annotate_row_cap_hits,
     build_matrix,
     build_params,
+    canonical_frame_payload,
+    classify_error_message,
+    contains_credential_header_hint,
     is_transient_network_error,
     not_queried_record,
     payload_sha256,
@@ -130,6 +135,29 @@ class TestSanitization:
     def test_output_capped(self):
         assert len(sanitize_error_text("x" * 5000)) <= 300
 
+    def test_serialized_credential_header_hint_detected(self):
+        # 001A-R1A final review P1#2: quoted/dict-serialized headers must be
+        # detectable even when the value is too short for token/blob rules.
+        assert contains_credential_header_hint('{"Cookie": "short-secret"}') == ["cookie"]
+        assert (
+            contains_credential_header_hint("headers={'Authorization': 'Bearer x'}")
+            == ["authorization"]
+        )
+        assert contains_credential_header_hint(
+            '{"Cookie": "a", "Authorization": "b"}'
+        ) == ["authorization", "cookie"]
+        # JSON-encoded artifacts escape the quotes; detection must survive.
+        assert contains_credential_header_hint('{\\"Cookie\\": \\"sid\\"}') == ["cookie"]
+
+    def test_plain_credential_header_hint_detected(self):
+        assert contains_credential_header_hint("Authorization: Bearer abc") == ["authorization"]
+        assert contains_credential_header_hint("Cookie: sid=xyz") == ["cookie"]
+
+    def test_credential_header_hint_no_false_positives(self):
+        assert contains_credential_header_hint("no credentials in this text") == []
+        assert contains_credential_header_hint("cookie_type column value") == []
+        assert contains_credential_header_hint("") == []
+
 
 class TestRegistry:
     def test_endpoint_scope_matches_task_definition(self):
@@ -196,10 +224,11 @@ class TestRegistry:
             "ts_code": "603629.SH",
             "trade_date": "20260814",
         }
-        assert build_params(specs["repurchase"], PROBE_CONTEXT) == {
-            "start_date": "20250101",
-            "end_date": "20260814",
-        }
+        # 001A-R1: repurchase must be a minimal single ts_code query, not a
+        # full-market announcement-window fetch.
+        repurchase = specs["repurchase"]
+        assert repurchase.scope == "symbol"
+        assert build_params(repurchase, PROBE_CONTEXT) == {"ts_code": "603629.SH"}
 
     def test_fallback_date_replaces_only_trade_date(self):
         updated = with_fallback_date({"ts_code": "603629.SH", "trade_date": "20260814"}, "20260813")
@@ -338,6 +367,23 @@ class TestProbe:
         assert record["permission_status"] == PERMISSION_UNKNOWN
         assert record["attempts"] == 1
 
+    def test_repurchase_probe_sends_single_ts_code_only(self):
+        seen: list[dict] = []
+
+        def query(endpoint, **kwargs):
+            seen.append({"endpoint": endpoint, **kwargs})
+            return _frame(
+                [{"ts_code": "603629.SH", "ann_date": "20260810", "proc": "实施", "amount": 1.0}]
+            )
+
+        spec = next(s for s in ENDPOINT_SPECS if s.endpoint == "repurchase")
+        record = probe_endpoint(query, spec, PROBE_CONTEXT, token=TOKEN)
+        assert seen == [{"endpoint": "repurchase", "ts_code": "603629.SH"}]
+        assert record["state"] == STATE_HAS_DATA
+        assert record["scope"] == "symbol"
+        assert record["row_count"] == 1
+        assert record.get("row_cap_suspected") is not True
+
 
 class TestCanonicalPayload:
     def test_nan_and_none_normalized(self):
@@ -419,6 +465,36 @@ class TestMatrix:
         matrix = build_matrix(PROBE_CONTEXT, self._records(), token_status=TOKEN_STATUS_HAS_KEY)
         assert TOKEN not in json.dumps(matrix, ensure_ascii=False)
 
+    def test_matrix_records_token_source_and_env_override(self):
+        matrix = build_matrix(
+            PROBE_CONTEXT,
+            self._records(),
+            token_status=TOKEN_STATUS_HAS_KEY,
+            token_source=TOKEN_SOURCE_DOTENV,
+            token_env_override_applied=True,
+        )
+        assert matrix["schema_version"] == "1.1"
+        assert matrix["token_source"] == TOKEN_SOURCE_DOTENV
+        assert matrix["token_env_override_applied"] is True
+        markdown = render_markdown(matrix)
+        assert "Token 来源：`dotenv_file`" in markdown
+        assert "已被显式 .env 值覆盖" in markdown
+        default = build_matrix(PROBE_CONTEXT, self._records(), token_status=TOKEN_STATUS_HAS_KEY)
+        assert default["token_source"] is None
+        assert default["token_env_override_applied"] is None
+        assert "Token 来源" not in render_markdown(default)
+
+    def test_row_cap_annotation_is_scope_agnostic(self):
+        records = self._records()
+        for record in records:
+            if record["endpoint"] == "income":
+                record["row_count"] = 2000
+        matrix = build_matrix(PROBE_CONTEXT, records, token_status=TOKEN_STATUS_HAS_KEY)
+        annotate_row_cap_hits(matrix)
+        income = next(r for r in matrix["endpoints"] if r["endpoint"] == "income")
+        assert income["row_cap_suspected"] is True
+        assert any("行返回上限" in note for note in matrix["notes"])
+
     def test_markdown_renders_without_secrets(self):
         matrix = build_matrix(PROBE_CONTEXT, self._records(), token_status=TOKEN_STATUS_HAS_KEY)
         markdown = render_markdown(matrix)
@@ -446,6 +522,15 @@ class TestFixtureEvidence:
             assert payload["expected_state"] == STATE_NORMAL_NO_DATA
 
 
+def _load_audit_module():
+    """Import the audit CLI as a module without invoking ``__main__``."""
+    spec = importlib.util.spec_from_file_location("audit_tushare_capability", SCRIPT)
+    assert spec and spec.loader, "unable to build spec for audit module"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestScript:
     def test_dry_run_lists_plan_without_network(self, tmp_path):
         result = subprocess.run(
@@ -453,8 +538,9 @@ class TestScript:
                 sys.executable,
                 str(SCRIPT),
                 "--dry-run",
+                "--no-dotenv",
                 "--output-dir",
-                str(tmp_path),
+                str(tmp_path / "out"),
             ],
             capture_output=True,
             text=True,
@@ -463,9 +549,37 @@ class TestScript:
         )
         assert result.returncode == 0
         assert "HAS_KEY" in result.stdout
+        assert "token_source=inherited_environment" in result.stdout
         assert "603629.SH" in result.stdout
         assert result.stdout.count("category=") == 24
-        assert not any(tmp_path.iterdir())
+        assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+
+    def test_missing_dotenv_rejects_inherited_env_token(self, tmp_path):
+        # 001A-R1A final review P1#1: a typo'd --dotenv path must fail closed
+        # instead of silently probing with the inherited environment token.
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--dry-run",
+                "--dotenv",
+                str(tmp_path / "typo.env"),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "TUSHARE_TOKEN": "inherited-token-must-not-be-used",
+            },
+            cwd=str(ROOT),
+        )
+        assert result.returncode == 2
+        assert "NO_KEY" in result.stdout
+        assert "--no-dotenv" in result.stdout
+        assert "inherited-token-must-not-be-used" not in result.stdout
+        assert not (tmp_path / "out").exists()
 
     def test_no_key_fails_closed_without_probes(self, tmp_path):
         result = subprocess.run(
@@ -478,3 +592,298 @@ class TestScript:
         assert result.returncode == 2
         assert "NO_KEY" in result.stdout
         assert not any(tmp_path.iterdir())
+
+
+class TestScriptRepairsR1:
+    """001A-R1: token source attribution, BJ exchange, display path, leak fail-closed."""
+
+    def test_dotenv_token_overrides_inherited_env(self, tmp_path):
+        dotenv_file = tmp_path / "custom.env"
+        dotenv_file.write_text("TUSHARE_TOKEN=token-from-dotenv\n", encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--dry-run",
+                "--dotenv",
+                str(dotenv_file),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": "token-from-inherited-env"},
+            cwd=str(ROOT),
+        )
+        assert result.returncode == 0
+        assert "token_source=dotenv_file" in result.stdout
+        assert "env_override_applied=true" in result.stdout
+        assert "token-from-dotenv" not in result.stdout
+        assert "token-from-inherited-env" not in result.stdout
+
+    def test_resolve_token_precedence_matrix(self, tmp_path):
+        audit = _load_audit_module()
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text("TUSHARE_TOKEN=dotenv-token\n", encoding="utf-8")
+        resolved = audit.resolve_token(
+            environ={"TUSHARE_TOKEN": "env-token"}, dotenv_path=dotenv_file
+        )
+        assert resolved == ("dotenv-token", TOKEN_SOURCE_DOTENV, True)
+        same = audit.resolve_token(
+            environ={"TUSHARE_TOKEN": "dotenv-token"}, dotenv_path=dotenv_file
+        )
+        assert same == ("dotenv-token", TOKEN_SOURCE_DOTENV, False)
+        inherited = audit.resolve_token(
+            environ={"TUSHARE_TOKEN": "env-token"}, dotenv_path=dotenv_file, allow_dotenv=False
+        )
+        assert inherited == ("env-token", TOKEN_SOURCE_INHERITED_ENV, False)
+        empty_dotenv = tmp_path / "empty.env"
+        empty_dotenv.write_text("OTHER=1\n", encoding="utf-8")
+        # 001A-R1A final review P1#1: token-less .env + inherited env token
+        # must fail closed instead of falling back to the inherited token.
+        rejected = audit.resolve_token(
+            environ={"TUSHARE_TOKEN": "env-token"}, dotenv_path=empty_dotenv
+        )
+        assert rejected == ("", "", False)
+        missing = audit.resolve_token(environ={}, dotenv_path=tmp_path / "absent.env")
+        assert missing == ("", "", False)
+
+    def test_exchange_mapping_covers_bj_and_fails_closed_on_unknown(self):
+        audit = _load_audit_module()
+        assert audit.exchange_for_ts_code("603629.SH") == "SSE"
+        assert audit.exchange_for_ts_code("000001.SZ") == "SZSE"
+        # 001A-R1B round2 review P2: the repository/Tushare identifier for the
+        # Beijing Stock Exchange is BSE (matches instrument_identity.infer_exchange).
+        assert audit.exchange_for_ts_code("430047.BJ") == "BSE"
+        with pytest.raises(ValueError):
+            audit.exchange_for_ts_code("603629.XX")
+
+    def test_display_path_never_crashes_outside_root(self, tmp_path):
+        audit = _load_audit_module()
+        outside = tmp_path / "deep" / "archive"
+        assert audit.display_path(outside) == str(outside)
+        inside = audit.ROOT / "docs" / "task_runs" / "x"
+        assert audit.display_path(inside) == str(Path("docs/task_runs/x"))
+
+    def test_write_outputs_fail_closed_on_real_leak(self, tmp_path):
+        audit = _load_audit_module()
+        records = [
+            not_queried_record(spec, PROBE_CONTEXT, "fixture")
+            for spec in ENDPOINT_SPECS
+        ]
+        records[0]["error"] = f"sanitizer bypass leaked token {TOKEN}"
+        matrix = build_matrix(PROBE_CONTEXT, records, token_status=TOKEN_STATUS_HAS_KEY)
+        written, leaks = audit.write_outputs(matrix, tmp_path, token=TOKEN)
+        assert written == []
+        assert {name for name, _ in leaks} >= {"tushare_permission_matrix.json"}
+        assert any(reason == "token_substring" for _, reason in leaks)
+        assert not tmp_path.exists() or not any(tmp_path.iterdir())
+
+    def test_scan_detects_serialized_credential_headers(self):
+        audit = _load_audit_module()
+        leaks = audit.scan_artifacts_for_secret(
+            {
+                "tushare_permission_matrix.json": (
+                    'upstream rejected headers={"Cookie": "short-secret", '
+                    '"Authorization": "Bearer xyz"}'
+                )
+            },
+            "",
+        )
+        assert sorted(leaks) == [
+            ("tushare_permission_matrix.json", "authorization_header"),
+            ("tushare_permission_matrix.json", "cookie_header"),
+        ]
+
+    def test_scan_detects_plain_credential_headers(self):
+        audit = _load_audit_module()
+        assert audit.scan_artifacts_for_secret({"m": "Authorization: Bearer x"}, "") == [
+            ("m", "authorization_header")
+        ]
+        assert audit.scan_artifacts_for_secret({"m": "Cookie: sid=1"}, "") == [
+            ("m", "cookie_header")
+        ]
+        assert audit.scan_artifacts_for_secret({"m": "clean error text"}, "") == []
+
+    def test_write_outputs_fail_closed_on_serialized_header_leak(self, tmp_path):
+        # 001A-R1A final review P1#2: a serialized header dict surviving
+        # sanitize_error_text must trip the pre-write scan (value too short
+        # for token/blob rules, quote defeats the old substring check).
+        audit = _load_audit_module()
+        records = [
+            not_queried_record(spec, PROBE_CONTEXT, "fixture")
+            for spec in ENDPOINT_SPECS
+        ]
+        records[0]["error"] = 'probe failed headers={"Cookie": "sid-short"}'
+        matrix = build_matrix(PROBE_CONTEXT, records, token_status=TOKEN_STATUS_HAS_KEY)
+        written, leaks = audit.write_outputs(matrix, tmp_path, token="")
+        assert written == []
+        assert ("tushare_permission_matrix.json", "cookie_header") in leaks
+        assert not tmp_path.exists() or not any(tmp_path.iterdir())
+
+    def test_write_outputs_clean_matrix_writes_all_artifacts(self, tmp_path):
+        audit = _load_audit_module()
+        records = [
+            not_queried_record(spec, PROBE_CONTEXT, "fixture")
+            for spec in ENDPOINT_SPECS
+        ]
+        matrix = build_matrix(
+            PROBE_CONTEXT,
+            records,
+            token_status=TOKEN_STATUS_HAS_KEY,
+            token_source=TOKEN_SOURCE_DOTENV,
+            token_env_override_applied=True,
+        )
+        written, leaks = audit.write_outputs(
+            matrix, tmp_path, token=TOKEN, token_source=TOKEN_SOURCE_DOTENV, env_override_applied=True
+        )
+        assert leaks == []
+        assert [path.name for path in written] == [
+            "tushare_permission_matrix.json",
+            "tushare_permission_matrix.md",
+            "run-receipt.md",
+        ]
+        receipt = (tmp_path / "run-receipt.md").read_text(encoding="utf-8")
+        assert "Token 来源" in receipt and "dotenv_file" in receipt
+        assert "env_override_applied=true" in receipt
+        assert "repurchase 单股查询记录" in receipt
+        matrix_json = json.loads((tmp_path / "tushare_permission_matrix.json").read_text(encoding="utf-8"))
+        repurchase = next(r for r in matrix_json["endpoints"] if r["endpoint"] == "repurchase")
+        assert repurchase["params"] == {"ts_code": "603629.SH"}
+        assert TOKEN not in receipt
+
+    def test_main_returns_3_and_writes_nothing_when_probe_leaks_token(self, tmp_path, monkeypatch):
+        audit = _load_audit_module()
+
+        def fake_probe(query_fn, spec, probe_context, *, token="", now=None):
+            record = not_queried_record(spec, probe_context, "fixture")
+            if spec.endpoint == "income":
+                record["error"] = f"dirty error containing {TOKEN}"
+            return record
+
+        monkeypatch.setattr(audit, "make_query_fn", lambda token: object())
+        monkeypatch.setattr(audit, "probe_endpoint", fake_probe)
+        out_dir = tmp_path / "custom-outside-root"
+        rc = audit.main(
+            ["--no-dotenv", "--sleep-seconds", "0", "--output-dir", str(out_dir)],
+            environ={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": TOKEN},
+        )
+        assert rc == 3
+        assert not out_dir.exists()
+
+    def test_main_success_writes_artifacts_to_custom_dir(self, tmp_path, monkeypatch):
+        audit = _load_audit_module()
+
+        def fake_probe(query_fn, spec, probe_context, *, token="", now=None):
+            return not_queried_record(spec, probe_context, "fixture probe")
+
+        monkeypatch.setattr(audit, "make_query_fn", lambda token: object())
+        monkeypatch.setattr(audit, "probe_endpoint", fake_probe)
+        out_dir = tmp_path / "custom-outside-root"
+        rc = audit.main(
+            ["--no-dotenv", "--sleep-seconds", "0", "--output-dir", str(out_dir)],
+            environ={"PATH": "/usr/bin:/bin", "TUSHARE_TOKEN": TOKEN},
+        )
+        assert rc == 0
+        assert (out_dir / "tushare_permission_matrix.json").is_file()
+        assert (out_dir / "run-receipt.md").is_file()
+
+
+class TestScriptRepairsR1B:
+    """001A-R1B (round2 review): dotenv interpolation provenance bypass and BSE mapping."""
+
+    def test_resolve_token_rejects_non_literal_dotenv_token(self, tmp_path):
+        # 001A-R1B round2 P1: TUSHARE_TOKEN=${FOREIGN_TOKEN} in .env must not
+        # be interpolated from the process environment; non-literal values are
+        # rejected fail-closed instead of being attributed to dotenv_file.
+        audit = _load_audit_module()
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(
+            "TUSHARE_TOKEN=${FOREIGN_TOKEN}\n", encoding="utf-8"
+        )
+        with pytest.raises(audit.TokenNotLiteralError):
+            audit.resolve_token(
+                environ={"FOREIGN_TOKEN": "foreign-secret-token"},
+                dotenv_path=dotenv_file,
+            )
+
+    def test_interpolated_dotenv_token_never_attributed_to_dotenv_file(self, tmp_path):
+        # Defense-in-depth companion: even if the rejection guard were removed,
+        # dotenv parsing itself must stay non-interpolating so the raw value
+        # never silently resolves to the inherited environment value.
+        audit = _load_audit_module()
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(
+            "TUSHARE_TOKEN=${FOREIGN_TOKEN}\n", encoding="utf-8"
+        )
+        with pytest.raises(audit.TokenNotLiteralError):
+            audit.resolve_token(
+                environ={},
+                dotenv_path=dotenv_file,
+            )
+        from dotenv import dotenv_values
+
+        raw = dotenv_values(dotenv_file, interpolate=False)
+        assert raw.get("TUSHARE_TOKEN") == "${FOREIGN_TOKEN}"
+
+    def test_cli_interpolated_dotenv_token_fails_closed(self, tmp_path):
+        dotenv_file = tmp_path / "custom.env"
+        dotenv_file.write_text(
+            "TUSHARE_TOKEN=${FOREIGN_TOKEN}\n", encoding="utf-8"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--dry-run",
+                "--dotenv",
+                str(dotenv_file),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "FOREIGN_TOKEN": "foreign-secret-token",
+            },
+            cwd=str(ROOT),
+        )
+        assert result.returncode == 2
+        assert "non-literal" in result.stdout
+        assert "foreign-secret-token" not in result.stdout
+        assert "token_source=dotenv_file" not in result.stdout
+        assert not (tmp_path / "out").exists()
+
+    def test_cli_literal_dotenv_token_still_resolves(self, tmp_path):
+        # No regression: plain literal tokens in .env keep working after the
+        # switch to dotenv_values(interpolate=False).
+        dotenv_file = tmp_path / "custom.env"
+        dotenv_file.write_text(
+            "TUSHARE_TOKEN=plain-literal-token\n", encoding="utf-8"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--dry-run",
+                "--dotenv",
+                str(dotenv_file),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin"},
+            cwd=str(ROOT),
+        )
+        assert result.returncode == 0
+        assert "token_source=dotenv_file" in result.stdout
+        assert "plain-literal-token" not in result.stdout
+
+    def test_margin_probe_context_uses_bse_for_bj_symbol(self):
+        # 001A-R1B round2 P2: a .BJ audit must probe margin with the
+        # repository/Tushare exchange identifier BSE, not the invalid BJSE.
+        audit = _load_audit_module()
+        ts_code = audit.normalize_symbol("430047.BJ")
+        assert audit.exchange_for_ts_code(ts_code) == "BSE"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -346,7 +347,33 @@ class TestSanitizedExampleFixture:
         assert pack["status"] == STATE_HAS_DATA
 
 
+def _load_script():
+    spec = importlib.util.spec_from_file_location("export_tushare_governance_events", SCRIPT)
+    assert spec and spec.loader, "unable to build spec for export script"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestExportScript:
+    def test_default_permission_matrix_is_audited_rerun_truth_source(self):
+        # 001A-R1A final review P2: default exports must consume the audited
+        # R1 rerun matrix, not the superseded 041709 archive.
+        default = _load_script().DEFAULT_PERMISSION_MATRIX
+        assert default.is_file()
+        assert default.parent.name == "TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237"
+        matrix = json.loads(default.read_text(encoding="utf-8"))
+        assert len(matrix["endpoints"]) == 24
+
+    def test_scan_text_for_secret_detects_serialized_headers(self):
+        # 001A-R1A final review P1#2: quoted/dict header forms must trip the
+        # credential self-check even with a short value and no token match.
+        module = _load_script()
+        assert module.scan_text_for_secret('{"Cookie": "short-secret"}', "")
+        assert module.scan_text_for_secret("headers={'Authorization': 'Bearer x'}", "")
+        assert module.scan_text_for_secret("Cookie: sid=xyz", "")
+        assert not module.scan_text_for_secret("clean sanitized error text", "")
+
     def _run(self, *args: str, env: dict[str, str] | None = None):
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],

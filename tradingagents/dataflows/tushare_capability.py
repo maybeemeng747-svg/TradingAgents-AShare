@@ -22,8 +22,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
-MATRIX_SCHEMA_VERSION = "1.0"
+MATRIX_SCHEMA_VERSION = "1.1"
 TASK_ID = "TA-TUSHARE-2000-001A"
+
+TOKEN_SOURCE_DOTENV = "dotenv_file"
+TOKEN_SOURCE_INHERITED_ENV = "inherited_environment"
 
 STATE_HAS_DATA = "HAS_DATA"
 STATE_NORMAL_NO_DATA = "NORMAL_NO_DATA"
@@ -82,6 +85,7 @@ _CREDENTIAL_KEY_RE = re.compile(
     r"(?i)\b(authorization|cookie|token|secret|api[_-]?key|password|session)"
     r"(\s*[:=]\s*)((?:bearer\s+)?[^\s,;'\"]+)"
 )
+_CREDENTIAL_HEADER_HINT_RE = re.compile(r"""(?i)\b(authorization|cookie)\b[\\"']*\s*[:=]""")
 _OPAQUE_BLOB_RE = re.compile(r"\b[A-Za-z0-9_\-]{40,}\b")
 
 PARAM_KIND_TS_CODE = "ts_code"
@@ -93,8 +97,8 @@ PARAM_KIND_EXCHANGE_PROBE_DATE = "exchange_probe_date"
 
 ROW_CAP_DEFAULT = 2000
 _ROW_CAP_NOTE = (
-    "repurchase 为市场窗口接口，单次探测命中 {cap} 行返回上限：权限结论（allowed）不受影响，"
-    "但该行数不代表窗口完整覆盖，也不构成全市场批量抓取"
+    "endpoint 单次探测命中 {cap} 行返回上限：权限结论（allowed）不受影响，但该行数不代表"
+    "完整窗口或最小单股结果，需核对查询参数是否被上游忽略"
 )
 
 
@@ -125,9 +129,8 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec(
         "repurchase",
         CATEGORY_GOVERNANCE,
-        (PARAM_KIND_STATEMENT_WINDOW,),
-        scope="market_window_filtered",
-        note="repurchase 按公告日窗口单次查询后本地按 ts_code 过滤；该接口不支持 ts_code 参数",
+        (PARAM_KIND_TS_CODE,),
+        note="repurchase 单 ts_code 最小查询（001A-R1 修复：原公告日窗口查询命中全市场行数上限，违反单股最小探测约束）",
     ),
     EndpointSpec("share_float", CATEGORY_GOVERNANCE, (PARAM_KIND_TS_CODE,)),
     EndpointSpec("stk_holdernumber", CATEGORY_GOVERNANCE, (PARAM_KIND_TS_CODE,)),
@@ -219,6 +222,27 @@ def sanitize_error_text(text: Any, *secrets: str) -> str:
     )
     message = _OPAQUE_BLOB_RE.sub("[REDACTED]", message)
     return message[:300]
+
+
+def contains_credential_header_hint(text: Any) -> list[str]:
+    """Return credential header names appearing in plain or serialized form.
+
+    001A-R1A fix (final review P1#2): serialized header dicts such as
+    ``{"Cookie": "sid"}`` or ``{'Authorization': 'Bearer x'}`` put a quote
+    between the header name and the separator, so naive ``"cookie:"``
+    substring scans miss them while ``sanitize_error_text`` leaves the
+    short value intact.  The optional quote/backslash regex (backslashes
+    included so JSON-escaped artifacts like ``{\\"Cookie\\": ...}`` stay
+    detectable) closes that fail-closed detection gap; empty result means
+    no credential header hint found.
+    """
+
+    return sorted(
+        {
+            match.group(1).lower()
+            for match in _CREDENTIAL_HEADER_HINT_RE.finditer(str(text or ""))
+        }
+    )
 
 
 def classify_error_message(message: str) -> str:
@@ -490,6 +514,8 @@ def build_matrix(
     records: Sequence[Mapping[str, Any]],
     *,
     token_status: str,
+    token_source: str = "",
+    token_env_override_applied: bool | None = None,
     generated_at: str | None = None,
     excluded: Sequence[Mapping[str, str]] = EXCLUDED_ENDPOINTS,
     state_evidence: Mapping[str, Mapping[str, Any]] | None = None,
@@ -535,6 +561,8 @@ def build_matrix(
         "generated_at": generated_at
         or datetime.now().astimezone().isoformat(timespec="seconds"),
         "token_status": token_status,
+        "token_source": token_source or None,
+        "token_env_override_applied": token_env_override_applied,
         "probe": {
             "symbol": probe_context["ts_code"],
             "exchange": probe_context.get("exchange"),
@@ -577,18 +605,18 @@ def _md_escape(value: Any) -> str:
 
 
 def annotate_row_cap_hits(matrix: Mapping[str, Any], *, cap: int = ROW_CAP_DEFAULT) -> None:
-    """Flag market-window records that reached the upstream row cap."""
+    """Flag any record that reached the upstream row cap.
 
-    note = _ROW_CAP_NOTE.format(cap=cap)
+    Scope-agnostic on purpose (001A-R1): even a symbol-scoped probe can hit
+    the cap when upstream ignores filter params, and that must stay visible.
+    """
+
     for record in matrix["endpoints"]:
-        if (
-            record.get("scope") == "market_window_filtered"
-            and record.get("row_count") is not None
-            and record["row_count"] >= cap
-        ):
+        if record.get("row_count") is not None and record["row_count"] >= cap:
             record["row_cap_suspected"] = True
     if any(record.get("row_cap_suspected") for record in matrix["endpoints"]):
         notes = matrix["notes"]
+        note = _ROW_CAP_NOTE.format(cap=cap)
         if note not in notes:
             notes.append(note)
 
@@ -601,6 +629,17 @@ def render_markdown(matrix: Mapping[str, Any]) -> str:
     lines.append("")
     lines.append(f"- 生成时间：{matrix['generated_at']}")
     lines.append(f"- Token 状态：`{matrix['token_status']}`（不记录 Token 任何明文信息）")
+    token_source = matrix.get("token_source")
+    if token_source:
+        source_label = (
+            "git-ignored .env 文件"
+            if token_source == TOKEN_SOURCE_DOTENV
+            else "继承环境变量"
+        )
+        source_line = f"- Token 来源：`{token_source}`（{source_label}）"
+        if matrix.get("token_env_override_applied"):
+            source_line += "；继承环境变量中的 TUSHARE_TOKEN 已被显式 .env 值覆盖，矩阵归属以 .env 为准"
+        lines.append(source_line)
     lines.append(
         f"- 探测标的：`{probe['symbol']}`（{probe['exchange']}），"
         f"探测日 `{probe['probe_date']}`，回退日 `{probe['fallback_date']}`"

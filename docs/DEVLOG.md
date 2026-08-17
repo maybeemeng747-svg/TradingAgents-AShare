@@ -1,5 +1,96 @@
 # 修改日志
 
+## 2026-08-17 | TA-TUSHARE-2000-001A-R1B：round2 review findings 修复并收口（P0）
+
+- 修复 001A-R1 round2 Codex review（gpt-5.6-sol high）1×P1+1×P2，并复核
+  round1 遗留项：
+  - **P1 dotenv 插值绕过 Token 来源审计**
+    （`scripts/audit_tushare_capability.py` `resolve_token`）：`.env` 中
+    `TUSHARE_TOKEN=${FOREIGN_TOKEN}` 会被 `dotenv_values()` 默认从进程环境
+    插值解析，探测用 Token 实为继承环境变量值，`token_source` 却记成
+    `dotenv_file`、`env_override_applied=false`，重演错误账号归属。修复为
+    双层防御：解析一律 `dotenv_values(interpolate=False)`（原始字面量），
+    且非字面量值（含 `${...}`）直接抛 `TokenNotLiteralError`，`main` 捕获后
+    退出码 2 fail closed（提示含 non-literal 原因，绝不打印 Token 明文）。
+  - **P2 北交所 margin probe exchange 标识**：`_SUFFIX_TO_EXCHANGE` 的
+    `BJ` 由 `BJSE` 改为 `BSE`，与仓库 `instrument_identity.infer_exchange`
+    及 Tushare 对北交所的标识一致（`.BJ` 标的 margin 探测不再发非法
+    exchange 参数）。
+  - **复核 round1 [P2]（下游 exporter 默认 matrix_ref）**：已由 R1A 修复——
+    `export_tushare_research_evidence.py` 与 `export_tushare_governance_events.py`
+    的 `DEFAULT_PERMISSION_MATRIX` 均指向 RERUN 新真源
+    `TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237`，并有回归锚点测试，本轮
+    无需再改。
+- 新增测试（`tests/test_tushare_capability.py` `TestScriptRepairsR1B`）：
+  `${FOREIGN_TOKEN}` 拒绝（含进程环境携带外源值时）、CLI 级插值 `.env`
+  退出码 2 且 stdout 无外源 Token/无 `token_source=dotenv_file`、字面量
+  Token 无回归、`.BJ`→BSE 映射断言同步修正。
+- 验证：聚焦 3 文件 **129 passed**；Codex review round3
+  （`docs/reviews/TA-TUSHARE-2000-001A-R1-20260817-round3.txt`）无 actionable
+  correctness finding（218 项 Tushare 测试由 review 会话复跑全绿）；待提交
+  文件对真实 Token 包含性与 Bearer 模式扫描 clean。未调用 live API、未写
+  生产数据库、未动 `.env`、未修改 001A 旧档案与 prompts。
+
+## 2026-08-16 | TA-TUSHARE-2000-001A-R1A：Codex 终审 findings 修复（P0）
+
+- 修复 001A-R1 终审 Codex review 2×P1+1×P2：
+  - **P1 继承 Token 未拒绝**（audit_tushare_capability.py `resolve_token`）：
+    显式选择的 `.env` 缺失或无 `TUSHARE_TOKEN` 时，原逻辑仍回退使用继承环境变量
+    Token（`--dotenv wrong.env` 手误即探测错误账号）。现继承环境变量**仅在显式
+    `--no-dotenv`（测试隔离）路径可用**；其余情况 NO_KEY 退出码 2 fail closed，
+    且 NO_KEY 提示会标注"检测到继承环境变量 TUSHARE_TOKEN，已拒绝使用"，不打印
+    Token 明文。
+  - **P1 序列化凭据头漏检**：`contains_credential_header_hint()` 新增于
+    `tradingagents/dataflows/tushare_capability.py`，正则
+    `\b(authorization|cookie)\b[\\"']*\s*[:=]` 同时覆盖 plain（`Cookie:`）与
+    quoted/dict（`{"Cookie": "short-secret"}`、`{'Authorization': ...}`）及
+    JSON 转义（`{\"Cookie\": ...}`，写盘扫描实测踩中并修复）形态；接入审计脚本
+    `scan_artifacts_for_secret()` 与两个导出脚本 `scan_text_for_secret()`，
+    序列化头残留时拒绝写盘（退出码 3）。
+  - **P2 导出默认矩阵指向被取代档案**：`export_tushare_research_evidence.py` 与
+    `export_tushare_governance_events.py` 的 `DEFAULT_PERMISSION_MATRIX` 由
+    `TA-TUSHARE-2000-001A-20260816-041709`（superseded，仅历史）改为
+    `TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237`（审计后真源），生成 pack 的
+    `matrix_ref` 不再记录未审计旧矩阵。
+- 验证：专项 3 文件 **124 passed**（新增：typo `.env` 拒绝继承 Token 退出码 2、
+  quoted/escaped 凭据头扫描、`write_outputs` 序列化头 fail closed 不写盘、两个
+  导出脚本默认矩阵=R1-RERUN 回归锚点）；Tushare 其余回归 3 文件 **89 passed**；
+  py_compile 通过。未调用 live API、未写生产数据库、未改 001A 旧档案与 prompts。
+- 残留风险（记录，未在本轮扩大范围）：导出脚本自身 `load_dotenv(override=False)`
+    仍是"继承环境变量优先于 .env"，与审计脚本新契约不一致；终审未列为 finding，
+    建议下轮统一收口。
+
+## 2026-08-16 | TA-TUSHARE-2000-001A-R1：权限矩阵补修与真实重跑（P0）
+
+- 修复 c73ed4f Codex review（gpt-5.6-sol high）3×P1+2×P2：
+  - **P1 Token 归属**：`scripts/audit_tushare_capability.py` 不再用
+    `load_dotenv(override=False)`（继承环境变量可静默压过指定 `.env`）。新增
+    `resolve_token()` 显式解析并记录来源：`.env` 恒优先于继承环境变量，返回
+    `(token, dotenv_file/inherited_environment, env_override_applied)`；矩阵新增
+    `token_source`/`token_env_override_applied` 字段（schema 1.0→1.1），Markdown、
+    receipt 与 dry-run 输出均展示来源标识；新增 `--dotenv` 参数支持显式指定文件。
+  - **P1 repurchase 全市场抓取**：`ENDPOINT_SPECS` 中 repurchase 由公告日窗口
+    （scope=market_window_filtered，实测命中 2000 行上限）改为单 `ts_code` 最小查询
+    （scope=symbol）。真实重跑验证上游接受 `ts_code`：2000 行→6 行（603629.SH，
+    公告日 20240207~20260326），receipt 新增“repurchase 单股查询记录”章节。
+  - **P1 泄漏扫描不阻断**：`write_outputs` 改为先组装 JSON/Markdown/receipt 全文，
+    `scan_artifacts_for_secret()` 命中即**拒绝写盘**并由 `main` 以退出码 3 fail
+    closed（0 成功 / 2 NO_KEY / 3 泄漏）。
+  - **P2 北交所映射**：`exchange_for_ts_code` 改为 SH→SSE、SZ→SZSE、BJ→BJSE，
+    未知后缀抛 ValueError fail closed（原逻辑 `.BJ` 误判 SSE）。
+  - **P2 自定义输出目录崩溃**：`relative_to(ROOT)` 改为 `display_path()`，root 外
+    路径回退绝对路径字符串，不再抛异常。
+- 附带加固：`annotate_row_cap_hits` 不再限定 market_window_filtered scope——任意
+  endpoint 命中行数上限都标注 `row_cap_suspected`（防止上游忽略过滤参数时失明）。
+- 真实重跑（603629.SH，24 endpoint，.env Token，来源 dotenv_file）：24/24 allowed
+  （HAS_DATA 22 + NORMAL_NO_DATA 2：express 无快报、top_list 非上榜日）；与旧矩阵
+  逐 endpoint 对比仅 repurchase（修复生效）与 pledge_stat（335→336，上游数据漂移）
+  变化，其余 22 项 digest 完全一致；产物对真实 Token 包含性扫描 clean。运行档案与
+  差异说明见 `docs/task_runs/TA-TUSHARE-2000-001A-R1-RERUN-20260816-202237/`。
+- 验证：专项 **55 passed**（含泄漏真实触发→退出码 3、Token 来源优先级、BJ 映射、
+  root 外输出目录四类新用例）；Tushare 相关回归 **202 passed**；runner 基线
+  smoke **157 passed**。未调用 live LLM、未写生产数据库、未修改 001A 旧档案。
+
 ## 2026-08-16 | TA-TUSHARE-2000-001E：退避、可审计缓存与动作降级收口（P1）
 
 - `CnTushareProvider` 限流有界退避：仅 RATE_LIMITED 触发重试，指数退避单次
