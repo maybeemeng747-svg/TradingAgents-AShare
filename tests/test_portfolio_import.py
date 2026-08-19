@@ -80,9 +80,9 @@ class TestPortfolioImportService:
 
         tasks = scheduled_service.list_scheduled(db, "user-auto-scheduled")
         assert [(item["symbol"], item["trigger_time"]) for item in tasks] == [
-            ("600519.SH", "14:30"),
+            ("600519.SH", "13:15"),
             ("600519.SH", "20:00"),
-            ("300750.SZ", "14:30"),
+            ("300750.SZ", "13:15"),
             ("300750.SZ", "20:00"),
         ]
 
@@ -330,8 +330,8 @@ class TestPortfolioImportApi:
         assert scheduled.status_code == 200
         scheduled_pairs = [(item["symbol"], item["trigger_time"]) for item in scheduled.json()["items"]]
         assert scheduled_pairs == [
-            ("600519.SH", "14:30"),
+            ("600519.SH", "13:15"),
             ("600519.SH", "20:00"),
-            ("300750.SZ", "14:30"),
+            ("300750.SZ", "13:15"),
             ("300750.SZ", "20:00"),
         ]

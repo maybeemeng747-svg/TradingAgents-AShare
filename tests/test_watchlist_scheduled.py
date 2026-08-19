@@ -169,7 +169,7 @@ class TestScheduled:
 
         assert result["created"] == ["300750.SZ", "300750.SZ"]
         assert [(item["symbol"], item["trigger_time"]) for item in items] == [
-            ("300750.SZ", "14:30"),
+            ("300750.SZ", "13:15"),
             ("300750.SZ", "20:00"),
         ]
 

@@ -5,13 +5,16 @@ after an intraday observe trigger.
 Responsibilities:
 1. Check executable conditions before dispatching TA.
 2. Enforce daily hard cap on TA dispatch count.
-3. Block forbidden models (e.g. DeepSeek) by default.
+3. Block forbidden models (e.g. DeepSeek) by default; DeepSeek requires the
+   explicit authorization switch ``deep_ta_deepseek_authorized`` (see
+   [CONFIG-DS-SCHEDULE-R1] in strategy_config).
 4. Record dispatch reason, model, duration, report path.
 5. Limit retries on failure — no infinite retry loops.
 6. Require position_context for all dispatches.
 
 Design constraints:
-- Default: do NOT call DeepSeek or any blocked model.
+- Default: do NOT call DeepSeek or any blocked model. DeepSeek is only
+  unblocked when the config explicitly sets deep_ta_deepseek_authorized=True.
 - Daily TA deep analysis count has a hard upper limit.
 - need_deep_ta=False → never dispatch.
 - Exceeds daily limit → never dispatch.
@@ -74,7 +77,11 @@ class DeepTADispatcher:
     trade_date: str = ""
     daily_count: int = 0
     daily_limit: int = 3
-    blocked_models: tuple = ()  # 2026-08-15: 解除 deepseek 黑名单（V4 GA 后恢复使用）
+    blocked_models: tuple = ("deepseek",)  # [CONFIG-DS-SCHEDULE-R1] default block restored; explicit authorization required to lift
+    # [CONFIG-DS-SCHEDULE-R1] DeepSeek explicit authorization is carried on the
+    # dispatcher itself and enforced by check_deep_ta_gate, so direct
+    # construction (not just from_config) cannot bypass the paid-model gate.
+    deepseek_authorized: bool = False
     default_model: str = ""
     max_retries: int = 1
     min_composite_score: float = 40.0
@@ -91,9 +98,22 @@ class DeepTADispatcher:
     def from_config(cls, cfg: Optional[StrategyConfig] = None) -> "DeepTADispatcher":
         if cfg is None:
             cfg = DEFAULT_STRATEGY_CONFIG
+        deepseek_authorized = bool(getattr(cfg, "deep_ta_deepseek_authorized", False))
+        blocked_models = tuple(getattr(cfg, "deep_ta_blocked_models", ("deepseek",)))
+        # [CONFIG-DS-SCHEDULE-R1] DeepSeek explicit authorization gate:
+        # - unauthorized (default): keep "deepseek" blocked even if a config
+        #   accidentally dropped it — fail closed, never implicitly unblocked.
+        # - authorized: drop only "deepseek"; every other blocked entry stays.
+        if deepseek_authorized:
+            blocked_models = tuple(
+                m for m in blocked_models if str(m).lower() != "deepseek"
+            )
+        elif "deepseek" not in {str(m).lower() for m in blocked_models}:
+            blocked_models = blocked_models + ("deepseek",)
         return cls(
             daily_limit=getattr(cfg, "deep_ta_daily_limit", 3),
-            blocked_models=getattr(cfg, "deep_ta_blocked_models", ("deepseek",)),
+            blocked_models=blocked_models,
+            deepseek_authorized=deepseek_authorized,
             default_model=getattr(cfg, "deep_ta_default_model", ""),
             max_retries=getattr(cfg, "deep_ta_max_retries", 1),
             min_composite_score=getattr(cfg, "deep_ta_min_composite_score", 40.0),
@@ -159,6 +179,17 @@ def check_deep_ta_gate(
         return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
 
     model_lower = resolved_model.lower()
+    # [CONFIG-DS-SCHEDULE-R1] DeepSeek requires explicit authorization carried
+    # on the dispatcher itself. Enforced here in the gate — not only in
+    # from_config — so direct construction with a cleared blocked_models tuple
+    # still cannot bypass the paid-model protection.
+    if "deepseek" in model_lower and not dispatcher.deepseek_authorized:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = (
+            f"模型'{resolved_model}'未获DeepSeek显式授权"
+            "(deep_ta_deepseek_authorized=False)"
+        )
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
     for blocked in dispatcher.blocked_models:
         if blocked and blocked.lower() in model_lower:
             record.status = DeepTAStatus.BLOCKED

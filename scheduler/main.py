@@ -445,14 +445,21 @@ async def _scheduler_loop():
 
             def _claim_pending_tasks():
                 with get_db_ctx() as db:
-                    tasks = scheduled_service.get_pending_tasks(db, today, current_hhmm)
+                    # [CONFIG-DS-SCHEDULE-R1] The allowlist is applied inside
+                    # get_pending_tasks BEFORE the default-pair dedup, so the
+                    # surviving pair member is always claimable (a 13:15-only
+                    # result this loop would then discard would silently skip
+                    # the allowed 14:30 sibling too).
+                    tasks = scheduled_service.get_pending_tasks(
+                        db,
+                        today,
+                        current_hhmm,
+                        allowed_trigger_times=(
+                            SCHEDULER_ALLOWED_TRIGGER_TIMES or None
+                        ),
+                    )
                     if not tasks:
                         return []
-                    if SCHEDULER_ALLOWED_TRIGGER_TIMES:
-                        tasks = [
-                            task for task in tasks
-                            if (task.trigger_time or "20:00") in SCHEDULER_ALLOWED_TRIGGER_TIMES
-                        ]
                     if SCHEDULER_MAX_TASKS_PER_TICK > 0:
                         tasks = tasks[:SCHEDULER_MAX_TASKS_PER_TICK]
                     if not tasks:

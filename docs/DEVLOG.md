@@ -1,5 +1,58 @@
 # 修改日志
 
+## 2026-08-19 | CONFIG-DS-SCHEDULE-R1：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，round1-5 收口）
+
+- 修复 72f31be review 发现的 P1/P2（Codex review round1-5 档案
+  `docs/reviews/CONFIG-DS-SCHEDULE-R1-20260819-round{1..5}.txt`）：
+  - **P1 DeepSeek 默认解禁绕过显式授权**（`strategy_config.py`、
+    `gated_deep_ta.py`）：默认黑名单恢复为 `("deepseek",)`，新增显式授权
+    开关 `StrategyConfig.deep_ta_deepseek_authorized`（默认 False）。授权
+    状态以 `DeepTADispatcher.deepseek_authorized` 字段带入 dispatcher，
+    并在 `check_deep_ta_gate` 内强制执行——直接构造
+    `DeepTADispatcher(blocked_models=())` 传 `deepseek-chat` 也会被拦截
+    （round1 P1）；`from_config` 未授权时即使配置清空黑名单也 fail-closed
+    补回，授权 True 时仅移除 deepseek，其余 blocked 条目保留。
+  - **P2 盘中默认时间前后端不一致**（`scheduled_service.py`）：后端
+    `DEFAULT_SCHEDULED_TRIGGER_TIMES` 改为 `("13:15", "20:00")`，与前端
+    `Portfolio.tsx` `DEFAULT_SCHEDULED_TASKS` 统一（测试读取前端源码做
+    契约锁）。
+  - **存量 13:15/14:30 冲突行：不做任何行改写，运行时防重复**
+    （`scheduled_service.py`；round1-5 迭代后的最终方案）：
+    - 早期版本曾实现 `api/database.py` 中的启动迁移（日期截断 →
+      migration marker → 状态合并），连续三轮 review 指出根本缺陷：存量
+      行无法事后区分"自动导入默认创建"与"用户手动选择"，任何静默改写
+      （搬家/停用/激活/状态合并）都会破坏某一类用户的真实意图，或绕过
+      3 次失败自动停用守卫。最终删除全部迁移代码，改为两条无损防线：
+    - **认领时默认对去重**（`get_pending_tasks`）：仅针对恰好由新旧默认
+      值碰撞产生的 {13:15, 14:30} 组合（同一 user/symbol/horizon——
+      不同 horizon 是独立分析，不视为重复），每天最多认领其一（先到
+      的 13:15 优先）；其中任一行当天已运行（含失败/已停用行）当天即
+      不再认领另一行，杜绝同一 symbol 同日重复付费分析。其他任意组合
+      （如用户自设 11:35+14:30）保持精确时间语义。
+    - **allowlist 前置**（round5 P1）：`get_pending_tasks` 新增
+      `allowed_trigger_times` 参数，scheduler 将
+      `SCHEDULER_ALLOWED_TRIGGER_TIMES` 传入并在对去重之前应用，避免
+      "去重选中 13:15 → allowlist 再丢弃 → 两个都不跑"。
+    - **自动导入盘中守卫**（`ensure_scheduled_for_symbols`）：使用默认
+      时间时，symbol 已有任意盘中（<15:00）任务（含已停用）即视为已
+      覆盖，不再自动新建第二个盘中任务；显式 trigger_time 请求保持
+      精确匹配语义。
+- 测试（`tests/test_config_ds_schedule_r1.py` 重写为最终契约，37 项；
+  `tests/test_m006_gated_deep_ta.py` 补直接构造门禁 3 项）：DeepSeek
+  授权门禁（默认封锁/直接构造绕过失败/授权放行/显式黑名单仍权威/
+  from_config 携带授权位）；前后端默认时间契约锁；认领对去重（组合去
+  重、非默认组合不受影响、同日已跑压制、失败尝试计入、失败停用行不
+  复活、盘后不受影响、按 user/symbol/horizon 隔离、allowlist 前置、
+  horizon 独立性）；自动导入守卫（任意盘中时间覆盖/停用任务不复活/
+  显式时间精确语义）。
+- 修正被 14:30 旧默认钉死的断言：`test_watchlist_scheduled.py` 默认时间
+  用例、`test_portfolio_import.py` 服务级与 API 级两处。
+- 验证：聚焦套件
+  `test_config_ds_schedule_r1 + test_m006_gated_deep_ta + test_watchlist_scheduled + test_portfolio_import + test_api_smoke + test_runtime_tier_contract + test_scheduled_queue + test_perf004_full_ta_cost_gate + test_data026_db_hygiene + test_b002_openclaw_callback + test_auto005_db_hygiene_preflight`
+  全绿（round5 后 469+ passed）；`py_compile` 与 `git diff --check`
+  通过。未写生产数据库（conftest 隔离 DATABASE_URL）、未调 live LLM、
+  未改 prompts、未 commit/push（由人工确认后提交）。
+
 ## 2026-08-17 | B-002-R2（round3 收口）：readiness fail-closed 语义补全 + 结构化防伪
 
 - 修复 Codex review round2 两项 P2（评审档案
@@ -16020,3 +16073,25 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - Validation: 1012 focused readiness, G-001, P0/P1 acceptance, event-risk,
   valuation-sanity and report-execution tests passed;
   Python compilation and `git diff --check` passed.
+
+## 2026-08-18 | AUTO-002 Auto Dev Loop
+
+- **Task**: CONFIG-DS-SCHEDULE-R1 - DeepSeek 显式授权门禁与 13:15 前后端统一（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/CONFIG-DS-SCHEDULE-R1-20260818-190004/
+
+## 2026-08-19 | CONFIG-DS-SCHEDULE-R1 收口（人工续跑半成品）
+
+- **Task**: CONFIG-DS-SCHEDULE-R1 - DeepSeek 显式授权门禁与 13:15 前后端统一（P1）
+- **Status**: PASS（round7-10 Codex review 收口；round10 无 correctness finding）
+- **背景**：2026-08-18 轮因 Codex 额度不可用停在 blocked-NEEDS_HUMAN；Codex 恢复后在既有 19 文件半成品 diff 基础上继续，未丢弃任何未提交修改。
+- **round7 P2 修复**：
+  - `api/services/scheduled_service.py`：intraday 覆盖判断加 A 股开盘下界（仅 [09:30, 15:00) 计为盘中），盘前任务（如 08:00）不再误判为盘中覆盖、13:15 默认任务恢复创建。
+  - 配额口径统一为 effective-count 契约：`create_scheduled`、`ensure_scheduled_for_symbols` 与前端 Portfolio UI（新增 `effectiveScheduledCount`，{13:15, 14:30} 同 symbol+horizon shadow pair 折叠计一）共用同一上限语义，自动路径放行后手动创建不再被原始行数拒绝。
+- **round8 P2 追加修复**：`update_scheduled`/`batch_update_scheduled` 按 projected effective count 复验配额 —— 编辑破坏 shadow pair 不得使有效数量超过上限；被拒编辑不产生任何变更。
+- **round9 P2 追加修复**：创建路径按 projected 集合校验配额（补全 shadow pair 的 13:15 成员占 0 个有效槽位，10 有效时可放行）；前端 `createDefaultScheduledTasks` 改用 projected 口径预算。
+- **验证**：pytest 聚焦选择 173 passed（test_config_ds_schedule_r1 / test_watchlist_scheduled / test_m006_gated_deep_ta / test_portfolio_import / test_data026_db_hygiene）；`npm run build`（tsc + vite）通过；round7 失败场景独立复现确认修复。
+- **Review 档案**：docs/reviews/CONFIG-DS-SCHEDULE-R1-20260819-round7~round10.txt

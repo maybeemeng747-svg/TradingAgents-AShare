@@ -405,7 +405,28 @@ class TestCheckDeepTAGate:
         assert decision.record.position_context == "unknown"
 
     def test_empty_blocked_models_tuple(self):
+        # [CONFIG-DS-SCHEDULE-R1] Authorization is carried on the dispatcher
+        # and enforced by the gate: clearing blocked_models alone can no
+        # longer bypass the DeepSeek paid-model protection via direct
+        # construction.
         d = DeepTADispatcher(blocked_models=())
+        assert d.deepseek_authorized is False
+        decision = check_deep_ta_gate(
+            dispatcher=d,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="deepseek-chat",
+        )
+        assert decision.allowed is False
+        assert "deepseek" in decision.reason.lower()
+
+    def test_empty_blocked_models_with_authorization_allows_deepseek(self):
+        # Direct construction with the explicit authorization switch is the
+        # only way to lift the DeepSeek block on this path.
+        d = DeepTADispatcher(blocked_models=(), deepseek_authorized=True)
         decision = check_deep_ta_gate(
             dispatcher=d,
             symbol="002138.SZ",
@@ -416,6 +437,27 @@ class TestCheckDeepTAGate:
             model="deepseek-chat",
         )
         assert decision.allowed is True
+        assert decision.model == "deepseek-chat"
+
+    def test_authorized_dispatcher_still_respects_explicit_block_list(self):
+        # Authorization only lifts the implicit DeepSeek gate; an explicit
+        # blocked_models entry remains authoritative.
+        d = DeepTADispatcher(blocked_models=("deepseek",), deepseek_authorized=True)
+        decision = check_deep_ta_gate(
+            dispatcher=d,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="deepseek-chat",
+        )
+        assert decision.allowed is False
+
+    def test_from_config_carries_authorization_flag(self):
+        assert DeepTADispatcher.from_config().deepseek_authorized is False
+        cfg = StrategyConfig(deep_ta_deepseek_authorized=True)
+        assert DeepTADispatcher.from_config(cfg).deepseek_authorized is True
 
     def test_no_model_blocks(self):
         decision = check_deep_ta_gate(

@@ -31,6 +31,23 @@ const DEFAULT_SCHEDULED_TASKS = [
     { trigger_time: '13:15', label: '盘中跟踪' },
     { trigger_time: '20:00', label: '盘后复盘' },
 ] as const
+// [CONFIG-DS-SCHEDULE-R1] 后端把同一 (symbol, horizon) 的历史 {13:15, 14:30}
+// 默认冲突对按"每日只领取一次"去重，被遮蔽的那一行不占用 10 条配额；
+// 前端所有上限判断必须使用同一 effective 口径，避免自动路径放行后手动创建被拒。
+const LEGACY_PAIR_SHADOW_TIMES = ['13:15', '14:30'] as const
+type ScheduledQuotaItem = Pick<ScheduledAnalysis, 'symbol' | 'horizon' | 'trigger_time'>
+const effectiveScheduledCount = (tasks: ScheduledQuotaItem[]) => {
+    const pairKeys = new Set(
+        tasks
+            .filter(item => item.trigger_time === LEGACY_PAIR_SHADOW_TIMES[0])
+            .map(item => `${item.symbol}|${item.horizon || 'short'}`)
+    )
+    const shadowed = tasks.filter(item =>
+        item.trigger_time === LEGACY_PAIR_SHADOW_TIMES[1]
+        && pairKeys.has(`${item.symbol}|${item.horizon || 'short'}`)
+    ).length
+    return tasks.length - shadowed
+}
 const SCHEDULED_TEST_TOOLTIP =
     '会立刻对当前勾选的股票批量发起最近交易日分析请求，并自动带上已导入的持仓上下文；若已开启邮箱报告，也可以顺带检查邮箱是否收到结果。不会改动原有定时设置。'
 
@@ -608,7 +625,15 @@ export default function Portfolio() {
             alert(`${normalizedSymbol} 已有盘中和盘后定时任务`)
             return
         }
-        if (scheduled.length + missingTasks.length > 10) {
+        // [P2 round9] Budget with the PROJECTED effective count: adding
+        // the missing 13:15 to an existing lone 14:30 merely completes a
+        // shadowed pair and costs zero effective slots.
+        const candidateTasks = missingTasks.map(task => ({
+            symbol: normalizedSymbol,
+            horizon,
+            trigger_time: task.trigger_time,
+        }))
+        if (effectiveScheduledCount([...scheduled, ...candidateTasks]) > 10) {
             throw new Error(`定时任务最多 10 条；${normalizedSymbol} 默认需要新增 ${missingTasks.length} 条，请先删除不用的任务。`)
         }
 
@@ -1043,13 +1068,13 @@ export default function Portfolio() {
                 <div className="card">
                     <div className="mb-4 flex items-center gap-2">
                         <Clock className="w-5 h-5 text-emerald-500" />
-                        <h2 className="font-semibold text-slate-900 dark:text-slate-100">定时分析 ({scheduled.length}/10)</h2>
+                        <h2 className="font-semibold text-slate-900 dark:text-slate-100">定时分析 ({effectiveScheduledCount(scheduled)}/10)</h2>
                         <button
                             type="button"
                             onClick={() => setShowScheduledAdd(current => !current)}
-                            disabled={scheduled.length >= 10}
+                            disabled={effectiveScheduledCount(scheduled) >= 10}
                             className="ml-auto inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-                            title={scheduled.length >= 10 ? '定时任务已达上限' : '添加定时任务'}
+                            title={effectiveScheduledCount(scheduled) >= 10 ? '定时任务已达上限' : '添加定时任务'}
                         >
                             <Plus className="h-3.5 w-3.5" />
                             添加任务
@@ -1112,7 +1137,7 @@ export default function Portfolio() {
                                     <button
                                         type="button"
                                         onClick={() => void submitScheduledAdd()}
-                                        disabled={!trimmedScheduledAddQuery || scheduledAddSubmitting || scheduled.length >= 10}
+                                        disabled={!trimmedScheduledAddQuery || scheduledAddSubmitting || effectiveScheduledCount(scheduled) >= 10}
                                         className="ml-auto inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         {scheduledAddSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}

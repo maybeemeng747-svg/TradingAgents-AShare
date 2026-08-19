@@ -181,7 +181,18 @@ class StrategyConfig:
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""
-    deep_ta_blocked_models: tuple = ()  # 2026-08-15: 解除 deepseek 黑名单（V4 GA 后恢复使用）
+    # [CONFIG-DS-SCHEDULE-R1] DeepSeek stays blocked by default (explicit
+    # authorization + paid-model protection). The block can ONLY be lifted
+    # through the switch below — no code path may unblock it implicitly.
+    deep_ta_blocked_models: tuple = ("deepseek",)
+    # [CONFIG-DS-SCHEDULE-R1] Explicit DeepSeek authorization switch.
+    # Default False. Set to True only when the operator has explicitly
+    # authorized DeepSeek usage (billing/model confirmed). The switch is
+    # carried onto DeepTADispatcher.deepseek_authorized and enforced by
+    # check_deep_ta_gate on every path (including direct construction):
+    # without it DeepSeek stays blocked even if deep_ta_blocked_models is
+    # cleared; with it only "deepseek" is dropped from the blocked list.
+    deep_ta_deepseek_authorized: bool = False
     deep_ta_max_retries: int = 1
     deep_ta_min_composite_score: float = 40.0
     deep_ta_min_completeness: float = 0.5
