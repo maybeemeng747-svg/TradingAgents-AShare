@@ -55,7 +55,7 @@
 25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，done — `3812306`，round1/round2/round3 三轮 Codex review 收口）。
 27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，ready）。
-28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，ready）。
+28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -350,13 +350,16 @@
 ### CONFIG-DS-SCHEDULE-R1: DeepSeek 显式授权门禁与 13:15 前后端统一（P1）
 - **描述**：修复 72f31be review 发现：`strategy_config.py:184` 默认解除 DeepSeek 黑名单，绕过显式授权与付费模型保护，破坏回归测试契约；`Portfolio.tsx` 只改前端默认 13:15，后端仍 14:30，自动建任务时间不一致甚至重复。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — 2026-08-19 解除 blocked：Codex 额度恢复，round7 两个 P2（盘中覆盖缺 09:30 开盘下界、配额口径不一致）已关闭；后续 round8（update 路径破坏 shadow pair 可绕过配额）与 round9（配额需按 projected 集合校验）追加修复，round10 Codex review 无 correctness finding；173 项聚焦测试通过。commit `8677d27`
 - **depends_on**：
 - **auto_release**：false
 - **预计耗时**：25-40 分钟
 - **修复清单**：
   - P1 DeepSeek 解禁改为显式授权配置（明确开关+文档说明），不再默认绕过；修复被破坏的回归测试契约。
   - P2 后端默认盘中时间 14:30→13:15 与前端统一；存量定时任务迁移，避免自动导入持仓时重复建任务。
+  - round7 P2：intraday 覆盖判断加 09:30 开盘下界（盘前任务不再误判为盘中覆盖）；create_scheduled/ensure/Portfolio UI 统一 effective-count 配额契约（{13:15, 14:30} shadow pair 折叠计一）。
+  - round8 P2：update/batch_update 在破坏 shadow pair 时按 projected effective count 复验配额。
+  - round9 P2：创建路径按 projected 集合校验配额（补全 shadow pair 成员占 0 个有效槽位）；前端 createDefaultScheduledTasks 同步 projected 口径。
 - **验收方式**：相关回归测试全绿；显式授权配置有单测；前后端默认时间断言一致。
 - **允许修改**：`tradingagents/tradeflow/strategy_config.py`、`gated_deep_ta.py`、后端定时任务创建/迁移逻辑、`Portfolio.tsx`、相关测试、`docs/TASKS.md`、`docs/DEVLOG.md`。
 - **禁止修改**：实盘下单逻辑、用户数据。
