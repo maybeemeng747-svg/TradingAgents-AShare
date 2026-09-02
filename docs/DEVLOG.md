@@ -16095,3 +16095,11 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **round9 P2 追加修复**：创建路径按 projected 集合校验配额（补全 shadow pair 的 13:15 成员占 0 个有效槽位，10 有效时可放行）；前端 `createDefaultScheduledTasks` 改用 projected 口径预算。
 - **验证**：pytest 聚焦选择 173 passed（test_config_ds_schedule_r1 / test_watchlist_scheduled / test_m006_gated_deep_ta / test_portfolio_import / test_data026_db_hygiene）；`npm run build`（tsc + vite）通过；round7 失败场景独立复现确认修复。
 - **Review 档案**：docs/reviews/CONFIG-DS-SCHEDULE-R1-20260819-round7~round10.txt
+
+## 2026-08-31 | 上游 v0.8.1 选择性吸收任务入池
+
+- 已拉取并核实 `origin/main=fef942f`、release `v0.8.1`；相对当前分支为本地独有 709 个、上游独有 25 个 commit，禁止整仓 merge/cherry-pick。
+- 新增串行任务：`UPSTREAM-081-001`（线程池/识别/错误语义）→ `UPSTREAM-081-002`（软硬超时与恢复）→ `UPSTREAM-081-003`（AKShare 最小差异修复）→ `UPSTREAM-081-004`（协同图平移）。仅 `UPSTREAM-081-001` 初始为 ready。
+- `UPSTREAM-081-005` Investoday 保持 `blocked — NEEDS_HUMAN`：必须先确认 API Key、授权范围、限流、许可和字段口径，不能因上游新增 provider 就默认启用。
+- 明确不吸收：上游 DeepSeek 默认解禁/推荐引导、本地已覆盖的简化否定匹配、Docker 同容器启动、Promo Banner、大版本依赖升级；上游已 Revert 的盘中概念板块扫描不得恢复。
+- 同步修正任务池顶部陈旧状态：`B-002-R1` 为 blocked，`B-002-R2` 为 done。

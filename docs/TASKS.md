@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-08-16
+> 最后更新：2026-08-31
 
 ---
 
@@ -22,7 +22,7 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-08-16）
+### 当前执行队列（2026-08-31）
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -51,11 +51,16 @@
 21. `TA-TUSHARE-2000-001C`：知识库研究证据包补齐（P1，done — 九端点证据包与只读导出落地，216 passed）。
 22. `TA-TUSHARE-2000-001D`：海瑞治理事件包只读出口（P1，done — 八端点治理包与 denylist 只读导出落地，175 passed）。
 23. `TA-TUSHARE-2000-001E`：缓存、退避、动作降级与端到端验收（P1，done — 有界退避+可审计缓存+STALE 出口+动作真实降级与 24 endpoint 真实运行，393+770 passed）。
-24. `B-002-R1`：调度回调报告字段补修（P2，ready）。
+24. `B-002-R1`：调度回调报告字段补修（P2，blocked — NEEDS_HUMAN，已由 B-002-R2 取代）。
 25. 其余 review finding 进入第二批：`B-003-R1`、`C-001/005/006-R1`、`HY-009-R1`、`M-009-R1`、`UI-014-R1`。
 26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，done — `3812306`，round1/round2/round3 三轮 Codex review 收口）。
-27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，ready）。
+27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，done — `7f1890d`，状态收口 `50267c0`）。
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
+29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，ready）。
+30. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，blocked-auto）。
+31. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked-auto）。
+32. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
+33. `UPSTREAM-081-005`：Investoday 数据源权限、许可与真值审计（P2，blocked — NEEDS_HUMAN）。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
 
@@ -364,19 +369,79 @@
 - **允许修改**：`tradingagents/tradeflow/strategy_config.py`、`gated_deep_ta.py`、后端定时任务创建/迁移逻辑、`Portfolio.tsx`、相关测试、`docs/TASKS.md`、`docs/DEVLOG.md`。
 - **禁止修改**：实盘下单逻辑、用户数据。
 
+### UPSTREAM-081-001: 线程池饱和、股票识别与错误语义选择性吸收（P1）
+- **描述**：参考上游 `v0.8.1` 的 `89754c5`（#202），只移植本地尚未覆盖的线程池饱和保护、股票代码/名称识别兜底和用户可理解错误语义；不得整笔 cherry-pick 覆盖本地 API、Tushare、意图解析或门禁链。
+- **优先级**：P1
+- **状态**：ready
+- **depends_on**：
+- **auto_release**：true
+- **预计耗时**：45-70 分钟
+- **现状基线**：本地已有 `/healthz` executor starvation 探针、默认 executor 和部分股票识别逻辑；实现前必须先列出“上游新增 / 本地已有 / 本地更强”差异表，只补真实缺口。
+- **允许修改**：`api/main.py`、`tradingagents/graph/data_collector.py`、相关 API/识别/并发测试、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：提示词、模型默认厂商、生产数据库、Tushare 契约、最终交易动作门禁、与本任务无关的 provider。
+- **验收方式**：线程池排队超限可观测且不会静默 524；同一任务不会因探针重复执行；股票代码优先走确定性解析，名称兜底失败保持明确错误；用户错误文案不泄漏 key/URL/内部堆栈；执行 `pytest tests/test_upstream081_runtime_resilience.py tests/test_api_smoke.py -q --tb=short`；独立 Codex review 无 P0/P1/P2 correctness finding。
+
+### UPSTREAM-081-002: 长时分析软/硬超时与断线恢复（P1）
+- **描述**：参考上游 `3e32c89`（#204），把软超时改成“继续后台运行”的非终态事件，并保留独立硬超时；前端断线后可恢复同一 job，禁止重复提交昂贵分析。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：UPSTREAM-081-001
+- **auto_release**：true
+- **预计耗时**：60-100 分钟
+- **实现要求**：复用本地 `_job_timeout_for_config`、持久化报告、SSE 和 job store；不得把历史 `failed(timeout)` 无条件重写为 running；软超时、硬超时、真实失败、完成四态必须可区分。
+- **允许修改**：`api/main.py`、job store、报告服务、SSE/analysis store/ChatCopilot 生命周期工具、相关前后端测试，以及 `docs/` 下的脱敏配置说明。
+- **禁止修改**：默认模型、分析 Agent 图、生产数据库内容、scheduler 自动任务时间、强动作门禁、根目录 `.env.example`（如确需修改，另开人工 review 任务）。
+- **验收方式**：软超时后 job 仍运行并最终只产生一次 completed/failed；硬超时 fail-closed；刷新/断线恢复不重复创建任务；Redis 与内存 store 语义一致；前端显示“后台继续”而非失败；执行 `pytest tests/test_upstream081_timeout_recovery.py -q --tb=short && cd frontend && npm run build`；独立 Codex review 通过。
+
+### UPSTREAM-081-003: AKShare v0.8.1 差异审计与最小修复（P1）
+- **描述**：审计上游 `aa79bca`（#195）对雪球 token、全球新闻、行业资金流、龙虎榜参数和热门数据接口的修复；逐项与本地多源 fallback、八态证据契约和 Tushare 主源比较，只移植仍有效且有真实小范围证据的修复。
+- **优先级**：P1
+- **状态**：blocked-auto
+- **depends_on**：UPSTREAM-081-002
+- **auto_release**：true
+- **预计耗时**：45-75 分钟
+- **实现要求**：先记录当前 AKShare 版本和函数签名；接口不存在、签名漂移、空数据、权限失败必须分别归类；不得把龙虎榜全市场结果直接当目标股票数据；不得默认扩大查询范围。
+- **允许修改**：`cn_akshare_provider.py`、provider 路由/fixture/专项测试、脱敏审计文档、`docs/TASKS.md`、`docs/DEVLOG.md`。
+- **禁止修改**：其他 provider、真实凭据、生产缓存/数据库、知识库/海瑞仓库、提示词。
+- **验收方式**：每项修复有函数签名证据和 fixture；至少一只股票做低频只读 smoke（不调用 LLM）；目标股票过滤、日期格式、空/失败状态正确；不降低 Tushare 已建立的主源优先级；执行 `pytest tests/test_upstream081_akshare_gap.py -q --tb=short`；独立 Codex review 通过。
+
+### UPSTREAM-081-004: Agent 协同图平移与节点完整显示（P2）
+- **描述**：参考上游 `74b22ad`（#118）与 `06a0e28`（#203），让协同工作流可完整平移，量价分析等边缘节点不被裁切，同时保持本地深色高密度布局。
+- **优先级**：P2
+- **状态**：blocked-auto
+- **depends_on**：UPSTREAM-081-003
+- **auto_release**：true
+- **预计耗时**：25-40 分钟
+- **允许修改**：`frontend/src/components/AgentCollaboration.tsx`、必要的 UI 测试与文档。
+- **禁止修改**：Agent 编排、后端 API、报告数据、营销 Banner、全局视觉主题。
+- **验收方式**：桌面和窄屏均能访问全部节点；拖拽不误触节点操作；无文本/连线遮挡；执行 `pytest tests/test_upstream081_agent_collaboration_ui.py -q --tb=short && cd frontend && npm run build`，并提供 Playwright 桌面/窄屏截图验收。
+
+### UPSTREAM-081-005: Investoday 数据源权限、许可与真值审计（P2）
+- **描述**：上游 `b8b2ee1`（#177）新增需要 `INVESTODAY_API_KEY` 的第三方 REST provider。在未确认账号、授权范围、使用条款、限流和数据口径前，不接入生产路由。
+- **优先级**：P2
+- **状态**：blocked — NEEDS_HUMAN（需要用户确认是否已有 Investoday API Key 及授权用途）
+- **depends_on**：UPSTREAM-081-003
+- **auto_release**：false
+- **预计耗时**：30-60 分钟审计；通过后另开实现任务。
+- **允许修改**：只读调研文档、脱敏配置示例、fixture；获得明确授权后才允许新增 provider。
+- **禁止修改**：默认 provider 顺序、真实 key、生产数据库、全市场抓取、未授权新闻/财务数据写入。
+- **验收方式**：记录官方 URL、权限/价格/限流/许可证、字段日期和复权口径；用最小真实查询区分权限不足与无数据；未通过审计时保持禁用。
+
+> `v0.8.1` 暂不吸收项：DeepSeek 一等厂商（本地已有更严格显式授权门禁）、biased BUY 修复（本地否定作用域覆盖更完整）、Docker 同容器部署（当前本地 launchd/独立 scheduler 更易审计）、推荐厂商 Promo Banner 和大版本依赖升级。概念板块异动扫描已被上游 Revert，禁止恢复。
+
 ### B-002-R1: 调度回调报告字段补修（P2）
 - **描述**：定时分析回调必须携带已持久化的 risk/score/metric 字段，避免 OpenClaw 收到残缺报告。
 - **优先级**：P2
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/B-002-R1-20260812-190004
+- **状态**：blocked — NEEDS_HUMAN, superseded by completed `B-002-R2`; original archive retained at `docs/task_runs/B-002-R1-20260812-190004/`
 - **depends_on**：B-001-R1
 - **auto_release**：true
 
 ### B-003-R1: 飞书文档链接与根节点写入补修（P2）
 - **描述**：生成正确 tenant-aware 文档链接；根节点写入不得依赖一次不必要的 read 成功。
 - **优先级**：P2
-- **状态**：blocked-auto
-- **depends_on**：B-002-R1
-- **auto_release**：true
+- **状态**：blocked — NEEDS_HUMAN（旧审查第二批，需人工确认后单独释放）
+- **depends_on**：B-002-R2
+- **auto_release**：false
 
 ### C-001-R1: 持仓推断与 HOLD 绕门禁补修（P2）
 - **描述**：门禁使用显式+推断后的统一持仓上下文；正文出现“等待”不得让错误 HOLD 绕过转换。
