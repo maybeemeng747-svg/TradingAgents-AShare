@@ -56,7 +56,7 @@
 26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，done — `3812306`，round1/round2/round3 三轮 Codex review 收口）。
 27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，done — `7f1890d`，状态收口 `50267c0`）。
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
-29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，ready）。
+29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）
 30. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，blocked-auto）。
 31. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked-auto）。
 32. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
@@ -372,7 +372,7 @@
 ### UPSTREAM-081-001: 线程池饱和、股票识别与错误语义选择性吸收（P1）
 - **描述**：参考上游 `v0.8.1` 的 `89754c5`（#202），只移植本地尚未覆盖的线程池饱和保护、股票代码/名称识别兜底和用户可理解错误语义；不得整笔 cherry-pick 覆盖本地 API、Tushare、意图解析或门禁链。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — round4 review 修复通过（2×P1：有界队列+超时 cancel、forced LHB 预算内终止），Codex 沙箱无法跑测试，主控本地实测 resilience 49 + api_smoke 87 全过；code 30e2e96；review 档案 docs/reviews/UPSTREAM-081-001-20260907-round4.txt
 - **depends_on**：
 - **auto_release**：true
 - **预计耗时**：45-70 分钟
@@ -839,7 +839,7 @@
 186. `FUND-006`：603629 与跨行业财报对抗回放验收（P1，blocked-review，第一版待 FUND-006A 重验）。
 187. `FUND-001A`：生产公司画像契约与 provider 格式补修（P0，done，人工实现与 Codex 对抗复审通过）。
 188. `FUND-003A`：财务因果声明与官方证据逐项绑定（P0，done，由 `2d98abc` 完成复审收口）。
-189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，ready，依赖已闭环）。
+189. `FUND-004B`：C-006 同日期/同期间口径计算补修（P0，done，33fa819 收口；2026-09-05 修正过期队列行）。
 190. `FUND-004A`：基本面语义门禁前移并剔除无效研究权重（P0，done，460 项回归通过）。
 191. `FUND-005A`：逐 Agent 真实模型与运行时 trace 补修（P1，blocked-auto，依赖 FUND-004A）。
 192. `FUND-006A`：真实 provider 格式与生产图离线回放验收（P1，done，FUND-006A-20260722-205540）。
