@@ -57,7 +57,7 @@
 27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，done — `7f1890d`，状态收口 `50267c0`）。
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
 29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）。
-30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，ready，源：2026-09-05 market-facts 交接包）。
+30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32）。
 30. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，blocked-auto）。
 31. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked-auto）。
 32. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
@@ -7062,7 +7062,7 @@ Phase 3（优化期）：C-006 + C-008
 ### TA-MF-01: 冻结通用市场事实契约 v1（源：2026-09-05 market-facts 交接包）
 - **描述**：按 /Users/maybee/Documents/Codex/handoffs/2026-09-05-market-facts/README.md 与 TA-PLAN.md 执行 TA-MF-01：①盘点现有 HTTP 路由、认证、行情类型、provider 能力及已发布财务/治理包，区分可复用与真实缺口；②发布 docs/contracts/market-facts-v1.md + 可验证 JSON Schema + 跨仓脱敏共享 fixture；③固化八状态与包级可用性映射、证券类型/代码映射；④冻结只读接口清单（K线复用 /v1/market/kline），禁开放任意 Tushare endpoint 透传；⑤写清边界、缓存 TTL、超时与更新时间策略。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked-review（2026-09-07 候选已交付且测试全过，未 commit；Codex review 因用量限额中断，15:51 后重试；运行记录 docs/task_runs/TA-MF-01-20260907-122509/）
 - **depends_on**：
 - **auto_release**：true
 - **预计耗时**：60-90 分钟
