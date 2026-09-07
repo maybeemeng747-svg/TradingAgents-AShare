@@ -1,0 +1,16 @@
+Task: UPSTREAM-081-001 - 线程池饱和、股票识别与错误语义选择性吸收（P1）
+Date: 2026-09-05_19:05
+Codex exit code: 0
+Round: 3 (fix round2 后复审)
+---
+结论: FAIL
+
+[P1] tradingagents/graph/data_collector.py:126,155-158,669-684 — `_BoundedFetchPool` 的队列是 `queue.SimpleQueue()`，`submit()` 无容量上限、无拒绝/降级路径；`_run_bounded_fetch()` 超时后也没有对 `not_done` futures 调 `cancel()`。当 fetch pool 已被卡死任务占满时，后续每轮仍会把全部 provider 调用无限入队，当前轮按“超时跳过”返回，但这些未启动任务会在旧 worker 释放后继续执行。这不只是可观测性问题：它违反“whole-round deadline”语义，也让过期 provider probe 在分析结束后继续运行，压力可随轮次无限堆积。`abandoned_total` 只计数，不阻止 backlog 增长。
+
+[P1] tradingagents/graph/data_collector.py:718-735 — `_apply_forced_lhb()` 对超时的强制 LHB future 同样不取消。若 pool 饱和导致该 future 还没启动，函数会返回 `forced_timeout`，但 queued force=True 查询之后仍可能被 worker 执行，等价于 LHB force retry 逃出了整轮 deadline。round2 P1 的“bounded by remaining round budget”只约束了等待时间，没有约束实际执行。
+
+[NOTE] round2 五项修复核验：锁超时推导、healthz fetch_pool gauges、Bearer/JWT 脱敏、idempotent shortcut 脱敏、LHB 剩余预算等待都有实现；但 bounded pool/forced LHB 的未取消 queued future 使 P1 修复不完整。
+
+[NOTE] tests/test_upstream081_runtime_resilience.py 覆盖了 5 个修复点的大部分表面行为，但没有覆盖“pool 饱和时超时 future 仍留在队列并稍后执行”的场景。现有 pool 测试反而在 tests/test_upstream081_runtime_resilience.py:184-195 明确期待 queued work 最终全部执行，因此无法捕获这个 correctness regression；LHB 测试也只验证函数及时返回，没有断言超时后的 force=True 调用不会在 deadline 后实际发生。
+
+未按约束运行 pytest 或网络调用；以上是静态 diff review。

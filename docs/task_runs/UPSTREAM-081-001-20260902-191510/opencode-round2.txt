@@ -1,0 +1,1744 @@
+[0m
+> build · glm-5.3-flash
+[0m
+[0m$ [0mgit status && git diff --stat
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 20 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     api/main.py
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     tradingagents/graph/data_collector.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/reviews/UPSTREAM-081-001-20260902-round1.txt
+	docs/reviews/UPSTREAM-081-001-20260903-round2.txt
+	docs/task_runs/UPSTREAM-081-001-20260902-191510/
+	tests/test_upstream081_runtime_resilience.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+ api/main.py                           | 124 +++++++++++++++++++++++++++++++++-
+ docs/DEVLOG.md                        |  55 +++++++++++++++
+ docs/TASKS.md                         |   4 +-
+ tradingagents/graph/data_collector.py |  67 ++++++++++++++----
+ 4 files changed, 231 insertions(+), 19 deletions(-)
+[0m
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+[0m→ [0mRead docs/reviews/UPSTREAM-081-001-20260903-round2.txt
+[0m
+[0m$ [0mgrep -n "UPSTREAM-081-001" docs/TASKS.md | head -20
+59:29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，in_progress — fix round2 处理 round2 review 3×P1+2×P2）。
+372:### UPSTREAM-081-001: 线程池饱和、股票识别与错误语义选择性吸收（P1）
+375:- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/UPSTREAM-081-001-20260902-191510
+388:- **depends_on**：UPSTREAM-081-001
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=120, offset=1][0m
+[0m✱ [0mGrep "_run_bounded_fetch|_compute_lhb_force_decision|_safe_with_vendor|FETCH_ALL_TIMEOUT|FETCH_LOCK_TIMEOUT|def _fetch_all"[90m in tradingagents/graph/data_collector.py · 18 matches[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=340, offset=390][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=80, offset=780][0m
+[0m✱ [0mGrep "_sanitize_analysis_error_text|_humanize_analysis_error|_ANALYSIS_ERROR_HINTS"[90m in api/main.py · 7 matches[0m
+[0m→ [0mRead api/main.py[90m [limit=110, offset=2660][0m
+[0m→ [0mRead tests/test_upstream081_runtime_resilience.py
+[0m✱ [0mGrep "healthz|_HEALTHZ_PROBE_TIMEOUT"[90m in api/main.py · 5 matches[0m
+[0m→ [0mRead api/main.py[90m [limit=70, offset=4740][0m
+[0m→ [0mRead api/main.py[90m [limit=30, offset=960][0m
+[0m✱ [0mGrep "_lhb_query_mode|_lhb_force_reason"[90m 176 matches[0m
+[0m
+[0m$ [0msource .venv/bin/activate && python --version && python - <<'EOF'
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+def init():
+    t = threading.current_thread()
+    try:
+        t.daemon = True
+        print("daemon set OK inside initializer")
+    except Exception as e:
+        print("daemon set failed:", type(e).__name__, e)
+
+ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="probe", initializer=init)
+f = ex.submit(lambda: (threading.current_thread().name, threading.current_thread().daemon))
+print(f.result())
+ex.shutdown(wait=True)
+EOF
+Python 3.12.13
+daemon set failed: RuntimeError cannot set daemon status of active thread
+('probe_0', False)
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=55, offset=855][0m
+现在我来检查一下 `_infer_source_status`、`smart_money_analyst` consumer，以及 `api/main.py` 中从 `data_collector` 的导入：
+[0m
+[0m$ [0mgrep -n "data_collector\|DataCollector" api/main.py | head -20 && grep -rn "_lhb_query_mode\|query_mode" tradingagents/agents/analysts/smart_money_analyst.py tradingagents/agents/utils/readiness_score.py 2>/dev/null | head
+67:from tradingagents.graph.data_collector import DataCollector
+69:# 全局共享 DataCollector：同一 ticker+date 的数据只拉一次，所有 job 复用缓存
+70:_shared_data_collector = DataCollector()
+2829:        _shared_data_collector.ref(request.symbol, request.trade_date)
+2834:            data_collector=_shared_data_collector,
+2907:                "agent": "数据采集", "tool": "data_collector",
+2912:            await asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons)
+2916:                "agent": "数据采集", "tool": "data_collector",
+2936:                    data_collector=graph.data_collector,
+2968:                init_state["metadata"]["raw_evidence"] = graph.data_collector.build_raw_evidence(
+3372:            if _ticker_legacy and _td_legacy and hasattr(graph, 'data_collector'):
+3373:                re_data = graph.data_collector.build_raw_evidence(_ticker_legacy, _td_legacy)
+3503:        _shared_data_collector.evict(request.symbol, request.trade_date)
+tradingagents/agents/utils/readiness_score.py:5117:    query_mode = "not_queried"
+tradingagents/agents/utils/readiness_score.py:5123:        query_mode = raw_lhb_entry.get("query_mode", "not_queried") or "not_queried"
+tradingagents/agents/utils/readiness_score.py:5148:        if query_mode == "not_queried":
+tradingagents/agents/utils/readiness_score.py:5149:            query_mode = "not_queried"
+tradingagents/agents/utils/readiness_score.py:5151:        if query_mode == "not_queried":
+tradingagents/agents/utils/readiness_score.py:5152:            query_mode = "forced"
+tradingagents/agents/utils/readiness_score.py:5165:        "query_mode": query_mode,
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=40, offset=910][0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=60, offset=5110][0m
+现在让我查看这两个源文件现有的未提交 diff，以便在此基础之上进行修改：
+[0m
+[0m$ [0mgit diff tradingagents/graph/data_collector.py
+diff --git a/tradingagents/graph/data_collector.py b/tradingagents/graph/data_collector.py
+index 188d2e1..fccce0d 100644
+--- a/tradingagents/graph/data_collector.py
++++ b/tradingagents/graph/data_collector.py
+@@ -1,7 +1,7 @@
+ """DataCollector: fetch all data once, serve windowed views to analyst agents."""
+ from __future__ import annotations
+ 
+-from concurrent.futures import ThreadPoolExecutor
++from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+ from datetime import datetime, timedelta, timezone
+ from typing import Any, Dict, List, Optional
+ import json
+@@ -67,6 +67,12 @@ INDICATORS = [
+ SHORT_DAYS = 14
+ LONG_DAYS = 90
+ FETCH_LOCK_TIMEOUT = float(os.getenv("TA_DATA_FETCH_LOCK_TIMEOUT", "360"))
++# [UPSTREAM-081-001] Hard cap for one whole fetch round. A stuck provider
++# (network stall beyond the socket timeout, vendor-internal retry loops)
++# must not pin the per-key lock and drain the asyncio default executor
++# forever. Keep FETCH_LOCK_TIMEOUT >= FETCH_ALL_TIMEOUT + margin so queueing
++# collectors do not fail while a round is still inside its budget.
++FETCH_ALL_TIMEOUT = float(os.getenv("TA_DATA_FETCH_TIMEOUT", "300"))
+ 
+ import numpy as np
+ 
+@@ -497,6 +503,50 @@ def _compute_lhb_force_decision(
+     return (False, "")
+ 
+ 
++def _run_bounded_fetch(tasks: Dict[str, tuple]) -> tuple[Dict[str, Any], Dict[str, str]]:
++    """[UPSTREAM-081-001] Run every fetch task in parallel under a whole-round
++    hard cap (``FETCH_ALL_TIMEOUT``).
++
++    Tasks that finish within the cap return their results normally. Timed-out
++    sources get an explicit ``数据获取失败`` message so ``_infer_source_status``
++    classifies them as FAILED instead of hanging the analysis. Still-running
++    workers are abandoned (``shutdown(wait=False, cancel_futures=True)``);
++    the process-wide socket/requests default timeout bounds those threads, so
++    the round returns promptly instead of silently queueing behind zombie
++    workers (production symptom: executor starvation → origin 524).
++    """
++    results: Dict[str, Any] = {}
++    provider_hits: Dict[str, str] = {}
++    executor = ThreadPoolExecutor(max_workers=min(10, len(tasks)))
++    try:
++        future_to_key = {
++            executor.submit(_safe_with_vendor, tool, payload): key
++            for key, (tool, payload) in tasks.items()
++        }
++        done, not_done = futures_wait(set(future_to_key), timeout=FETCH_ALL_TIMEOUT)
++        for future in done:
++            key = future_to_key[future]
++            result, vendor = future.result()
++            results[key] = result
++            if vendor:
++                provider_hits[key] = vendor
++        for future in not_done:
++            key = future_to_key[future]
++            results[key] = (
++                f"数据获取失败：{key} 数据拉取超时（>{FETCH_ALL_TIMEOUT:g}s），"
++                "本轮分析跳过该数据源"
++            )
++            print(
++                f"  [Warning] {key} fetch timed out after "
++                f"{FETCH_ALL_TIMEOUT:g}s, skipped"
++            )
++    finally:
++        # Abandoned workers die once their socket-bounded network call gives
++        # up; never join them here or the hard cap would be meaningless.
++        executor.shutdown(wait=False, cancel_futures=True)
++    return results, provider_hits
++
++
+ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
+     """Fetch all data sources in parallel.
+ 
+@@ -567,19 +617,8 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
+     provider_hits: Dict[str, str] = {}
+     fetch_start = time.time()
+     stock_data_fetch_started_at = datetime.now(timezone.utc)
+-    # Provider calls remain joined here. A process-wide socket timeout bounds
+-    # ordinary network stalls without abandoning live worker threads.
+-    with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
+-        future_to_key = {
+-            executor.submit(_safe_with_vendor, tool, payload): key
+-            for key, (tool, payload) in tasks.items()
+-        }
+-        for future in future_to_key:
+-            key = future_to_key[future]
+-            result, vendor = future.result()
+-            results[key] = result
+-            if vendor:
+-                provider_hits[key] = vendor
++    # [UPSTREAM-081-001] bounded fetch round: see _run_bounded_fetch.
++    results, provider_hits = _run_bounded_fetch(tasks)
+     results["_provider_hits"] = provider_hits
+ 
+     # [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=60, offset=724][0m
+[0m✱ [0mGrep "def _exclude_forming_daily_bar|def _parse_csv_to_dataframe|def _safe|def _should_fetch_realtime_quote"[90m in tradingagents/graph/data_collector.py · 5 matches[0m
+我来读取 `_fetch_all` 和 helper 的剩余部分，以确保测试端的集成鲁棒性：
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=70, offset=125][0m
+[0m
+[0m# [0mTodos
+[•] Fix #5: data_collector.py 锁超时从 fetch 预算推导（TA_DATA_FETCH_TIMEOUT≥360 不再破坏不变量）
+[ ] Fix #2: 模块级共享有界 daemon 线程池替换每轮新建 executor + /healthz 可观测
+[ ] Fix #1: LHB force 查询纳入整轮 deadline（_apply_forced_lhb + _fetch_all 接线）
+[ ] Fix #3: api/main.py Authorization: Bearer <token>/JWT 完整脱敏
+[ ] Fix #4: 幂等捷径返回前走 _sanitize_analysis_error_text
+[ ] 补/改 5 组测试（test_upstream081_runtime_resilience.py）
+[ ] 验收：py_compile + pytest upstream081 + api_smoke 全绿
+[ ] 更新 docs/DEVLOG.md（fix round 2 条目）与 implementation.md（逐条取舍）
+[0m
+我已经了解全局了。让我来制定待办事项列表并开始实施。
+Fix #5 — 锁超时从 fetch 预算推导：
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -65,15 +65,29 @@
+     "rsi", "macd", "boll", "boll_ub", "boll_lb", "atr", "vwma",
+ ]
+ SHORT_DAYS = 14
+ LONG_DAYS = 90
+-FETCH_LOCK_TIMEOUT = float(os.getenv("TA_DATA_FETCH_LOCK_TIMEOUT", "360"))
+ # [UPSTREAM-081-001] Hard cap for one whole fetch round. A stuck provider
+ # (network stall beyond the socket timeout, vendor-internal retry loops)
+ # must not pin the per-key lock and drain the asyncio default executor
+-# forever. Keep FETCH_LOCK_TIMEOUT >= FETCH_ALL_TIMEOUT + margin so queueing
+-# collectors do not fail while a round is still inside its budget.
++# forever.
+ FETCH_ALL_TIMEOUT = float(os.getenv("TA_DATA_FETCH_TIMEOUT", "300"))
++# [UPSTREAM-081-001] The per-key lock must outlast one whole fetch round
++# (+ margin) so queueing collectors do not fail while a round is still inside
++# its budget. The timeout is DERIVED from the fetch budget: a custom
++# TA_DATA_FETCH_LOCK_TIMEOUT is honoured only when it keeps that margin, so an
++# incompatible env pair can no longer violate the invariant at import time.
++FETCH_LOCK_TIMEOUT_MARGIN = 60.0
++_FETCH_LOCK_TIMEOUT_ENV = float(os.getenv("TA_DATA_FETCH_LOCK_TIMEOUT", "360"))
++FETCH_LOCK_TIMEOUT = max(
++    _FETCH_LOCK_TIMEOUT_ENV, FETCH_ALL_TIMEOUT + FETCH_LOCK_TIMEOUT_MARGIN
++)
++# [UPSTREAM-081-001] Process-wide bounded worker pool for all fetch rounds
++# (see _BoundedFetchPool). Cap is the whole-process ceiling for leaked
++# (abandoned, socket-bound) fetch threads.
++FETCH_POOL_MAX_WORKERS = max(
++    1, int(os.getenv("TA_DATA_FETCH_POOL_WORKERS", "16"))
++)
+ 
+ import numpy as np
+ 
+ _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
+
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=30, offset=88][0m
+[0m
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -93,9 +93,119 @@
+ _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
+ 
+ _logger = logging.getLogger(__name__)
+ 
++if FETCH_LOCK_TIMEOUT > _FETCH_LOCK_TIMEOUT_ENV:
++    _logger.warning(
++        "TA_DATA_FETCH_LOCK_TIMEOUT=%g violates the invariant "
++        "FETCH_LOCK_TIMEOUT >= TA_DATA_FETCH_TIMEOUT(%g) + %g; "
++        "derived FETCH_LOCK_TIMEOUT=%g",
++        _FETCH_LOCK_TIMEOUT_ENV,
++        FETCH_ALL_TIMEOUT,
++        FETCH_LOCK_TIMEOUT_MARGIN,
++        FETCH_LOCK_TIMEOUT,
++    )
+ 
++
++class _BoundedFetchPool:
++    """Process-wide bounded daemon worker pool shared by all fetch rounds.
++
++    [UPSTREAM-081-001] Each fetch round used to build its own
++    ``ThreadPoolExecutor``; abandoned (stuck) workers cannot be cancelled, so
++    every round that hit the deadline leaked one live thread + connection per
++    timed-out source, and threads accumulated without bound as rounds piled
++    up. All rounds now share this pool: the leak is hard-capped at
++    ``FETCH_POOL_MAX_WORKERS`` daemon threads for the whole process, threads
++    carry the ``ta-data-fetch`` name prefix for dumps, and leak/backlog
++    gauges are exposed via :func:`get_fetch_pool_stats` (surfaced on
++    ``/healthz``).
++    """
++
++    def __init__(self, max_workers: int) -> None:
++        self._max_workers = max(1, int(max_workers))
++        self._work: "queue.SimpleQueue" = queue.SimpleQueue()
++        self._lock = threading.Lock()
++        self._active = 0
++        self._abandoned = 0
++        self._threads: List[threading.Thread] = []
++        for idx in range(self._max_workers):
++            thread = threading.Thread(
++                target=self._worker, name=f"ta-data-fetch-{idx}", daemon=True
++            )
++            thread.start()
++            self._threads.append(thread)
++
++    def _worker(self) -> None:
++        while True:
++            fn, future = self._work.get()
++            if not future.set_running_or_notify_cancel():
++                continue
++            with self._lock:
++                self._active += 1
++            try:
++                result = fn()
++            except BaseException as exc:  # propagate to the waiting round
++                future.set_exception(exc)
++            else:
++                future.set_result(result)
++            finally:
++                with self._lock:
++                    self._active -= 1
++
++    def submit(self, fn) -> "Future":
++        future: Future = Future()
++        self._work.put((fn, future))
++        return future
++
++    def mark_abandoned(self, count: int = 1) -> None:
++        """Count workers left running past their round deadline (leak gauge)."""
++        with self._lock:
++            self._abandoned += count
++
++    def stats(self) -> Dict[str, int]:
++        with self._lock:
++            return {
++                "max_workers": self._max_workers,
++                "threads": len(self._threads),
++                "active": self._active,
++                "queued": self._work.qsize(),
++                "abandoned_total": self._abandoned,
++            }
++
++
++_fetch_pool: Optional[_BoundedFetchPool] = None
++_fetch_pool_lock = threading.Lock()
++
++
++def get_fetch_pool() -> "_BoundedFetchPool":
++    """Lazily create the shared fetch pool so importing this module stays
++    side-effect free (scheduler/tests import it without fetching)."""
++    global _fetch_pool
++    if _fetch_pool is None:
++        with _fetch_pool_lock:
++            if _fetch_pool is None:
++                _fetch_pool = _BoundedFetchPool(FETCH_POOL_MAX_WORKERS)
++    return _fetch_pool
++
++
++def get_fetch_pool_stats() -> Dict[str, int]:
++    """Leak/backlog gauges for the shared fetch pool (``/healthz`` observability).
++
++    Never forces pool creation; reports the configured ceiling with zeroed
++    counters until the first fetch round runs.
++    """
++    pool = _fetch_pool
++    if pool is None:
++        return {
++            "max_workers": FETCH_POOL_MAX_WORKERS,
++            "threads": 0,
++            "active": 0,
++            "queued": 0,
++            "abandoned_total": 0,
++        }
++    return pool.stats()
++
++
+ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+     "stock_data": "ohlcv",
+     "realtime_quote": "realtime_quotes",
+     "news": "news",
+
+[0m
+Now update the imports (`ThreadPoolExecutor` no longer needed; add `Future`, `queue`):
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -1,12 +1,13 @@
+ """DataCollector: fetch all data once, serve windowed views to analyst agents."""
+ from __future__ import annotations
+ 
+-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
++from concurrent.futures import Future, wait as futures_wait
+ from datetime import datetime, timedelta, timezone
+ from typing import Any, Dict, List, Optional
+ import json
+ import os
++import queue
+ import re
+ import threading
+ import time
+ import pandas as pd
+
+[0m
+现在我来重构 `_run_bounded_fetch` (修复 #2)，并添加 `_apply_forced_lhb` (修复 #1)：
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -627,52 +627,121 @@
+ 
+     return (False, "")
+ 
+ 
+-def _run_bounded_fetch(tasks: Dict[str, tuple]) -> tuple[Dict[str, Any], Dict[str, str]]:
++def _run_bounded_fetch(
++    tasks: Dict[str, tuple],
++    deadline: Optional[float] = None,
++) -> tuple[Dict[str, Any], Dict[str, str]]:
+     """[UPSTREAM-081-001] Run every fetch task in parallel under a whole-round
+     hard cap (``FETCH_ALL_TIMEOUT``).
+ 
+     Tasks that finish within the cap return their results normally. Timed-out
+     sources get an explicit ``数据获取失败`` message so ``_infer_source_status``
+-    classifies them as FAILED instead of hanging the analysis. Still-running
+-    workers are abandoned (``shutdown(wait=False, cancel_futures=True)``);
+-    the process-wide socket/requests default timeout bounds those threads, so
+-    the round returns promptly instead of silently queueing behind zombie
+-    workers (production symptom: executor starvation → origin 524).
++    classifies them as FAILED instead of hanging the analysis.
++
++    Workers run on the process-wide bounded pool (``_BoundedFetchPool``), not
++    a per-round executor: a stuck provider keeps its thread until the
++    socket-bounded call gives up, but the leak is capped at
++    ``FETCH_POOL_MAX_WORKERS`` threads for the whole process instead of
++    growing by one thread per abandoned worker per round. Callers pass a
++    ``time.monotonic()`` deadline so follow-up work (the LHB force upgrade)
++    consumes the same budget. Backlog/leak gauges: ``get_fetch_pool_stats()``.
+     """
+     results: Dict[str, Any] = {}
+     provider_hits: Dict[str, str] = {}
+-    executor = ThreadPoolExecutor(max_workers=min(10, len(tasks)))
+-    try:
+-        future_to_key = {
+-            executor.submit(_safe_with_vendor, tool, payload): key
+-            for key, (tool, payload) in tasks.items()
+-        }
+-        done, not_done = futures_wait(set(future_to_key), timeout=FETCH_ALL_TIMEOUT)
+-        for future in done:
+-            key = future_to_key[future]
+-            result, vendor = future.result()
+-            results[key] = result
+-            if vendor:
+-                provider_hits[key] = vendor
+-        for future in not_done:
+-            key = future_to_key[future]
+-            results[key] = (
+-                f"数据获取失败：{key} 数据拉取超时（>{FETCH_ALL_TIMEOUT:g}s），"
+-                "本轮分析跳过该数据源"
+-            )
+-            print(
+-                f"  [Warning] {key} fetch timed out after "
+-                f"{FETCH_ALL_TIMEOUT:g}s, skipped"
+-            )
+-    finally:
++    if deadline is None:
++        deadline = time.monotonic() + FETCH_ALL_TIMEOUT
++    pool = get_fetch_pool()
++    future_to_key = {
++        # default-arg binding: capture each task's tool/payload individually
++        pool.submit(lambda tool=tool, payload=payload: _safe_with_vendor(tool, payload)): key
++        for key, (tool, payload) in tasks.items()
++    }
++    done, not_done = futures_wait(
++        set(future_to_key), timeout=max(0.0, deadline - time.monotonic())
++    )
++    for future in done:
++        key = future_to_key[future]
++        result, vendor = future.result()
++        results[key] = result
++        if vendor:
++            provider_hits[key] = vendor
++    if not_done:
+         # Abandoned workers die once their socket-bounded network call gives
+-        # up; never join them here or the hard cap would be meaningless.
+-        executor.shutdown(wait=False, cancel_futures=True)
++        # up; never join them here or the hard cap would be meaningless. The
++        # shared pool keeps the leak bounded and observable.
++        pool.mark_abandoned(len(not_done))
++    for future in not_done:
++        key = future_to_key[future]
++        results[key] = (
++            f"数据获取失败：{key} 数据拉取超时（>{FETCH_ALL_TIMEOUT:g}s），"
++            "本轮分析跳过该数据源"
++        )
++        print(
++            f"  [Warning] {key} fetch timed out after "
++            f"{FETCH_ALL_TIMEOUT:g}s, skipped"
++        )
+     return results, provider_hits
+ 
+ 
++def _apply_forced_lhb(
++    results: Dict[str, Any],
++    provider_hits: Dict[str, str],
++    ticker: str,
++    trade_date: str,
++    deadline: float,
++    force_reason: str,
++) -> None:
++    """[E-003] Upgrade LHB to force=True strictly inside the whole-round budget.
++
++    [UPSTREAM-081-001] The forced query used to run after ``_run_bounded_fetch``
++    with no deadline at all: a stuck provider could hold a worker thread
++    indefinitely past the round cap. It now consumes whatever budget remains
++    of the same deadline the round started with:
++
++    - budget exhausted → never submitted, explicit degraded status text
++      (``_lhb_query_mode="forced_skipped_budget"``);
++    - submitted but the remaining wait expires → abandoned on the bounded
++      pool, explicit degraded status text (``_lhb_query_mode="forced_timeout"``;
++      ``_infer_source_status`` → FAILED, never a fake success).
++    """
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        results["lhb"] = (
++            "数据获取失败：lhb 强制查询因整轮预算已用尽未执行"
++            f"（>{FETCH_ALL_TIMEOUT:g}s），本轮分析跳过该数据源"
++        )
++        results["_lhb_query_mode"] = "forced_skipped_budget"  # [G-007] provenance
++        results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
++        print("  [E-003] lhb force query skipped: whole-round budget exhausted")
++        return
++    future = get_fetch_pool().submit(
++        lambda: _safe_with_vendor(
++            get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True}
++        )
++    )
++    _done, not_done = futures_wait({future}, timeout=remaining)
++    if not_done:
++        get_fetch_pool().mark_abandoned(1)
++        results["lhb"] = (
++            f"数据获取失败：lhb 强制查询超时（>{remaining:.0f}s），"
++            "本轮分析跳过该数据源"
++        )
++        results["_lhb_query_mode"] = "forced_timeout"  # [G-007] provenance
++        results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
++        print(
++            f"  [E-003] lhb force query timed out after {remaining:.0f}s, skipped"
++        )
++        return
++    lhb_forced, lhb_vendor = future.result()
++    results["lhb"] = lhb_forced
++    if lhb_vendor:
++        provider_hits["lhb"] = lhb_vendor
++    results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
++    results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
++
++
+ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
+     """Fetch all data sources in parallel.
+ 
+     Always fetches full data including financial statements, regardless of horizon.
+
+[0m
+现在将截止时间传入 `_fetch_all`，并将未受限的强制 LHB 调用替换为 `_apply_forced_lhb`：
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -810,10 +810,13 @@
+ results: Dict[str, Any] = {}
+ provider_hits: Dict[str, str] = {}
+ fetch_start = time.time()
+ stock_data_fetch_started_at = datetime.now(timezone.utc)
+-# [UPSTREAM-081-001] bounded fetch round: see _run_bounded_fetch.
+-results, provider_hits = _run_bounded_fetch(tasks)
++# [UPSTREAM-081-001] bounded fetch round: one deadline covers both the
++# parallel round and the conditional LHB force upgrade below, so no
++# provider call can outlive the whole-round budget.
++round_deadline = time.monotonic() + FETCH_ALL_TIMEOUT
++results, provider_hits = _run_bounded_fetch(tasks, deadline=round_deadline)
+ results["_provider_hits"] = provider_hits
+ 
+ # [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
+ # 结构化条目，让 raw_evidence / readiness 识别为"已跳过（低危）"而非"未查询/缺失"，
+
+[0m
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -865,17 +865,12 @@
+     )
+ 
+     if lhb_force_needed:
+         print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+-        lhb_forced, lhb_vendor = _safe_with_vendor(
+-            get_lhb_detail,
+-            {"symbol": ticker, "date": trade_date, "force": True},
++        _apply_forced_lhb(
++            results, provider_hits, ticker, trade_date,
++            deadline=round_deadline, force_reason=lhb_force_reason,
+         )
+-        results["lhb"] = lhb_forced
+-        if lhb_vendor:
+-            provider_hits["lhb"] = lhb_vendor
+-        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+-        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+ else:
+     results["_lhb_query_mode"] = "skipped_hk"  # [HK-001] hk_market_boundary
+ 
+ # ── Parse CSV once, reuse for indicators and VPA ──────────────────
+
+[0m
+现在我来修复 api/main.py 中的 #3 和 #4 问题 —— 处理 credential 正则表达式和幂等性快捷方式：
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -2696,11 +2696,19 @@
+     r"https?://\S+|www\.\S+|\b[A-Za-z0-9.-]+\.(?:com|cn|net|org|io|ai|tech|vip)\b(?:\.\S*)?(?:/\S*)?",
+     re.IGNORECASE,
+ )
+ _ERROR_CREDENTIAL_RE = re.compile(
+-    r"(?:sk-|Bearer\s+)[A-Za-z0-9_\-]{8,}"
+-    r"|\b(?:api[_-]?key|apikey|token|secret|password|authorization)\b"
+-    r"[\"'=:\s]+\S+"
++    # [UPSTREAM-081-001] Authorization header forms: "Authorization: Bearer
++    # <jwt>", '"Authorization": "Bearer <jwt>"' (JSON), "authorization=basic
++    # xyz" — the credential (dotted JWT included) must be swallowed whole,
++    # not just the literal "Authorization: Bearer" prefix.
++    r"\bauthorization\b[\"'=:\s]*(?:bearer|basic|token)?[\"'=:\s]*[^\s\"',;)]+"
++    # bare "Bearer <credential>" without the header keyword
++    r"|\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"
++    # standalone JWT (header.payload.signature)
++    r"|\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"
++    r"|\bsk-[A-Za-z0-9_\-]{8,}"
++    r"|\b(?:api[_-]?key|apikey|token|secret|password)\b[\"'=:\s]+\S+"
+     r"|\b[A-Za-z0-9_\-]{32,}\b",
+     re.IGNORECASE,
+ )
+ _ERROR_MAX_ORIGIN_LEN = 200
+@@ -2710,9 +2718,9 @@
+     """Redact credentials/URLs/stack continuation from a raw error string.
+ 
+     Only the first line is kept (exception chains embed multi-line internal
+     frames), then URLs and key-like tokens are masked, then the text is
+-    truncated for display.
++    truncated for display. Stable under repeated application.
+     """
+     raw = str(err or "").strip()
+     if not raw:
+         return raw
+@@ -2733,9 +2741,12 @@
+     raw = str(err or "")
+     if not raw.strip():
+         return raw
+     if "（原始错误：" in raw:  # already humanized; keep idempotent
+-        return raw
++        # [UPSTREAM-081-001] The shortcut must not bypass redaction: an
++        # already-humanized payload can still carry URLs/credentials (e.g.
++        # composed upstream). Re-sanitize; repeated sanitization is stable.
++        return _sanitize_analysis_error_text(raw)
+     safe = _sanitize_analysis_error_text(raw)
+     for pat, hint in _ANALYSIS_ERROR_HINTS:
+         if re.search(pat, raw, re.IGNORECASE):
+             return f"{hint}（原始错误：{safe}）"
+
+[0m
+现在处理 `api/main.py` 中的 `healthz` `fetch_pool` 可观测性：
+[0m→ [0mRead api/main.py[90m [limit=8, offset=64][0m
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -63,9 +63,9 @@
+ 
+ 
+ from tradingagents.default_config import DEFAULT_CONFIG
+ from tradingagents.graph.trading_graph import TradingAgentsGraph
+-from tradingagents.graph.data_collector import DataCollector
++from tradingagents.graph.data_collector import DataCollector, get_fetch_pool_stats
+ 
+ # 全局共享 DataCollector：同一 ticker+date 的数据只拉一次，所有 job 复用缓存
+ _shared_data_collector = DataCollector()
+ from tradingagents.dataflows.trade_calendar import cn_today_str
+
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -4764,8 +4764,12 @@
+ payload: Dict[str, Any] = {"status": "ok"}
+ if _default_executor is not None:
+     payload["executor_queued"] = _default_executor._work_queue.qsize()
+     payload["executor_threads"] = len(_default_executor._threads)
++# [UPSTREAM-081-001] shared fetch-pool leak/backlog gauges: stuck fetch
++# threads are capped by max_workers and visible here instead of growing
++# unbounded across rounds.
++payload["fetch_pool"] = get_fetch_pool_stats()
+ try:
+     loop = asyncio.get_running_loop()
+     await asyncio.wait_for(
+         loop.run_in_executor(None, int), timeout=_HEALTHZ_PROBE_TIMEOUT
+
+[0m
+[0m$ [0mgrep -n "ThreadPoolExecutor" tradingagents/graph/data_collector.py; python -m py_compile api/main.py tradingagents/graph/data_collector.py && echo COMPILE_OK
+114:    ``ThreadPoolExecutor``; abandoned (stuck) workers cannot be cancelled, so
+zsh:1: command not found: python
+[0m
+[0m$ [0msource .venv/bin/activate && python -m py_compile api/main.py tradingagents/graph/data_collector.py && echo COMPILE_OK
+COMPILE_OK
+[0m
+两项修复的快速行为健全性检查，然后进行测试更新：
+[0m$ [0msource .venv/bin/activate && python - <<'EOF'
+import api.main as m
+
+cases = [
+    "RuntimeError: 401 Unauthorized, Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    '{"headers": {"Authorization": "Bearer sk-abcdef0123456789"}}',
+    "Authorization:Basic dXNlcjpwYXNzMTIzNDU2Nzg=",
+    "GET /v1/x HTTP/1.1 authorization=Bearer abc123def456ghi789",
+    "Bearer eyJhbGciOiJub25lIn0.eyJhIjoxfQ.sig_part-here",
+    "invalid api_key sk-abcdef0123456789",
+    "Authorization Failed",
+    "9f8e7d6c5b4a32109f8e7d6c5b4a32109f8e7d6c",
+]
+for c in cases:
+    out = m._sanitize_analysis_error_text(c)
+    leak = any(s in out for s in ("eyJ", "sk-abc", "dXNlcj", "abc123def456", "9f8e7d6c", "SflKxw"))
+    print(("LEAK!" if leak else "ok   "), out[:100])
+
+# idempotency shortcut
+h1 = m._humanize_analysis_error("Error code: 429 throttling")
+h2 = m._humanize_analysis_error(h1)
+print("idem:", h1 == h2)
+crafted = "您配置的大模型 API Key 余额不足。（原始错误：see https://secret.example.com/v1?key=sk-abcdef0123456789）"
+s1 = m._humanize_analysis_error(crafted)
+print("shortcut sanitized:", "secret.example.com" not in s1 and "sk-abcdef" not in s1)
+print("stable:", m._humanize_analysis_error(s1) == s1)
+# config invariant
+import importlib
+from tradingagents.graph import data_collector as dc
+print("default:", dc.FETCH_ALL_TIMEOUT, dc.FETCH_LOCK_TIMEOUT)
+import os
+os.environ["TA_DATA_FETCH_TIMEOUT"] = "360"
+importlib.reload(dc)
+print("custom360:", dc.FETCH_ALL_TIMEOUT, dc.FETCH_LOCK_TIMEOUT)
+os.environ["TA_DATA_FETCH_LOCK_TIMEOUT"] = "700"
+importlib.reload(dc)
+print("big-lock-honoured:", dc.FETCH_ALL_TIMEOUT, dc.FETCH_LOCK_TIMEOUT)
+del os.environ["TA_DATA_FETCH_TIMEOUT"]; del os.environ["TA_DATA_FETCH_LOCK_TIMEOUT"]
+importlib.reload(dc)
+print("restored:", dc.FETCH_ALL_TIMEOUT, dc.FETCH_LOCK_TIMEOUT, dc.FETCH_POOL_MAX_WORKERS)
+print("stats:", dc.get_fetch_pool_stats())
+EOF
+[2026-09-05 14:05:42] WARNING: TA_DATA_FETCH_LOCK_TIMEOUT=360 violates the invariant FETCH_LOCK_TIMEOUT >= TA_DATA_FETCH_TIMEOUT(360) + 60; derived FETCH_LOCK_TIMEOUT=420
+ok    RuntimeError: 401 Unauthorized, <凭据已隐藏>
+ok    {"headers": {"<凭据已隐藏>"}}
+ok    <凭据已隐藏>
+ok    GET /v1/x HTTP/1.1 <凭据已隐藏>
+ok    <凭据已隐藏>
+ok    invalid <凭据已隐藏>
+ok    <凭据已隐藏>
+ok    <凭据已隐藏>
+idem: True
+shortcut sanitized: True
+stable: True
+default: 300.0 360.0
+custom360: 360.0 420.0
+big-lock-honoured: 360.0 700.0
+restored: 300.0 360.0 16
+stats: {'max_workers': 16, 'threads': 0, 'active': 0, 'queued': 0, 'abandoned_total': 0}
+[0m
+两个实现均已验证工作正常。现在我来更新测试文件——首先是 docstring 和 imports，接着是新的/扩展的测试类：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -12,13 +12,25 @@
+    ambiguity / cold cache); unresolved text keeps the explicit error.
+ 3. Error semantics: user-facing failure messages are humanized AND
+    sanitized — they must never leak API keys, URLs, or internal stack
+    frames.
++
++Fix round 2 (review round2 3×P1 + 2×P2) additionally locks down:
++
++4. The LHB force upgrade runs strictly inside the whole-round deadline.
++5. All fetch rounds share a bounded daemon pool: leaked (stuck) threads are
++   capped process-wide and observable on ``/healthz`` instead of growing
++   one-thread-per-abandoned-worker per round.
++6. ``Authorization: Bearer <token>`` (incl. JWT) is redacted whole, and the
++   humanize idempotency shortcut can no longer bypass sanitization.
++7. ``FETCH_LOCK_TIMEOUT`` is derived from the fetch budget so a custom
++   ``TA_DATA_FETCH_TIMEOUT`` can no longer violate the queueing invariant.
+ """
+ 
+ from __future__ import annotations
+ 
+ import asyncio
++import importlib
+ import json
+ import os
+ import threading
+ import time
+
+[0m
+现在添加一个 `_GateTool` 辅助函数，并强化现有的裕度（margin）测试：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -55,13 +55,24 @@
+         self._result = result
+         self._delay = delay
+ 
+     def invoke(self, payload):
+-        if self._delay:
+-            time.sleep(self._delay)
++        time.sleep(self._delay)
+         return self._result
+ 
+ 
++class _GateTool(_FakeTool):
++    """Simulates a stuck provider: invoke() blocks until the gate is set."""
++
++    def __init__(self, name: str, gate: threading.Event) -> None:
++        super().__init__(name, result="late")
++        self._gate = gate
++
++    def invoke(self, payload):
++        self._gate.wait(timeout=10)
++        return self._result
++
++
+ def _break_llm(monkeypatch, exc: Exception | None = None):
+     """Make the intent-extraction LLM client fail like a dead provider."""
+     from tradingagents.llm_clients import factory
+ 
+
+[0m
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -107,12 +107,14 @@
+ def test_fetch_all_timeout_default_and_lock_margin(self):
+     if "TA_DATA_FETCH_TIMEOUT" in os.environ or "TA_DATA_FETCH_LOCK_TIMEOUT" in os.environ:
+         pytest.skip("custom fetch timeout envs configured")
+     assert data_collector_module.FETCH_ALL_TIMEOUT == 300.0
+-    # Queueing collectors must be able to outlast a full round budget.
++    # Queueing collectors must be able to outlast a full round budget:
++    # the lock timeout is derived from the fetch budget plus a margin
++    # (fix round2 P2: a custom fetch timeout can no longer break this).
+     assert (
+         data_collector_module.FETCH_LOCK_TIMEOUT
+-        > data_collector_module.FETCH_ALL_TIMEOUT
++        >= data_collector_module.FETCH_ALL_TIMEOUT + 60.0
+     )
+ 
+ def test_fast_sources_return_normally(self):
+     tasks = {
+
+[0m
+现在我来在 `TestBoundedFetchRound` 之后添加新的测试类（shared pool、thread cap、LHB force budget、config invariant）：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -167,8 +167,282 @@
+             release.set()
+ 
+ 
+ # ---------------------------------------------------------------------------
++# 1b. Fix round2: shared bounded fetch pool (thread leaks capped + observable)
++# ---------------------------------------------------------------------------
++
++
++class TestSharedFetchPool:
++    def test_pool_is_bounded_named_and_daemonized(self):
++        pool = data_collector_module._BoundedFetchPool(2)
++        gate = threading.Event()
++
++        def _blocked():
++            gate.wait(timeout=10)
++            return "x"
++
++        futures = [pool.submit(_blocked) for _ in range(5)]
++        deadline = time.monotonic() + 2
++        while time.monotonic() < deadline and pool.stats()["active"] < 2:
++            time.sleep(0.02)
++
++        stats = pool.stats()
++        assert stats["max_workers"] == 2
++        assert stats["threads"] == 2
++        assert stats["active"] == 2
++        assert stats["queued"] == 3
++        try:
++            assert [f.result(timeout=10) for f in futures] == ["x"] * 5
++        finally:
++            gate.set()
++        assert all(t.name.startswith("ta-data-fetch-") for t in pool._threads)
++        assert all(t.daemon for t in pool._threads)
++
++    def test_submit_propagates_worker_exceptions(self):
++        pool = data_collector_module._BoundedFetchPool(1)
++
++        def _boom():
++            raise ValueError("provider blew up")
++
++        with pytest.raises(ValueError):
++            pool.submit(_boom).result(timeout=5)
++
++    def test_abandoned_stuck_workers_do_not_accumulate_threads(self, monkeypatch):
++        """The P1: per-round executors leaked one thread per abandoned worker.
++
++        With the shared pool, the live thread count must not grow as more
++        rounds abandon stuck workers.
++        """
++        monkeypatch.setattr(data_collector_module, "FETCH_ALL_TIMEOUT", 0.15)
++        gate = threading.Event()
++        pool = data_collector_module.get_fetch_pool()
++        cap = pool.stats()["max_workers"]
++        abandoned_before = pool.stats()["abandoned_total"]
++
++        def _live_fetch_threads() -> int:
++            return len(
++                [
++                    t
++                    for t in threading.enumerate()
++                    if t.name.startswith("ta-data-fetch-")
++                ]
++            )
++
++        try:
++            results, _hits = _run_bounded_fetch(
++                {"stock_data": (_GateTool("get_stock_data", gate), {})}
++            )
++            assert "数据拉取超时" in results["stock_data"]
++            live_after_first = _live_fetch_threads()
++
++            for _ in range(3):  # three more rounds, each abandoning a worker
++                _run_bounded_fetch(
++                    {"stock_data": (_GateTool("get_stock_data", gate), {})}
++                )
++
++            assert _live_fetch_threads() == live_after_first, (
++                "leaked threads must not accumulate across rounds"
++            )
++            assert live_after_first <= cap
++            assert (
++                data_collector_module.get_fetch_pool_stats()["abandoned_total"]
++                - abandoned_before
++                == 4
++            )
++        finally:
++            gate.set()
++
++
++# ---------------------------------------------------------------------------
++# 1c. Fix round2: LHB force upgrade stays inside the whole-round deadline
++# ---------------------------------------------------------------------------
++
++
++class TestLhbForceWithinRoundBudget:
++    def test_forced_lhb_success_within_budget_keeps_provenance(self, monkeypatch):
++        monkeypatch.setattr(
++            data_collector_module,
++            "get_lhb_detail",
++            _FakeTool("get_lhb_detail", result="LHB_HAS_DATA 龙虎榜明细"),
++        )
++        results: dict = {}
++        hits: dict = {}
++
++        data_collector_module._apply_forced_lhb(
++            results, hits, "600519.SH", "2026-09-01",
++            deadline=time.monotonic() + 5,
++            force_reason="announcement_mentions_lhb",
++        )
++
++        assert results["lhb"] == "LHB_HAS_DATA 龙虎榜明细"
++        assert results["_lhb_query_mode"] == "forced"
++        assert results["_lhb_force_reason"] == "announcement_mentions_lhb"
++
++    def test_forced_lhb_times_out_inside_remaining_budget(self, monkeypatch):
++        gate = threading.Event()
++        monkeypatch.setattr(
++            data_collector_module, "get_lhb_detail", _GateTool("get_lhb_detail", gate)
++        )
++        results: dict = {}
++        hits: dict = {}
++        deadline = time.monotonic() + 0.3
++        started = time.monotonic()
++        try:
++            data_collector_module._apply_forced_lhb(
++                results, hits, "600519.SH", "2026-09-01",
++                deadline=deadline, force_reason="fund_flow_anomaly",
++            )
++            elapsed = time.monotonic() - started
++        finally:
++            gate.set()
++
++        assert elapsed < 2.5, "force query must not wait past the round deadline"
++        assert "数据获取失败" in results["lhb"]
++        assert "超时" in results["lhb"]
++        assert DataCollector._infer_source_status(results["lhb"]) == "FAILED"
++        assert results["_lhb_query_mode"] == "forced_timeout"
++        assert results["_lhb_force_reason"] == "fund_flow_anomaly"
++        assert "lhb" not in hits
++
++    def test_forced_lhb_skipped_when_budget_exhausted(self, monkeypatch):
++        calls: list = []
++
++        def _must_not_run(**payload):
++            calls.append(payload)
++            return "should never run"
++
++        monkeypatch.setattr(data_collector_module, "get_lhb_detail", _must_not_run)
++        results: dict = {}
++        hits: dict = {}
++
++        data_collector_module._apply_forced_lhb(
++            results, hits, "600519.SH", "2026-09-01",
++            deadline=time.monotonic() - 1,  # budget already gone
++            force_reason="anomaly_condition",
++        )
++
++        assert calls == [], "force query must not be submitted without budget"
++        assert "数据获取失败" in results["lhb"]
++        assert "预算" in results["lhb"]
++        assert DataCollector._infer_source_status(results["lhb"]) == "FAILED"
++        assert results["_lhb_query_mode"] == "forced_skipped_budget"
++
++    def test_fetch_all_keeps_forced_lhb_inside_round_deadline(self, monkeypatch):
++        """Integration: _fetch_all wiring gives the force query the SAME
++        deadline as the round — no budget-free execution after the cap."""
++        for name in (
++            "get_stock_data", "get_global_news", "get_board_fund_flow",
++            "get_individual_fund_flow", "get_insider_transactions", "get_zt_pool",
++            "get_hot_stocks_xq", "get_announcements", "get_margin_trading",
++            "get_ratings", "get_research_report", "get_buybacks",
++            "get_realtime_quotes", "get_fundamentals", "get_balance_sheet",
++            "get_cashflow", "get_income_statement",
++        ):
++            monkeypatch.setattr(
++                data_collector_module, name, _FakeTool(name, result="ok")
++            )
++        # News mentions 龙虎榜 → LHB force upgrade must trigger.
++        monkeypatch.setattr(
++            data_collector_module,
++            "get_news",
++            _FakeTool("get_news", result="600519 触发龙虎榜 异常波动"),
++        )
++        monkeypatch.setattr(
++            data_collector_module, "_should_fetch_realtime_quote",
++            lambda *a, **k: False,
++        )
++        monkeypatch.setattr(data_collector_module, "FETCH_ALL_TIMEOUT", 1.0)
++
++        gate = threading.Event()
++
++        class _StatefulLhbTool:
++            name = "get_lhb_detail"
++
++            def __init__(self) -> None:
++                self.calls = 0
++
++            def invoke(self, payload):
++                self.calls += 1
++                if payload.get("force") is not True:
++                    return "LHB_NORMAL_NO_DATA 无龙虎榜数据"
++                gate.wait(timeout=10)
++                return "late"
++
++        lhb_tool = _StatefulLhbTool()
++        monkeypatch.setattr(data_collector_module, "get_lhb_detail", lhb_tool)
++
++        try:
++            started = time.monotonic()
++            pool = data_collector_module._fetch_all("600519.SH", "2026-09-01")
++            elapsed = time.monotonic() - started
++        finally:
++            gate.set()
++
++        assert elapsed < 3.5, f"round must return inside its deadline, took {elapsed:.2f}s"
++        assert pool["stock_data"] == "ok"
++        assert lhb_tool.calls >= 2, "force upgrade must have been attempted"
++        assert pool["_lhb_force_reason"] == "anomaly_condition"
++        assert pool["_lhb_query_mode"] == "forced_timeout"
++        assert "数据获取失败" in pool["lhb"]
++        assert DataCollector._infer_source_status(pool["lhb"]) == "FAILED"
++
++
++# ---------------------------------------------------------------------------
++# 1d. Fix round2: lock timeout derived from fetch budget (config invariant)
++# ---------------------------------------------------------------------------
++
++
++class TestFetchLockBudgetInvariant:
++    _ENV_KEYS = ("TA_DATA_FETCH_TIMEOUT", "TA_DATA_FETCH_LOCK_TIMEOUT")
++
++    def _reload_with(self, monkeypatch, *, fetch=None, lock=None):
++        if fetch is None:
++            monkeypatch.delenv("TA_DATA_FETCH_TIMEOUT", raising=False)
++        else:
++            monkeypatch.setenv("TA_DATA_FETCH_TIMEOUT", str(fetch))
++        if lock is None:
++            monkeypatch.delenv("TA_DATA_FETCH_LOCK_TIMEOUT", raising=False)
++        else:
++            monkeypatch.setenv("TA_DATA_FETCH_LOCK_TIMEOUT", str(lock))
++        importlib.reload(data_collector_module)
++
++    @pytest.fixture(autouse=True)
++    def _restore_module_env(self):
++        saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
++        yield
++        for k, v in saved.items():
++            if v is None:
++                os.environ.pop(k, None)
++            else:
++                os.environ[k] = v
++        importlib.reload(data_collector_module)
++
++    def test_custom_fetch_timeout_derives_lock_margin(self, monkeypatch):
++        """TA_DATA_FETCH_TIMEOUT=360 used to break the invariant; now the
++        lock timeout is derived so the margin always holds."""
++        self._reload_with(monkeypatch, fetch=360)
++
++        assert data_collector_module.FETCH_ALL_TIMEOUT == 360.0
++        assert data_collector_module.FETCH_LOCK_TIMEOUT == 420.0
++        assert (
++            data_collector_module.FETCH_LOCK_TIMEOUT
++            >= data_collector_module.FETCH_ALL_TIMEOUT + 60.0
++        )
++
++    def test_explicit_larger_lock_timeout_is_honoured(self, monkeypatch):
++        self._reload_with(monkeypatch, fetch=300, lock=700)
++
++        assert data_collector_module.FETCH_LOCK_TIMEOUT == 700.0
++
++    def test_default_values_unchanged(self, monkeypatch):
++        self._reload_with(monkeypatch)
++
++        assert data_collector_module.FETCH_ALL_TIMEOUT == 300.0
++        assert data_collector_module.FETCH_LOCK_TIMEOUT == 360.0
++
++
++# ---------------------------------------------------------------------------
+ # 2. /healthz executor starvation probe
+ # ---------------------------------------------------------------------------
+ 
+ 
+
+[0m
+现在在 `TestHealthzExecutorProbe` 中添加 healthz fetch_pool gauge 测试：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -501,9 +501,28 @@
+ 
+         assert response.status_code == 200
+         assert response.json()["status"] == "ok"
+ 
++    def test_healthz_reports_fetch_pool_gauges(self, monkeypatch):
++        """Fix round2 P1: leaked/backlogged fetch workers are observable."""
++        from fastapi.testclient import TestClient
+ 
++        healthy = ThreadPoolExecutor(max_workers=1, thread_name_prefix="probe-gauges")
++        monkeypatch.setattr(api_main, "_default_executor", healthy)
++        client = TestClient(api_main.app, raise_server_exceptions=False)
++        try:
++            response = client.get("/healthz")
++        finally:
++            healthy.shutdown(wait=True)
++
++        assert response.status_code == 200
++        gauges = response.json()["fetch_pool"]
++        assert gauges["max_workers"] >= 1
++        assert gauges["threads"] <= gauges["max_workers"]
++        for key in ("active", "queued", "abandoned_total"):
++            assert key in gauges
++
++
+ # ---------------------------------------------------------------------------
+ # 3. Stock identification fallback
+ # ---------------------------------------------------------------------------
+ 
+
+[0m
+现在 `TestHumanizeAnalysisError` 中针对修复 #3/#4 的净化测试：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -661,8 +661,42 @@
+         "Error: upstream rejected 9f8e7d6c5b4a32109f8e7d6c5b4a32109f8e7d6c"
+     )
+     assert "9f8e7d6c5b4a3210" not in msg
+ 
++def test_bearer_header_with_jwt_is_fully_masked(self):
++    """Fix round2 P1: the credential must be swallowed whole, not just
++    the literal "Authorization: Bearer" prefix."""
++    msg = api_main._humanize_analysis_error(
++        "RuntimeError: Error code: 401 Authorization: Bearer "
++        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0."
++        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
++    )
++    assert "eyJhbGciOiJIUzI1NiJ9" not in msg
++    assert "SflKxwRJSMeKKF2QT4" not in msg
++    assert "Bearer" not in msg
++    assert "<凭据已隐藏>" in msg
++
++def test_bearer_header_json_and_kv_forms_masked(self):
++    raw_msgs = (
++        '{"headers": {"Authorization": "Bearer sk-abcdef0123456789"}}',
++        "authorization=Bearer abc123def456ghi789",
++        "Authorization:Basic dXNlcjpwYXNzMTIzNDU2Nzg=",
++    )
++    for raw in raw_msgs:
++        msg = api_main._humanize_analysis_error(f"Request failed: {raw}")
++        assert "sk-abcdef0123456789" not in msg, raw
++        assert "abc123def456ghi789" not in msg, raw
++        assert "dXNlcjpwYXNz" not in msg, raw
++        assert "<凭据已隐藏>" in msg, raw
++
++def test_standalone_bearer_and_jwt_masked(self):
++    msg = api_main._humanize_analysis_error(
++        "Response 401: Bearer eyJhbGciOiJub25lIn0.eyJhIjoxfQ.sig-val-here"
++    )
++    assert "eyJhbGciOiJub25lIn0" not in msg
++    assert "sig-val-here" not in msg
++    assert "<凭据已隐藏>" in msg
++
+ def test_stack_lines_are_dropped(self):
+     msg = api_main._humanize_analysis_error(
+         'RuntimeError: boom\n  File "/srv/app/api/main.py", line 123\n'
+         "    result = pending()\nRuntimeError: boom"
+
+[0m
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -723,8 +723,22 @@
+     once = api_main._humanize_analysis_error("Error code: 429 throttling")
+     assert api_main._humanize_analysis_error(once) == once
+     assert api_main._humanize_analysis_error("") == ""
+ 
++def test_idempotent_shortcut_still_sanitizes(self):
++    """Fix round2 P2: the "already humanized" shortcut must not bypass
++    URL/credential redaction, and repeated sanitization stays stable."""
++    crafted = (
++        "您配置的大模型 API Key 余额不足。（原始错误："
++        "see https://secret.example.com/v1?key=sk-abcdef0123456789 "
++        "and internal trace /srv/app/api/main.py）"
++    )
++    once = api_main._humanize_analysis_error(crafted)
++    assert "secret.example.com" not in once
++    assert "sk-abcdef0123456789" not in once
++    assert "/srv/app" not in once
++    assert api_main._humanize_analysis_error(once) == once
++
+ def test_truncation_keeps_message_bounded(self):
+     msg = api_main._humanize_analysis_error("ValueError: " + "x" * 5000)
+     assert len(msg) <= api_main._ERROR_MAX_ORIGIN_LEN
+ 
+
+[0m
+现在运行测试套件：
+[0m$ [0msource .venv/bin/activate && python -m py_compile api/main.py tradingagents/graph/data_collector.py tests/test_upstream081_runtime_resilience.py && pytest tests/test_upstream081_runtime_resilience.py -q --tb=short -x 2>&1 | tail -25
+....F
+=================================== FAILURES ===================================
+________ TestSharedFetchPool.test_pool_is_bounded_named_and_daemonized _________
+tests/test_upstream081_runtime_resilience.py:195: in test_pool_is_bounded_named_and_daemonized
+    assert [f.result(timeout=10) for f in futures] == ["x"] * 5
+            ^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/concurrent/futures/_base.py:458: in result
+    raise TimeoutError()
+E   TimeoutError
+----------------------------- Captured stdout call -----------------------------
+  [Timer] get_stock_data took 1.21s
+=========================== short test summary info ============================
+FAILED tests/test_upstream081_runtime_resilience.py::TestSharedFetchPool::test_pool_is_bounded_named_and_daemonized
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 4 passed in 21.67s
+[0m
+测试本身存在死锁 —— 我必须在收集排队的 futures 之前设置 gate。正在修复：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -190,12 +190,10 @@
+     assert stats["max_workers"] == 2
+     assert stats["threads"] == 2
+     assert stats["active"] == 2
+     assert stats["queued"] == 3
+-    try:
+-        assert [f.result(timeout=10) for f in futures] == ["x"] * 5
+-    finally:
+-        gate.set()
++    gate.set()
++    assert [f.result(timeout=10) for f in futures] == ["x"] * 5
+     assert all(t.name.startswith("ta-data-fetch-") for t in pool._threads)
+     assert all(t.daemon for t in pool._threads)
+ 
+ def test_submit_propagates_worker_exceptions(self):
+
+[0m
+[0m$ [0msource .venv/bin/activate && pytest tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -20
+tests/test_upstream081_runtime_resilience.py:244: in test_abandoned_stuck_workers_do_not_accumulate_threads
+    assert live_after_first <= cap
+E   assert 19 <= 16
+----------------------------- Captured stdout call -----------------------------
+  [Warning] stock_data fetch timed out after 0.15s, skipped
+  [Warning] stock_data fetch timed out after 0.15s, skipped
+  [Warning] stock_data fetch timed out after 0.15s, skipped
+  [Warning] stock_data fetch timed out after 0.15s, skipped
+______ TestHumanizeAnalysisError.test_idempotent_shortcut_still_sanitizes ______
+tests/test_upstream081_runtime_resilience.py:736: in test_idempotent_shortcut_still_sanitizes
+    assert "/srv/app" not in once
+E   AssertionError: assert '/srv/app' not in '您配置的大模型 API...api/main.py）'
+E     
+E     '/srv/app' is contained here:
+E       al trace /srv/app/api/main.py）
+E     ?          ++++++++
+=========================== short test summary info ============================
+FAILED tests/test_upstream081_runtime_resilience.py::TestSharedFetchPool::test_abandoned_stuck_workers_do_not_accumulate_threads
+FAILED tests/test_upstream081_runtime_resilience.py::TestHumanizeAnalysisError::test_idempotent_shortcut_still_sanitizes
+2 failed, 41 passed in 3.90s
+[0m
+两项测试设计均需修复：(1) 之前的单元测试池共享了名称前缀，因此全局枚举上限是错误的——池自身的 `stats()["threads"]` 才是正确的可观测指标；(2) 我构建的单行中的 URL 正则表达式 `\S+` 会在空格处停止，因此路径的断言属于多行情况。正在修复这两个问题：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -240,14 +240,11 @@
+ 
+     assert _live_fetch_threads() == live_after_first, (
+         "leaked threads must not accumulate across rounds"
+     )
+-    assert live_after_first <= cap
+-    assert (
+-        data_collector_module.get_fetch_pool_stats()["abandoned_total"]
+-        - abandoned_before
+-        == 4
+-    )
++    gauges = data_collector_module.get_fetch_pool_stats()
++    assert gauges["threads"] <= cap
++    assert gauges["abandoned_total"] - abandoned_before == 4
+ finally:
+     gate.set()
+ 
+ 
+
+[0m
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -723,17 +723,28 @@
+     """Fix round2 P2: the "already humanized" shortcut must not bypass
+     URL/credential redaction, and repeated sanitization stays stable."""
+     crafted = (
+         "您配置的大模型 API Key 余额不足。（原始错误："
+-        "see https://secret.example.com/v1?key=sk-abcdef0123456789 "
+-        "and internal trace /srv/app/api/main.py）"
++        "see https://secret.example.com/v1?key=sk-abcdef0123456789）"
+     )
+     once = api_main._humanize_analysis_error(crafted)
+     assert "secret.example.com" not in once
+     assert "sk-abcdef0123456789" not in once
+-    assert "/srv/app" not in once
++    assert "<url已隐藏>" in once
+     assert api_main._humanize_analysis_error(once) == once
+ 
++def test_idempotent_shortcut_drops_stack_lines(self):
++    multiline = (
++        "模型服务端暂时故障。请稍后重试。（原始错误：boom）\n"
++        '  File "/srv/app/api/main.py", line 9\n'
++        "    raise RuntimeError: boom"
++    )
++    sanitized = api_main._humanize_analysis_error(multiline)
++    assert "/srv/app" not in sanitized
++    assert "raise RuntimeError" not in sanitized
++    assert sanitized.count("\n") == 0
++    assert api_main._humanize_analysis_error(sanitized) == sanitized
++
+ def test_truncation_keeps_message_bounded(self):
+     msg = api_main._humanize_analysis_error("ValueError: " + "x" * 5000)
+     assert len(msg) <= api_main._ERROR_MAX_ORIGIN_LEN
+ 
+
+[0m
+[0m$ [0msource .venv/bin/activate && pytest tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -12
+......  [Timer] get_stock_data took 0.64s
+....  [Timer] get_lhb_detail took 1.01s
+..................................                             [100%]
+44 passed in 3.82s
+[0m
+44 个测试全部通过。现在进行正式验收命令以及相关的回归测试套件（LHB/data_collector 与此修复密切相关）：
+[0m$ [0msource .venv/bin/activate && pytest tests/test_upstream081_runtime_resilience.py tests/test_api_smoke.py -q --tb=short 2>&1 | tail -4
+....  [Timer] get_lhb_detail took 1.01s
+.............................................................. [ 54%]
+...........................................................              [100%]
+131 passed in 22.08s
+[0m
+[0m$ [0msource .venv/bin/activate && ls tests/ | grep -iE "data_collector|lhb|g006|data004|upstream_v081|intent_parser|raw_evidence" 
+test_data004_evidence_contract.py
+test_data017_fund_lhb_health.py
+test_data022_fund_lhb_status_matrix.py
+test_data_collector.py
+test_data_p1_lhb_fund_decouple.py
+test_g006_raw_evidence_snapshot.py
+test_g007_fund_lhb_provenance.py
+test_intent_parser.py
+test_raw_evidence_vendor.py
+test_upstream_v081_absorption.py
+[0m
+[0m$ [0msource .venv/bin/activate && pytest tests/test_data_collector.py tests/test_data_p1_lhb_fund_decouple.py tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_upstream_v081_absorption.py tests/test_data004_evidence_contract.py tests/test_intent_parser.py tests/test_raw_evidence_vendor.py -q --tb=short 2>&1 | tail -4
+........................................................................ [ 74%]
+........................................................................ [ 99%]
+.                                                                        [100%]
+289 passed in 48.05s
+[0m
+同时也正在运行剩余的相邻测试套件（LHB status matrix, health, HK, v001, runtime tier）：
+[0m$ [0msource .venv/bin/activate && ls tests/ | grep -iE "hk001|v001|runtime_tier|data017|data022" && pytest tests/test_data017_fund_lhb_health.py tests/test_data022_fund_lhb_status_matrix.py tests/test_hk001_market_boundary.py tests/test_v001_600584_regression.py -q --tb=short 2>&1 | tail -3
+test_data017_fund_lhb_health.py
+test_data022_fund_lhb_status_matrix.py
+test_hk001_market_boundary.py
+test_runtime_tier_contract.py
+test_v001_600584_data_authenticity.py
+
+
+no tests ran in 0.01s
+[0m
+[0m$ [0msource .venv/bin/activate && pytest tests/test_data017_fund_lhb_health.py tests/test_data022_fund_lhb_status_matrix.py tests/test_hk001_market_boundary.py tests/test_runtime_tier_contract.py tests/test_v001_600584_data_authenticity.py -q --tb=short 2>&1 | tail -3
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+244 passed, 6 warnings in 79.34s (0:01:19)
+[0m
+全部通过。现在更新文档——先检查 DEVLOG 条目样式：
+[0m$ [0msource .venv/bin/activate && grep -n "^## " docs/DEVLOG.md | tail -5 && wc -l docs/DEVLOG.md
+16036:## 2026-08-16 | Tushare 2000 积分扩展任务拆分
+16123:## 2026-08-18 | AUTO-002 Auto Dev Loop
+16132:## 2026-08-19 | CONFIG-DS-SCHEDULE-R1 收口（人工续跑半成品）
+16145:## 2026-08-31 | 上游 v0.8.1 选择性吸收任务入池
+16153:## 2026-09-02 | AUTO-002 Auto Dev Loop
+   16160 docs/DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && grep -n "081-001" docs/DEVLOG.md | tail -5
+3:## 2026-09-02 | UPSTREAM-081-001：线程池饱和、股票识别与错误语义选择性吸收（P1）
+43:  `docs/task_runs/UPSTREAM-081-001-20260902-191510/`。
+16148:- 新增串行任务：`UPSTREAM-081-001`（线程池/识别/错误语义）→ `UPSTREAM-081-002`（软硬超时与恢复）→ `UPSTREAM-081-003`（AKShare 最小差异修复）→ `UPSTREAM-081-004`（协同图平移）。仅 `UPSTREAM-081-001` 初始为 ready。
+16155:- **Task**: UPSTREAM-081-001 - 线程池饱和、股票识别与错误语义选择性吸收（P1）
+16160:- **Run archive**: docs/task_runs/UPSTREAM-081-001-20260902-191510/
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=45, offset=1][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,46 @@
+ # 修改日志
+ 
++## 2026-09-05 | UPSTREAM-081-001 fix round 2：修复 round2 review 3×P1 + 2×P2
++
++- **[P1] LHB 强制重试纳入整轮 deadline**（`data_collector.py`）：新增
++  `_apply_forced_lhb`，强制龙虎榜查询消费 `_run_bounded_fetch` 同一
++  `round_deadline` 的剩余预算——预算耗尽不提交（`_lhb_query_mode=
++  "forced_skipped_budget"`），提交后超时则遗弃并写"数据获取失败"明文
++  （`"forced_timeout"`，`_infer_source_status` 判 FAILED），不再在
++  `_run_bounded_fetch` 之外无界运行。
++- **[P1] 超时 worker 无界累积 → 共享有界隔离**（`data_collector.py` +
++  `api/main.py`）：每轮新建 `ThreadPoolExecutor` 改为进程级共享
++  `_BoundedFetchPool`（`TA_DATA_FETCH_POOL_WORKERS`，默认 16；daemon、
++  `ta-data-fetch-N` 命名、queue.SimpleQueue + Future 自实现）——卡死线程
++  泄漏上限=进程级 worker 数，不再随轮数累积；`get_fetch_pool_stats()`
++  （max_workers/threads/active/queued/abandoned_total）挂到 `/healthz`
++  `fetch_pool` 键，泄漏/积压可观测。
++- **[P1] `Authorization: Bearer <token>` 脱敏不完整**（`api/main.py`）：
++  `_ERROR_CREDENTIAL_RE` 新增三支——Authorization 头+scheme+凭据整体（含
++  JWT 点分）、裸 `Bearer <cred>`、独立 JWT（`eyJ...`三段），覆盖 header/
++  JSON/键值形态，真实 token 不再原样落库 job.error/SSE。
++- **[P2] 幂等捷径绕过脱敏**（`api/main.py`）：`_humanize_analysis_error`
++  命中"（原始错误："捷径时改为返回 `_sanitize_analysis_error_text(raw)`
++  （重复脱敏结果稳定，幂等语义保持，有测试锚定）。
++- **[P2] 自定义 `TA_DATA_FETCH_TIMEOUT≥360` 违反锁余量不变量**
++  （`data_collector.py`）：`FETCH_LOCK_TIMEOUT` 改为导入期推导
++  `max(env_lock, FETCH_ALL_TIMEOUT + 60)`——默认 300/360 行为不变，
++  不兼容 env 对自动推导并打 warning，显式更大的 lock 仍被尊重。
++- **测试**：`tests/test_upstream081_runtime_resilience.py` 新增/加强 16 项
++  （LHB force 预算内成功/超时降级/预算耗尽跳过 + `_fetch_all` 整轮接线、
++  共享池有界+命名+daemon+异常传播+泄漏线程数不随轮增长+healthz gauges、
++  Bearer/JWT/JSON/键值全形态脱敏、捷径脱敏+堆栈行丢弃、锁超时推导/大值
++  尊重/默认不变）。
++- **验证**：验收命令 `pytest tests/test_upstream081_runtime_resilience.py
++  tests/test_api_smoke.py -q --tb=short` → **131 passed**；相关回归
++  （data_collector/LHB decouple/G-006/G-007/v081 absorption/DATA-004/
++  intent/evidence/DATA-017/DATA-022/HK-001/runtime-tier/v001）→
++  **533 passed**；`py_compile` 通过。逐条取舍见
++  `docs/task_runs/UPSTREAM-081-002-…/`（注：run 目录
++  `docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md`
++  fix-round-2 小节）。未 commit/push；docs/TASKS.md 状态未动。
++
+ ## 2026-09-02 | UPSTREAM-081-001：线程池饱和、股票识别与错误语义选择性吸收（P1）
+ 
+ - **策略**：参考上游 `v0.8.1` `89754c5`（#202），先做差异表，只补本地真实缺口；
+   不整笔 cherry-pick，本地意图解析/Tushare 契约/门禁链不动。
+
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -34,12 +34,11 @@
+ - **验证**：验收命令 `pytest tests/test_upstream081_runtime_resilience.py
+   tests/test_api_smoke.py -q --tb=short` → **131 passed**；相关回归
+   （data_collector/LHB decouple/G-006/G-007/v081 absorption/DATA-004/
+   intent/evidence/DATA-017/DATA-022/HK-001/runtime-tier/v001）→
+-  **533 passed**；`py_compile` 通过。逐条取舍见
+-  `docs/task_runs/UPSTREAM-081-002-…/`（注：run 目录
++  **533 passed**；`py_compile` 通过。逐条取舍见 run 目录
+   `docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md`
+-  fix-round-2 小节）。未 commit/push；docs/TASKS.md 状态未动。
++  的 fix-round-2 小节。未 commit/push；docs/TASKS.md 状态未动。
+ 
+ ## 2026-09-02 | UPSTREAM-081-001：线程池饱和、股票识别与错误语义选择性吸收（P1）
+ 
+ - **策略**：参考上游 `v0.8.1` `89754c5`（#202），先做差异表，只补本地真实缺口；
+
+[0m
+现在我来更新 implementation.md，加入 fix-round-2 的决策记录：
+[0m← [0mEdit docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+@@ -1,8 +1,8 @@
+ # UPSTREAM-081-001 Implementation — 线程池饱和、股票识别与错误语义选择性吸收
+ 
+ - Date: 2026-09-02
+-- Status: implemented; review round2 found 3xP1+2xP2, NOT committed, pending fix round
++- Status: implemented; review round2 found 3xP1+2xP2; fix round 2 done (2026-09-05), NOT committed, pending review round 3
+ - Upstream reference: `89754c5` (#202), v0.8.1
+ - Local baseline HEAD: `7e52176`
+ 
+ ## 差异表（上游新增 / 本地已有 / 本地更强）
+
+[0m
+[0m← [0mEdit docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+@@ -58,4 +58,109 @@
+   hk001 / g006 / lhb_fund_decouple / v001_600584 / data004 / runtime_tier_contract）
+   → **385 passed**。
+ - `py_compile api/main.py tradingagents/graph/data_collector.py` 通过。
+ - 约束自查：未改 prompts；未 commit/push；docs/TASKS.md 状态未动（外层脚本所有）。
++
++## Fix round 2（2026-09-05）— round2 review 3×P1 + 2×P2 逐条取舍
++
++前提：在 round1 未提交 diff 之上继续修，未回滚/重写既有实现，未动无关文件。
++
++### R2-1 [P1] LHB 强制重试未纳入整轮 deadline（data_collector.py）
++
++**取舍**：不给 `_fetch_all` 再开第二个等待窗口，而是让 force 查询消费
++round1 已建立的同一 `round_deadline`（`time.monotonic() + FETCH_ALL_TIMEOUT`，
++`_fetch_all` 计算一次并传入 `_run_bounded_fetch` 与 force 路径）。
++
++- 新增 `_apply_forced_lhb(results, provider_hits, ticker, trade_date, deadline, force_reason)`
++  取代原先 `_run_bounded_fetch` 返回后的裸 `_safe_with_vendor(get_lhb_detail, force=True)`：
++  - 剩余预算 `remaining = deadline - now` ≤ 0 → **不提交**，`results["lhb"]`
++    写"数据获取失败：lhb 强制查询因整轮预算已用尽未执行（>{FETCH_ALL_TIMEOUT}s）…"，
++    `_lhb_query_mode="forced_skipped_budget"`；
++  - remaining > 0 → 提交到共享 fetch pool，`futures_wait(timeout=remaining)`；
++    超时 → 遗弃（`mark_abandoned(1)`）+ "数据获取失败：lhb 强制查询超时…"，
++    `_lhb_query_mode="forced_timeout"`；`_infer_source_status` 对两种降级文本
++    均判 FAILED（含"获取失败"），不伪装成功；
++  - 成功 → 原语义不变（`"forced"` + `_lhb_force_reason`）。
++- 新增 `_lhb_query_mode` 枚举值 `forced_skipped_budget` / `forced_timeout`：
++  消费方（`build_raw_evidence` entry、`readiness_score._resolve_lhb`）对该值
++  无硬编码分支，状态以文本 FAILED 为准，语义兼容。
++
++### R2-2 [P1] 超时 worker 无法回收、线程无界累积（data_collector.py + api/main.py）
++
++**取舍**：采用 review 可接受方案之一——**模块级共享有界 daemon 线程池**承担
++所有 fetch 轮次（含 LHB force），而非进程外隔离或进程重启。
++
++- 为什么不用 `ThreadPoolExecutor`+initializer 设 daemon：Python 3.12 在线程
++  已启动后设置 `daemon` 直接 RuntimeError（已实测），该 hack 不可行；改用
++  ~60 行自实现 `_BoundedFetchPool`：`queue.SimpleQueue` + N 个命名 daemon
++  线程（`ta-data-fetch-{i}`）+ `concurrent.futures.Future`，无私有 API 依赖。
++- 上限：`TA_DATA_FETCH_POOL_WORKERS`（默认 16）。单轮并发与 round1 的
++  `min(10, len(tasks))` 同量级（一轮 ≤19 任务）；卡死线程泄漏上限 = 进程级
++  worker 数，不再每轮 +1/超时源 无界累积。多轮并发下排队任务靠整轮 deadline
++  兜底（deadline 内未跑完即明确 FAILED），等待同一 key 的排队 collector 仍由
++  `FETCH_LOCK_TIMEOUT > FETCH_ALL_TIMEOUT` 不变量保护。
++- 遗弃语义不变：`_run_bounded_fetch` 超时不 join 遗弃 worker，只
++  `mark_abandoned(n)`；其线程存活到 socket 默认超时兜底结束，daemon 不阻
++  进程退出。
++- 可观测：`get_fetch_pool_stats()`（max_workers/threads/active/queued/
++  abandoned_total）挂到 `/healthz` payload 的 `fetch_pool` 键（api/main.py
++  顶层导入，无副作用；stats 在池未创建前报告配置上限+零计数）。
++
++### R2-3 [P1] `Authorization: Bearer <token>` 脱敏不完整（api/main.py）
++
++**取舍**：扩展 `_ERROR_CREDENTIAL_RE` 而非新增长链前置替换——保持单次
++`re.sub` 扫描，靠备选顺序（左优先）保证"Authorization 头整体"优先于
++key/value 规则（旧规则 `[keyword][seps]\S+` 只吃到字面 "Bearer"）。
++
++- 新增三支备选：
++  1. `\bauthorization\b["'=:\s]*(?:bearer|basic|token)?["'=:\s]*[^\s"',;)]+`
++     —— 头名 + 可选 scheme + 凭据整体（凭据字符类含 `.`，JWT 点分不截断；
++     停在空白/引号/逗号/分号/右括号，兼容 JSON `"Authorization": "Bearer …"`
++     与 `authorization=Bearer …` 键值形态）；
++  2. `\bbearer\s+[A-Za-z0-9._~+/=-]{8,}` —— 无头名的裸 Bearer 凭据；
++  3. `\beyJ…\.[…]\.[…]+` —— 独立 JWT 三段兜底。
++- 原 `sk-` / 关键字键值 / 32+ 不透明 token 规则保留（`authorization` 从
++  关键字备选中移入新首支，行为对"Authorization Failed"类文案的既有遮蔽
++  保持一致；hint 检测始终基于 raw，不受影响）。
++
++### R2-4 [P2] 幂等捷径绕过脱敏（api/main.py）
++
++**取舍**：按 review 建议字面修复——捷径命中"（原始错误："时返回
++`_sanitize_analysis_error_text(raw)`（首行 + URL/凭据清洗 + 200 截断）。
++重复脱敏对已清洗文本是 no-op（占位符不匹配任何规则），截断点收敛，
++`f(f(x)) == f(x)` 幂等语义保持（测试锚定单行与多行两形态）。
++
++### R2-5 [P2] 自定义 `TA_DATA_FETCH_TIMEOUT ≥ 360` 违反锁余量不变量（data_collector.py）
++
++**取舍**：review 给了两条路（推导 / 拒绝启动），选**推导**——运维改
++fetch 预算是合理操作，因连带参数没跟上而拒绝启动过于激进；推导后不变量
++在任何 env 组合下恒成立。
++
++- `FETCH_LOCK_TIMEOUT = max(env TA_DATA_FETCH_LOCK_TIMEOUT, FETCH_ALL_TIMEOUT + 60)`；
++  margin 常量 `FETCH_LOCK_TIMEOUT_MARGIN=60`（与默认 360-300 差值一致）。
++- 默认 300/360 行为不变（max(360, 360)=360）；显式更大的 lock 仍被尊重；
++  env 被推导覆盖时打 WARNING 说明推导结果。
++- 模块导入期生效，测试用 `importlib.reload` 锚定三组合（默认不变 / 360
++  推导 420 / 显式 700 尊重）。
++
++### Fix round 2 修改文件
++
++1. `tradingagents/graph/data_collector.py`：锁超时推导；`_BoundedFetchPool` +
++   `get_fetch_pool`/`get_fetch_pool_stats`/`mark_abandoned`；`_run_bounded_fetch`
++   改共享池+deadline 参数；新增 `_apply_forced_lhb`；`_fetch_all` 接线
++   `round_deadline`。
++2. `api/main.py`：`_ERROR_CREDENTIAL_RE` 三支新备选；幂等捷径走
++   `_sanitize_analysis_error_text`；`/healthz` 增 `fetch_pool` gauges。
++3. `tests/test_upstream081_runtime_resilience.py`：28 → 44 项（新增共享池/
++   LHB 预算/配置不变量/脱敏加强，加强默认余量断言）。
++
++### Fix round 2 Test evidence
++
++- 验收命令 `pytest tests/test_upstream081_runtime_resilience.py
++  tests/test_api_smoke.py -q --tb=short` → **131 passed**。
++- 相关回归（data_collector / data_p1_lhb_fund_decouple / g006 / g007 /
++  upstream_v081_absorption / data004 / intent_parser / raw_evidence_vendor）
++  → **289 passed**；（data017 / data022 / hk001 / runtime_tier_contract /
++  v001_600584）→ **244 passed**。
++- `py_compile api/main.py tradingagents/graph/data_collector.py` 通过。
++- 约束自查：未改 prompts；未写生产库（仅 pytest，conftest 隔离）；未
++  commit/push；docs/TASKS.md 状态未动。
+
+[0m
+最后验证 —— 执行验收命令，编译，并确认仅修改了目标文件：
+[0m$ [0msource .venv/bin/activate && python -m py_compile api/main.py tradingagents/graph/data_collector.py && pytest tests/test_upstream081_runtime_resilience.py tests/test_api_smoke.py -q --tb=short 2>&1 | tail -3 && git status --short && git diff --stat
+.............................................................. [ 54%]
+...........................................................              [100%]
+131 passed in 25.89s
+ M api/main.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/graph/data_collector.py
+?? docs/reviews/UPSTREAM-081-001-20260902-round1.txt
+?? docs/reviews/UPSTREAM-081-001-20260903-round2.txt
+?? docs/task_runs/UPSTREAM-081-001-20260902-191510/
+?? tests/test_upstream081_runtime_resilience.py
+ api/main.py                           | 141 ++++++++++++++++-
+ docs/DEVLOG.md                        |  94 ++++++++++++
+ docs/TASKS.md                         |   4 +-
+ tradingagents/graph/data_collector.py | 277 +++++++++++++++++++++++++++++++---
+ 4 files changed, 487 insertions(+), 29 deletions(-)
+[0m
+[0m# [0mTodos
+[✓] Fix #5: data_collector.py 锁超时从 fetch 预算推导（TA_DATA_FETCH_TIMEOUT≥360 不再破坏不变量）
+[✓] Fix #2: 模块级共享有界 daemon 线程池替换每轮新建 executor + /healthz 可观测
+[✓] Fix #1: LHB force 查询纳入整轮 deadline（_apply_forced_lhb + _fetch_all 接线）
+[✓] Fix #3: api/main.py Authorization: Bearer <token>/JWT 完整脱敏
+[✓] Fix #4: 幂等捷径返回前走 _sanitize_analysis_error_text
+[✓] 补/改 5 组测试（test_upstream081_runtime_resilience.py）
+[✓] 验收：py_compile + pytest upstream081 + api_smoke 全绿
+[✓] 更新 docs/DEVLOG.md（fix round 2 条目）与 implementation.md（逐条取舍）
+[0m
+## 修复摘要（逐条 finding）
+
+1. **[P1] LHB 强制重试未纳入整轮 deadline**：新增 `_apply_forced_lhb`，force 查询消费与 `_run_bounded_fetch` 同一个 `round_deadline` 的剩余预算——预算耗尽不提交（`forced_skipped_budget`），超时则遗弃到共享池并写“数据获取失败”明文（`forced_timeout`，`_infer_source_status` 判 FAILED），不再预算外无界运行。
+2. **[P1] 超时 worker 无界累积**：改为进程级共享 `_BoundedFetchPool`（自实现 SimpleQueue+Future，默认 16 worker、daemon、`ta-data-fetch-N` 命名；Python 3.12 无法在 initializer 设 daemon，已实测故自实现）；泄漏线程上限=进程级 worker 数，`get_fetch_pool_stats()`（threads/active/queued/abandoned_total）挂到 `/healthz` 的 `fetch_pool` 键可观测。
+3. **[P1] `Authorization: Bearer <token>` 脱敏不完整**：`_ERROR_CREDENTIAL_RE` 新增三支——Authorization 头+scheme+凭据整体（JWT 点分不截断，覆盖 header/JSON/键值形态）、裸 `Bearer <cred>`、独立 JWT 三段。
+4. **[P2] 幂等捷径绕过脱敏**：捷径命中改为返回 `_sanitize_analysis_error_text(raw)`，重复脱敏结果稳定（幂等保持，单行+多行均有测试锚定）。
+5. **[P2] `TA_DATA_FETCH_TIMEOUT≥360` 违反锁余量不变量**：`FETCH_LOCK_TIMEOUT = max(env_lock, FETCH_ALL_TIMEOUT + 60)` 导入期推导并打 WARNING；默认 300/360 不变，显式更大 lock 仍被尊重（选推导而非拒绝启动：fetch 预算是合理运维参数）。
+
+## 修改文件
+
+- `tradingagents/graph/data_collector.py`、`api/main.py`（在既有未提交 diff 之上）
+- `tests/test_upstream081_runtime_resilience.py`（28→44 项）
+- `docs/DEVLOG.md`（fix round 2 条目）、`docs/task_runs/.../implementation.md`（逐条取舍）
+- 未动：prompts/、生产库、eval_results/、docs/TASKS.md（本次未改）
+
+## 测试结果
+
+- 验收命令：**131 passed**（44 upstream081 + 87 api_smoke），0 failed
+- 相关回归：**533 passed**（data_collector/LHB decouple/G-006/G-007/v081 absorption/DATA-004/intent/evidence/DATA-017/DATA-022/HK-001/runtime-tier/v001）
+- `py_compile` 通过；未 commit/push

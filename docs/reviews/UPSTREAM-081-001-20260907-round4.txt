@@ -1,0 +1,64 @@
+# UPSTREAM-081-001 round4 独立 review（Codex gpt-5.5，2026-09-07）
+# 原始输出: docs/task_runs/UPSTREAM-081-001-20260902-191510/codex-review-round4-raw.txt
+
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/tempfile.py:223: in _get_default_tempdir
+    raise FileNotFoundError(_errno.ENOENT,
+E   FileNotFoundError: [Errno 2] No usable temporary directory found in ['/Users/maybee/.openclaw/tmp', '/tmp', '/var/tmp', '/usr/tmp', '/Users/maybee/TradingAgents-AShare']
+
+codex
+结论: FAIL
+
+R3-1 核验：PASS  
+- 队列确已改为有界：`FETCH_POOL_MAX_QUEUED` 默认 64，`_BoundedFetchPool.__init__` 使用 `queue.Queue(maxsize=...)`，见 `tradingagents/graph/data_collector.py:91`、`tradingagents/graph/data_collector.py:145`、`tradingagents/graph/data_collector.py:150`。
+- 饱和路径不是成功：`submit()` 用 `put_nowait()`，`queue.Full` 时递增 `rejected_total` 并抛 `_FetchPoolSaturated`，见 `tradingagents/graph/data_collector.py:182`、`tradingagents/graph/data_collector.py:187`、`tradingagents/graph/data_collector.py:188`、`tradingagents/graph/data_collector.py:190`。`_run_bounded_fetch()` 捕获后写入“数据获取失败…线程池饱和”降级文本，`_infer_source_status` 会判 FAILED，见 `tradingagents/graph/data_collector.py:716`、`tradingagents/graph/data_collector.py:719`、`tradingagents/graph/data_collector.py:763`、`tradingagents/graph/data_collector.py:1229`。
+- 超时后确实取消 queued futures：`_run_bounded_fetch()` 对 `not_done` 调 `future.cancel()`，cancel 成功计 `cancelled_total`，cancel 失败才计 `abandoned_total`，见 `tradingagents/graph/data_collector.py:735`、`tradingagents/graph/data_collector.py:743`、`tradingagents/graph/data_collector.py:745`、`tradingagents/graph/data_collector.py:752`、`tradingagents/graph/data_collector.py:754`。
+- worker 出队前检查取消状态：`set_running_or_notify_cancel()` 返回 False 直接跳过，不执行 `fn()`，见 `tradingagents/graph/data_collector.py:164`、`tradingagents/graph/data_collector.py:166`、`tradingagents/graph/data_collector.py:167`、`tradingagents/graph/data_collector.py:173`。
+- `/healthz` gauge 键一致：`get_fetch_pool_stats()` 返回 `max_queued/cancelled_total/rejected_total`，`api/main.py` 通过 `fetch_pool` 透传，见 `tradingagents/graph/data_collector.py:236`、`tradingagents/graph/data_collector.py:245`、`tradingagents/graph/data_collector.py:251`、`tradingagents/graph/data_collector.py:252`、`api/main.py:4771`。测试也断言这些键，见 `tests/test_upstream081_runtime_resilience.py:744`、`tests/test_upstream081_runtime_resilience.py:757`、`tests/test_upstream081_runtime_resilience.py:762`、`tests/test_upstream081_runtime_resilience.py:763`。
+- 未发现新的无界队列资源；`put_nowait()` 不阻塞，cancel/worker 交互没有明显死锁或 wakeup 丢失问题。
+
+R3-2 核验：PASS  
+- forced LHB 饱和路径直接拒绝，不入队，并返回明确“数据获取失败…线程池饱和”文本，`_lhb_query_mode="forced_rejected_saturated"`，见 `tradingagents/graph/data_collector.py:811`、`tradingagents/graph/data_collector.py:813`、`tradingagents/graph/data_collector.py:818`、`tradingagents/graph/data_collector.py:821`、`tradingagents/graph/data_collector.py:824`。
+- forced timeout 路径先 `future.cancel()`，再按 cancel 结果记 `cancelled_total` 或 `abandoned_total`，然后写 FAILED 降级文本和 `forced_timeout`，见 `tradingagents/graph/data_collector.py:828`、`tradingagents/graph/data_collector.py:835`、`tradingagents/graph/data_collector.py:839`、`tradingagents/graph/data_collector.py:842`、`tradingagents/graph/data_collector.py:843`、`tradingagents/graph/data_collector.py:847`。
+- “queued force=True future 不得事后执行”有直接回归测试，断言 `force_calls == []` 与 `cancelled_total == 1`，见 `tests/test_upstream081_runtime_resilience.py:442`、`tests/test_upstream081_runtime_resilience.py:476`、`tests/test_upstream081_runtime_resilience.py:488`、`tests/test_upstream081_runtime_resilience.py:489`、`tests/test_upstream081_runtime_resilience.py:490`。
+- 已运行 forced LHB 的 timeout 场景也有测试约束：只允许那一次 in-flight attempt，不得重放，见 `tests/test_upstream081_runtime_resilience.py:402`、`tests/test_upstream081_runtime_resilience.py:437`、`tests/test_upstream081_runtime_resilience.py:440`。
+
+新发现 findings：  
+- P1 范围控制失败：当前 tracked diff 包含 `docs/TASKS.md`，但本轮审查对象明确只列出 `data_collector.py`、`api/main.py`、专项测试、`docs/DEVLOG.md` 和 task run 文档。`docs/TASKS.md` 还修改了任务真源状态：顶部队列把 `UPSTREAM-081-001` 从 `ready` 改为 `in_progress`，任务详情把状态改为 `blocked`，并修改历史 `FUND-004B` 状态；见 `docs/TASKS.md:56`、`docs/TASKS.md:372`、`docs/TASKS.md:839`。这和 `docs/DEVLOG.md` 声明“docs/TASKS.md 状态未动”相矛盾，见 `docs/DEVLOG.md:34`。在该项目里 `docs/TASKS.md` 是自动领取/状态真源，夹带状态修改会影响后续任务释放与审查边界。
+
+实际运行的测试命令与结果汇总：  
+- `pytest tests/test_upstream081_runtime_resilience.py -q --tb=short`：未运行，系统 PATH 无 `pytest`，退出 127。
+- `.venv/bin/pytest tests/test_upstream081_runtime_resilience.py -q --tb=short`：未进入测试收集，当前只读沙箱无可用临时目录，pytest fd capture 创建临时文件失败。
+- `.venv/bin/pytest tests/test_upstream081_runtime_resilience.py -q --tb=short -s`：仍未进入测试收集，`tests/conftest.py` 需要 `tempfile.mkdtemp()` 创建隔离 DATABASE_URL 目录，但只读沙箱无可用临时目录，退出 4。
+
+补充：未发现 prompts 修改；未提交，`git status` 显示工作区仍有未提交 tracked/untracked 变更。
+
+
+tokens used
+98,269
+结论: FAIL
+
+R3-1 核验：PASS  
+- 队列确已改为有界：`FETCH_POOL_MAX_QUEUED` 默认 64，`_BoundedFetchPool.__init__` 使用 `queue.Queue(maxsize=...)`，见 `tradingagents/graph/data_collector.py:91`、`tradingagents/graph/data_collector.py:145`、`tradingagents/graph/data_collector.py:150`。
+- 饱和路径不是成功：`submit()` 用 `put_nowait()`，`queue.Full` 时递增 `rejected_total` 并抛 `_FetchPoolSaturated`，见 `tradingagents/graph/data_collector.py:182`、`tradingagents/graph/data_collector.py:187`、`tradingagents/graph/data_collector.py:188`、`tradingagents/graph/data_collector.py:190`。`_run_bounded_fetch()` 捕获后写入“数据获取失败…线程池饱和”降级文本，`_infer_source_status` 会判 FAILED，见 `tradingagents/graph/data_collector.py:716`、`tradingagents/graph/data_collector.py:719`、`tradingagents/graph/data_collector.py:763`、`tradingagents/graph/data_collector.py:1229`。
+- 超时后确实取消 queued futures：`_run_bounded_fetch()` 对 `not_done` 调 `future.cancel()`，cancel 成功计 `cancelled_total`，cancel 失败才计 `abandoned_total`，见 `tradingagents/graph/data_collector.py:735`、`tradingagents/graph/data_collector.py:743`、`tradingagents/graph/data_collector.py:745`、`tradingagents/graph/data_collector.py:752`、`tradingagents/graph/data_collector.py:754`。
+- worker 出队前检查取消状态：`set_running_or_notify_cancel()` 返回 False 直接跳过，不执行 `fn()`，见 `tradingagents/graph/data_collector.py:164`、`tradingagents/graph/data_collector.py:166`、`tradingagents/graph/data_collector.py:167`、`tradingagents/graph/data_collector.py:173`。
+- `/healthz` gauge 键一致：`get_fetch_pool_stats()` 返回 `max_queued/cancelled_total/rejected_total`，`api/main.py` 通过 `fetch_pool` 透传，见 `tradingagents/graph/data_collector.py:236`、`tradingagents/graph/data_collector.py:245`、`tradingagents/graph/data_collector.py:251`、`tradingagents/graph/data_collector.py:252`、`api/main.py:4771`。测试也断言这些键，见 `tests/test_upstream081_runtime_resilience.py:744`、`tests/test_upstream081_runtime_resilience.py:757`、`tests/test_upstream081_runtime_resilience.py:762`、`tests/test_upstream081_runtime_resilience.py:763`。
+- 未发现新的无界队列资源；`put_nowait()` 不阻塞，cancel/worker 交互没有明显死锁或 wakeup 丢失问题。
+
+R3-2 核验：PASS  
+- forced LHB 饱和路径直接拒绝，不入队，并返回明确“数据获取失败…线程池饱和”文本，`_lhb_query_mode="forced_rejected_saturated"`，见 `tradingagents/graph/data_collector.py:811`、`tradingagents/graph/data_collector.py:813`、`tradingagents/graph/data_collector.py:818`、`tradingagents/graph/data_collector.py:821`、`tradingagents/graph/data_collector.py:824`。
+- forced timeout 路径先 `future.cancel()`，再按 cancel 结果记 `cancelled_total` 或 `abandoned_total`，然后写 FAILED 降级文本和 `forced_timeout`，见 `tradingagents/graph/data_collector.py:828`、`tradingagents/graph/data_collector.py:835`、`tradingagents/graph/data_collector.py:839`、`tradingagents/graph/data_collector.py:842`、`tradingagents/graph/data_collector.py:843`、`tradingagents/graph/data_collector.py:847`。
+- “queued force=True future 不得事后执行”有直接回归测试，断言 `force_calls == []` 与 `cancelled_total == 1`，见 `tests/test_upstream081_runtime_resilience.py:442`、`tests/test_upstream081_runtime_resilience.py:476`、`tests/test_upstream081_runtime_resilience.py:488`、`tests/test_upstream081_runtime_resilience.py:489`、`tests/test_upstream081_runtime_resilience.py:490`。
+- 已运行 forced LHB 的 timeout 场景也有测试约束：只允许那一次 in-flight attempt，不得重放，见 `tests/test_upstream081_runtime_resilience.py:402`、`tests/test_upstream081_runtime_resilience.py:437`、`tests/test_upstream081_runtime_resilience.py:440`。
+
+新发现 findings：  
+- P1 范围控制失败：当前 tracked diff 包含 `docs/TASKS.md`，但本轮审查对象明确只列出 `data_collector.py`、`api/main.py`、专项测试、`docs/DEVLOG.md` 和 task run 文档。`docs/TASKS.md` 还修改了任务真源状态：顶部队列把 `UPSTREAM-081-001` 从 `ready` 改为 `in_progress`，任务详情把状态改为 `blocked`，并修改历史 `FUND-004B` 状态；见 `docs/TASKS.md:56`、`docs/TASKS.md:372`、`docs/TASKS.md:839`。这和 `docs/DEVLOG.md` 声明“docs/TASKS.md 状态未动”相矛盾，见 `docs/DEVLOG.md:34`。在该项目里 `docs/TASKS.md` 是自动领取/状态真源，夹带状态修改会影响后续任务释放与审查边界。
+
+实际运行的测试命令与结果汇总：  
+- `pytest tests/test_upstream081_runtime_resilience.py -q --tb=short`：未运行，系统 PATH 无 `pytest`，退出 127。
+- `.venv/bin/pytest tests/test_upstream081_runtime_resilience.py -q --tb=short`：未进入测试收集，当前只读沙箱无可用临时目录，pytest fd capture 创建临时文件失败。
+- `.venv/bin/pytest tests/test_upstream081_runtime_resilience.py -q --tb=short -s`：仍未进入测试收集，`tests/conftest.py` 需要 `tempfile.mkdtemp()` 创建隔离 DATABASE_URL 目录，但只读沙箱无可用临时目录，退出 4。
+
+补充：未发现 prompts 修改；未提交，`git status` 显示工作区仍有未提交 tracked/untracked 变更。
+
+

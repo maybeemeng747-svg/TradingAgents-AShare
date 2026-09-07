@@ -1,5 +1,135 @@
 # 修改日志
 
+## 2026-09-07 | UPSTREAM-081-001 fix round 3：修复 round3 review 2×P1
+
+- **[P1] `_BoundedFetchPool` 队列无界、超时不取消**（`data_collector.py`）：
+  队列改为有界 `queue.Queue`（`FETCH_POOL_MAX_QUEUED`，env
+  `TA_DATA_FETCH_POOL_MAX_QUEUED`，默认 64），`submit()` 饱和时计入
+  `rejected_total` 并抛 `_FetchPoolSaturated`——`_run_bounded_fetch` 捕获后
+  写"数据获取失败：…被拒（线程池饱和）…"（FAILED），不再静默入队；
+  整轮超时路径对 `not_done` futures 逐一 `cancel()`：排队未启动的任务保证
+  永不执行（worker 出队后 `set_running_or_notify_cancel` 跳过），计入新增
+  `cancelled_total`；已启动卡死的维持 round2 上限（`mark_abandoned` +
+  共享有界池 + daemon + socket 默认超时），不引入新的无界资源。语义收敛：
+  一轮结束（含超时）后本轮 provider 调用不再执行，后续轮次饱和 submit
+  得到明确降级文本而非伪装成功。`/healthz` `fetch_pool` gauges 新增
+  `max_queued`/`cancelled_total`/`rejected_total`。
+- **[P1] `_apply_forced_lhb` 超时强制查询不取消**（`data_collector.py`）：
+  超时路径先 `future.cancel()` 再记账——排队未启动的 force=True 查询被
+  取消（`mark_cancelled`），保证 `forced_timeout` 返回后本轮不再有 LHB
+  force 查询执行（round2 只约束了等待时间，没有约束实际执行）；已启动的
+  维持有界遗弃。新增池饱和降级路径：不入队、写"…被拒（线程池饱和）…"，
+  `_lhb_query_mode="forced_rejected_saturated"`（消费方透传无分支）。
+- **测试**（`tests/test_upstream081_runtime_resilience.py`，44 → 49）：
+  - 新增 review 点名回归："pool 饱和时超时 future 仍留在队列并稍后执行"
+    → `test_round_timeout_cancels_queued_work_so_it_never_runs` 断言超时后
+    queued 任务永不执行（gate 释放 + 宽限期后 `executed == []`）；
+  - 按新 deadline 语义修正旧 pool 测试（原 184-195 行期待 queued work
+    最终全部执行 → 改为 cancel 后断言不执行）；
+  - finding 2 断言：`forced_timeout` 后 force 查询不再执行（排队场景 0 次、
+    已运行场景恰好 1 次不重放、整轮集成精确 `force_calls==1`）；
+  - 新增饱和拒绝/降级 3 项 + healthz gauges 新键断言。
+- **验证**：`pytest tests/test_upstream081_runtime_resilience.py -q
+  --tb=short` → **49 passed**；`pytest tests/test_api_smoke.py -q
+  --tb=short` → **87 passed**；相关回归（data_collector/LHB decouple/
+  G-006/G-007/v081 absorption/DATA-004/DATA-017/DATA-022）→
+  **324 passed**；`py_compile` 通过。逐条取舍见
+  `docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md`
+  的 fix-round-3 小节。未 commit/push；docs/TASKS.md 状态未动。
+
+## 2026-09-05 | UPSTREAM-081-001 round3 review 受阻：Codex 额度上限，18:00 自动续跑
+
+- **Task**: UPSTREAM-081-001 - 线程池饱和、股票识别与错误语义选择性吸收（P1）
+- **进展**: 13:47 auto_dev_loop 选中任务（fix round2）；13:52-14:15 OpenCode 完成 5/5 findings 修复（见下条 fix round 2 条目）；14:16 主控独立复验验收命令 131 passed、py_compile 通过。变更保持未提交。
+- **round3 review 尝试**: attempt1 默认模型 gpt-6-astra 超出 CLI 0.144.1 能力（400 unsupported，exit 1）；attempt2 `--model gpt-5.5` 触发 OpenAI usage limit（今日 17:50 重置，exit 1）。review 是提交强制门禁，未过不 commit。
+- **续跑**: automations 登记受限，改由今日 19:00 auto-dev-loop 循环续跑（脚本 CONTINUE 信号 + 本手册）。操作手册: docs/task_runs/UPSTREAM-081-001-20260902-191510/HANDOFF-round3-review.md
+- **档案**: docs/task_runs/.../codex-review-round3-raw-attempt1-gpt6astra-unsupported.log、...attempt2-quota.log、diff-round2-fix.txt
+
+## 2026-09-05 | UPSTREAM-081-001 fix round 2：修复 round2 review 3×P1 + 2×P2
+
+- **[P1] LHB 强制重试纳入整轮 deadline**（`data_collector.py`）：新增
+  `_apply_forced_lhb`，强制龙虎榜查询消费 `_run_bounded_fetch` 同一
+  `round_deadline` 的剩余预算——预算耗尽不提交（`_lhb_query_mode=
+  "forced_skipped_budget"`），提交后超时则遗弃并写"数据获取失败"明文
+  （`"forced_timeout"`，`_infer_source_status` 判 FAILED），不再在
+  `_run_bounded_fetch` 之外无界运行。
+- **[P1] 超时 worker 无界累积 → 共享有界隔离**（`data_collector.py` +
+  `api/main.py`）：每轮新建 `ThreadPoolExecutor` 改为进程级共享
+  `_BoundedFetchPool`（`TA_DATA_FETCH_POOL_WORKERS`，默认 16；daemon、
+  `ta-data-fetch-N` 命名、queue.SimpleQueue + Future 自实现）——卡死线程
+  泄漏上限=进程级 worker 数，不再随轮数累积；`get_fetch_pool_stats()`
+  （max_workers/threads/active/queued/abandoned_total）挂到 `/healthz`
+  `fetch_pool` 键，泄漏/积压可观测。
+- **[P1] `Authorization: Bearer <token>` 脱敏不完整**（`api/main.py`）：
+  `_ERROR_CREDENTIAL_RE` 新增三支——Authorization 头+scheme+凭据整体（含
+  JWT 点分）、裸 `Bearer <cred>`、独立 JWT（`eyJ...`三段），覆盖 header/
+  JSON/键值形态，真实 token 不再原样落库 job.error/SSE。
+- **[P2] 幂等捷径绕过脱敏**（`api/main.py`）：`_humanize_analysis_error`
+  命中"（原始错误："捷径时改为返回 `_sanitize_analysis_error_text(raw)`
+  （重复脱敏结果稳定，幂等语义保持，有测试锚定）。
+- **[P2] 自定义 `TA_DATA_FETCH_TIMEOUT≥360` 违反锁余量不变量**
+  （`data_collector.py`）：`FETCH_LOCK_TIMEOUT` 改为导入期推导
+  `max(env_lock, FETCH_ALL_TIMEOUT + 60)`——默认 300/360 行为不变，
+  不兼容 env 对自动推导并打 warning，显式更大的 lock 仍被尊重。
+- **测试**：`tests/test_upstream081_runtime_resilience.py` 新增/加强 16 项
+  （LHB force 预算内成功/超时降级/预算耗尽跳过 + `_fetch_all` 整轮接线、
+  共享池有界+命名+daemon+异常传播+泄漏线程数不随轮增长+healthz gauges、
+  Bearer/JWT/JSON/键值全形态脱敏、捷径脱敏+堆栈行丢弃、锁超时推导/大值
+  尊重/默认不变）。
+- **验证**：验收命令 `pytest tests/test_upstream081_runtime_resilience.py
+  tests/test_api_smoke.py -q --tb=short` → **131 passed**；相关回归
+  （data_collector/LHB decouple/G-006/G-007/v081 absorption/DATA-004/
+  intent/evidence/DATA-017/DATA-022/HK-001/runtime-tier/v001）→
+  **533 passed**；`py_compile` 通过。逐条取舍见 run 目录
+  `docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md`
+  的 fix-round-2 小节。未 commit/push；docs/TASKS.md 状态未动。
+
+## 2026-09-02 | UPSTREAM-081-001：线程池饱和、股票识别与错误语义选择性吸收（P1）
+
+- **策略**：参考上游 `v0.8.1` `89754c5`（#202），先做差异表，只补本地真实缺口；
+  不整笔 cherry-pick，本地意图解析/Tushare 契约/门禁链不动。
+- **线程池饱和**（`tradingagents/graph/data_collector.py`）：
+  - 已有（不动）：`install_default_network_timeout`（socket+requests 双覆盖，强于
+    上游 setdefaulttimeout）、默认 executor、`/healthz` 饱和探针、
+    `FETCH_LOCK_TIMEOUT` 锁等待上限。
+  - **补缺口**：新增 `_run_bounded_fetch` + `FETCH_ALL_TIMEOUT`
+    （env `TA_DATA_FETCH_TIMEOUT`，默认 300s）——`_fetch_all` 整轮抓取硬上限，
+    超时数据源写入含"数据获取失败"的明文（`_infer_source_status` 判 FAILED，
+    不伪装成功），`shutdown(wait=False, cancel_futures=True)` 遗弃卡死 worker
+    （其生命周期由 socket 默认超时兜底）。此举取代 2026-07-27 "绝不遗弃线程"
+    的旧决策——旧决策留下首个 collector 持锁无上界的缺口；保持
+    `FETCH_LOCK_TIMEOUT(360) > FETCH_ALL_TIMEOUT(300)` 排队者可熬过整轮预算。
+  - `/healthz` 探针超时改 `_HEALTHZ_PROBE_TIMEOUT`（env 可调，默认 5s 不变），
+    探针保持纯 no-op，绝不重复执行任务（有测试锚定）。
+- **股票识别兜底**（`api/main.py`）：LLM 失败（限流/下线/网络）且 regex 无果时，
+  新增 `_resolve_cn_name_from_text_cached` 用原文在**已预热的本地股票名单**做
+  一次兜底——只读 warm cache（冷缓存不触发远程加载）、复用 fail-closed 单标的
+  解析器（歧义/冷缓存/无关文本→None，保持"无法识别股票标的"明确错误）。
+  不采纳上游"多候选取最短名"（误报风险）。确定性 regex 优先级不变
+  （`分析 300845.SZ` 不依赖 LLM，LLM 返回垃圾名也不覆盖明确代码，有测试锚定）。
+- **错误语义人性化**（`api/main.py`）：新增 `_ANALYSIS_ERROR_HINTS` +
+  `_sanitize_analysis_error_text` + `_humanize_analysis_error`，接线
+  `_run_job_inner` 失败落库/SSE 与 chat 流式 `job.failed` 两个出口。本地强于
+  上游之处：拼入的原始错误先脱敏——URL（含无 scheme 域名）、sk-/Bearer/键值对/
+  32+ 不透明 token、堆栈续行（仅保留首行）、截断 200 字符；job store 的
+  `traceback` 仍为内部真源（`/v1/jobs/{id}` 只暴露 `error`）。
+- **测试**（`tests/test_upstream081_runtime_resilience.py` 新增 28 项）：整轮
+  硬上限（超时源 FAILED、不 join 遗弃 worker、默认值/锁余量契约）；healthz
+  探针（饱和 503+队列统计、健康 ok、探针不触发任务重执行）；识别兜底
+  （飞沃科技命中、流式同路径、歧义 fail-closed、无股票保持明确错误、冷缓存
+  不远程加载、显式代码战胜坏 LLM）；人性化+脱敏（余额/限流/下线/连接提示、
+  key/长 token/URL/无 scheme 域名/堆栈行不泄漏、幂等、截断、`_run_job_inner`
+  两条注入路径、chat SSE 端到端）。
+- **验证**：验收命令 `pytest tests/test_upstream081_runtime_resilience.py
+  tests/test_api_smoke.py -q --tb=short` → **115 passed**；相关回归（absorption/
+  collector/intent/evidence/HK/G-006/LHB/v001/DATA-004/runtime-tier）→
+  **385 passed**；`py_compile` 通过。运行档案
+  `docs/task_runs/UPSTREAM-081-001-20260902-191510/`。
+- **事故记录（已恢复）**：一次 ad-hoc 调试脚本（未走 conftest 隔离）曾向生产
+  `tradingagents.db`（WAL）写入测试用户 `dbg081@test.com`，发现后已验证无子行
+  引用并单行删除、复核 count=0；pytest 运行本身均被 DATABASE_URL 隔离。
+- 未改 prompts、未 commit/push、未动 docs/TASKS.md 状态（外层脚本所有）。
+
 ## 2026-08-19 | CONFIG-DS-SCHEDULE-R1：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，round1-5 收口）
 
 - 修复 72f31be review 发现的 P1/P2（Codex review round1-5 档案
@@ -16103,3 +16233,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - `UPSTREAM-081-005` Investoday 保持 `blocked — NEEDS_HUMAN`：必须先确认 API Key、授权范围、限流、许可和字段口径，不能因上游新增 provider 就默认启用。
 - 明确不吸收：上游 DeepSeek 默认解禁/推荐引导、本地已覆盖的简化否定匹配、Docker 同容器启动、Promo Banner、大版本依赖升级；上游已 Revert 的盘中概念板块扫描不得恢复。
 - 同步修正任务池顶部陈旧状态：`B-002-R1` 为 blocked，`B-002-R2` 为 done。
+
+## 2026-09-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: UPSTREAM-081-001 - 线程池饱和、股票识别与错误语义选择性吸收（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex unavailable (token/auth), review is mandatory
+- **Run archive**: docs/task_runs/UPSTREAM-081-001-20260902-191510/

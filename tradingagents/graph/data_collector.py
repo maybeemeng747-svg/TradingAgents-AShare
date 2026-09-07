@@ -1,11 +1,12 @@
 """DataCollector: fetch all data once, serve windowed views to analyst agents."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, wait as futures_wait
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -66,13 +67,191 @@ INDICATORS = [
 ]
 SHORT_DAYS = 14
 LONG_DAYS = 90
-FETCH_LOCK_TIMEOUT = float(os.getenv("TA_DATA_FETCH_LOCK_TIMEOUT", "360"))
+# [UPSTREAM-081-001] Hard cap for one whole fetch round. A stuck provider
+# (network stall beyond the socket timeout, vendor-internal retry loops)
+# must not pin the per-key lock and drain the asyncio default executor
+# forever.
+FETCH_ALL_TIMEOUT = float(os.getenv("TA_DATA_FETCH_TIMEOUT", "300"))
+# [UPSTREAM-081-001] The per-key lock must outlast one whole fetch round
+# (+ margin) so queueing collectors do not fail while a round is still inside
+# its budget. The timeout is DERIVED from the fetch budget: a custom
+# TA_DATA_FETCH_LOCK_TIMEOUT is honoured only when it keeps that margin, so an
+# incompatible env pair can no longer violate the invariant at import time.
+FETCH_LOCK_TIMEOUT_MARGIN = 60.0
+_FETCH_LOCK_TIMEOUT_ENV = float(os.getenv("TA_DATA_FETCH_LOCK_TIMEOUT", "360"))
+FETCH_LOCK_TIMEOUT = max(
+    _FETCH_LOCK_TIMEOUT_ENV, FETCH_ALL_TIMEOUT + FETCH_LOCK_TIMEOUT_MARGIN
+)
+# [UPSTREAM-081-001] Process-wide bounded worker pool for all fetch rounds
+# (see _BoundedFetchPool). Cap is the whole-process ceiling for leaked
+# (abandoned, socket-bound) fetch threads.
+FETCH_POOL_MAX_WORKERS = max(
+    1, int(os.getenv("TA_DATA_FETCH_POOL_WORKERS", "16"))
+)
+# [UPSTREAM-081-001 fix round3] Hard cap on the shared pool's queue depth.
+# A saturated pool must REJECT new submits (explicit degradation) instead of
+# silently enqueuing work that would only execute after its round deadline.
+FETCH_POOL_MAX_QUEUED = max(
+    1, int(os.getenv("TA_DATA_FETCH_POOL_MAX_QUEUED", "64"))
+)
 
 import numpy as np
 
 _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
 
 _logger = logging.getLogger(__name__)
+
+if FETCH_LOCK_TIMEOUT > _FETCH_LOCK_TIMEOUT_ENV:
+    _logger.warning(
+        "TA_DATA_FETCH_LOCK_TIMEOUT=%g violates the invariant "
+        "FETCH_LOCK_TIMEOUT >= TA_DATA_FETCH_TIMEOUT(%g) + %g; "
+        "derived FETCH_LOCK_TIMEOUT=%g",
+        _FETCH_LOCK_TIMEOUT_ENV,
+        FETCH_ALL_TIMEOUT,
+        FETCH_LOCK_TIMEOUT_MARGIN,
+        FETCH_LOCK_TIMEOUT,
+    )
+
+
+class _FetchPoolSaturated(RuntimeError):
+    """[UPSTREAM-081-001 fix round3] submit() rejected: the bounded fetch
+    queue is full. Callers must degrade explicitly — never enqueue silently,
+    because a task left queued past its round deadline must not execute."""
+
+
+class _BoundedFetchPool:
+    """Process-wide bounded daemon worker pool shared by all fetch rounds.
+
+    [UPSTREAM-081-001] Each fetch round used to build its own
+    ``ThreadPoolExecutor``; abandoned (stuck) workers cannot be cancelled, so
+    every round that hit the deadline leaked one live thread + connection per
+    timed-out source, and threads accumulated without bound as rounds piled
+    up. All rounds now share this pool: the leak is hard-capped at
+    ``FETCH_POOL_MAX_WORKERS`` daemon threads for the whole process, threads
+    carry the ``ta-data-fetch`` name prefix for dumps, and leak/backlog
+    gauges are exposed via :func:`get_fetch_pool_stats` (surfaced on
+    ``/healthz``).
+
+    [UPSTREAM-081-001 fix round3] The work queue is bounded
+    (``FETCH_POOL_MAX_QUEUED``): ``submit`` raises :class:`_FetchPoolSaturated`
+    on saturation so callers degrade explicitly instead of growing an
+    unbounded backlog of tasks that would execute only after their round
+    deadline expired. Deadline expiry itself cancels queued futures — a
+    cancelled task is guaranteed never to run (the worker re-checks
+    ``set_running_or_notify_cancel`` after dequeue); only tasks already
+    running on a worker stay bounded by the worker cap + socket timeout.
+    """
+
+    def __init__(self, max_workers: int, max_queued: Optional[int] = None) -> None:
+        self._max_workers = max(1, int(max_workers))
+        self._max_queued = (
+            FETCH_POOL_MAX_QUEUED if max_queued is None else max(1, int(max_queued))
+        )
+        self._work: "queue.Queue" = queue.Queue(maxsize=self._max_queued)
+        self._lock = threading.Lock()
+        self._active = 0
+        self._abandoned = 0
+        self._cancelled = 0
+        self._rejected = 0
+        self._threads: List[threading.Thread] = []
+        for idx in range(self._max_workers):
+            thread = threading.Thread(
+                target=self._worker, name=f"ta-data-fetch-{idx}", daemon=True
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def _worker(self) -> None:
+        while True:
+            fn, future = self._work.get()
+            if not future.set_running_or_notify_cancel():
+                # Cancelled while queued: guaranteed never to execute.
+                continue
+            with self._lock:
+                self._active += 1
+            try:
+                result = fn()
+            except BaseException as exc:  # propagate to the waiting round
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+            finally:
+                with self._lock:
+                    self._active -= 1
+
+    def submit(self, fn) -> "Future":
+        future: Future = Future()
+        try:
+            # [UPSTREAM-081-001 fix round3] Bounded queue: saturation raises
+            # instead of silently growing the backlog without bound.
+            self._work.put_nowait((fn, future))
+        except queue.Full:
+            with self._lock:
+                self._rejected += 1
+            raise _FetchPoolSaturated(
+                f"fetch pool saturated: {self._max_queued} tasks already queued"
+            )
+        return future
+
+    def mark_abandoned(self, count: int = 1) -> None:
+        """Count workers left running past their round deadline (leak gauge)."""
+        with self._lock:
+            self._abandoned += count
+
+    def mark_cancelled(self, count: int = 1) -> None:
+        """[fix round3] Count queued tasks cancelled before a worker started
+        them: they are guaranteed never to execute."""
+        with self._lock:
+            self._cancelled += count
+
+    def stats(self) -> Dict[str, int]:
+        with self._lock:
+            return {
+                "max_workers": self._max_workers,
+                "max_queued": self._max_queued,
+                "threads": len(self._threads),
+                "active": self._active,
+                "queued": self._work.qsize(),
+                "abandoned_total": self._abandoned,
+                "cancelled_total": self._cancelled,
+                "rejected_total": self._rejected,
+            }
+
+
+_fetch_pool: Optional[_BoundedFetchPool] = None
+_fetch_pool_lock = threading.Lock()
+
+
+def get_fetch_pool() -> "_BoundedFetchPool":
+    """Lazily create the shared fetch pool so importing this module stays
+    side-effect free (scheduler/tests import it without fetching)."""
+    global _fetch_pool
+    if _fetch_pool is None:
+        with _fetch_pool_lock:
+            if _fetch_pool is None:
+                _fetch_pool = _BoundedFetchPool(FETCH_POOL_MAX_WORKERS)
+    return _fetch_pool
+
+
+def get_fetch_pool_stats() -> Dict[str, int]:
+    """Leak/backlog gauges for the shared fetch pool (``/healthz`` observability).
+
+    Never forces pool creation; reports the configured ceiling with zeroed
+    counters until the first fetch round runs.
+    """
+    pool = _fetch_pool
+    if pool is None:
+        return {
+            "max_workers": FETCH_POOL_MAX_WORKERS,
+            "max_queued": FETCH_POOL_MAX_QUEUED,
+            "threads": 0,
+            "active": 0,
+            "queued": 0,
+            "abandoned_total": 0,
+            "cancelled_total": 0,
+            "rejected_total": 0,
+        }
+    return pool.stats()
 
 
 _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
@@ -497,6 +676,188 @@ def _compute_lhb_force_decision(
     return (False, "")
 
 
+def _run_bounded_fetch(
+    tasks: Dict[str, tuple],
+    deadline: Optional[float] = None,
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """[UPSTREAM-081-001] Run every fetch task in parallel under a whole-round
+    hard cap (``FETCH_ALL_TIMEOUT``).
+
+    Tasks that finish within the cap return their results normally. Timed-out
+    sources get an explicit ``数据获取失败`` message so ``_infer_source_status``
+    classifies them as FAILED instead of hanging the analysis.
+
+    Workers run on the process-wide bounded pool (``_BoundedFetchPool``), not
+    a per-round executor: a stuck provider keeps its thread until the
+    socket-bounded call gives up, but the leak is capped at
+    ``FETCH_POOL_MAX_WORKERS`` threads for the whole process instead of
+    growing by one thread per abandoned worker per round. Callers pass a
+    ``time.monotonic()`` deadline so follow-up work (the LHB force upgrade)
+    consumes the same budget. Backlog/leak gauges: ``get_fetch_pool_stats()``.
+
+    [UPSTREAM-081-001 fix round3] Deadline semantics are enforced, not just
+    waited: when the round expires, queued (not yet started) futures are
+    ``cancel()``-ed so they can never execute — not even once older workers
+    free up. Submits into an already saturated pool raise
+    ``_FetchPoolSaturated`` and degrade to explicit FAILED status text
+    instead of silently joining an unbounded backlog.
+    """
+    results: Dict[str, Any] = {}
+    provider_hits: Dict[str, str] = {}
+    if deadline is None:
+        deadline = time.monotonic() + FETCH_ALL_TIMEOUT
+    pool = get_fetch_pool()
+    future_to_key: Dict["Future", str] = {}
+    for key, (tool, payload) in tasks.items():
+        try:
+            future = pool.submit(
+                lambda tool=tool, payload=payload: _safe_with_vendor(tool, payload)
+            )
+        except _FetchPoolSaturated:
+            # Explicit degraded status (``_infer_source_status`` → FAILED):
+            # never a silent enqueue that could run after the deadline.
+            results[key] = (
+                f"数据获取失败：{key} 数据拉取被拒（线程池饱和），"
+                "本轮分析跳过该数据源"
+            )
+            print(f"  [Warning] {key} fetch rejected: fetch pool saturated")
+            continue
+        future_to_key[future] = key
+    done, not_done = futures_wait(
+        set(future_to_key), timeout=max(0.0, deadline - time.monotonic())
+    )
+    for future in done:
+        key = future_to_key[future]
+        result, vendor = future.result()
+        results[key] = result
+        if vendor:
+            provider_hits[key] = vendor
+    if not_done:
+        # [UPSTREAM-081-001 fix round3] Queued-but-not-started futures are
+        # cancelled: after the whole-round deadline they must never execute.
+        # Already-running futures cannot be cancelled; they stay bounded by
+        # the shared pool's worker cap + the socket default timeout
+        # (round2 semantics).
+        cancelled = 0
+        running = 0
+        for future in not_done:
+            try:
+                was_queued = future.cancel()
+            except Exception:
+                was_queued = False
+            if was_queued:
+                cancelled += 1
+            else:
+                running += 1
+        if cancelled:
+            pool.mark_cancelled(cancelled)
+        if running:
+            # Abandoned workers die once their socket-bounded network call
+            # gives up; never join them here or the hard cap would be
+            # meaningless. The shared pool keeps the leak bounded and
+            # observable.
+            pool.mark_abandoned(running)
+    for future in not_done:
+        key = future_to_key[future]
+        results[key] = (
+            f"数据获取失败：{key} 数据拉取超时（>{FETCH_ALL_TIMEOUT:g}s），"
+            "本轮分析跳过该数据源"
+        )
+        print(
+            f"  [Warning] {key} fetch timed out after "
+            f"{FETCH_ALL_TIMEOUT:g}s, skipped"
+        )
+    return results, provider_hits
+
+
+def _apply_forced_lhb(
+    results: Dict[str, Any],
+    provider_hits: Dict[str, str],
+    ticker: str,
+    trade_date: str,
+    deadline: float,
+    force_reason: str,
+) -> None:
+    """[E-003] Upgrade LHB to force=True strictly inside the whole-round budget.
+
+    [UPSTREAM-081-001] The forced query used to run after ``_run_bounded_fetch``
+    with no deadline at all: a stuck provider could hold a worker thread
+    indefinitely past the round cap. It now consumes whatever budget remains
+    of the same deadline the round started with:
+
+    - budget exhausted → never submitted, explicit degraded status text
+      (``_lhb_query_mode="forced_skipped_budget"``);
+    - submitted but the remaining wait expires → the future is cancelled
+      (fix round3): a queued (not yet started) force query is guaranteed
+      never to execute, so ``forced_timeout`` really ends all force activity
+      for the round; a query already running on a worker cannot be cancelled
+      and stays bounded by the shared pool cap + socket default timeout
+      (round2 semantics). Both cases write explicit degraded status text
+      (``_lhb_query_mode="forced_timeout"``; ``_infer_source_status`` →
+      FAILED, never a fake success);
+    - pool saturated → never enqueued, explicit degraded status text
+      (``_lhb_query_mode="forced_rejected_saturated"``, fix round3).
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        results["lhb"] = (
+            "数据获取失败：lhb 强制查询因整轮预算已用尽未执行"
+            f"（>{FETCH_ALL_TIMEOUT:g}s），本轮分析跳过该数据源"
+        )
+        results["_lhb_query_mode"] = "forced_skipped_budget"  # [G-007] provenance
+        results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
+        print("  [E-003] lhb force query skipped: whole-round budget exhausted")
+        return
+    pool = get_fetch_pool()
+    try:
+        future = pool.submit(
+            lambda: _safe_with_vendor(
+                get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True}
+            )
+        )
+    except _FetchPoolSaturated:
+        # [fix round3] Never silently enqueue work that would escape the
+        # whole-round deadline; degrade explicitly instead.
+        results["lhb"] = (
+            "数据获取失败：lhb 强制查询被拒（线程池饱和），本轮分析跳过该数据源"
+        )
+        results["_lhb_query_mode"] = "forced_rejected_saturated"  # [G-007]
+        results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
+        print("  [E-003] lhb force query rejected: fetch pool saturated")
+        return
+    _done, not_done = futures_wait({future}, timeout=remaining)
+    if not_done:
+        # [UPSTREAM-081-001 fix round3] Cancel the future: a queued (not yet
+        # started) force query must never execute once forced_timeout is
+        # returned — previously it stayed in the queue and ran later,
+        # escaping the whole-round deadline. Only a query already running on
+        # a worker is abandoned (bounded by pool cap + socket timeout).
+        try:
+            was_queued = future.cancel()
+        except Exception:
+            was_queued = False
+        if was_queued:
+            pool.mark_cancelled(1)
+        else:
+            pool.mark_abandoned(1)
+        results["lhb"] = (
+            f"数据获取失败：lhb 强制查询超时（>{remaining:.0f}s），"
+            "本轮分析跳过该数据源"
+        )
+        results["_lhb_query_mode"] = "forced_timeout"  # [G-007] provenance
+        results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
+        print(
+            f"  [E-003] lhb force query timed out after {remaining:.0f}s, skipped"
+        )
+        return
+    lhb_forced, lhb_vendor = future.result()
+    results["lhb"] = lhb_forced
+    if lhb_vendor:
+        provider_hits["lhb"] = lhb_vendor
+    results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+    results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
+
+
 def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     """Fetch all data sources in parallel.
 
@@ -567,19 +928,11 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     provider_hits: Dict[str, str] = {}
     fetch_start = time.time()
     stock_data_fetch_started_at = datetime.now(timezone.utc)
-    # Provider calls remain joined here. A process-wide socket timeout bounds
-    # ordinary network stalls without abandoning live worker threads.
-    with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
-        future_to_key = {
-            executor.submit(_safe_with_vendor, tool, payload): key
-            for key, (tool, payload) in tasks.items()
-        }
-        for future in future_to_key:
-            key = future_to_key[future]
-            result, vendor = future.result()
-            results[key] = result
-            if vendor:
-                provider_hits[key] = vendor
+    # [UPSTREAM-081-001] bounded fetch round: one deadline covers both the
+    # parallel round and the conditional LHB force upgrade below, so no
+    # provider call can outlive the whole-round budget.
+    round_deadline = time.monotonic() + FETCH_ALL_TIMEOUT
+    results, provider_hits = _run_bounded_fetch(tasks, deadline=round_deadline)
     results["_provider_hits"] = provider_hits
 
     # [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
@@ -630,15 +983,10 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
         if lhb_force_needed:
             print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
-            lhb_forced, lhb_vendor = _safe_with_vendor(
-                get_lhb_detail,
-                {"symbol": ticker, "date": trade_date, "force": True},
+            _apply_forced_lhb(
+                results, provider_hits, ticker, trade_date,
+                deadline=round_deadline, force_reason=lhb_force_reason,
             )
-            results["lhb"] = lhb_forced
-            if lhb_vendor:
-                provider_hits["lhb"] = lhb_vendor
-            results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
-            results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
     else:
         results["_lhb_query_mode"] = "skipped_hk"  # [HK-001] hk_market_boundary
 

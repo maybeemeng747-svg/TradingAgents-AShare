@@ -64,7 +64,7 @@ def _get_real_ip(request: Request) -> Optional[str]:
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.graph.data_collector import DataCollector
+from tradingagents.graph.data_collector import DataCollector, get_fetch_pool_stats
 
 # 全局共享 DataCollector：同一 ticker+date 的数据只拉一次，所有 job 复用缓存
 _shared_data_collector = DataCollector()
@@ -970,6 +970,9 @@ app.add_middleware(
 
 _executor = ThreadPoolExecutor(max_workers=int(os.getenv("TA_MAX_WORKERS", "2")))
 _default_executor: Optional[ThreadPoolExecutor] = None
+# [UPSTREAM-081-001] healthz 探针排队上限（秒）：no-op 超过该时间排不上默认
+# executor 即判饱和返回 503，避免探针自身长时间占用请求。
+_HEALTHZ_PROBE_TIMEOUT = float(os.getenv("TA_HEALTHZ_PROBE_TIMEOUT", "5"))
 
 # ── Singleton job store (in-memory or Redis depending on REDIS_URL) ─────────
 _job_store_instance: Optional[Any] = None
@@ -1290,6 +1293,33 @@ def _is_explicit_cn_name_mention(query: str, name: str) -> bool:
         or re.search(escaped + suffix_context, query)
         or query == name
     )
+
+
+def _resolve_cn_name_from_text_cached(text: str) -> Optional[str]:
+    """[UPSTREAM-081-001] Last-resort deterministic CN name lookup on raw text.
+
+    Used only when the intent LLM failed (rate limit / model offline / network)
+    and the regex fast path found no code, so a user typing a plain company
+    name ("分析一下 飞沃科技") still gets an analysis instead of a generic
+    "cannot identify" error. Stronger than the upstream shortest-name pick:
+    - reads only the already-warm stock-name cache (no remote cold load in an
+      already-degraded path);
+    - reuses the fail-closed single-instrument resolver, so ambiguous
+      multi-name mentions return None instead of guessing;
+    - non A-share-analysis symbols are rejected by the resolver itself.
+    """
+    query = str(text or "").strip()
+    if not query:
+        return None
+    try:
+        matches = _extract_cn_symbols_from_query(
+            query, stock_map=_get_cn_stock_map_cached_only()
+        )
+    except Exception:
+        return None
+    if len(matches) != 1:
+        return None
+    return next(iter(matches))
 
 
 def _is_supported_cn_analysis_symbol(symbol: str) -> bool:
@@ -2642,6 +2672,87 @@ async def _run_job(
     _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
 
 
+# [UPSTREAM-081-001] 分析失败错误语义：把常见 LLM/网络原始报错翻译成用户能
+# 看懂的一句话 + 建议动作。本地在上游基础上加强：拼入的原始错误先脱敏
+# （key/token、URL、堆栈换行），用户可见文案绝不泄漏凭据、服务地址或内部堆栈。
+_ANALYSIS_ERROR_HINTS: List[tuple] = [
+    (r"Insufficient Balance|Error code: 402",
+     "您配置的大模型 API Key 余额不足。请前往模型服务商充值，或在「设置」中更换其他模型。"),
+    (r"DataInspectionFailed|sensitive words detect|data_inspection",
+     "模型服务商的内容安全审查拦截了本次分析输出。请重试一次；若频繁出现，建议在「设置」中更换其他模型服务商。"),
+    (r"Error code: 429|too.?many.?requests|throttling|rate.?limit",
+     "模型服务限流（请求过于频繁或额度受限）。请稍后重试，或在「设置」中更换模型。"),
+    (r"Error code: 401|Authorization Failed|invalid.*api.?key|authentication",
+     "模型 API Key 无效或已过期。请在「设置」中检查 API Key 配置并点击「测试」验证。"),
+    (r"Unsupported model|invalid_parameter.*model|model.*not.*(exist|found)",
+     "配置的模型名称不被服务商支持（可能已下线或改名）。请在「设置」中更换模型名称。"),
+    (r"Error code: 5\d\d|overloaded|InternalError|upload file failed",
+     "模型服务端暂时故障。请稍后重试；若持续失败，建议在「设置」中更换模型。"),
+    (r"Connection error|peer closed connection|Request timed out|timed?.?out|ConnectTimeout|ConnectError|GetAddrInfoError|NameResolutionError|Connection refused",
+     "连接模型服务失败（网络波动或服务不可达）。请稍后重试，并确认「设置」中的 Base URL 配置正确。"),
+]
+
+_ERROR_URL_RE = re.compile(
+    r"https?://\S+|www\.\S+|\b[A-Za-z0-9.-]+\.(?:com|cn|net|org|io|ai|tech|vip)\b(?:\.\S*)?(?:/\S*)?",
+    re.IGNORECASE,
+)
+_ERROR_CREDENTIAL_RE = re.compile(
+    # [UPSTREAM-081-001] Authorization header forms: "Authorization: Bearer
+    # <jwt>", '"Authorization": "Bearer <jwt>"' (JSON), "authorization=basic
+    # xyz" — the credential (dotted JWT included) must be swallowed whole,
+    # not just the literal "Authorization: Bearer" prefix.
+    r"\bauthorization\b[\"'=:\s]*(?:bearer|basic|token)?[\"'=:\s]*[^\s\"',;)]+"
+    # bare "Bearer <credential>" without the header keyword
+    r"|\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"
+    # standalone JWT (header.payload.signature)
+    r"|\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"
+    r"|\bsk-[A-Za-z0-9_\-]{8,}"
+    r"|\b(?:api[_-]?key|apikey|token|secret|password)\b[\"'=:\s]+\S+"
+    r"|\b[A-Za-z0-9_\-]{32,}\b",
+    re.IGNORECASE,
+)
+_ERROR_MAX_ORIGIN_LEN = 200
+
+
+def _sanitize_analysis_error_text(err: str) -> str:
+    """Redact credentials/URLs/stack continuation from a raw error string.
+
+    Only the first line is kept (exception chains embed multi-line internal
+    frames), then URLs and key-like tokens are masked, then the text is
+    truncated for display. Stable under repeated application.
+    """
+    raw = str(err or "").strip()
+    if not raw:
+        return raw
+    first_line = raw.splitlines()[0]
+    first_line = _ERROR_URL_RE.sub("<url已隐藏>", first_line)
+    first_line = _ERROR_CREDENTIAL_RE.sub("<凭据已隐藏>", first_line)
+    return first_line[:_ERROR_MAX_ORIGIN_LEN]
+
+
+def _humanize_analysis_error(err: str) -> str:
+    """[UPSTREAM-081-001] Translate raw LLM/network failures into a user
+    actionable hint.
+
+    Recognized errors get a Chinese explanation plus the sanitized original
+    (for troubleshooting feedback); unrecognized errors are returned
+    sanitized-only. Never leaks keys, URLs, or internal stack frames.
+    """
+    raw = str(err or "")
+    if not raw.strip():
+        return raw
+    if "（原始错误：" in raw:  # already humanized; keep idempotent
+        # [UPSTREAM-081-001] The shortcut must not bypass redaction: an
+        # already-humanized payload can still carry URLs/credentials (e.g.
+        # composed upstream). Re-sanitize; repeated sanitization is stable.
+        return _sanitize_analysis_error_text(raw)
+    safe = _sanitize_analysis_error_text(raw)
+    for pat, hint in _ANALYSIS_ERROR_HINTS:
+        if re.search(pat, raw, re.IGNORECASE):
+            return f"{hint}（原始错误：{safe}）"
+    return safe
+
+
 async def _run_job_inner(
     job_id: str,
     request: AnalyzeRequest,
@@ -3376,7 +3487,7 @@ async def _run_job_inner(
         _log(f"Job completed successfully: {job_id}")
         _log(f"[Timer] TOTAL Job execution (single_horizon) took {time.time() - job_start_t:.2f}s")
     except Exception as exc:
-        err_msg = f"{type(exc).__name__}: {exc}"
+        err_msg = _humanize_analysis_error(f"{type(exc).__name__}: {exc}")
         _set_job(
             job_id,
             status="failed",
@@ -4654,9 +4765,15 @@ async def healthz():
     if _default_executor is not None:
         payload["executor_queued"] = _default_executor._work_queue.qsize()
         payload["executor_threads"] = len(_default_executor._threads)
+    # [UPSTREAM-081-001] shared fetch-pool leak/backlog gauges: stuck fetch
+    # threads are capped by max_workers and visible here instead of growing
+    # unbounded across rounds.
+    payload["fetch_pool"] = get_fetch_pool_stats()
     try:
         loop = asyncio.get_running_loop()
-        await asyncio.wait_for(loop.run_in_executor(None, int), timeout=5)
+        await asyncio.wait_for(
+            loop.run_in_executor(None, int), timeout=_HEALTHZ_PROBE_TIMEOUT
+        )
     except asyncio.TimeoutError:
         payload["status"] = "thread_pool_starved"
         return JSONResponse(status_code=503, content=payload)
@@ -5327,6 +5444,12 @@ async def _ai_extract_symbol_and_date_streaming(
         if fast_symbol:
             _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
             return fast_symbol, fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        # [UPSTREAM-081-001] LLM 失败（限流/下线/网络）且 regex 无果时，用原文在
+        # 已预热的本地股票名单里做一次 fail-closed 兜底；歧义或冷缓存保持 None。
+        local_code = await asyncio.to_thread(_resolve_cn_name_from_text_cached, text)
+        if local_code:
+            _log(f"[StockExtract] LLM 失败，本地名单从原文兜底命中: {local_code}")
+            return local_code, fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
@@ -5434,6 +5557,12 @@ def _ai_extract_symbol_and_date(
         if fast_symbol:
             _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
             return fast_symbol, fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        # [UPSTREAM-081-001] LLM 失败（限流/下线/网络）且 regex 无果时，用原文在
+        # 已预热的本地股票名单里做一次 fail-closed 兜底；歧义或冷缓存保持 None。
+        local_code = _resolve_cn_name_from_text_cached(text)
+        if local_code:
+            _log(f"[StockExtract] LLM 失败，本地名单从原文兜底命中: {local_code}")
+            return local_code, fast_fallback_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
         _log(f"[StockExtract] LLM returned no stock name for: '{text[:40]}'")
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
@@ -5570,7 +5699,11 @@ async def chat_completions(
                 await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
             except Exception as exc:
                 _log(f"[chat] _extract_and_run failed: {exc}")
-                _emit_job_event(job_id, "job.failed", {"error": str(exc)})
+                _emit_job_event(
+                    job_id,
+                    "job.failed",
+                    {"error": _humanize_analysis_error(str(exc))},
+                )
 
         _create_tracked_task(_extract_and_run())
         return StreamingResponse(

@@ -1,0 +1,1150 @@
+[0m
+> build · glm-5.3-flash
+[0m
+[0m$ [0mgit status && git diff --stat
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 20 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     api/main.py
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     tradingagents/graph/data_collector.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/reviews/UPSTREAM-081-001-20260902-round1.txt
+	docs/reviews/UPSTREAM-081-001-20260903-round2.txt
+	docs/reviews/UPSTREAM-081-001-20260905-round3.txt
+	docs/task_runs/UPSTREAM-081-001-20260902-191510/
+	tests/test_upstream081_runtime_resilience.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+ api/main.py                           | 141 ++++++++++++++++-
+ docs/DEVLOG.md                        | 102 +++++++++++++
+ docs/TASKS.md                         |   6 +-
+ tradingagents/graph/data_collector.py | 277 +++++++++++++++++++++++++++++++---
+ 4 files changed, 496 insertions(+), 30 deletions(-)
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+[0m→ [0mRead docs/reviews/UPSTREAM-081-001-20260905-round3.txt
+[0m→ [0mRead tests/test_upstream081_runtime_resilience.py
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=260][0m
+Now let me read the current data_collector.py implementation:
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [offset=600, limit=220][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=80, offset=820][0m
+[0m✱ [0mGrep "_infer_source_status|_safe_with_vendor"[90m in tradingagents/graph/data_collector.py · 7 matches[0m
+[0m✱ [0mGrep "fetch_pool|get_fetch_pool_stats"[90m in api/main.py · 2 matches[0m
+现在我来查看剩余的相关部分：`_infer_source_status`、`_safe_with_vendor` 以及 api/main.py 中的 healthz 布置：
+[0m✱ [0mGrep "_lhb_query_mode"[90m in . · 185 matches[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=100, offset=519][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=60, offset=1040][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=60, offset=1100][0m
+[0m→ [0mRead api/main.py[90m [limit=50, offset=4735][0m
+`_infer_source_status` 会将任何 “获取失败” 的文本分类为 FAILED，因此降级文本可以正常流转。我先检查一下 healthz 部分和 DEVLOG 格式：
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=60][0m
+[0m
+[0m# [0mTodos
+[•] Fix P1-1: _BoundedFetchPool bounded queue + submit rejection + timeout cancel
+[ ] Fix P1-2: _apply_forced_lhb cancel queued force future + saturation degradation
+[ ] Update tests: fix pool test 184-195, add saturation/cancel regression tests
+[ ] Run verification: py_compile + pytest resilience + pytest api_smoke
+[ ] Update implementation.md fix round 3 section + DEVLOG.md entry
+[0m
+我现在已经掌握了完整上下文。我来跟进这项工作并进行修复：
+**修复 1a** — 池常量 + 有界队列 + 拒绝/取消计量指标：
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -87,8 +87,14 @@
+ # (abandoned, socket-bound) fetch threads.
+ FETCH_POOL_MAX_WORKERS = max(
+     1, int(os.getenv("TA_DATA_FETCH_POOL_WORKERS", "16"))
+ )
++# [UPSTREAM-081-001 fix round3] Hard cap on the shared pool's queue depth.
++# A saturated pool must REJECT new submits (explicit degradation) instead of
++# silently enqueuing work that would only execute after its round deadline.
++FETCH_POOL_MAX_QUEUED = max(
++    1, int(os.getenv("TA_DATA_FETCH_POOL_MAX_QUEUED", "64"))
++)
+ 
+ import numpy as np
+ 
+ _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
+
+[0m
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -112,8 +112,14 @@
+         FETCH_LOCK_TIMEOUT,
+     )
+ 
+ 
++class _FetchPoolSaturated(RuntimeError):
++    """[UPSTREAM-081-001 fix round3] submit() rejected: the bounded fetch
++    queue is full. Callers must degrade explicitly — never enqueue silently,
++    because a task left queued past its round deadline must not execute."""
++
++
+ class _BoundedFetchPool:
+     """Process-wide bounded daemon worker pool shared by all fetch rounds.
+ 
+     [UPSTREAM-081-001] Each fetch round used to build its own
+@@ -124,16 +130,30 @@
+     ``FETCH_POOL_MAX_WORKERS`` daemon threads for the whole process, threads
+     carry the ``ta-data-fetch`` name prefix for dumps, and leak/backlog
+     gauges are exposed via :func:`get_fetch_pool_stats` (surfaced on
+     ``/healthz``).
++
++    [UPSTREAM-081-001 fix round3] The work queue is bounded
++    (``FETCH_POOL_MAX_QUEUED``): ``submit`` raises :class:`_FetchPoolSaturated`
++    on saturation so callers degrade explicitly instead of growing an
++    unbounded backlog of tasks that would execute only after their round
++    deadline expired. Deadline expiry itself cancels queued futures — a
++    cancelled task is guaranteed never to run (the worker re-checks
++    ``set_running_or_notify_cancel`` after dequeue); only tasks already
++    running on a worker stay bounded by the worker cap + socket timeout.
+     """
+ 
+-    def __init__(self, max_workers: int) -> None:
++    def __init__(self, max_workers: int, max_queued: Optional[int] = None) -> None:
+         self._max_workers = max(1, int(max_workers))
+-        self._work: "queue.SimpleQueue" = queue.SimpleQueue()
++        self._max_queued = (
++            FETCH_POOL_MAX_QUEUED if max_queued is None else max(1, int(max_queued))
++        )
++        self._work: "queue.Queue" = queue.Queue(maxsize=self._max_queued)
+         self._lock = threading.Lock()
+         self._active = 0
+         self._abandoned = 0
++        self._cancelled = 0
++        self._rejected = 0
+         self._threads: List[threading.Thread] = []
+         for idx in range(self._max_workers):
+             thread = threading.Thread(
+                 target=self._worker, name=f"ta-data-fetch-{idx}", daemon=True
+@@ -144,8 +164,9 @@
+     def _worker(self) -> None:
+         while True:
+             fn, future = self._work.get()
+             if not future.set_running_or_notify_cancel():
++                # Cancelled while queued: guaranteed never to execute.
+                 continue
+             with self._lock:
+                 self._active += 1
+             try:
+@@ -159,24 +180,42 @@
+                     self._active -= 1
+ 
+     def submit(self, fn) -> "Future":
+         future: Future = Future()
+-        self._work.put((fn, future))
++        try:
++            # [UPSTREAM-081-001 fix round3] Bounded queue: saturation raises
++            # instead of silently growing the backlog without bound.
++            self._work.put_nowait((fn, future))
++        except queue.Full:
++            with self._lock:
++                self._rejected += 1
++            raise _FetchPoolSaturated(
++                f"fetch pool saturated: {self._max_queued} tasks already queued"
++            )
+         return future
+ 
+     def mark_abandoned(self, count: int = 1) -> None:
+         """Count workers left running past their round deadline (leak gauge)."""
+         with self._lock:
+             self._abandoned += count
+ 
++    def mark_cancelled(self, count: int = 1) -> None:
++        """[fix round3] Count queued tasks cancelled before a worker started
++        them: they are guaranteed never to execute."""
++        with self._lock:
++            self._cancelled += count
++
+     def stats(self) -> Dict[str, int]:
+         with self._lock:
+             return {
+                 "max_workers": self._max_workers,
++                "max_queued": self._max_queued,
+                 "threads": len(self._threads),
+                 "active": self._active,
+                 "queued": self._work.qsize(),
+                 "abandoned_total": self._abandoned,
++                "cancelled_total": self._cancelled,
++                "rejected_total": self._rejected,
+             }
+ 
+ 
+ _fetch_pool: Optional[_BoundedFetchPool] = None
+
+[0m
+现在我来更新 `get_fetch_pool_stats()` 中 zeroed-stats 的路径：
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -242,12 +242,15 @@
+ pool = _fetch_pool
+ if pool is None:
+     return {
+         "max_workers": FETCH_POOL_MAX_WORKERS,
++        "max_queued": FETCH_POOL_MAX_QUEUED,
+         "threads": 0,
+         "active": 0,
+         "queued": 0,
+         "abandoned_total": 0,
++        "cancelled_total": 0,
++        "rejected_total": 0,
+     }
+ return pool.stats()
+ 
+ 
+
+[0m
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -693,19 +693,37 @@
+ ``FETCH_POOL_MAX_WORKERS`` threads for the whole process instead of
+ growing by one thread per abandoned worker per round. Callers pass a
+ ``time.monotonic()`` deadline so follow-up work (the LHB force upgrade)
+ consumes the same budget. Backlog/leak gauges: ``get_fetch_pool_stats()``.
++
++[UPSTREAM-081-001 fix round3] Deadline semantics are enforced, not just
++waited: when the round expires, queued (not yet started) futures are
++``cancel()``-ed so they can never execute — not even once older workers
++free up. Submits into an already saturated pool raise
++``_FetchPoolSaturated`` and degrade to explicit FAILED status text
++instead of silently joining an unbounded backlog.
+ """
+ results: Dict[str, Any] = {}
+ provider_hits: Dict[str, str] = {}
+ if deadline is None:
+     deadline = time.monotonic() + FETCH_ALL_TIMEOUT
+ pool = get_fetch_pool()
+-future_to_key = {
+-    # default-arg binding: capture each task's tool/payload individually
+-    pool.submit(lambda tool=tool, payload=payload: _safe_with_vendor(tool, payload)): key
+-    for key, (tool, payload) in tasks.items()
+-}
++future_to_key: Dict["Future", str] = {}
++for key, (tool, payload) in tasks.items():
++    try:
++        future = pool.submit(
++            lambda tool=tool, payload=payload: _safe_with_vendor(tool, payload)
++        )
++    except _FetchPoolSaturated:
++        # Explicit degraded status (``_infer_source_status`` → FAILED):
++        # never a silent enqueue that could run after the deadline.
++        results[key] = (
++            f"数据获取失败：{key} 数据拉取被拒（线程池饱和），"
++            "本轮分析跳过该数据源"
++        )
++        print(f"  [Warning] {key} fetch rejected: fetch pool saturated")
++        continue
++    future_to_key[future] = key
+ done, not_done = futures_wait(
+     set(future_to_key), timeout=max(0.0, deadline - time.monotonic())
+ )
+ for future in done:
+@@ -714,12 +732,32 @@
+     results[key] = result
+     if vendor:
+         provider_hits[key] = vendor
+ if not_done:
+-    # Abandoned workers die once their socket-bounded network call gives
+-    # up; never join them here or the hard cap would be meaningless. The
+-    # shared pool keeps the leak bounded and observable.
+-    pool.mark_abandoned(len(not_done))
++    # [UPSTREAM-081-001 fix round3] Queued-but-not-started futures are
++    # cancelled: after the whole-round deadline they must never execute.
++    # Already-running futures cannot be cancelled; they stay bounded by
++    # the shared pool's worker cap + the socket default timeout
++    # (round2 semantics).
++    cancelled = 0
++    running = 0
++    for future in not_done:
++        try:
++            was_queued = future.cancel()
++        except Exception:
++            was_queued = False
++        if was_queued:
++            cancelled += 1
++        else:
++            running += 1
++    if cancelled:
++        pool.mark_cancelled(cancelled)
++    if running:
++        # Abandoned workers die once their socket-bounded network call
++        # gives up; never join them here or the hard cap would be
++        # meaningless. The shared pool keeps the leak bounded and
++        # observable.
++        pool.mark_abandoned(running)
+ for future in not_done:
+     key = future_to_key[future]
+     results[key] = (
+         f"数据获取失败：{key} 数据拉取超时（>{FETCH_ALL_TIMEOUT:g}s），"
+
+[0m
+**修复 1b** — `_run_bounded_fetch`：处理饱和度 + 在超时时取消排队的 futures：
+[0m# [0mTodos
+[✓] Fix P1-1: _BoundedFetchPool bounded queue + submit rejection + timeout cancel
+[•] Fix P1-2: _apply_forced_lhb cancel queued force future + saturation degradation
+[ ] Update tests: fix pool test 184-195, add saturation/cancel regression tests
+[ ] Run verification: py_compile + pytest resilience + pytest api_smoke
+[ ] Update implementation.md fix round 3 section + DEVLOG.md entry
+[0m
+**修复 2** — `_apply_forced_lhb`：饱和降级 + 取消超时的 future：
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -786,11 +786,18 @@
+ of the same deadline the round started with:
+ 
+ - budget exhausted → never submitted, explicit degraded status text
+   (``_lhb_query_mode="forced_skipped_budget"``);
+-- submitted but the remaining wait expires → abandoned on the bounded
+-  pool, explicit degraded status text (``_lhb_query_mode="forced_timeout"``;
+-  ``_infer_source_status`` → FAILED, never a fake success).
++- submitted but the remaining wait expires → the future is cancelled
++  (fix round3): a queued (not yet started) force query is guaranteed
++  never to execute, so ``forced_timeout`` really ends all force activity
++  for the round; a query already running on a worker cannot be cancelled
++  and stays bounded by the shared pool cap + socket default timeout
++  (round2 semantics). Both cases write explicit degraded status text
++  (``_lhb_query_mode="forced_timeout"``; ``_infer_source_status`` →
++  FAILED, never a fake success);
++- pool saturated → never enqueued, explicit degraded status text
++  (``_lhb_query_mode="forced_rejected_saturated"``, fix round3).
+ """
+ remaining = deadline - time.monotonic()
+ if remaining <= 0:
+     results["lhb"] = (
+@@ -800,16 +807,40 @@
+     results["_lhb_query_mode"] = "forced_skipped_budget"  # [G-007] provenance
+     results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
+     print("  [E-003] lhb force query skipped: whole-round budget exhausted")
+     return
+-future = get_fetch_pool().submit(
+-    lambda: _safe_with_vendor(
+-        get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True}
++pool = get_fetch_pool()
++try:
++    future = pool.submit(
++        lambda: _safe_with_vendor(
++            get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True}
++        )
+     )
+-)
++except _FetchPoolSaturated:
++    # [fix round3] Never silently enqueue work that would escape the
++    # whole-round deadline; degrade explicitly instead.
++    results["lhb"] = (
++        "数据获取失败：lhb 强制查询被拒（线程池饱和），本轮分析跳过该数据源"
++    )
++    results["_lhb_query_mode"] = "forced_rejected_saturated"  # [G-007]
++    results["_lhb_force_reason"] = force_reason  # [DATA-P0-603629]
++    print("  [E-003] lhb force query rejected: fetch pool saturated")
++    return
+ _done, not_done = futures_wait({future}, timeout=remaining)
+ if not_done:
+-    get_fetch_pool().mark_abandoned(1)
++    # [UPSTREAM-081-001 fix round3] Cancel the future: a queued (not yet
++    # started) force query must never execute once forced_timeout is
++    # returned — previously it stayed in the queue and ran later,
++    # escaping the whole-round deadline. Only a query already running on
++    # a worker is abandoned (bounded by pool cap + socket timeout).
++    try:
++        was_queued = future.cancel()
++    except Exception:
++        was_queued = False
++    if was_queued:
++        pool.mark_cancelled(1)
++    else:
++        pool.mark_abandoned(1)
+     results["lhb"] = (
+         f"数据获取失败：lhb 强制查询超时（>{remaining:.0f}s），"
+         "本轮分析跳过该数据源"
+     )
+
+[0m
+[0m# [0mTodos
+[✓] Fix P1-1: _BoundedFetchPool bounded queue + submit rejection + timeout cancel
+[✓] Fix P1-2: _apply_forced_lhb cancel queued force future + saturation degradation
+[•] Update tests: fix pool test 184-195, add saturation/cancel regression tests
+[ ] Run verification: py_compile + pytest resilience + pytest api_smoke
+[ ] Update implementation.md fix round 3 section + DEVLOG.md entry
+[0m
+两项代码修复均已完成。现在我来更新测试：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -23,8 +23,21 @@
+ 6. ``Authorization: Bearer <token>`` (incl. JWT) is redacted whole, and the
+    humanize idempotency shortcut can no longer bypass sanitization.
+ 7. ``FETCH_LOCK_TIMEOUT`` is derived from the fetch budget so a custom
+    ``TA_DATA_FETCH_TIMEOUT`` can no longer violate the queueing invariant.
++
++Fix round 3 (review round3 2×P1) additionally locks down:
++
++8. The shared pool's queue is bounded and enforceable: saturation raises an
++   explicit rejection (counted on ``rejected_total``) instead of silently
++   enqueuing work; at round timeout, queued (not-yet-started) futures are
++   cancelled so they NEVER execute afterwards — the old behavior let
++   "timed-out" tasks run once stuck workers freed up, escaping the
++   whole-round deadline.
++9. The forced LHB query obeys the same rule: after ``forced_timeout`` no
++   force query may execute (queued futures are cancelled); a saturated pool
++   degrades explicitly (``forced_rejected_saturated``) instead of faking a
++   queued success.
+ """
+ 
+ from __future__ import annotations
+ 
+
+[0m
+现在我来重写 pool test（即 round3 review 标记出的那个），并添加 saturation/cancel 回归测试：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -188,37 +188,138 @@
+ class TestSharedFetchPool:
+     def test_pool_is_bounded_named_and_daemonized(self):
+         pool = data_collector_module._BoundedFetchPool(2)
+         gate = threading.Event()
++        executed: list[str] = []
+ 
+         def _blocked():
+             gate.wait(timeout=10)
+             return "x"
+ 
+-        futures = [pool.submit(_blocked) for _ in range(5)]
+-        deadline = time.monotonic() + 2
+-        while time.monotonic() < deadline and pool.stats()["active"] < 2:
+-            time.sleep(0.02)
++        def _queued_work(name: str):
++            executed.append(name)
++            return name
+ 
+-        stats = pool.stats()
+-        assert stats["max_workers"] == 2
+-        assert stats["threads"] == 2
+-        assert stats["active"] == 2
+-        assert stats["queued"] == 3
+-        gate.set()
+-        assert [f.result(timeout=10) for f in futures] == ["x"] * 5
++        try:
++            running = [pool.submit(_blocked) for _ in range(2)]
++            deadline = time.monotonic() + 2
++            while time.monotonic() < deadline and pool.stats()["active"] < 2:
++                time.sleep(0.02)
++
++            queued = [pool.submit(_queued_work, f"q{i}") for i in range(3)]
++            stats = pool.stats()
++            assert stats["max_workers"] == 2
++            assert stats["threads"] == 2
++            assert stats["active"] == 2
++            assert stats["queued"] == 3
++
++            # Fix round3 deadline semantics: queued work past its round
++            # deadline is cancelled and must NEVER execute once workers free
++            # up (the old test expected every queued item to run eventually,
++            # which is exactly the escaped-deadline regression).
++            assert all(f.cancel() for f in queued)
++        finally:
++            gate.set()
++
++        assert [f.result(timeout=10) for f in running] == ["x"] * 2
++        time.sleep(0.1)
++        assert executed == [], "cancelled queued tasks must never execute"
+         assert all(t.name.startswith("ta-data-fetch-") for t in pool._threads)
+         assert all(t.daemon for t in pool._threads)
+ 
+-    def test_submit_propagates_worker_exceptions(self):
+-        pool = data_collector_module._BoundedFetchPool(1)
++    def test_submit_rejects_when_queue_is_full(self):
++        """Fix round3: the queue is bounded; a saturated pool raises an
++        explicit rejection (counted on ``rejected_total``) instead of
++        silently enqueuing work that would run after its round deadline."""
++        pool = data_collector_module._BoundedFetchPool(1, max_queued=2)
++        gate = threading.Event()
++        try:
++            pool.submit(lambda: gate.wait(timeout=10))
++            deadline = time.monotonic() + 2
++            while time.monotonic() < deadline and pool.stats()["active"] < 1:
++                time.sleep(0.02)
++            for _ in range(2):  # fill the only queue slots
++                pool.submit(lambda: "queued")
+ 
+-        def _boom():
+-            raise ValueError("provider blew up")
++            rejected_before = pool.stats()["rejected_total"]
++            with pytest.raises(data_collector_module._FetchPoolSaturated):
++                pool.submit(lambda: "overflow")
++            assert pool.stats()["rejected_total"] == rejected_before + 1
++        finally:
++            gate.set()
+ 
+-        with pytest.raises(ValueError):
+-            pool.submit(_boom).result(timeout=5)
++    def test_round_timeout_cancels_queued_work_so_it_never_runs(self, monkeypatch):
++        """Regression (round3 P1): when stuck tasks occupy every worker, a
++        round used to leave its queued futures alive — they executed after
++        the round had already reported 超时跳过. The round must cancel
++        queued futures at timeout so they never run, even after workers
++        free up; abandoned_total must only count the already-running one."""
++        monkeypatch.setattr(data_collector_module, "FETCH_ALL_TIMEOUT", 0.2)
++        gate = threading.Event()
++        test_pool = data_collector_module._BoundedFetchPool(1, max_queued=8)
++        monkeypatch.setattr(data_collector_module, "_fetch_pool", test_pool)
++        executed: list[str] = []
+ 
++        class _QueuedTool(_FakeTool):
++            def invoke(self, payload):
++                executed.append(self.name)
++                return "should-never-run"
++
++        tasks = {
++            "stock_data": (_GateTool("get_stock_data", gate), {}),  # occupies worker
++            "news": (_QueuedTool("get_news", "news-data"), {}),  # stays queued
++        }
++        try:
++            started = time.monotonic()
++            results, _hits = _run_bounded_fetch(tasks)
++            elapsed = time.monotonic() - started
++
++            assert elapsed < 0.9
++            assert "数据获取失败" in results["stock_data"]
++            assert "数据获取失败" in results["news"]
++            assert DataCollector._infer_source_status(results["news"]) == "FAILED"
++        finally:
++            gate.set()
++
++        # Give a wrongly-persisted queue entry every chance to run.
++        time.sleep(0.2)
++        assert executed == [], "timed-out queued task must be cancelled, not run later"
++        gauges = test_pool.stats()
++        assert gauges["cancelled_total"] == 1
++        assert gauges["abandoned_total"] == 1
++
++    def test_bounded_fetch_degrades_explicitly_when_pool_saturated(self, monkeypatch):
++        """Fix round3: submits into a saturated pool must produce explicit
++        degraded status text (FAILED), never a silent drop or fake success."""
++        gate = threading.Event()
++        test_pool = data_collector_module._BoundedFetchPool(1, max_queued=1)
++        monkeypatch.setattr(data_collector_module, "_fetch_pool", test_pool)
++        executed: list[str] = []
++
++        class _Probe(_FakeTool):
++            def invoke(self, payload):
++                executed.append(self.name)
++                return "ran"
++
++        try:
++            test_pool.submit(lambda: gate.wait(timeout=10))  # occupies worker
++            deadline = time.monotonic() + 2
++            while time.monotonic() < deadline and test_pool.stats()["active"] < 1:
++                time.sleep(0.02)
++            test_pool.submit(lambda: gate.wait(timeout=10))  # fills queue slot
++
++            results, hits = _run_bounded_fetch(
++                {"news": (_Probe("get_news", "news-data"), {})}
++            )
++        finally:
++            gate.set()
++
++        assert executed == []
++        assert "数据获取失败" in results["news"]
++        assert "线程池饱和" in results["news"]
++        assert DataCollector._infer_source_status(results["news"]) == "FAILED"
++        assert "news" not in hits
++
+     def test_abandoned_stuck_workers_do_not_accumulate_threads(self, monkeypatch):
+         """The P1: per-round executors leaked one thread per abandoned worker.
+ 
+         With the shared pool, the live thread count must not grow as more
+
+[0m
+我不小心在编辑中遗漏了 `test_submit_propagates_worker_exceptions` —— 现在将其恢复：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -246,8 +246,17 @@
+         assert pool.stats()["rejected_total"] == rejected_before + 1
+     finally:
+         gate.set()
+ 
++def test_submit_propagates_worker_exceptions(self):
++    pool = data_collector_module._BoundedFetchPool(1)
++
++    def _boom():
++        raise ValueError("provider blew up")
++
++    with pytest.raises(ValueError):
++        pool.submit(_boom).result(timeout=5)
++
+ def test_round_timeout_cancels_queued_work_so_it_never_runs(self, monkeypatch):
+     """Regression (round3 P1): when stuck tasks occupy every worker, a
+     round used to leave its queued futures alive — they executed after
+     the round had already reported 超时跳过. The round must cancel
+
+[0m
+[0m→ [0mRead tests/test_upstream081_runtime_resilience.py[90m [limit=190, offset=183][0m
+测试看起来没问题。现在更新 LHB force 测试——增强超时测试以包含调用记录，并增加两个新的 round3 回归测试：
+[0m
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -397,10 +397,20 @@
+     assert results["_lhb_force_reason"] == "announcement_mentions_lhb"
+ 
+ def test_forced_lhb_times_out_inside_remaining_budget(self, monkeypatch):
+     gate = threading.Event()
++    force_calls: list[dict] = []
++
++    class _RecordingGateTool:
++        name = "get_lhb_detail"
++
++        def invoke(self, payload):
++            force_calls.append(dict(payload))
++            gate.wait(timeout=10)
++            return "late"
++
+     monkeypatch.setattr(
+-        data_collector_module, "get_lhb_detail", _GateTool("get_lhb_detail", gate)
++        data_collector_module, "get_lhb_detail", _RecordingGateTool()
+     )
+     results: dict = {}
+     hits: dict = {}
+     deadline = time.monotonic() + 0.3
+@@ -420,9 +430,108 @@
+     assert DataCollector._infer_source_status(results["lhb"]) == "FAILED"
+     assert results["_lhb_query_mode"] == "forced_timeout"
+     assert results["_lhb_force_reason"] == "fund_flow_anomaly"
+     assert "lhb" not in hits
++    # Fix round3: forced_timeout ends ALL force activity for the round —
++    # aside from the single in-flight attempt, nothing may execute after.
++    time.sleep(0.2)
++    assert len(force_calls) == 1
+ 
++def test_forced_lhb_queued_future_is_cancelled_and_never_executes(
++    self, monkeypatch
++):
++    """Regression (round3 P1): with the pool saturated by stuck tasks,
++    the forced LHB future used to stay queued past the deadline and run
++    later — the force retry escaped the whole-round deadline even though
++    the round already returned forced_timeout. The queued future must be
++    cancelled: no force query may execute at all."""
++    gate = threading.Event()
++    test_pool = data_collector_module._BoundedFetchPool(1, max_queued=4)
++    monkeypatch.setattr(data_collector_module, "_fetch_pool", test_pool)
++    force_calls: list[dict] = []
++
++    class _RecordingLhbTool:
++        name = "get_lhb_detail"
++
++        def invoke(self, payload):
++            force_calls.append(dict(payload))
++            gate.wait(timeout=10)
++            return "late"
++
++    monkeypatch.setattr(
++        data_collector_module, "get_lhb_detail", _RecordingLhbTool()
++    )
++
++    try:
++        # Occupy the only worker so the forced query stays queued.
++        test_pool.submit(lambda: gate.wait(timeout=10))
++        deadline = time.monotonic() + 2
++        while time.monotonic() < deadline and test_pool.stats()["active"] < 1:
++            time.sleep(0.02)
++
++        results: dict = {}
++        hits: dict = {}
++        data_collector_module._apply_forced_lhb(
++            results, hits, "600519.SH", "2026-09-01",
++            deadline=time.monotonic() + 0.3,
++            force_reason="fund_flow_anomaly",
++        )
++    finally:
++        gate.set()
++
++    assert results["_lhb_query_mode"] == "forced_timeout"
++    assert "数据获取失败" in results["lhb"]
++    assert DataCollector._infer_source_status(results["lhb"]) == "FAILED"
++    assert "lhb" not in hits
++    time.sleep(0.2)  # give a wrongly-alive queue entry a chance to run
++    assert force_calls == [], "queued force query must be cancelled, never executed"
++    assert test_pool.stats()["cancelled_total"] == 1
++
++def test_forced_lhb_rejected_when_pool_saturated(self, monkeypatch):
++    """Fix round3: a saturated pool must not silently enqueue the force
++    query; it degrades explicitly (forced_rejected_saturated) instead of
++    pretending the query was queued for success."""
++    gate = threading.Event()
++    test_pool = data_collector_module._BoundedFetchPool(1, max_queued=1)
++    monkeypatch.setattr(data_collector_module, "_fetch_pool", test_pool)
++    force_calls: list[dict] = []
++
++    class _RecordingLhbTool:
++        name = "get_lhb_detail"
++
++        def invoke(self, payload):
++            force_calls.append(dict(payload))
++            gate.wait(timeout=10)
++            return "late"
++
++    monkeypatch.setattr(
++        data_collector_module, "get_lhb_detail", _RecordingLhbTool()
++    )
++
++    try:
++        test_pool.submit(lambda: gate.wait(timeout=10))  # occupies worker
++        deadline = time.monotonic() + 2
++        while time.monotonic() < deadline and test_pool.stats()["active"] < 1:
++            time.sleep(0.02)
++        test_pool.submit(lambda: gate.wait(timeout=10))  # fills queue slot
++
++        results: dict = {}
++        hits: dict = {}
++        data_collector_module._apply_forced_lhb(
++            results, hits, "600519.SH", "2026-09-01",
++            deadline=time.monotonic() + 5,
++            force_reason="fund_flow_anomaly",
++        )
++    finally:
++        gate.set()
++
++    assert force_calls == []
++    assert "数据获取失败" in results["lhb"]
++    assert "线程池饱和" in results["lhb"]
++    assert DataCollector._infer_source_status(results["lhb"]) == "FAILED"
++    assert results["_lhb_query_mode"] == "forced_rejected_saturated"
++    assert results["_lhb_force_reason"] == "fund_flow_anomaly"
++
+ def test_forced_lhb_skipped_when_budget_exhausted(self, monkeypatch):
+     calls: list = []
+ 
+     def _must_not_run(**payload):
+
+[0m
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -744,9 +744,12 @@
+         assert response.status_code == 200
+         gauges = response.json()["fetch_pool"]
+         assert gauges["max_workers"] >= 1
+         assert gauges["threads"] <= gauges["max_workers"]
+-        for key in ("active", "queued", "abandoned_total"):
++        # Fix round3: queue cap + saturation rejections + deadline cancels
++        # are observable alongside the round2 leak/backlog gauges.
++        assert gauges["max_queued"] >= 1
++        for key in ("active", "queued", "abandoned_total", "cancelled_total", "rejected_total"):
+             assert key in gauges
+ 
+ 
+ # ---------------------------------------------------------------------------
+
+[0m
+现在我来更新 `healthz` gauges 测试，以适配新的 keys：
+同时加强集成测试（`test_fetch_all_keeps_forced_lhb_inside_round_deadline`），遵循 round3 NOTE ——断言在 `forced_timeout` 之后，实际上不会再发生强制调用：
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -586,13 +586,15 @@
+             name = "get_lhb_detail"
+ 
+             def __init__(self) -> None:
+                 self.calls = 0
++                self.force_calls = 0
+ 
+             def invoke(self, payload):
+                 self.calls += 1
+                 if payload.get("force") is not True:
+                     return "LHB_NORMAL_NO_DATA 无龙虎榜数据"
++                self.force_calls += 1
+                 gate.wait(timeout=10)
+                 return "late"
+ 
+         lhb_tool = _StatefulLhbTool()
+@@ -606,13 +608,20 @@
+             gate.set()
+ 
+         assert elapsed < 3.5, f"round must return inside its deadline, took {elapsed:.2f}s"
+         assert pool["stock_data"] == "ok"
+-        assert lhb_tool.calls >= 2, "force upgrade must have been attempted"
+         assert pool["_lhb_force_reason"] == "anomaly_condition"
+         assert pool["_lhb_query_mode"] == "forced_timeout"
+         assert "数据获取失败" in pool["lhb"]
+         assert DataCollector._infer_source_status(pool["lhb"]) == "FAILED"
++        # Fix round3: after the round returned forced_timeout, the force
++        # query must not (re)execute — exactly one in-flight attempt, and
++        # once the gate releases, nothing new may run.
++        time.sleep(0.2)
++        assert lhb_tool.force_calls == 1, (
++            "forced_timeout must end all LHB force activity for the round"
++        )
++        assert lhb_tool.calls == 2
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # 1d. Fix round2: lock timeout derived from fetch budget (config invariant)
+
+[0m
+One edge case to verify: `futures_wait()` with an **empty** set (all submits rejected on a saturated pool) — behavior varies across Python versions:
+[0m$ [0msource .venv/bin/activate && python -c "
+import sys, time, concurrent.futures as cf
+print(sys.version)
+t0 = time.monotonic()
+done, not_done = cf.wait(set(), timeout=299.0)
+print('empty wait returned in', round(time.monotonic()-t0, 4), 's ->', done, not_done)
+"
+3.12.13 (main, Mar  3 2026, 12:39:30) [Clang 17.0.0 (clang-1700.6.3.2)]
+empty wait returned in 0.0 s -> set() set()
+[0m
+在运行时 (3.12) 下，空集会立即返回——无需使用防护机制。现在运行验证：
+[0m$ [0msource .venv/bin/activate && python -m py_compile tradingagents/graph/data_collector.py && python -m py_compile api/main.py && echo PY_COMPILE_OK
+PY_COMPILE_OK
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -25
+....F....  [Timer] get_stock_data took 0.62s
+........................................                        [100%]
+=================================== FAILURES ===================================
+________ TestSharedFetchPool.test_pool_is_bounded_named_and_daemonized _________
+tests/test_upstream081_runtime_resilience.py:208: in test_pool_is_bounded_named_and_daemonized
+    queued = [pool.submit(_queued_work, f"q{i}") for i in range(3)]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: _BoundedFetchPool.submit() takes 2 positional arguments but 3 were given
+=========================== short test summary info ============================
+FAILED tests/test_upstream081_runtime_resilience.py::TestSharedFetchPool::test_pool_is_bounded_named_and_daemonized
+1 failed, 48 passed in 5.96s
+[0m
+[0m← [0mEdit tests/test_upstream081_runtime_resilience.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_runtime_resilience.py
+@@ -204,9 +204,12 @@
+ deadline = time.monotonic() + 2
+ while time.monotonic() < deadline and pool.stats()["active"] < 2:
+     time.sleep(0.02)
+ 
+-queued = [pool.submit(_queued_work, f"q{i}") for i in range(3)]
++queued = [
++    pool.submit(lambda name=f"q{i}": _queued_work(name))
++    for i in range(3)
++]
+ stats = pool.stats()
+ assert stats["max_workers"] == 2
+ assert stats["threads"] == 2
+ assert stats["active"] == 2
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -5
+.........  [Timer] get_stock_data took 0.62s
+........................................                        [100%]
+49 passed in 5.75s
+[0m
+49 passed。接下来进行 API smoke 回归测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_api_smoke.py -q --tb=short 2>&1 | tail -5
+........................................................................ [ 82%]
+...............                                                          [100%]
+87 passed in 30.90s
+[0m
+[0m$ [0msource .venv/bin/activate && ls tests/ | grep -iE "data_collector|lhb|g006|g007|absorption|evidence_contract" 
+test_data004_evidence_contract.py
+test_data017_fund_lhb_health.py
+test_data022_fund_lhb_status_matrix.py
+test_data_collector.py
+test_data_p1_lhb_fund_decouple.py
+test_g006_raw_evidence_snapshot.py
+test_g007_fund_lhb_provenance.py
+test_upstream_v081_absorption.py
+[0m
+两个验证套件均已通过。我再运行一下与 data_collector/LHB 相关的回归测试文件以进行安全检查：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data_collector.py tests/test_data_p1_lhb_fund_decouple.py tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_upstream_v081_absorption.py tests/test_data004_evidence_contract.py tests/test_data017_fund_lhb_health.py tests/test_data022_fund_lhb_status_matrix.py -q --tb=short 2>&1 | tail -5
+........................................................................ [ 44%]
+........................................................................ [ 66%]
+........................................................................ [ 88%]
+....................................                                     [100%]
+324 passed in 48.19s
+[0m
+[0m# [0mTodos
+[✓] Fix P1-1: _BoundedFetchPool bounded queue + submit rejection + timeout cancel
+[✓] Fix P1-2: _apply_forced_lhb cancel queued force future + saturation degradation
+[✓] Update tests: fix pool test 184-195, add saturation/cancel regression tests
+[✓] Run verification: py_compile + pytest resilience + pytest api_smoke
+[•] Update implementation.md fix round 3 section + DEVLOG.md entry
+[0m
+全部通过（共 460 项测试）。现在更新文档：
+[0m← [0mEdit docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+@@ -1,8 +1,8 @@
+ # UPSTREAM-081-001 Implementation — 线程池饱和、股票识别与错误语义选择性吸收
+ 
+ - Date: 2026-09-02
+-- Status: implemented; review round2 found 3xP1+2xP2; fix round 2 done (2026-09-05), NOT committed, pending review round 3
++- Status: implemented; review round2 found 3xP1+2xP2 (fix round 2 done); review round3 found 2xP1 (fix round 3 done 2026-09-07), NOT committed, pending review round 4
+ - Upstream reference: `89754c5` (#202), v0.8.1
+ - Local baseline HEAD: `7e52176`
+ 
+ ## 差异表（上游新增 / 本地已有 / 本地更强）
+
+[0m
+[0m← [0mEdit docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md
+@@ -163,4 +163,109 @@
+   v001_600584）→ **244 passed**。
+ - `py_compile api/main.py tradingagents/graph/data_collector.py` 通过。
+ - 约束自查：未改 prompts；未写生产库（仅 pytest，conftest 隔离）；未
+   commit/push；docs/TASKS.md 状态未动。
++
++## Fix round 3（2026-09-07）— round3 review 2×P1 逐条取舍
++
++前提：在 round1+round2 未提交 diff 之上继续修，未回滚/重写既有实现，
++未动无关文件。round2 的五项修复全部保留。
++
++### R3-1 [P1] `_BoundedFetchPool` 队列无界、超时不取消（data_collector.py）
++
++**取舍**：队列从"无界 SimpleQueue"改为**有界 `queue.Queue(maxsize)`**，
++饱和走**显式拒绝 + 降级文本**而不是静默入队；整轮超时路径对
++`not_done` futures 逐一 `cancel()`，按 cancel 结果分流记账。不引入新的
++无界资源，已启动卡死任务维持 round2 的共享有界池 + daemon + socket
++默认超时上限。
++
++- 新增 `FETCH_POOL_MAX_QUEUED`（env `TA_DATA_FETCH_POOL_MAX_QUEUED`，
++  默认 64 ≈ 3 个整轮任务的积压上限）；`_BoundedFetchPool(max_workers,
++  max_queued=None)`，`submit()` 用 `put_nowait`，`queue.Full` → 计入
++  `rejected_total` gauge 并抛 `_FetchPoolSaturated`（调用方必须降级）。
++- `_run_bounded_fetch`：
++  - 提交循环 try/except `_FetchPoolSaturated` → 该 key 写
++    "数据获取失败：… 数据拉取被拒（线程池饱和）…"（`_infer_source_status`
++    → FAILED），不静默、不伪装成功，继续提交其余任务；
++  - `futures_wait` 超时后对每个 `not_done` future 调 `future.cancel()`：
++    cancel 成功 = 仍在排队 → **保证永不执行**（worker 出队后
++    `set_running_or_notify_cancel()` 返回 False 直接跳过，这是
++    `concurrent.futures.Future` 的状态机保证）→ 计入新增
++    `cancelled_total` gauge；cancel 失败 = 已在 worker 上运行 → 维持
++    round2 语义 `mark_abandoned(n)`（上限 = 进程级 worker 数 + socket
++    默认超时兜底）。
++- 取舍说明：为什么不再用"只计数不设防"——review 指出被卡死任务占满池后，
++  后续每轮"超时跳过"的任务会在旧 worker 释放后继续执行，压力随轮次无限
++  堆积且过期 probe 在分析结束后仍在跑；只有 cancel（排队任务）+ 拒绝
++  （饱和时的新任务）能把"一轮结束（含超时）后本轮 provider 调用不再执行"
++  变成状态机保证而非君子协定。已在运行的 provider 调用无法撤回，保留
++  round2 的有界遗弃约束是 review 明确接受的上限方案。
++- 可观测：`stats()` / `get_fetch_pool_stats()` 新增 `max_queued`、
++  `cancelled_total`、`rejected_total`（零计数路径同步），随 round2 的
++  `fetch_pool` 键自动暴露到 `/healthz`。
++
++### R3-2 [P1] `_apply_forced_lhb()` 超时强制查询不取消（data_collector.py）
++
++**取舍**：沿用 round2 的"remaining budget 内才等待"逻辑，但在
++`futures_wait` 超时后**先 cancel 再记账**，让 `forced_timeout` 成为
++"本轮强制查询彻底终止"的硬语义而不是"等待放弃"。
++
++- 超时路径：`future.cancel()` 成功（= 排队中未启动）→ `mark_cancelled(1)`
++  + degraded 文本，该 force=True 查询保证永不执行；cancel 失败（= 已启动
++  运行）→ 维持 `mark_abandoned(1)` + degraded 文本（有界遗弃）。两种情况
++  均写 "数据获取失败：lhb 强制查询超时…"（FAILED），`_lhb_query_mode` 保持
++  `"forced_timeout"`（消费方无硬编码分支，语义兼容）。
++- 新增池饱和路径：`submit` 抛 `_FetchPoolSaturated` → 不入队，写
++  "数据获取失败：lhb 强制查询被拒（线程池饱和）…"，新增枚举值
++  `_lhb_query_mode="forced_rejected_saturated"`；`build_raw_evidence` /
++  `readiness_score` 对 query_mode 值无分支（透传），文本 FAILED 判定不变。
++- 语义验收：`forced_timeout` 返回后本轮不得再有 LHB force 查询执行——
++  排队的被 cancel，已运行的有界遗弃，饱和的根本没入队。
++
++### Fix round 3 测试补充（round3 NOTE 逐项落地）
++
++1. **回归场景（review 点名）**：`test_round_timeout_cancels_queued_work_so_it_never_runs`
++   —— 1-worker 池被卡死任务占满，queued 任务随整轮超时"跳过"；修复后断言
++   gate 释放 + 宽限期后该任务**从未执行**（`executed == []`），且
++   `cancelled_total==1`、`abandoned_total==1`（只计已运行者）。
++2. **修正与新语义冲突的旧 pool 测试**（原 184-195 行，期待 queued work
++   最终全部执行）：`test_pool_is_bounded_named_and_daemonized` 改为对
++   queued futures 先 `cancel()`，断言 workers 释放后它们不执行。
++3. **池饱和拒绝**：`test_submit_rejects_when_queue_is_full`（`_FetchPoolSaturated`
++   + `rejected_total` 计数）、`test_bounded_fetch_degrades_explicitly_when_pool_saturated`
++   （`_run_bounded_fetch` 降级文本 FAILED、`hits` 无 vendor、任务不执行）。
++4. **Finding 2 断言**：
++   - `test_forced_lhb_queued_future_is_cancelled_and_never_executes` ——
++     池饱和时 force 查询排队，`forced_timeout` 后 force 调用次数为 0
++     （修复前会事后执行）；
++   - `test_forced_lhb_times_out_inside_remaining_budget` 增加调用记录断言
++     `len(force_calls) == 1`（仅超时前已启动的那一次，之后不再执行）；
++   - `test_fetch_all_keeps_forced_lhb_inside_round_deadline` 整轮集成增加
++     `force_calls == 1` / `calls == 2` 精确断言（round3 NOTE 指其原先只验
++     及时返回）；
++   - `test_forced_lhb_rejected_when_pool_saturated` —— 饱和降级
++     `forced_rejected_saturated`，force 调用 0 次。
++5. `test_healthz_reports_fetch_pool_gauges` 增补 `max_queued`/
++   `cancelled_total`/`rejected_total` 键断言。
++
++### Fix round 3 修改文件
++
++1. `tradingagents/graph/data_collector.py`：`FETCH_POOL_MAX_QUEUED`；
++   `_FetchPoolSaturated`；`_BoundedFetchPool`（有界队列 + 拒绝 +
++   `mark_cancelled` + 新 gauges）；`_run_bounded_fetch`（饱和降级 +
++   超时 cancel 分流记账）；`_apply_forced_lhb`（饱和降级 + 超时 cancel）。
++2. `tests/test_upstream081_runtime_resilience.py`：44 → 49 项（新增 5、
++   加强 3，按新 deadline 语义修正 1 项旧断言）。
++3. `api/main.py`：无代码改动（`fetch_pool` gauges 经
++   `get_fetch_pool_stats()` 透传新键）。
++
++### Fix round 3 Test evidence
++
++- `python -m py_compile tradingagents/graph/data_collector.py api/main.py`
++  通过。
++- 验收命令 `pytest tests/test_upstream081_runtime_resilience.py -q
++  --tb=short` → **49 passed**；`pytest tests/test_api_smoke.py -q
++  --tb=short` → **87 passed**。
++- 相关回归（data_collector / LHB decouple / G-006 / G-007 / v081
++  absorption / DATA-004 / DATA-017 / DATA-022）→ **324 passed**。
++- 约束自查：未改 prompts；未写生产库（仅 pytest，conftest 隔离）；未
++  commit/push；docs/TASKS.md 状态未动。
+
+[0m
+现在追加 DEVLOG 条目：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -1,6 +1,43 @@
+ # 修改日志
+ 
++## 2026-09-07 | UPSTREAM-081-001 fix round 3：修复 round3 review 2×P1
++
++- **[P1] `_BoundedFetchPool` 队列无界、超时不取消**（`data_collector.py`）：
++  队列改为有界 `queue.Queue`（`FETCH_POOL_MAX_QUEUED`，env
++  `TA_DATA_FETCH_POOL_MAX_QUEUED`，默认 64），`submit()` 饱和时计入
++  `rejected_total` 并抛 `_FetchPoolSaturated`——`_run_bounded_fetch` 捕获后
++  写"数据获取失败：…被拒（线程池饱和）…"（FAILED），不再静默入队；
++  整轮超时路径对 `not_done` futures 逐一 `cancel()`：排队未启动的任务保证
++  永不执行（worker 出队后 `set_running_or_notify_cancel` 跳过），计入新增
++  `cancelled_total`；已启动卡死的维持 round2 上限（`mark_abandoned` +
++  共享有界池 + daemon + socket 默认超时），不引入新的无界资源。语义收敛：
++  一轮结束（含超时）后本轮 provider 调用不再执行，后续轮次饱和 submit
++  得到明确降级文本而非伪装成功。`/healthz` `fetch_pool` gauges 新增
++  `max_queued`/`cancelled_total`/`rejected_total`。
++- **[P1] `_apply_forced_lhb` 超时强制查询不取消**（`data_collector.py`）：
++  超时路径先 `future.cancel()` 再记账——排队未启动的 force=True 查询被
++  取消（`mark_cancelled`），保证 `forced_timeout` 返回后本轮不再有 LHB
++  force 查询执行（round2 只约束了等待时间，没有约束实际执行）；已启动的
++  维持有界遗弃。新增池饱和降级路径：不入队、写"…被拒（线程池饱和）…"，
++  `_lhb_query_mode="forced_rejected_saturated"`（消费方透传无分支）。
++- **测试**（`tests/test_upstream081_runtime_resilience.py`，44 → 49）：
++  - 新增 review 点名回归："pool 饱和时超时 future 仍留在队列并稍后执行"
++    → `test_round_timeout_cancels_queued_work_so_it_never_runs` 断言超时后
++    queued 任务永不执行（gate 释放 + 宽限期后 `executed == []`）；
++  - 按新 deadline 语义修正旧 pool 测试（原 184-195 行期待 queued work
++    最终全部执行 → 改为 cancel 后断言不执行）；
++  - finding 2 断言：`forced_timeout` 后 force 查询不再执行（排队场景 0 次、
++    已运行场景恰好 1 次不重放、整轮集成精确 `force_calls==1`）；
++  - 新增饱和拒绝/降级 3 项 + healthz gauges 新键断言。
++- **验证**：`pytest tests/test_upstream081_runtime_resilience.py -q
++  --tb=short` → **49 passed**；`pytest tests/test_api_smoke.py -q
++  --tb=short` → **87 passed**；相关回归（data_collector/LHB decouple/
++  G-006/G-007/v081 absorption/DATA-004/DATA-017/DATA-022）→
++  **324 passed**；`py_compile` 通过。逐条取舍见
++  `docs/task_runs/UPSTREAM-081-001-20260902-191510/implementation.md`
++  的 fix-round-3 小节。未 commit/push；docs/TASKS.md 状态未动。
++
+ ## 2026-09-05 | UPSTREAM-081-001 round3 review 受阻：Codex 额度上限，18:00 自动续跑
+ 
+ - **Task**: UPSTREAM-081-001 - 线程池饱和、股票识别与错误语义选择性吸收（P1）
+ - **进展**: 13:47 auto_dev_loop 选中任务（fix round2）；13:52-14:15 OpenCode 完成 5/5 findings 修复（见下条 fix round 2 条目）；14:16 主控独立复验验收命令 131 passed、py_compile 通过。变更保持未提交。
+
+[0m
+[0m$ [0mgit diff --stat tradingagents/graph/data_collector.py api/main.py tests/ 2>/dev/null; git status --short
+api/main.py                           | 141 +++++++++++-
+ tradingagents/graph/data_collector.py | 394 ++++++++++++++++++++++++++++++++--
+ 2 files changed, 508 insertions(+), 27 deletions(-)
+ M api/main.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/graph/data_collector.py
+?? docs/reviews/UPSTREAM-081-001-20260902-round1.txt
+?? docs/reviews/UPSTREAM-081-001-20260903-round2.txt
+?? docs/reviews/UPSTREAM-081-001-20260905-round3.txt
+?? docs/task_runs/UPSTREAM-081-001-20260902-191510/
+?? tests/test_upstream081_runtime_resilience.py
+[0m
+文档已更新。对修改后的代码进行最终审查及重新验证：
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=130, offset=116][0m
+变更范围清晰——仅涉及预期文件（TASKS.md 在本轮之前已由主控修改）。正在进行最后验证运行：
+[0m
+[0m$ [0msource .venv/bin/activate && python -m py_compile tradingagents/graph/data_collector.py && python -m pytest tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -2 && python -m pytest tests/test_api_smoke.py -q --tb=short 2>&1 | tail -2
+........................................                        [100%]
+49 passed in 5.87s
+...............                                                          [100%]
+87 passed in 31.35s
+[0m
+[0m# [0mTodos
+[✓] Fix P1-1: _BoundedFetchPool bounded queue + submit rejection + timeout cancel
+[✓] Fix P1-2: _apply_forced_lhb cancel queued force future + saturation degradation
+[✓] Update tests: fix pool test 184-195, add saturation/cancel regression tests
+[✓] Run verification: py_compile + pytest resilience + pytest api_smoke
+[✓] Update implementation.md fix round 3 section + DEVLOG.md entry
+[0m
+Fix round 3 完成，2×P1 全部修复，等待独立 Codex review。未 commit。
+
+## Finding 修复说明
+
+**R3-1 [P1] `_BoundedFetchPool` 队列无界、超时不取消**（tradingagents/graph/data_collector.py）
+- 新增 `FETCH_POOL_MAX_QUEUED`（env `TA_DATA_FETCH_POOL_MAX_QUEUED`，默认 64），队列改 `queue.Queue(maxsize)`（:116-150）
+- `submit()` 饱和 → `rejected_total` 计数 + 抛 `_FetchPoolSaturated`（:182-194）
+- `_run_bounded_fetch`：饱和 submit → 明确降级文本“被拒（线程池饱和）”（FAILED，不伪装成功）；超时后对 `not_done` 逐一 `cancel()` —— 排队任务 cancel 成功保证永不执行（worker 出队 `set_running_or_notify_cancel()` 跳过，Future 状态机保证）→ `cancelled_total`；已运行的维持 round2 `mark_abandoned` 上限约束（:700-760 附近）
+
+**R3-2 [P1] `_apply_forced_lhb` 超时不取消**（同文件）
+- 超时路径先 `future.cancel()` 再记账：排队 force 查询被取消永不执行（`mark_cancelled`）；已运行的有界遗弃；均写降级文本，`forced_timeout` 语义收敛为“本轮 force 查询彻底终止”
+- 新增池饱和降级：不入队，“被拒（线程池饱和）” + `_lhb_query_mode="forced_rejected_saturated"`（消费方透传无分支）
+
+## 测试清单（44 → 49 项）
+- **新增 5**：`test_round_timeout_cancels_queued_work_so_it_never_runs`（review 点名回归：池饱和时超时任务不再事后执行）、`test_submit_rejects_when_queue_is_full`、`test_bounded_fetch_degrades_explicitly_when_pool_saturated`、`test_forced_lhb_queued_future_is_cancelled_and_never_executes`（forced_timeout 后 force 调用 0 次）、`test_forced_lhb_rejected_when_pool_saturated`
+- **修正 1**：旧 pool 测试（原 184-195 行期待 queued work 全部执行）改为 cancel 后断言不执行
+- **加强 3**：`test_forced_lhb_times_out_inside_remaining_budget`（`force_calls==1` 精确断言）、`test_fetch_all_keeps_forced_lhb_inside_round_deadline`（整轮集成 `force_calls==1`/`calls==2`）、`test_healthz_reports_fetch_pool_gauges`（新键）
+
+## 测试结果
+```
+pytest tests/test_upstream081_runtime_resilience.py -q → 49 passed
+pytest tests/test_api_smoke.py -q                      → 87 passed
+相关回归（data_collector/LHB/G-006/G-007/absorption/DATA-004/017/022）→ 324 passed
+py_compile 通过
+```
+文档已更新：implementation.md 新增 "Fix round 3" 小节（含取舍），DEVLOG.md 追加 fix round 3 条目。约束自查：未动 prompts/、未写生产库、未 commit/push、未动 docs/TASKS.md 状态。
