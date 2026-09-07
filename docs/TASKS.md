@@ -56,7 +56,8 @@
 26. `TA-TUSHARE-2000-001A-R1`：权限矩阵补修与真实重跑（P0，done — `3812306`，round1/round2/round3 三轮 Codex review 收口）。
 27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，done — `7f1890d`，状态收口 `50267c0`）。
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
-29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）
+29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）。
+30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，ready，源：2026-09-05 market-facts 交接包）。
 30. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，blocked-auto）。
 31. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked-auto）。
 32. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
@@ -384,7 +385,7 @@
 ### UPSTREAM-081-002: 长时分析软/硬超时与断线恢复（P1）
 - **描述**：参考上游 `3e32c89`（#204），把软超时改成“继续后台运行”的非终态事件，并保留独立硬超时；前端断线后可恢复同一 job，禁止重复提交昂贵分析。
 - **优先级**：P1
-- **状态**：blocked-auto
+- **状态**：ready
 - **depends_on**：UPSTREAM-081-001
 - **auto_release**：true
 - **预计耗时**：60-100 分钟
@@ -7057,3 +7058,18 @@ Phase 3（优化期）：C-006 + C-008
   - `pytest tests/test_vlm*.py -q` 通过
 - **代码标注要求**：`# [VLM-001] watchlist_table_parser`
 - **完成记录**：2026-05-31, commit f52aa21
+
+### TA-MF-01: 冻结通用市场事实契约 v1（源：2026-09-05 market-facts 交接包）
+- **描述**：按 /Users/maybee/Documents/Codex/handoffs/2026-09-05-market-facts/README.md 与 TA-PLAN.md 执行 TA-MF-01：①盘点现有 HTTP 路由、认证、行情类型、provider 能力及已发布财务/治理包，区分可复用与真实缺口；②发布 docs/contracts/market-facts-v1.md + 可验证 JSON Schema + 跨仓脱敏共享 fixture；③固化八状态与包级可用性映射、证券类型/代码映射；④冻结只读接口清单（K线复用 /v1/market/kline），禁开放任意 Tushare endpoint 透传；⑤写清边界、缓存 TTL、超时与更新时间策略。
+- **优先级**：P1
+- **状态**：ready
+- **depends_on**：
+- **auto_release**：true
+- **预计耗时**：60-90 分钟
+- **现状基线**：UPSTREAM-081-001 已 done（30e2e96），api/main.py 工作区已清；交接包强调"已有代码≠已被海瑞读取"，盘点必须列"上游已有/本地已有/真实缺口"。
+- **允许修改**：docs/contracts/、docs/task_runs/、docs/TASKS.md（状态行）、docs/DEVLOG.md、dataflows/provider 必要小改动、api/ 薄路由与 schema、相关 tests。
+- **禁止修改**：海瑞/知识库/controller 仓库、生产持仓/净值/数据库、投资规则与阈值、LLM prompts、TradeFlow 动作、自动调度与前端；不顺手提交他人 diff。
+- **实现约束**：先交契约候选+fixture，等独立 review，不提前实现全部包（TA-MF-02~06 后续）；不进入海瑞仓库；Tushare Token 留在 TA 侧。
+- **验收方式**：所有 fixture 通过 schema 校验；失败状态不混入假数值；路由只读且有鉴权测试；现有 K线/报告调用保持兼容；清单中每个包都有字段、状态、来源与日期约定；交付候选经 Codex review 后冻结版本。
+- **回报格式**：交接包 README「每张任务的回报格式」节（Task/Status/Owner/Base commit/Commit/Contract version/fixture digest/Tests/Live smoke/Security evidence/Open gaps）。
+- **登记**：2026-09-07 主控AI 登记，孟批准派单计划。
