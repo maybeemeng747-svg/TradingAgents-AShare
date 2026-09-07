@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -4930,6 +4931,90 @@ def get_kline(
         start_date=start,
         end_date=end,
         candles=candles,
+    )
+
+
+# TA-MF-01: frozen market-facts contract (candidate) self-description.
+# Read-only, authenticated; the ONLY new facts endpoint in TA-MF-01 — the six
+# package routes stay reserved until TA-MF-02..05 implement them.
+MARKET_FACTS_CONTRACT_VERSION = "1.0.0-candidate.1"
+MARKET_FACTS_PACK_TYPES = (
+    "trading_calendar",
+    "market_regime",
+    "strategy_inputs",
+    "event_calendar",
+    "company_facts",
+    "governance_risk",
+)
+MARKET_FACTS_READONLY_ENDPOINTS = (
+    {"path": "/v1/market/kline", "package": "raw_kline", "auth": "none", "status": "LEGACY", "note": "KNOWN-GAP-1: unauthenticated legacy route kept for compatibility"},
+    {"path": "/v1/market/facts/contract", "package": "self_description", "auth": "bearer_readonly", "status": "ACTIVE", "note": "this endpoint"},
+    {"path": "/v1/market/facts/trading-calendar", "package": "trading_calendar", "auth": "bearer_readonly", "status": "RESERVED", "note": "TA-MF-02"},
+    {"path": "/v1/market/facts/market-regime", "package": "market_regime", "auth": "bearer_readonly", "status": "RESERVED", "note": "TA-MF-03"},
+    {"path": "/v1/market/facts/strategy-inputs", "package": "strategy_inputs", "auth": "bearer_readonly", "status": "RESERVED", "note": "TA-MF-03"},
+    {"path": "/v1/market/facts/event-calendar", "package": "event_calendar", "auth": "bearer_readonly", "status": "RESERVED", "note": "TA-MF-04"},
+    {"path": "/v1/market/facts/company-facts", "package": "company_facts", "auth": "bearer_readonly", "status": "RESERVED", "note": "TA-MF-05"},
+    {"path": "/v1/market/facts/governance-risk", "package": "governance_risk", "auth": "bearer_readonly", "status": "RESERVED", "note": "TA-MF-05"},
+)
+_MARKET_FACTS_SCHEMA_DIR = Path(__file__).resolve().parent.parent / "docs" / "contracts" / "schemas"
+
+
+class MarketFactsContractResponse(BaseModel):
+    contract: str
+    version: str
+    status: str
+    timezone: str
+    packages: List[str]
+    query_states: List[str]
+    read_only_endpoints: List[Dict[str, str]]
+    schema_dir_available: bool
+    schemas: Optional[List[Dict[str, str]]] = None
+    fixture_manifest_sha256: Optional[str] = None
+    contract_doc_ref: str
+
+
+def _market_facts_schema_digests() -> tuple[bool, Optional[List[Dict[str, str]]], Optional[str]]:
+    if not _MARKET_FACTS_SCHEMA_DIR.is_dir():
+        return False, None, None
+    try:
+        schemas = [
+            {"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in sorted(_MARKET_FACTS_SCHEMA_DIR.glob("*.schema.json"))
+        ]
+        manifest_path = _MARKET_FACTS_SCHEMA_DIR / "MANIFEST.json"
+        manifest_sha = (
+            hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            if manifest_path.is_file()
+            else None
+        )
+        return True, schemas or None, manifest_sha
+    except OSError:
+        return False, None, None
+
+
+@app.get("/v1/market/facts/contract", response_model=MarketFactsContractResponse)
+def get_market_facts_contract(
+    current_user: UserDB = Depends(_require_readonly_api_user),
+) -> MarketFactsContractResponse:
+    """Contract self-description so consumers can pin the loaded version.
+
+    Read-only; serves no market data and never calls upstream providers.
+    """
+    from tradingagents.dataflows.tushare_query_contract import QUERY_STATES
+
+    available, schemas, manifest_sha = _market_facts_schema_digests()
+    return MarketFactsContractResponse(
+        contract="market-facts",
+        version=MARKET_FACTS_CONTRACT_VERSION,
+        status="CANDIDATE",
+        timezone="Asia/Shanghai",
+        packages=list(MARKET_FACTS_PACK_TYPES),
+        query_states=list(QUERY_STATES),
+        read_only_endpoints=[dict(entry) for entry in MARKET_FACTS_READONLY_ENDPOINTS],
+        schema_dir_available=available,
+        schemas=schemas,
+        fixture_manifest_sha256=manifest_sha,
+        contract_doc_ref="docs/contracts/market-facts-v1.md",
     )
 
 

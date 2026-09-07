@@ -16242,3 +16242,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex unavailable (token/auth), review is mandatory
 - **Run archive**: docs/task_runs/UPSTREAM-081-001-20260902-191510/
+
+## 2026-09-07 | TA-MF-01 市场事实契约 v1 候选交付（未提交）
+
+- **Task**: TA-MF-01 - 冻结通用市场事实契约 v1（P1，源：2026-09-05 market-facts 交接包）
+- **Status**: CANDIDATE（待 Codex review；按派单要求不 git commit）
+- **交付**: docs/contracts/market-facts-v1.md（盘点三列+12条对照+六包+信封+八状态映射+边界）；docs/contracts/schemas/ 7 个 draft-07 子集 JSON Schema + 13 个脱敏 fixture + MANIFEST.json（逐文件 sha256）；api/main.py 新增只读鉴权端点 GET /v1/market/facts/contract（契约自描述，包路由预留 TA-MF-02~05）；tests/market_facts/schema_lite.py 零依赖校验器。
+- **验证**: test_market_facts_contract 32 passed、test_api_market_facts 8 passed；兼容回归 test_api_smoke 87 passed、tushare 契约/证据/治理包 95 passed、test_price_intent_contract 199 passed。
+- **安全**: /v1/market/kline 未改动（KNOWN-GAP-1 无鉴权现状入契约）；fixture 无凭据（测试断言）；LLM 调用 0 次；Live smoke NOT_RUN。
+- **Run archive**: docs/task_runs/TA-MF-01-20260907-122509/

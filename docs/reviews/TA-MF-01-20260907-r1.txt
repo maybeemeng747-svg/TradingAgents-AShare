@@ -1,0 +1,27 @@
+# TA-MF-01 round1 独立 review（Codex gpt-5.5，2026-09-07 18:33-18:45）
+# 结论 PASS；原始输出: docs/task_runs/TA-MF-01-20260907-122509/codex-review-r1-raw.txt（113,865 tokens）
+# 唯一 P2（MANIFEST event-calendar 场景描述笔误）已按建议冻结前修正；版本冻结 1.0.0
+
+结论: PASS
+
+1. fixture/schema/MANIFEST：通过。目录内确为 7 个 schema + 13 个 fixture；MANIFEST 逐文件列出 sha256（`docs/contracts/schemas/MANIFEST.json:8`, `docs/contracts/schemas/MANIFEST.json:38`）。抽查 `market-facts-envelope.schema.json`、`market-regime.partial.json`、`trading-calendar.has-data.json` 的实际 sha256 均与 MANIFEST 一致；抽查 3 个正例 schema 校验通过，1 个负例按预期拒绝。
+2. 八状态与失败不伪造：通过。envelope schema 覆盖六包枚举（`docs/contracts/schemas/market-facts-envelope.schema.json:38`）和八状态枚举（`docs/contracts/schemas/market-facts-envelope.schema.json:351`）；失败状态强制 `payload/data_date/ann_date/actual_disclosure_date/report_period = null`（`docs/contracts/schemas/market-facts-envelope.schema.json:158`）。FIELD_MISSING fixture 也符合空 payload/null 日期（`docs/contracts/schemas/fixtures/strategy-inputs.field-missing.json:30`）。
+3. 新端点只读与鉴权：通过。`GET /v1/market/facts/contract` 使用 `_require_readonly_api_user`（`api/main.py:4995`），该依赖设置 `update_api_token_usage=False`（`api/main.py:2132`），最终走 `verify_token_readonly`，不写 `last_used_at`（`api/services/token_service.py:108`）。端点只返回版本、状态、包、schema digest、manifest digest，不调用 provider/LLM（`api/main.py:5003`）。
+4. 兼容性：通过。`git diff -- api/main.py` 显示只新增 `hashlib`、常量、响应模型、digest helper 和一个 GET 路由；既有 `/v1/market/kline` 函数签名和返回路径未改（`api/main.py:4893`, `api/main.py:4930`）。`rg` 未发现新增 `/v1/tushare/{endpoint}` 或任意 Tushare 透传路由。
+5. 六包字段/状态/来源/日期：通过。契约逐节定义六包字段、状态、来源与日期约定（`docs/contracts/market-facts-v1.md:75`, `docs/contracts/market-facts-v1.md:86`, `docs/contracts/market-facts-v1.md:97`, `docs/contracts/market-facts-v1.md:107`, `docs/contracts/market-facts-v1.md:119`, `docs/contracts/market-facts-v1.md:130`）。不存在日期使用 null 的规则明确（`docs/contracts/market-facts-v1.md:205`），上海时区和历史 as_of 过滤要求明确（`docs/contracts/market-facts-v1.md:252`）。
+6. 证券类型/凭据：通过。契约明确统一证券注册表缺口，不靠首位数字猜指数（`docs/contracts/market-facts-v1.md:54`）；fixture 抽查中指数类型显式写入 `security_type: index`（`docs/contracts/schemas/fixtures/market-regime.partial.json:44`）。凭据扫描未发现真实 token/key；出现的是 `TUSHARE_TOKEN NO_KEY` 这类脱敏状态描述。
+7. 边界/TTL/超时：通过。标的数、日期跨度、响应大小、单上游超时、整请求超时均有数值（`docs/contracts/market-facts-v1.md:315`）；缓存 TTL 有分包数值（`docs/contracts/market-facts-v1.md:326`）；重试策略明确（`docs/contracts/market-facts-v1.md:336`）。
+8. 确定性/零 LLM：通过。契约写明事实查询不启动分析、不调用 LLM（`docs/contracts/market-facts-v1.md:65`）；新端点实现仅读本地 schema/manifest 和常量（`api/main.py:4976`）。
+
+新发现 findings：
+- P2 `docs/contracts/schemas/MANIFEST.json:51`：`event-calendar.has-data.json` 的 MANIFEST `scenario` 写了 “events=[]”，但 fixture 实际包含 4 个 events（`docs/contracts/schemas/fixtures/event-calendar.has-data.json:36`）。不影响 schema 校验或契约安全边界，但会误导跨仓 fixture 使用者，建议冻结前修正描述。
+
+实际运行的命令与结果：
+- `git status --short --branch`：工作区为未提交候选；`api/main.py`、`docs/DEVLOG.md`、`docs/TASKS.md` 修改，`docs/contracts/`、`docs/task_runs/...`、market_facts 测试为新增；`docs/TASKS.md` 按任务说明豁免。
+- `.venv/bin/python -m pytest tests/test_market_facts_contract.py tests/test_api_market_facts.py`：未进入测试，失败于当前沙箱无可用临时目录。
+- `.venv/bin/python -m pytest -s tests/test_market_facts_contract.py tests/test_api_market_facts.py`：仍失败于 `tests/conftest.py` 调用 `tempfile.mkdtemp`，环境无可写临时目录。
+- 只读 Python 抽查 sha256：3/3 一致。
+- 只读 Python 抽查 schema：`market-regime.partial`、`strategy-inputs.field-missing`、`event-calendar.has-data` 通过；`invalid.fail-state-with-fake-data` 被拒绝。
+- `rg` API 路由：仅发现既有 `/v1/market/kline` 和新增 `/v1/market/facts/contract`；未发现新增任意 Tushare 透传。
+
+
