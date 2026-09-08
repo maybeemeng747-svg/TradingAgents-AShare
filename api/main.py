@@ -14,7 +14,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from fastapi import Body
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 from uuid import uuid4
 
 import logging
@@ -1008,6 +1008,12 @@ def _utcnow_iso() -> str:
 
 
 _JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "1800"))  # seconds
+# [UPSTREAM-081-002] Independent fail-closed backstop. Crossing the soft
+# deadline (_job_timeout_for_config) only emits a non-terminal overtime event;
+# the workflow keeps running in the background. The hard deadline is the
+# resource-safety backstop that actually terminates a wedged workflow. Set
+# either value to 0 to disable that deadline.
+_JOB_HARD_TIMEOUT = int(os.getenv("TA_JOB_HARD_TIMEOUT", "7200"))  # seconds
 _ZHIPU_CODING_JOB_TIMEOUT = int(os.getenv("TA_ZHIPU_CODING_JOB_TIMEOUT", "2700"))  # seconds
 
 
@@ -1511,6 +1517,9 @@ class JobStatusResponse(BaseModel):
     symbol: str
     trade_date: str
     error: Optional[str] = None
+    # [UPSTREAM-081-002] 软超时加班态：status 仍为 running，仅提示后台继续。
+    overtime: bool = False
+    overtime_at: Optional[str] = None
     waiting_ahead_count: Optional[int] = None
     scheduled_running_count: Optional[int] = None
     scheduled_concurrency_limit: Optional[int] = None
@@ -2647,30 +2656,145 @@ async def _run_job(
     user_id: Optional[str] = None,
     request_source: str = "api",
 ) -> None:
-    # 用 asyncio.Task + sleep 竞速代替 wait_for，避免 cancel 卡在 to_thread 导致
-    # semaphore 永远不释放的问题。超时后标记失败但不 cancel 内部协程（让线程自然结束）。
+    # [UPSTREAM-081-002] 软/硬超时双门。
+    # 软超时（_resolve_job_timeout → _job_timeout_for_config，按用户配置区分
+    # 普通通道与智谱 Coding 通道）到达后只发非终态 job.overtime 事件，任务继续
+    # 在后台运行，最终仍只会产生一次 completed/failed。
+    # 硬超时（_JOB_HARD_TIMEOUT）是独立的 fail-closed 兜底：到达后 cancel 内部
+    # 协程并标记 failed，释放调度槽位，避免僵尸任务永久占用线程池。
+    # 内层任务放在独立 task 中运行，跨软超时不 cancel to_thread 工作；
+    # 硬超时 cancel 协程，阻止其恢复执行后续的报告写入与终态写。
     job_timeout = _resolve_job_timeout(request, user_id)
+    started_monotonic = time.monotonic()
     inner_task = asyncio.create_task(
         _run_job_inner(job_id, request, stream_events, save_report, user_id, request_source)
     )
-    done, _ = await asyncio.wait({inner_task}, timeout=job_timeout)
-    if inner_task in done:
-        # 正常完成（可能成功也可能异常）
-        if not inner_task.cancelled() and inner_task.exception():
-            _log(f"[Job {job_id}] failed: {inner_task.exception()}")
-        return
-    # 超时：标记失败，但不 cancel 内部 task（避免 cancel 卡住）
-    err_msg = f"任务超时（超过 {job_timeout} 秒），已自动终止"
-    _log(f"[Job {job_id}] {err_msg}")
-    _set_job(job_id, status="failed", error=err_msg, finished_at=_utcnow_iso())
-    # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
-    # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
     try:
-        with get_db_ctx() as db:
-            report_service.mark_report_failed(db, job_id, err_msg)
-    except Exception:
-        pass
-    _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
+        if job_timeout > 0:
+            soft_wait_seconds = job_timeout
+            if _JOB_HARD_TIMEOUT > 0:
+                soft_wait_seconds = min(soft_wait_seconds, _JOB_HARD_TIMEOUT)
+            done, _ = await asyncio.wait({inner_task}, timeout=soft_wait_seconds)
+            if inner_task not in done and not inner_task.done():
+                # 硬上限不大于软上限时不发误导性的加班提示，直接落到下方硬超时处理。
+                if _JOB_HARD_TIMEOUT <= 0 or job_timeout < _JOB_HARD_TIMEOUT:
+                    overtime_at = _utcnow_iso()
+                    elapsed_seconds = time.monotonic() - started_monotonic
+                    message = (
+                        f"分析耗时较长（已超过 {job_timeout} 秒），后台仍在继续，"
+                        "正在等待最终结果，请勿重复提交。"
+                    )
+                    _log(f"[Job {job_id}] {message}")
+                    _set_job(
+                        job_id,
+                        status="running",
+                        overtime=True,
+                        overtime_at=overtime_at,
+                        error=None,
+                    )
+                    _emit_job_event(
+                        job_id,
+                        "job.overtime",
+                        {
+                            "job_id": job_id,
+                            "elapsed_seconds": elapsed_seconds,
+                            "soft_timeout_seconds": job_timeout,
+                            "overtime_at": overtime_at,
+                            "message": message,
+                        },
+                    )
+
+        if _JOB_HARD_TIMEOUT > 0 and not inner_task.done():
+            remaining_seconds = max(
+                0.0,
+                _JOB_HARD_TIMEOUT - (time.monotonic() - started_monotonic),
+            )
+            done, _ = await asyncio.wait({inner_task}, timeout=remaining_seconds)
+            if inner_task not in done and not inner_task.done() and inner_task.cancel():
+                try:
+                    await inner_task
+                except asyncio.CancelledError:
+                    pass
+
+                elapsed_seconds = time.monotonic() - started_monotonic
+                err_msg = (
+                    f"任务达到硬性运行上限（{_JOB_HARD_TIMEOUT} 秒），已终止。"
+                    "请检查模型或数据源的请求超时配置后重试。"
+                )
+                _log(f"[Job {job_id}] {err_msg}")
+                _set_job(
+                    job_id,
+                    status="failed",
+                    error=err_msg,
+                    overtime=False,
+                    overtime_at=None,
+                    finished_at=_utcnow_iso(),
+                )
+                # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
+                # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
+                try:
+                    with get_db_ctx() as db:
+                        report_service.mark_report_failed(db, job_id, err_msg)
+                except Exception:
+                    pass
+                _emit_job_event(
+                    job_id,
+                    "job.failed",
+                    {
+                        "job_id": job_id,
+                        "error": err_msg,
+                        "elapsed_seconds": elapsed_seconds,
+                        "hard_timeout_seconds": _JOB_HARD_TIMEOUT,
+                    },
+                )
+                return
+
+        await inner_task
+    except asyncio.CancelledError:
+        # Preserve normal application shutdown/caller cancellation semantics.
+        if not inner_task.done():
+            inner_task.cancel()
+        raise
+    except Exception as exc:
+        # _run_job_inner handles expected workflow errors itself. This guards
+        # failures before its try block (initialisation/configuration) as well.
+        err_msg = f"{type(exc).__name__}: {exc}"
+        _log(f"[Job {job_id}] failed: {err_msg}")
+        _set_job(
+            job_id,
+            status="failed",
+            error=err_msg,
+            overtime=False,
+            overtime_at=None,
+            finished_at=_utcnow_iso(),
+        )
+        try:
+            with get_db_ctx() as db:
+                report_service.mark_report_failed(db, job_id, err_msg)
+        except Exception:
+            pass
+        _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
+
+
+async def _save_report_or_raise(
+    job_id: str,
+    save_callable: Callable[[], Any],
+    *,
+    stage: str,
+) -> Any:
+    """[UPSTREAM-081-002] Run a report DB finalizer without turning persistence
+    errors into success.
+
+    此前报告保存失败只会打日志，job 随后被标成 completed，出现“无报告的完成”
+    幻觉状态。现在持久化失败会抛回 _run_job_inner 的失败边界，保证“真实失败”
+    与“完成”两态可区分。
+    """
+    try:
+        return await asyncio.to_thread(save_callable)
+    except Exception as exc:
+        message = f"Failed to {stage} report for job {job_id}: {exc}"
+        _log(message)
+        raise RuntimeError(message) from exc
 
 
 # [UPSTREAM-081-001] 分析失败错误语义：把常见 LLM/网络原始报错翻译成用户能
@@ -2786,7 +2910,15 @@ async def _run_job_inner(
 
     config = await asyncio.to_thread(_init_and_configure)
 
-    _set_job(job_id, status="running", started_at=_utcnow_iso(), symbol=normalized_symbol)
+    _set_job(
+        job_id,
+        status="running",
+        started_at=_utcnow_iso(),
+        symbol=normalized_symbol,
+        error=None,
+        overtime=False,
+        overtime_at=None,
+    )
 
     _emit_job_event(
         job_id,
@@ -2829,6 +2961,9 @@ async def _run_job_inner(
                 status="completed",
                 result=result,
                 decision="DRY_RUN",
+                error=None,
+                overtime=False,
+                overtime_at=None,
                 finished_at=_utcnow_iso(),
             )
             _emit_job_event(
@@ -3189,14 +3324,13 @@ async def _run_job_inner(
                         save_db.commit()
                         return saved_report.id
 
-                try:
-                    saved_report_id = await asyncio.to_thread(_save_report_sync)
-                    _create_tracked_task(
-                        _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
-                        label=f"Bark report notification ({request.symbol})",
-                    )
-                except Exception as e:
-                    _log(f"Failed to save report: {e}")
+                saved_report_id = await _save_report_or_raise(
+                    job_id, _save_report_sync, stage="save"
+                )
+                _create_tracked_task(
+                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+                    label=f"Bark report notification ({request.symbol})",
+                )
 
             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
             _set_job(
@@ -3210,6 +3344,9 @@ async def _run_job_inner(
                 confidence=result["confidence"],
                 target_price=result["target_price"],
                 stop_loss_price=result["stop_loss_price"],
+                error=None,
+                overtime=False,
+                overtime_at=None,
                 finished_at=_utcnow_iso(),
             )
             _emit_job_event(job_id, "job.completed", {
@@ -3448,14 +3585,13 @@ async def _run_job_inner(
                     save_db.commit()
                     return saved_report.id
 
-            try:
-                saved_report_id = await asyncio.to_thread(_save_report_final_sync)
-                _create_tracked_task(
-                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
-                    label=f"Bark report notification ({request.symbol})",
-                )
-            except Exception as e:
-                _log(f"Failed to finalize report: {e}")
+            saved_report_id = await _save_report_or_raise(
+                job_id, _save_report_final_sync, stage="finalize"
+            )
+            _create_tracked_task(
+                _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+                label=f"Bark report notification ({request.symbol})",
+            )
         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
         _set_job(
             job_id,
@@ -3468,6 +3604,9 @@ async def _run_job_inner(
             confidence=result["confidence"],
             target_price=result["target_price"],
             stop_loss_price=result["stop_loss_price"],
+            error=None,
+            overtime=False,
+            overtime_at=None,
             finished_at=_utcnow_iso(),
         )
         _emit_job_event(
@@ -3493,6 +3632,8 @@ async def _run_job_inner(
             job_id,
             status="failed",
             error=err_msg,
+            overtime=False,
+            overtime_at=None,
             traceback=traceback.format_exc(),
             finished_at=_utcnow_iso(),
         )
@@ -5360,6 +5501,8 @@ async def analyze(
         symbol=request.symbol,
         trade_date=request.trade_date,
         error=None,
+        overtime=False,
+        overtime_at=None,
         result=None,
         decision=None,
     )
@@ -5414,6 +5557,8 @@ def get_job_status(job_id: str, current_user: UserDB = Depends(_require_api_user
         symbol=job["symbol"],
         trade_date=job["trade_date"],
         error=job.get("error"),
+        overtime=bool(job.get("overtime", False)),
+        overtime_at=job.get("overtime_at"),
         waiting_ahead_count=job.get("waiting_ahead_count"),
         scheduled_running_count=job.get("scheduled_running_count"),
         scheduled_concurrency_limit=job.get("scheduled_concurrency_limit"),
@@ -5773,6 +5918,8 @@ async def chat_completions(
                     symbol=analyze_req.symbol,
                     trade_date=analyze_req.trade_date,
                     error=None,
+                    overtime=False,
+                    overtime_at=None,
                     result=None,
                     decision=None,
                 )
@@ -5867,6 +6014,8 @@ async def chat_completions(
         symbol=analyze_req.symbol,
         trade_date=analyze_req.trade_date,
         error=None,
+        overtime=False,
+        overtime_at=None,
         result=None,
         decision=None,
     )

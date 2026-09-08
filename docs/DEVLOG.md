@@ -16251,3 +16251,33 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **验证**: test_market_facts_contract 32 passed、test_api_market_facts 8 passed；兼容回归 test_api_smoke 87 passed、tushare 契约/证据/治理包 95 passed、test_price_intent_contract 199 passed。
 - **安全**: /v1/market/kline 未改动（KNOWN-GAP-1 无鉴权现状入契约）；fixture 无凭据（测试断言）；LLM 调用 0 次；Live smoke NOT_RUN。
 - **Run archive**: docs/task_runs/TA-MF-01-20260907-122509/
+
+## 2026-09-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode timed out after 1800s
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/
+
+## 2026-09-07 | MANUAL round2 (continuation) — UPSTREAM-081-002
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Status**: round2 continuation 完成，未提交（等待独立 Codex review）
+- **round1 遗留盘点**: 后端软/硬双超时（`_run_job` 重写、`overtime/overtime_at` 字段、`job.overtime` 非终态事件、`_save_report_or_raise` 持久化失败不伪装完成、Redis bool 序列化修复、`create_report` 清除陈旧 error）；前端 `jobLifecycle.ts` 纯函数工具 + SSE/store/ChatCopilot 接线（软超时横幅、断线/刷新回查同一 job、isAnalyzing 阻止重复提交）。缺：后端专项测试文件。
+- **round2 补齐**:
+  - 新增 `tests/test_upstream081_timeout_recovery.py`（11 tests）：软超时后 job 保持 running+overtime 且终态只写一次（防双写）；硬超时 fail-closed（cancel 内层、`mark_report_failed` 一次、硬超时文案与旧软超时可区分）；软=硬与软禁用边界不发误导性加班事件；真实失败/持久化失败与完成可区分；`get_job_status` 暴露 overtime 字段；历史 `failed(timeout)` 读路径只读不改写；Redis 序列化层 bool 与内存 store 一致（无需 Redis 连接）；`create_report` 完成时清除陈旧 failed 痕迹。
+  - `tests/test_job_store_redis.py` 补 `test_bool_roundtrip_matches_memory_store`（Redis 可用时运行）。
+  - 修复 `frontend/src/utils/jobLifecycle.test.ts` 缺失 `vitest` 显式导入（round1 写法依赖未启用的 globals，collection 即失败）。
+- **测试证据**: `pytest tests/test_upstream081_timeout_recovery.py` 11 passed；`pytest tests/test_api_smoke.py` 87 passed；`pytest tests/test_upstream081_runtime_resilience.py` 49 passed；`npx vitest run` 157 passed（11 files）；`npm run build` 零错误。
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md）
+
+## 2026-09-08 | MANUAL fix round — UPSTREAM-081-002 r1 review 修复
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Status**: r1 review 1×P1 + 1×P2 修复完成，未提交（等待独立 review）
+- **P1 修复**: Redis SSE 订阅错过终态事件后现在按内存 store 同语义补发 `job.completed`/`job.failed` 再终止（`api/job_store_redis.py` subscribe 超时分支）；决策逻辑抽为共享纯函数 `api/job_store.py::terminal_replay_event`，内存 store 同步改用（行为等价重构，防两处漂移）。对 job hash 只读、零额外写入，事件顺序不变。修复前 `/v1/jobs/{id}/events` 订阅端只有 `job.ready`+`ping` 后流静默结束；修复后 `job.ready` → `ping`×N → 终态事件 → `done`。附带：脏 `result`（非 dict）不再使 SSE 生成器崩溃。
+- **P2 修复**: 新增 4 个不依赖活 Redis 的纯函数/一致性单测（completed payload 全字段+回退、failed/非终态/脏 result 边界、内存订阅补发与纯函数一致、Redis 序列化往返后决策一致）；`test_job_store_redis.py` 改写旧「终态后静默结束」断言并新增 completed/failed 两条订阅重放集成用例（skip 守卫，本机 Redis 未运行如实 12 skipped）；未引入 fakeredis 等新依赖。
+- **测试证据**: timeout_recovery 15 passed；timeout_recovery+api_smoke+runtime_resilience 合跑 151 passed；test_job_store_redis 12 skipped（Redis down）；另以 stub get_job 离线驱动修复后的 Redis 生成器确认 `ping→job.completed` 与立即 `job.failed` 重放。前端零改动未重跑。
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md 第五节）

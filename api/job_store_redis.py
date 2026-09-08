@@ -16,6 +16,8 @@ from typing import Any, AsyncIterator, Dict
 
 import redis
 
+from api.job_store import terminal_replay_event
+
 logger = logging.getLogger(__name__)
 
 # TTL for job state hashes (seconds). Configurable via env var.
@@ -32,7 +34,11 @@ def _serialize_value(v: Any) -> str:
     """Serialize a Python value for storage in a Redis Hash field."""
     if v is None:
         return ""
-    if isinstance(v, (dict, list)):
+    # [UPSTREAM-081-002] Booleans must be JSON-encoded: str(True) == "True"
+    # would round-trip back as the string "True", making overtime=False in
+    # Redis differ from overtime=False in the in-memory store (bool("False")
+    # is also truthy, so any string encoding of booleans is unsafe).
+    if isinstance(v, (dict, list, bool)):
         return json.dumps(v, ensure_ascii=False)
     return str(v)
 
@@ -78,7 +84,7 @@ class RedisJobStore:
     def set_job(self, job_id: str, **fields: Any) -> None:
         """Create or update job fields (merge semantics).
 
-        Complex values (dict/list) are JSON-serialized; None becomes empty string.
+        Complex values and booleans are JSON-serialized; None becomes empty string.
         Each call refreshes the TTL.
         """
         if not fields:
@@ -123,7 +129,9 @@ class RedisJobStore:
 
         On timeout with no events:
           - If job is still running, yield a ping event.
-          - If job is completed/failed, terminate the generator.
+          - If job is completed/failed, replay the terminal event
+            (job.completed/job.failed, same decision and payload as the
+            in-memory store via ``terminal_replay_event``) and terminate.
         On terminal events (job.completed, job.failed), yield and terminate.
         """
         loop = asyncio.get_running_loop()
@@ -163,8 +171,18 @@ class RedisJobStore:
                     if event["event"] in _TERMINAL_EVENTS:
                         break
                 except asyncio.TimeoutError:
-                    status = self.get_job(job_id).get("status")
-                    if status in ("completed", "failed"):
+                    # [UPSTREAM-081-002] A subscriber that missed the live
+                    # pub/sub terminal event (late subscription, or the
+                    # publish raced the listener) must still receive the same
+                    # job.completed/job.failed the in-memory store replays —
+                    # otherwise the SSE stream ends after `job.ready` and the
+                    # consumer never sees a terminal state. Reads the job hash
+                    # only; no extra writes to Redis.
+                    job = self.get_job(job_id)
+                    replay = terminal_replay_event(job_id, job)
+                    if replay is not None:
+                        replay["timestamp"] = _utcnow_iso()
+                        yield replay
                         break
                     yield {
                         "event": "ping",

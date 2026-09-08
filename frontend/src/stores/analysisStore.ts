@@ -79,6 +79,8 @@ interface AnalysisState {
     isConnected: boolean
     analysisRunState: 'idle' | 'running' | 'completed' | 'failed'
     analysisRunError: string | null
+    // [UPSTREAM-081-002] 软超时提示：非终态，运行期间持续展示
+    analysisOvertimeNotice: string | null
 
     // Current analysis horizon (for badge display)
     currentHorizon: string | null
@@ -112,6 +114,7 @@ interface AnalysisState {
     setIsAnalyzing: (isAnalyzing: boolean) => void
     setIsConnected: (isConnected: boolean) => void
     setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
+    setAnalysisOvertimeNotice: (notice: string | null) => void
     failRun: (error: string) => void
     setCurrentHorizon: (horizon: string | null) => void
     // [TA-UI-001] analysis_console_horizon_intent
@@ -216,6 +219,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     isConnected: false,
     analysisRunState: 'idle',
     analysisRunError: null,
+    analysisOvertimeNotice: null,
     currentHorizon: null,
     analysisHorizon: 'short',
     analysisIntent: 'watch',
@@ -433,6 +437,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         isConnected: false,
         analysisRunState: 'idle',
         analysisRunError: null,
+        analysisOvertimeNotice: null,
         currentHorizon: null,
         analysisHorizon: 'short',
         analysisIntent: 'watch',
@@ -466,7 +471,11 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     setAnalysisRunState: (analysisRunState, error = null) => set({
         analysisRunState,
         analysisRunError: analysisRunState === 'failed' ? error : null,
+        // 离开 running 态时清掉软超时提示；运行中保留
+        ...(analysisRunState === 'running' ? {} : { analysisOvertimeNotice: null }),
     }),
+
+    setAnalysisOvertimeNotice: (analysisOvertimeNotice) => set({ analysisOvertimeNotice }),
 
     failRun: (error) => set((state) => {
         const finishedAt = Date.now()
@@ -487,6 +496,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
             isConnected: false,
             analysisRunState: 'failed',
             analysisRunError: error,
+            analysisOvertimeNotice: null,
             currentHorizon: null,
             streamingSections,
             agents: state.agents.map(agent => (
@@ -525,6 +535,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         isConnected: false,
         analysisRunState: 'idle',
         analysisRunError: null,
+        analysisOvertimeNotice: null,
         currentHorizon: null,
         // [TA-UI-001] 保留用户选择的分析上下文
         analysisHorizon: state.analysisHorizon,
@@ -544,6 +555,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         jobTargetPrice: state.jobTargetPrice,
         jobStopLoss: state.jobStopLoss,
         chatMessages: normalizePersistedChatMessages(state.chatMessages) ?? [],
+        // [UPSTREAM-081-002] 刷新后可回查同一个 job，避免重复提交昂贵分析。
+        // currentJobId 只在 running 态下有意义：终态时挂载恢复逻辑会清理它。
+        currentJobId: state.currentJobId,
+        analysisRunState: state.analysisRunState,
         // [TA-UI-001] analysis_console_horizon_intent
         analysisHorizon: state.analysisHorizon,
         analysisIntent: state.analysisIntent,
@@ -552,10 +567,16 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     merge: (persistedState, currentState) => {
         const persisted = (persistedState ?? {}) as Partial<AnalysisState>
         const chatMessages = normalizePersistedChatMessages(persisted.chatMessages)
+        const resumeRun = persisted.analysisRunState === 'running' && Boolean(persisted.currentJobId)
         return {
             ...currentState,
             ...persisted,
-            currentJobId: null,
+            // [UPSTREAM-081-002] 保留 running 中的 job 供挂载恢复；其余状态回 idle
+            currentJobId: resumeRun ? persisted.currentJobId! : null,
+            isAnalyzing: resumeRun,
+            analysisRunState: resumeRun ? 'running' : 'idle',
+            analysisRunError: null,
+            analysisOvertimeNotice: null,
             jobStatus: null,
             agents: initialAgents.map(a => ({ ...a, status: 'pending' })),
             streamingSections: {},
@@ -563,10 +584,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         debateScrollTick: 0,
             milestones: [],
             logs: [],
-            isAnalyzing: false,
             isConnected: false,
-            analysisRunState: 'idle',
-            analysisRunError: null,
             chatMessages: chatMessages?.length ? chatMessages : currentState.chatMessages,
         }
     },

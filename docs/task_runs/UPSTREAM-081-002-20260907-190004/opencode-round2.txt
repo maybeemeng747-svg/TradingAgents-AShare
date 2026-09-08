@@ -1,0 +1,2171 @@
+[0m
+> build · glm-5.3-flash
+[0m
+[0m$ [0mgit status && git diff --stat
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 25 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     api/job_store_redis.py
+	修改：     api/main.py
+	修改：     api/services/report_service.py
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     frontend/src/components/ChatCopilotPanel.tsx
+	修改：     frontend/src/hooks/useSSE.ts
+	修改：     frontend/src/stores/analysisStore.ts
+	修改：     frontend/src/types/index.ts
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/UPSTREAM-081-002-20260907-190004/
+	frontend/src/utils/jobLifecycle.test.ts
+	frontend/src/utils/jobLifecycle.ts
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+ api/job_store_redis.py                       |   8 +-
+ api/main.py                                  | 223 ++++++++++++++++++++-----
+ api/services/report_service.py               |   6 +
+ docs/DEVLOG.md                               |   9 ++
+ docs/TASKS.md                                |   2 +-
+ frontend/src/components/ChatCopilotPanel.tsx | 234 ++++++++++++++++++++-------
+ frontend/src/hooks/useSSE.ts                 |  40 ++++-
+ frontend/src/stores/analysisStore.ts         |  26 ++-
+ frontend/src/types/index.ts                  |   4 +
+ 9 files changed, 451 insertions(+), 101 deletions(-)
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m
+[0m$ [0mls -la docs/task_runs/UPSTREAM-081-002-20260907-190004/
+total 272
+drwx------   10 maybee  staff     320 Sep  7 19:44 .
+drwx------  247 maybee  staff    7904 Sep  7 19:00 ..
+-rw-------    1 maybee  staff     492 Sep  7 19:00 codegraph-context.txt
+-rw-------    1 maybee  staff     373 Sep  7 19:00 codegraph-status.json
+-rw-------    1 maybee  staff  107107 Sep  7 19:30 opencode-round1.txt
+-rw-------    1 maybee  staff    1699 Sep  7 19:44 opencode-round2.txt
+-rw-------    1 maybee  staff     643 Sep  7 19:00 prompt-round1.md
+-rw-------    1 maybee  staff    2985 Sep  7 19:44 prompt-round2-continuation.md
+-rw-------    1 maybee  staff     501 Sep  7 19:30 summary.md
+-rw-------    1 maybee  staff     718 Sep  7 19:00 task.md
+[0m
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-002-20260907-190004/summary.md
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-002-20260907-190004/task.md
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-002-20260907-190004/opencode-round2.txt
+现在我来查看一下现有的 diff，以了解已经实现了哪些内容：
+[0m
+[0m$ [0mgit diff api/job_store_redis.py api/services/report_service.py
+diff --git a/api/job_store_redis.py b/api/job_store_redis.py
+index b86da95..1ef1596 100644
+--- a/api/job_store_redis.py
++++ b/api/job_store_redis.py
+@@ -32,7 +32,11 @@ def _serialize_value(v: Any) -> str:
+     """Serialize a Python value for storage in a Redis Hash field."""
+     if v is None:
+         return ""
+-    if isinstance(v, (dict, list)):
++    # [UPSTREAM-081-002] Booleans must be JSON-encoded: str(True) == "True"
++    # would round-trip back as the string "True", making overtime=False in
++    # Redis differ from overtime=False in the in-memory store (bool("False")
++    # is also truthy, so any string encoding of booleans is unsafe).
++    if isinstance(v, (dict, list, bool)):
+         return json.dumps(v, ensure_ascii=False)
+     return str(v)
+ 
+@@ -78,7 +82,7 @@ class RedisJobStore:
+     def set_job(self, job_id: str, **fields: Any) -> None:
+         """Create or update job fields (merge semantics).
+ 
+-        Complex values (dict/list) are JSON-serialized; None becomes empty string.
++        Complex values and booleans are JSON-serialized; None becomes empty string.
+         Each call refreshes the TTL.
+         """
+         if not fields:
+diff --git a/api/services/report_service.py b/api/services/report_service.py
+index dd51d26..87f1e4c 100644
+--- a/api/services/report_service.py
++++ b/api/services/report_service.py
+@@ -1537,6 +1537,12 @@ def create_report(
+     if db_report:
+         # Update existing
+         db_report.status = "completed"
++        # [UPSTREAM-081-002] A report may previously have been marked failed by
++        # an older worker or timeout policy (e.g. the legacy watchdog flipped
++        # long analyses to failed while the workflow was still running).
++        # Successful finalisation is authoritative: clear the stale error so a
++        # completed report never carries a failure message.
++        db_report.error = None
+         db_report.decision = decision
+         db_report.direction = resolved["direction"]
+         db_report.research_direction = resolved["research_direction"]
+[0m
+[0m$ [0mgit diff api/main.py
+diff --git a/api/main.py b/api/main.py
+index 7e5074a..26e2551 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -14,7 +14,7 @@ from copy import deepcopy
+ from datetime import datetime, timedelta, timezone
+ from threading import Lock
+ from fastapi import Body
+-from typing import Any, Dict, List, Literal, Optional, Tuple
++from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+ from uuid import uuid4
+ 
+ import logging
+@@ -1008,6 +1008,12 @@ def _utcnow_iso() -> str:
+ 
+ 
+ _JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "1800"))  # seconds
++# [UPSTREAM-081-002] Independent fail-closed backstop. Crossing the soft
++# deadline (_job_timeout_for_config) only emits a non-terminal overtime event;
++# the workflow keeps running in the background. The hard deadline is the
++# resource-safety backstop that actually terminates a wedged workflow. Set
++# either value to 0 to disable that deadline.
++_JOB_HARD_TIMEOUT = int(os.getenv("TA_JOB_HARD_TIMEOUT", "7200"))  # seconds
+ _ZHIPU_CODING_JOB_TIMEOUT = int(os.getenv("TA_ZHIPU_CODING_JOB_TIMEOUT", "2700"))  # seconds
+ 
+ 
+@@ -1511,6 +1517,9 @@ class JobStatusResponse(BaseModel):
+     symbol: str
+     trade_date: str
+     error: Optional[str] = None
++    # [UPSTREAM-081-002] 软超时加班态：status 仍为 running，仅提示后台继续。
++    overtime: bool = False
++    overtime_at: Optional[str] = None
+     waiting_ahead_count: Optional[int] = None
+     scheduled_running_count: Optional[int] = None
+     scheduled_concurrency_limit: Optional[int] = None
+@@ -2647,30 +2656,145 @@ async def _run_job(
+     user_id: Optional[str] = None,
+     request_source: str = "api",
+ ) -> None:
+-    # 用 asyncio.Task + sleep 竞速代替 wait_for，避免 cancel 卡在 to_thread 导致
+-    # semaphore 永远不释放的问题。超时后标记失败但不 cancel 内部协程（让线程自然结束）。
++    # [UPSTREAM-081-002] 软/硬超时双门。
++    # 软超时（_resolve_job_timeout → _job_timeout_for_config，按用户配置区分
++    # 普通通道与智谱 Coding 通道）到达后只发非终态 job.overtime 事件，任务继续
++    # 在后台运行，最终仍只会产生一次 completed/failed。
++    # 硬超时（_JOB_HARD_TIMEOUT）是独立的 fail-closed 兜底：到达后 cancel 内部
++    # 协程并标记 failed，释放调度槽位，避免僵尸任务永久占用线程池。
++    # 内层任务放在独立 task 中运行，跨软超时不 cancel to_thread 工作；
++    # 硬超时 cancel 协程，阻止其恢复执行后续的报告写入与终态写。
+     job_timeout = _resolve_job_timeout(request, user_id)
++    started_monotonic = time.monotonic()
+     inner_task = asyncio.create_task(
+         _run_job_inner(job_id, request, stream_events, save_report, user_id, request_source)
+     )
+-    done, _ = await asyncio.wait({inner_task}, timeout=job_timeout)
+-    if inner_task in done:
+-        # 正常完成（可能成功也可能异常）
+-        if not inner_task.cancelled() and inner_task.exception():
+-            _log(f"[Job {job_id}] failed: {inner_task.exception()}")
+-        return
+-    # 超时：标记失败，但不 cancel 内部 task（避免 cancel 卡住）
+-    err_msg = f"任务超时（超过 {job_timeout} 秒），已自动终止"
+-    _log(f"[Job {job_id}] {err_msg}")
+-    _set_job(job_id, status="failed", error=err_msg, finished_at=_utcnow_iso())
+-    # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
+-    # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
+     try:
+-        with get_db_ctx() as db:
+-            report_service.mark_report_failed(db, job_id, err_msg)
+-    except Exception:
+-        pass
+-    _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
++        if job_timeout > 0:
++            soft_wait_seconds = job_timeout
++            if _JOB_HARD_TIMEOUT > 0:
++                soft_wait_seconds = min(soft_wait_seconds, _JOB_HARD_TIMEOUT)
++            done, _ = await asyncio.wait({inner_task}, timeout=soft_wait_seconds)
++            if inner_task not in done and not inner_task.done():
++                # 硬上限不大于软上限时不发误导性的加班提示，直接落到下方硬超时处理。
++                if _JOB_HARD_TIMEOUT <= 0 or job_timeout < _JOB_HARD_TIMEOUT:
++                    overtime_at = _utcnow_iso()
++                    elapsed_seconds = time.monotonic() - started_monotonic
++                    message = (
++                        f"分析耗时较长（已超过 {job_timeout} 秒），后台仍在继续，"
++                        "正在等待最终结果，请勿重复提交。"
++                    )
++                    _log(f"[Job {job_id}] {message}")
++                    _set_job(
++                        job_id,
++                        status="running",
++                        overtime=True,
++                        overtime_at=overtime_at,
++                        error=None,
++                    )
++                    _emit_job_event(
++                        job_id,
++                        "job.overtime",
++                        {
++                            "job_id": job_id,
++                            "elapsed_seconds": elapsed_seconds,
++                            "soft_timeout_seconds": job_timeout,
++                            "overtime_at": overtime_at,
++                            "message": message,
++                        },
++                    )
++
++        if _JOB_HARD_TIMEOUT > 0 and not inner_task.done():
++            remaining_seconds = max(
++                0.0,
++                _JOB_HARD_TIMEOUT - (time.monotonic() - started_monotonic),
++            )
++            done, _ = await asyncio.wait({inner_task}, timeout=remaining_seconds)
++            if inner_task not in done and not inner_task.done() and inner_task.cancel():
++                try:
++                    await inner_task
++                except asyncio.CancelledError:
++                    pass
++
++                elapsed_seconds = time.monotonic() - started_monotonic
++                err_msg = (
++                    f"任务达到硬性运行上限（{_JOB_HARD_TIMEOUT} 秒），已终止。"
++                    "请检查模型或数据源的请求超时配置后重试。"
++                )
++                _log(f"[Job {job_id}] {err_msg}")
++                _set_job(
++                    job_id,
++                    status="failed",
++                    error=err_msg,
++                    overtime=False,
++                    overtime_at=None,
++                    finished_at=_utcnow_iso(),
++                )
++                # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
++                # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
++                try:
++                    with get_db_ctx() as db:
++                        report_service.mark_report_failed(db, job_id, err_msg)
++                except Exception:
++                    pass
++                _emit_job_event(
++                    job_id,
++                    "job.failed",
++                    {
++                        "job_id": job_id,
++                        "error": err_msg,
++                        "elapsed_seconds": elapsed_seconds,
++                        "hard_timeout_seconds": _JOB_HARD_TIMEOUT,
++                    },
++                )
++                return
++
++        await inner_task
++    except asyncio.CancelledError:
++        # Preserve normal application shutdown/caller cancellation semantics.
++        if not inner_task.done():
++            inner_task.cancel()
++        raise
++    except Exception as exc:
++        # _run_job_inner handles expected workflow errors itself. This guards
++        # failures before its try block (initialisation/configuration) as well.
++        err_msg = f"{type(exc).__name__}: {exc}"
++        _log(f"[Job {job_id}] failed: {err_msg}")
++        _set_job(
++            job_id,
++            status="failed",
++            error=err_msg,
++            overtime=False,
++            overtime_at=None,
++            finished_at=_utcnow_iso(),
++        )
++        try:
++            with get_db_ctx() as db:
++                report_service.mark_report_failed(db, job_id, err_msg)
++        except Exception:
++            pass
++        _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
++
++
++async def _save_report_or_raise(
++    job_id: str,
++    save_callable: Callable[[], Any],
++    *,
++    stage: str,
++) -> Any:
++    """[UPSTREAM-081-002] Run a report DB finalizer without turning persistence
++    errors into success.
++
++    此前报告保存失败只会打日志，job 随后被标成 completed，出现“无报告的完成”
++    幻觉状态。现在持久化失败会抛回 _run_job_inner 的失败边界，保证“真实失败”
++    与“完成”两态可区分。
++    """
++    try:
++        return await asyncio.to_thread(save_callable)
++    except Exception as exc:
++        message = f"Failed to {stage} report for job {job_id}: {exc}"
++        _log(message)
++        raise RuntimeError(message) from exc
+ 
+ 
+ # [UPSTREAM-081-001] 分析失败错误语义：把常见 LLM/网络原始报错翻译成用户能
+@@ -2786,7 +2910,15 @@ async def _run_job_inner(
+ 
+     config = await asyncio.to_thread(_init_and_configure)
+ 
+-    _set_job(job_id, status="running", started_at=_utcnow_iso(), symbol=normalized_symbol)
++    _set_job(
++        job_id,
++        status="running",
++        started_at=_utcnow_iso(),
++        symbol=normalized_symbol,
++        error=None,
++        overtime=False,
++        overtime_at=None,
++    )
+ 
+     _emit_job_event(
+         job_id,
+@@ -2829,6 +2961,9 @@ async def _run_job_inner(
+                 status="completed",
+                 result=result,
+                 decision="DRY_RUN",
++                error=None,
++                overtime=False,
++                overtime_at=None,
+                 finished_at=_utcnow_iso(),
+             )
+             _emit_job_event(
+@@ -3189,14 +3324,13 @@ async def _run_job_inner(
+                         save_db.commit()
+                         return saved_report.id
+ 
+-                try:
+-                    saved_report_id = await asyncio.to_thread(_save_report_sync)
+-                    _create_tracked_task(
+-                        _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+-                        label=f"Bark report notification ({request.symbol})",
+-                    )
+-                except Exception as e:
+-                    _log(f"Failed to save report: {e}")
++                saved_report_id = await _save_report_or_raise(
++                    job_id, _save_report_sync, stage="save"
++                )
++                _create_tracked_task(
++                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
++                    label=f"Bark report notification ({request.symbol})",
++                )
+ 
+             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
+             _set_job(
+@@ -3210,6 +3344,9 @@ async def _run_job_inner(
+                 confidence=result["confidence"],
+                 target_price=result["target_price"],
+                 stop_loss_price=result["stop_loss_price"],
++                error=None,
++                overtime=False,
++                overtime_at=None,
+                 finished_at=_utcnow_iso(),
+             )
+             _emit_job_event(job_id, "job.completed", {
+@@ -3448,14 +3585,13 @@ async def _run_job_inner(
+                     save_db.commit()
+                     return saved_report.id
+ 
+-            try:
+-                saved_report_id = await asyncio.to_thread(_save_report_final_sync)
+-                _create_tracked_task(
+-                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+-                    label=f"Bark report notification ({request.symbol})",
+-                )
+-            except Exception as e:
+-                _log(f"Failed to finalize report: {e}")
++            saved_report_id = await _save_report_or_raise(
++                job_id, _save_report_final_sync, stage="finalize"
++            )
++            _create_tracked_task(
++                _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
++                label=f"Bark report notification ({request.symbol})",
++            )
+         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
+         _set_job(
+             job_id,
+@@ -3468,6 +3604,9 @@ async def _run_job_inner(
+             confidence=result["confidence"],
+             target_price=result["target_price"],
+             stop_loss_price=result["stop_loss_price"],
++            error=None,
++            overtime=False,
++            overtime_at=None,
+             finished_at=_utcnow_iso(),
+         )
+         _emit_job_event(
+@@ -3493,6 +3632,8 @@ async def _run_job_inner(
+             job_id,
+             status="failed",
+             error=err_msg,
++            overtime=False,
++            overtime_at=None,
+             traceback=traceback.format_exc(),
+             finished_at=_utcnow_iso(),
+         )
+@@ -5360,6 +5501,8 @@ async def analyze(
+         symbol=request.symbol,
+         trade_date=request.trade_date,
+         error=None,
++        overtime=False,
++        overtime_at=None,
+         result=None,
+         decision=None,
+     )
+@@ -5414,6 +5557,8 @@ def get_job_status(job_id: str, current_user: UserDB = Depends(_require_api_user
+         symbol=job["symbol"],
+         trade_date=job["trade_date"],
+         error=job.get("error"),
++        overtime=bool(job.get("overtime", False)),
++        overtime_at=job.get("overtime_at"),
+         waiting_ahead_count=job.get("waiting_ahead_count"),
+         scheduled_running_count=job.get("scheduled_running_count"),
+         scheduled_concurrency_limit=job.get("scheduled_concurrency_limit"),
+@@ -5773,6 +5918,8 @@ async def chat_completions(
+                     symbol=analyze_req.symbol,
+                     trade_date=analyze_req.trade_date,
+                     error=None,
++                    overtime=False,
++                    overtime_at=None,
+                     result=None,
+                     decision=None,
+                 )
+@@ -5867,6 +6014,8 @@ async def chat_completions(
+         symbol=analyze_req.symbol,
+         trade_date=analyze_req.trade_date,
+         error=None,
++        overtime=False,
++        overtime_at=None,
+         result=None,
+         decision=None,
+     )
+[0m
+[0m$ [0mgit diff frontend/src/hooks/useSSE.ts frontend/src/stores/analysisStore.ts frontend/src/types/index.ts
+diff --git a/frontend/src/hooks/useSSE.ts b/frontend/src/hooks/useSSE.ts
+index b8de46e..59198d8 100644
+--- a/frontend/src/hooks/useSSE.ts
++++ b/frontend/src/hooks/useSSE.ts
+@@ -2,6 +2,11 @@ import { useEffect, useRef, useCallback } from 'react'
+ import { useAnalysisStore } from '@/stores/analysisStore'
+ import type { AnalysisReport, RiskItem, KeyMetric } from '@/types'
+ import { getBaseUrl } from '@/services/api'
++import {
++    classifyRecoveredJobStatus,
++    DEFAULT_OVERTIME_NOTICE,
++    getJobLifecycleUpdate,
++} from '@/utils/jobLifecycle'
+ 
+ export function useSSE(jobId: string | null) {
+     const eventSourceRef = useRef<EventSource | null>(null)
+@@ -23,6 +28,8 @@ export function useSSE(jobId: string | null) {
+         addChatMessage,
+         appendToChatMessage,
+         setMessageContent,
++        setAnalysisRunState,
++        setAnalysisOvertimeNotice,
+     } = useAnalysisStore()
+ 
+     const connect = useCallback(() => {
+@@ -43,6 +50,16 @@ export function useSSE(jobId: string | null) {
+         }
+ 
+         const handleEvent = (eventType: string, data: Record<string, unknown>) => {
++            // [UPSTREAM-081-002] Lifecycle state is derived in one place so
++            // soft-timeout overtime events keep the run alive instead of
++            // flipping the console to a terminal state.
++            const lifecycleUpdate = getJobLifecycleUpdate(eventType, data)
++            if (lifecycleUpdate) {
++                setIsAnalyzing(lifecycleUpdate.isAnalyzing)
++                setAnalysisRunState(lifecycleUpdate.runState, eventType === 'job.failed' ? String(data.error || '未知错误') : null)
++                setAnalysisOvertimeNotice(lifecycleUpdate.overtimeNotice)
++            }
++
+             switch (eventType) {
+                 case 'job.created':
+                     addLog({
+@@ -54,7 +71,6 @@ export function useSSE(jobId: string | null) {
+                     break
+ 
+                 case 'job.running':
+-                    setIsAnalyzing(true)
+                     addChatMessage({
+                         id: `job-running-${Date.now()}`,
+                         role: 'system',
+@@ -69,8 +85,16 @@ export function useSSE(jobId: string | null) {
+                     })
+                     break
+ 
++                case 'job.overtime':
++                    addLog({
++                        id: Date.now().toString(),
++                        timestamp: new Date().toISOString(),
++                        type: 'system',
++                        content: lifecycleUpdate?.overtimeNotice || DEFAULT_OVERTIME_NOTICE
++                    })
++                    break
++
+                 case 'job.completed':
+-                    setIsAnalyzing(false)
+                     setReport((data.result || null) as AnalysisReport | null)
+                     setStructuredData({
+                         riskItems: (data.risk_items as RiskItem[] | undefined) ?? [],
+@@ -94,7 +118,16 @@ export function useSSE(jobId: string | null) {
+                     break
+ 
+                 case 'job.failed':
+-                    setIsAnalyzing(false)
++                    if (classifyRecoveredJobStatus('failed', typeof data.error === 'string' ? data.error : null) === 'running') {
++                        // 历史软超时文案：后台仍在继续，不显示失败。
++                        addLog({
++                            id: Date.now().toString(),
++                            timestamp: new Date().toISOString(),
++                            type: 'system',
++                            content: DEFAULT_OVERTIME_NOTICE
++                        })
++                        break
++                    }
+                     addChatMessage({
+                         id: `job-failed-${Date.now()}`,
+                         role: 'system',
+@@ -181,6 +214,7 @@ export function useSSE(jobId: string | null) {
+             'job.ready',
+             'job.created',
+             'job.running',
++            'job.overtime',
+             'job.completed',
+             'job.failed',
+             'agent.status',
+diff --git a/frontend/src/stores/analysisStore.ts b/frontend/src/stores/analysisStore.ts
+index 5e129bd..fd88da0 100644
+--- a/frontend/src/stores/analysisStore.ts
++++ b/frontend/src/stores/analysisStore.ts
+@@ -79,6 +79,8 @@ interface AnalysisState {
+     isConnected: boolean
+     analysisRunState: 'idle' | 'running' | 'completed' | 'failed'
+     analysisRunError: string | null
++    // [UPSTREAM-081-002] 软超时提示：非终态，运行期间持续展示
++    analysisOvertimeNotice: string | null
+ 
+     // Current analysis horizon (for badge display)
+     currentHorizon: string | null
+@@ -112,6 +114,7 @@ interface AnalysisState {
+     setIsAnalyzing: (isAnalyzing: boolean) => void
+     setIsConnected: (isConnected: boolean) => void
+     setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
++    setAnalysisOvertimeNotice: (notice: string | null) => void
+     failRun: (error: string) => void
+     setCurrentHorizon: (horizon: string | null) => void
+     // [TA-UI-001] analysis_console_horizon_intent
+@@ -216,6 +219,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     isConnected: false,
+     analysisRunState: 'idle',
+     analysisRunError: null,
++    analysisOvertimeNotice: null,
+     currentHorizon: null,
+     analysisHorizon: 'short',
+     analysisIntent: 'watch',
+@@ -433,6 +437,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         isConnected: false,
+         analysisRunState: 'idle',
+         analysisRunError: null,
++        analysisOvertimeNotice: null,
+         currentHorizon: null,
+         analysisHorizon: 'short',
+         analysisIntent: 'watch',
+@@ -466,8 +471,12 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     setAnalysisRunState: (analysisRunState, error = null) => set({
+         analysisRunState,
+         analysisRunError: analysisRunState === 'failed' ? error : null,
++        // 离开 running 态时清掉软超时提示；运行中保留
++        ...(analysisRunState === 'running' ? {} : { analysisOvertimeNotice: null }),
+     }),
+ 
++    setAnalysisOvertimeNotice: (analysisOvertimeNotice) => set({ analysisOvertimeNotice }),
++
+     failRun: (error) => set((state) => {
+         const finishedAt = Date.now()
+         const streamingSections = Object.fromEntries(
+@@ -487,6 +496,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+             isConnected: false,
+             analysisRunState: 'failed',
+             analysisRunError: error,
++            analysisOvertimeNotice: null,
+             currentHorizon: null,
+             streamingSections,
+             agents: state.agents.map(agent => (
+@@ -525,6 +535,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         isConnected: false,
+         analysisRunState: 'idle',
+         analysisRunError: null,
++        analysisOvertimeNotice: null,
+         currentHorizon: null,
+         // [TA-UI-001] 保留用户选择的分析上下文
+         analysisHorizon: state.analysisHorizon,
+@@ -544,6 +555,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         jobTargetPrice: state.jobTargetPrice,
+         jobStopLoss: state.jobStopLoss,
+         chatMessages: normalizePersistedChatMessages(state.chatMessages) ?? [],
++        // [UPSTREAM-081-002] 刷新后可回查同一个 job，避免重复提交昂贵分析。
++        // currentJobId 只在 running 态下有意义：终态时挂载恢复逻辑会清理它。
++        currentJobId: state.currentJobId,
++        analysisRunState: state.analysisRunState,
+         // [TA-UI-001] analysis_console_horizon_intent
+         analysisHorizon: state.analysisHorizon,
+         analysisIntent: state.analysisIntent,
+@@ -552,10 +567,16 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     merge: (persistedState, currentState) => {
+         const persisted = (persistedState ?? {}) as Partial<AnalysisState>
+         const chatMessages = normalizePersistedChatMessages(persisted.chatMessages)
++        const resumeRun = persisted.analysisRunState === 'running' && Boolean(persisted.currentJobId)
+         return {
+             ...currentState,
+             ...persisted,
+-            currentJobId: null,
++            // [UPSTREAM-081-002] 保留 running 中的 job 供挂载恢复；其余状态回 idle
++            currentJobId: resumeRun ? persisted.currentJobId! : null,
++            isAnalyzing: resumeRun,
++            analysisRunState: resumeRun ? 'running' : 'idle',
++            analysisRunError: null,
++            analysisOvertimeNotice: null,
+             jobStatus: null,
+             agents: initialAgents.map(a => ({ ...a, status: 'pending' })),
+             streamingSections: {},
+@@ -563,10 +584,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         debateScrollTick: 0,
+             milestones: [],
+             logs: [],
+-            isAnalyzing: false,
+             isConnected: false,
+-            analysisRunState: 'idle',
+-            analysisRunError: null,
+             chatMessages: chatMessages?.length ? chatMessages : currentState.chatMessages,
+         }
+     },
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 06d3679..922193a 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -199,6 +199,9 @@ export interface JobStatus {
+     symbol: string
+     trade_date: string
+     error?: string
++    // [UPSTREAM-081-002] 软超时加班态（status 仍为 running）
++    overtime?: boolean
++    overtime_at?: string | null
+     waiting_ahead_count?: number | null
+     scheduled_running_count?: number | null
+     scheduled_concurrency_limit?: number | null
+@@ -208,6 +211,7 @@ export interface JobStatus {
+ export type SSEEventType =
+     | 'job.created'
+     | 'job.running'
++    | 'job.overtime'
+     | 'job.completed'
+     | 'job.failed'
+     | 'agent.status'
+[0m
+[0m→ [0mRead frontend/src/utils/jobLifecycle.ts
+[0m→ [0mRead frontend/src/utils/jobLifecycle.test.ts
+[0m
+[0m$ [0mgit diff frontend/src/components/ChatCopilotPanel.tsx
+diff --git a/frontend/src/components/ChatCopilotPanel.tsx b/frontend/src/components/ChatCopilotPanel.tsx
+index 7f1c5a3..75617fc 100644
+--- a/frontend/src/components/ChatCopilotPanel.tsx
++++ b/frontend/src/components/ChatCopilotPanel.tsx
+@@ -9,6 +9,14 @@ import ReactMarkdown from 'react-markdown'
+ import remarkGfm from 'remark-gfm'
+ import { api } from '@/services/api'
+ import { useAnalysisStore } from '@/stores/analysisStore'
++import {
++    classifyRecoveredJobStatus,
++    DEFAULT_OVERTIME_NOTICE,
++    getJobLifecycleUpdate,
++    hasRecoveryPollingReachedLimit,
++    RECOVERY_POLL_INTERVAL_MS,
++    RECOVERY_POLL_TIMEOUT_MESSAGE,
++} from '@/utils/jobLifecycle'
+ import type {
+     AgentReportEvent,
+     AgentSnapshotEvent,
+@@ -163,17 +171,20 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+     const abortControllerRef = useRef<AbortController | null>(null)
+     const stopHandledRef = useRef(false)
+     const terminalEventSeenRef = useRef(false)
++    const recoveryAbortRef = useRef<AbortController | null>(null)
+     const messagesEndRef = useRef<HTMLDivElement>(null)
+     const messagesContainerRef = useRef<HTMLDivElement>(null)
+ 
+     const {
+         chatMessages,
+         isAnalyzing,
++        analysisOvertimeNotice,
+         setCurrentJobId,
+         setCurrentSymbol,
+         setIsAnalyzing,
+         setIsConnected,
+         setAnalysisRunState,
++        setAnalysisOvertimeNotice,
+         setCurrentHorizon,
+         updateAgentStatus,
+         updateAgentSnapshot,
+@@ -192,59 +203,113 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         reset,
+     } = useAnalysisStore()
+ 
+-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
++    const sleepUntilRetry = (ms: number, signal: AbortSignal) => new Promise<boolean>(resolve => {
++        if (signal.aborted) {
++            resolve(false)
++            return
++        }
++        const timer = window.setTimeout(() => {
++            signal.removeEventListener('abort', onAbort)
++            resolve(true)
++        }, ms)
++        const onAbort = () => {
++            window.clearTimeout(timer)
++            resolve(false)
++        }
++        signal.addEventListener('abort', onAbort, { once: true })
++    })
+ 
+-    const recoverInterruptedJob = async () => {
++    const recoverInterruptedJob = async (signal: AbortSignal): Promise<boolean> => {
++        // [UPSTREAM-081-002] 断线/刷新后回查同一个 job，禁止重复提交昂贵分析。
+         const { currentJobId } = useAnalysisStore.getState()
+         if (!currentJobId) return false
++        let recoveryPollAttempts = 0
+ 
+         pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
++        setIsConnected(false)
++        setIsAnalyzing(true)
++        setAnalysisRunState('running')
+ 
+-        for (let attempt = 0; attempt < 8; attempt += 1) {
+-            const status = await api.getJobStatus(currentJobId)
++        while (!signal.aborted) {
++            if (hasRecoveryPollingReachedLimit(recoveryPollAttempts)) {
++                pushAssistant(RECOVERY_POLL_TIMEOUT_MESSAGE)
++                setCurrentHorizon(null)
++                setIsAnalyzing(false)
++                setAnalysisRunState('failed', RECOVERY_POLL_TIMEOUT_MESSAGE)
++                return true
++            }
++            recoveryPollAttempts += 1
+ 
+-            if (status.status === 'completed') {
+-                const result = await api.getJobResult(currentJobId)
+-                setReport(result.result)
++            try {
++                const status = await api.getJobStatus(currentJobId)
++                if (signal.aborted) return false
++                const disposition = classifyRecoveredJobStatus(status.status, status.error)
+ 
+-                const symbol = result.result.symbol
+-                const tradeDate = result.result.trade_date
+-                if (symbol) {
+-                    setCurrentSymbol(symbol)
+-                    onSymbolDetected(symbol)
+-                }
++                if (disposition === 'completed') {
++                    const result = await api.getJobResult(currentJobId)
++                    if (signal.aborted) return false
++                    setReport(result.result)
+ 
+-                try {
+-                    const history = await api.getReports(symbol, 0, 10)
+-                    const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
+-                    if (matched) {
+-                        setStructuredData({
+-                            riskItems: matched.risk_items,
+-                            keyMetrics: matched.key_metrics,
+-                            confidence: matched.confidence,
+-                            targetPrice: matched.target_price,
+-                            stopLoss: matched.stop_loss_price,
+-                        })
++                    const symbol = result.result.symbol
++                    const tradeDate = result.result.trade_date
++                    if (symbol) {
++                        setCurrentSymbol(symbol)
++                        onSymbolDetected(symbol)
+                     }
+-                } catch {
+-                    // 历史报告回填失败时，至少保留主报告正文
++
++                    try {
++                        const history = await api.getReports(symbol, 0, 10)
++                        const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
++                        if (matched) {
++                            setStructuredData({
++                                riskItems: matched.risk_items,
++                                keyMetrics: matched.key_metrics,
++                                confidence: matched.confidence,
++                                targetPrice: matched.target_price,
++                                stopLoss: matched.stop_loss_price,
++                            })
++                        }
++                    } catch {
++                        // 历史报告回填失败时，至少保留主报告正文
++                    }
++
++                    pendingAgentMsgIdsRef.current = new Set()
++                    forceUpdate(n => n + 1)
++                    markAgentMessagesComplete()
++                    pushAssistant(
++                        `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.research_direction || result.result.direction || '未知')}**\n\n执行动作：**${String(result.result.action_label || result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
++                    )
++                    setCurrentHorizon(null)
++                    setIsAnalyzing(false)
++                    setAnalysisRunState('completed')
++                    return true
+                 }
+ 
+-                pushAssistant(
+-                    `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.research_direction || result.result.direction || '未知')}**\n\n执行动作：**${String(result.result.action_label || result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
+-                )
+-                setAnalysisRunState('completed')
+-                return true
+-            }
++                if (disposition === 'failed') {
++                    const message = status.error || 'unknown error'
++                    finalizeFailedRun(message)
++                    pushAssistant(`分析失败：${message}`)
++                    return true
++                }
+ 
+-            if (status.status === 'failed') {
+-                const message = status.error || 'unknown error'
+-                finalizeFailedRun(message)
+-                pushAssistant(`分析失败：${message}`)
+-                return true
++                // running / 软超时加班：持续提示后台继续，保持回查
++                if (status.overtime || status.status === 'failed') {
++                    setAnalysisOvertimeNotice(DEFAULT_OVERTIME_NOTICE)
++                }
++            } catch (error) {
++                if (signal.aborted) return false
++                // 任务记录不存在（服务重启清空了内存 store / 超过 TTL）：
++                // 停止回查并按失败收口，避免无限轮询；不自动重新提交。
++                const message = error instanceof Error ? error.message : String(error)
++                if (/job not found|404/i.test(message)) {
++                    finalizeFailedRun('任务状态已失效（服务端无此任务记录），请到历史报告中查看是否已生成报告。')
++                    pushAssistant('任务状态已失效（服务端无此任务记录）。为避免重复消耗，未自动重新发起分析；请到历史报告中查看。')
++                    return true
++                }
++                console.warn('任务状态回查失败，将继续重试:', error)
+             }
+ 
+-            await sleep(1500)
++            if (!await sleepUntilRetry(RECOVERY_POLL_INTERVAL_MS, signal)) return false
+         }
+ 
+         return false
+@@ -259,6 +324,29 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         })
+     }, [chatMessages])
+ 
++    // [UPSTREAM-081-002] 卸载时中止回查，避免离开页面后继续轮询。
++    useEffect(() => () => {
++        recoveryAbortRef.current?.abort()
++    }, [])
++
++    // [UPSTREAM-081-002] 刷新恢复：挂载时若存在仍在运行的 job，回查同一任务
++    // 而不是让用户重新提交。running 态下 isAnalyzing=true 已阻止重复提交。
++    const mountRecoveryRanRef = useRef(false)
++    useEffect(() => {
++        if (mountRecoveryRanRef.current) return
++        mountRecoveryRanRef.current = true
++        const { currentJobId, analysisRunState } = useAnalysisStore.getState()
++        if (!currentJobId || analysisRunState !== 'running') return
++        const controller = new AbortController()
++        recoveryAbortRef.current = controller
++        void recoverInterruptedJob(controller.signal).finally(() => {
++            if (recoveryAbortRef.current === controller) {
++                recoveryAbortRef.current = null
++            }
++        })
++        // eslint-disable-next-line react-hooks/exhaustive-deps
++    }, [])
++
+     const pushAssistant = (content: string) => {
+         addChatMessage({
+             id: `${Date.now()}-${Math.random()}`,
+@@ -296,9 +384,21 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+ 
+     const parseAndDispatch = (event: StreamEvent) => {
+         const { event: eventName, data } = event
++        // [UPSTREAM-081-002] 运行态统一由生命周期映射维护，软超时不再误判为失败
++        const lifecycleUpdate = getJobLifecycleUpdate(eventName, data)
++        if (lifecycleUpdate) {
++            setIsAnalyzing(lifecycleUpdate.isAnalyzing)
++            setAnalysisRunState(
++                lifecycleUpdate.runState,
++                eventName === 'job.failed' ? String(data.error || 'unknown error') : null,
++            )
++            setAnalysisOvertimeNotice(lifecycleUpdate.overtimeNotice)
++        }
++
+         switch (eventName) {
+             case 'job.ready':
+                 setIsConnected(true)
++                if (data.job_id) setCurrentJobId(String(data.job_id))
+                 // 把 typing indicator 换成"解析中"提示，告知用户正在识别标的
+                 if (typingIndicatorIdRef.current) {
+                     setMessageContent(typingIndicatorIdRef.current, '__parsing__')
+@@ -324,13 +424,15 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 break
+             }
+             case 'job.running':
+-                setIsAnalyzing(true)
+-                setAnalysisRunState('running')
++                // 运行态已由 lifecycle hook 统一设置
+                 // 切换 indicator 到"分析启动"阶段
+                 if (typingIndicatorIdRef.current) {
+                     setMessageContent(typingIndicatorIdRef.current, '__status:analyzing__')
+                 }
+                 break
++            case 'job.overtime':
++                // 软超时：保持流、进度与运行态不变，横幅提示由 lifecycle hook 设置
++                break
+             case 'agent.horizon_start': {
+                 const h = String(data.horizon || '')
+                 setCurrentHorizon(h || null)
+@@ -342,8 +444,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+             case 'job.completed': {
+                 terminalEventSeenRef.current = true
+                 setCurrentHorizon(null)
+-                setIsAnalyzing(false)
+-                setAnalysisRunState('completed')
++                // 终态设置已由 lifecycle hook 统一处理
+                 // 任务结束：所有 agent 消息标记为已完成（持久化到 store）
+                 pendingAgentMsgIdsRef.current = new Set()
+                 forceUpdate(n => n + 1)
+@@ -375,6 +476,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 break
+             }
+             case 'job.failed':
++                // 历史软超时文案按“后台继续”处理：不算终态，不置 terminal 标记
++                if (classifyRecoveredJobStatus('failed', typeof data.error === 'string' ? data.error : null) === 'running') {
++                    break
++                }
+                 terminalEventSeenRef.current = true
+                 setCurrentHorizon(null)
+                 {
+@@ -625,7 +730,8 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 if (!dataLine) continue
+                 if (dataLine === '[DONE]' || currentEvent === 'done') {
+                     setIsConnected(false)
+-                    setIsAnalyzing(false)
++                    // [UPSTREAM-081-002] 流结束≠任务结束：若未见终态事件，
++                    // 保持运行态并交由回查流程收口，不在此关闭 analyzing。
+                     return terminalEventSeenRef.current
+                 }
+                 
+@@ -643,14 +749,14 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         }
+ 
+         setIsConnected(false)
+-        setIsAnalyzing(false)
+         return terminalEventSeenRef.current
+     }
+ 
+     const handleSubmit = async (e: FormEvent) => {
+         e.preventDefault()
+         const prompt = input.trim()
+-        if (!prompt || streaming) return
++        // [UPSTREAM-081-002] isAnalyzing（含软超时加班与回查等待）时禁止重复提交昂贵分析
++        if (!prompt || streaming || isAnalyzing) return
+ 
+         // Inject custom analysis prompt from settings if set
+         const customPrompt = localStorage.getItem('ta-custom-prompt')?.trim() || ''
+@@ -686,13 +792,18 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         const abortController = new AbortController()
+         abortControllerRef.current = abortController
+         stopHandledRef.current = false
++        recoveryAbortRef.current?.abort()
++        const recoveryController = new AbortController()
++        recoveryAbortRef.current = recoveryController
+ 
+         try {
+             const sawTerminalEvent = await streamChat(fullPrompt, abortController.signal)
+             if (!sawTerminalEvent && !abortController.signal.aborted) {
+-                const recovered = await recoverInterruptedJob()
+-                if (!recovered) {
+-                    pushAssistant('分析流已结束，但没有收到最终完成事件；后端任务可能仍在收尾，请稍后到历史报告中查看结果。')
++                // 流断了但后端任务可能仍在跑：回查同一个 job，不重复提交
++                const recovered = await recoverInterruptedJob(recoveryController.signal)
++                if (!recovered && !recoveryController.signal.aborted) {
++                    finalizeFailedRun('分析流在任务编号返回前中断')
++                    pushAssistant('请求中断：未能取得任务编号，无法继续回查任务状态。')
+                 }
+             }
+         } catch (error) {
+@@ -705,10 +816,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 pushAssistant('已停止本次分析。')
+                 return
+             }
+-            const shouldRecover = /network|fetch|stream|sse|body/i.test(errorMessage)
+-            if (shouldRecover) {
+-                const recovered = await recoverInterruptedJob()
+-                if (!recovered) {
++            const canRecover = Boolean(useAnalysisStore.getState().currentJobId)
++            if (canRecover) {
++                const recovered = await recoverInterruptedJob(recoveryController.signal)
++                if (!recovered && !recoveryController.signal.aborted) {
+                     finalizeFailedRun(errorMessage)
+                     pushAssistant(`请求中断：${errorMessage}\n\n后端任务可能仍在执行，请稍后到历史报告中查看结果。`)
+                 }
+@@ -720,6 +831,9 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+             if (abortControllerRef.current === abortController) {
+                 abortControllerRef.current = null
+             }
++            if (recoveryAbortRef.current === recoveryController) {
++                recoveryAbortRef.current = null
++            }
+             setStreaming(false)
+         }
+     }
+@@ -728,6 +842,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         if (!streaming && !isAnalyzing) return
+         stopHandledRef.current = true
+         abortControllerRef.current?.abort()
++        recoveryAbortRef.current?.abort()
+         finalizeFailedRun('用户已停止本次分析')
+         pushAssistant('已停止本次分析。')
+         setStreaming(false)
+@@ -764,7 +879,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                     >
+                         <Trash2 className="w-3 h-3" />
+                     </button>
+-                    {streaming && (
++                    {(streaming || isAnalyzing) && (
+                         <span className="badge-blue inline-flex items-center gap-1">
+                             <Loader2 className="w-3 h-3 animate-spin" />
+                             分析中
+@@ -820,6 +935,17 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 ))}
+             </div>
+ 
++            {/* [UPSTREAM-081-002] 软超时提示：后台继续，非失败态 */}
++            {analysisOvertimeNotice && (
++                <div
++                    role="status"
++                    className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
++                >
++                    <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
++                    <span>{analysisOvertimeNotice}</span>
++                </div>
++            )}
++
+             {/* 聊天内容 */}
+             <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+                 {chatMessages.map((msg) => {
+@@ -1030,7 +1156,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                     />
+                     <button
+                         type="submit"
+-                        disabled={!input.trim() || streaming}
++                        disabled={!input.trim() || streaming || isAnalyzing}
+                         className="btn-primary px-3 py-2 inline-flex items-center gap-1"
+                     >
+                         <Send className="w-4 h-4" />
+[0m
+[0m$ [0mls tests/test_upstream081_timeout_recovery.py 2>&1; ls tests/ | grep -i timeout
+ls: tests/test_upstream081_timeout_recovery.py: No such file or directory
+[0m
+现在我来检查一下还存在哪些内容——测试文件、内存中的 job store 以及 DEVLOG 的修改：
+[0m$ [0mgit diff docs/DEVLOG.md docs/TASKS.md
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 7d0fbf9..9ef9a6c 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -16251,3 +16251,12 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
+ - **验证**: test_market_facts_contract 32 passed、test_api_market_facts 8 passed；兼容回归 test_api_smoke 87 passed、tushare 契约/证据/治理包 95 passed、test_price_intent_contract 199 passed。
+ - **安全**: /v1/market/kline 未改动（KNOWN-GAP-1 无鉴权现状入契约）；fixture 无凭据（测试断言）；LLM 调用 0 次；Live smoke NOT_RUN。
+ - **Run archive**: docs/task_runs/TA-MF-01-20260907-122509/
++
++## 2026-09-07 | AUTO-002 Auto Dev Loop
++
++- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
++- **Priority**: P1
++- **Rounds**: 1 (max)
++- **Status**: FAIL NEEDS_HUMAN
++- **Reason**: OpenCode timed out after 1800s
++- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 9db6544..350d48e 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -385,7 +385,7 @@
+ ### UPSTREAM-081-002: 长时分析软/硬超时与断线恢复（P1）
+ - **描述**：参考上游 `3e32c89`（#204），把软超时改成“继续后台运行”的非终态事件，并保留独立硬超时；前端断线后可恢复同一 job，禁止重复提交昂贵分析。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — round1 超时(1800s)留下451行半成品，主控派 OpenCode 续跑收尾中（2026-09-07 19:45）
+ - **depends_on**：UPSTREAM-081-001
+ - **auto_release**：true
+ - **预计耗时**：60-100 分钟
+[0m
+测试文件缺失——需要补齐。我先研究一下后端内部实现：
+[0m$ [0mgrep -n "_job_timeout_for_config\|_resolve_job_timeout\|def _set_job\|def _emit_job_event\|JOBS\b\|job_store" api/main.py | head -40
+44:from api.job_store import get_job_store as _new_job_store
+889:    store = get_job_store()
+979:_job_store_instance: Optional[Any] = None
+981:def get_job_store():
+982:    global _job_store_instance
+983:    if _job_store_instance is None:
+984:        _job_store_instance = _new_job_store()
+985:    return _job_store_instance
+1012:# deadline (_job_timeout_for_config) only emits a non-terminal overtime event;
+1020:def _job_timeout_for_config(config: Dict[str, Any]) -> int:
+1027:def _resolve_job_timeout(request: AnalyzeRequest, user_id: Optional[str]) -> int:
+1034:        return _job_timeout_for_config(config)
+2166:def _set_job(job_key: str, **kwargs) -> None:
+2172:    get_job_store().set_job(job_key, **kwargs)
+2176:    d = get_job_store().get_job(job_key)
+2182:def _emit_job_event(job_id: str, event: str, data: Dict[str, Any]) -> None:
+2183:    get_job_store().emit_event(job_id, event, data)
+2660:    # 软超时（_resolve_job_timeout → _job_timeout_for_config，按用户配置区分
+2667:    job_timeout = _resolve_job_timeout(request, user_id)
+4893:    store = get_job_store()
+[0m
+[0m→ [0mRead api/main.py[90m [limit=60, offset=1005][0m
+[0m→ [0mRead api/main.py[90m [limit=60, offset=2160][0m
+[0m→ [0mRead api/job_store.py
+[0m→ [0mRead api/main.py[90m [limit=190, offset=2645][0m
+[0m→ [0mRead api/job_store_redis.py
+后端核心看起来已经完成了。现在让我检查一下剩余的部分——Redis 往返、`mark_report_failed`、SSE 事件端点：
+[0m
+[0m$ [0mgrep -n "def mark_report_failed" -A 25 api/services/report_service.py
+1466:def mark_report_failed(
+1467-    db: Session,
+1468-    report_id: str,
+1469-    error_message: str
+1470-) -> Optional[ReportDB]:
+1471-    """Mark a report as failed with an error message."""
+1472-    return update_report_partial(db, report_id, status="failed", error=error_message)
+1473-
+1474-
+1475-def create_report(
+1476-    db: Session,
+1477-    symbol: str,
+1478-    trade_date: str,
+1479-    decision: Optional[str] = None,
+1480-    result_data: Optional[Dict[str, Any]] = None,
+1481-    user_id: Optional[str] = None,
+1482-    risk_items: Optional[List[dict]] = None,
+1483-    key_metrics: Optional[List[dict]] = None,
+1484-    analyst_traces: Optional[List[dict]] = None,
+1485-    confidence_override: Optional[int] = None,
+1486-    target_price_override: Optional[float] = None,
+1487-    stop_loss_override: Optional[float] = None,
+1488-    report_id: Optional[str] = None,  # If provided, update existing
+1489-    playbook_stage: Optional[str] = None,  # [PLAYBOOK-001]
+1490-    playbook_contract: Optional[Dict[str, Any]] = None,  # [PLAYBOOK-001]
+1491-) -> ReportDB:
+[0m
+[0m$ [0mgrep -n "setCurrentJobId\|currentJobId" frontend/src/components/ChatCopilotPanel.tsx | head -20; grep -n "createJobStream\|fetchEventSource\|/analyze\|job_id" frontend/src/services/api.ts | head -30
+182:        setCurrentJobId,
+224:        const { currentJobId } = useAnalysisStore.getState()
+225:        if (!currentJobId) return false
+228:        pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
+244:                const status = await api.getJobStatus(currentJobId)
+249:                    const result = await api.getJobResult(currentJobId)
+338:        const { currentJobId, analysisRunState } = useAnalysisStore.getState()
+339:        if (!currentJobId || analysisRunState !== 'running') return
+401:                if (data.job_id) setCurrentJobId(String(data.job_id))
+410:                if (jobId) setCurrentJobId(jobId)
+819:            const canRecover = Boolean(useAnalysisStore.getState().currentJobId)
+64:        return this.request<AnalysisResponse>('/v1/analyze', {
+71:        return this.request<FullTACostPreview>('/v1/analyze/cost-preview')
+78:    async getJobResult(jobId: string): Promise<{ job_id: string; status: string; decision: string; result: AnalysisReport }> {
+[0m
+[0m→ [0mRead frontend/src/components/ChatCopilotPanel.tsx[90m [limit=90, offset=395][0m
+[0m
+[0m$ [0mgrep -n "events\|subscribe" api/main.py | grep -in "def \|subscribe" | head; grep -n "def analyze\|def analyze_job_events\|/events\|StreamingResponse" api/main.py | head -20
+7:4892:async def _stream_job_events(job_id: str):
+8:4895:    async for event in store.subscribe(job_id):
+10:5583:def stream_job_events(job_id: str, current_user: UserDB = Depends(_require_api_user)):
+37:from fastapi.responses import JSONResponse, StreamingResponse
+5318:async def analyze(
+5582:@app.get("/v1/jobs/{job_id}/events")
+5585:    return StreamingResponse(
+5941:        return StreamingResponse(
+[0m
+[0m→ [0mRead api/main.py[90m [limit=40, offset=4888][0m
+[0m→ [0mRead api/main.py[90m [limit=75, offset=5510][0m
+[0m
+[0m$ [0mgrep -n "_run_job\|_resolve_job_timeout\|job_timeout\|mark_report_failed" scheduler/main.py | head; echo ---; grep -rn "任务超时（超过" --include="*.py" . | grep -v ".venv" | head
+116:    _run_job,
+358:            await _run_job(
+588:    # Each scheduled `_run_job` fans out many `asyncio.to_thread` calls (DB
+---
+[0m
+SSE 转发覆盖所有事件。我来检查一下调度器（scheduler）是如何与此交互的，并研究一下来自 001（同级任务）的现有测试约定：
+[0m$ [0mls tests/test_upstream081*; grep -n "DATABASE_URL\|client\|fixture" tests/conftest.py | head -20
+tests/test_upstream081_runtime_resilience.py
+4:Without an early DATABASE_URL override those tests write to the local
+29:    current = os.environ.get("DATABASE_URL")
+33:    os.environ["DATABASE_URL"] = f"sqlite:///{temp_dir / 'tradingagents-test.db'}"
+[0m
+[0m$ [0msed -n '340,380p' scheduler/main.py
+def _record_success_sync():
+        with get_db_ctx() as db:
+            if mark_schedule_run:
+                scheduled_service.mark_run_success(db, task_id, requested_trade_date, job_id)
+            else:
+                scheduled_service.record_manual_test_result(db, task_id, "success", report_id=job_id)
+
+    def _record_failure_sync():
+        with get_db_ctx() as db:
+            if mark_schedule_run:
+                scheduled_service.mark_run_failed(db, task_id, requested_trade_date)
+            else:
+                scheduled_service.record_manual_test_result(db, task_id, "failed")
+    try:
+        async with _concurrency_slot(job_id, symbol):
+            req = await asyncio.to_thread(_build_request_sync)
+
+            await _run_job(
+                job_id,
+                req,
+                False,
+                True,
+                user_id,
+                "scheduled" if mark_schedule_run else "scheduled_manual",
+            )
+        job_state = _get_job(job_id)
+        if job_state.get("status") == "failed":
+            raise RuntimeError(job_state.get("error") or f"scheduled analysis job {job_id} failed")
+        await asyncio.to_thread(_record_success_sync)
+        _log(f"[Scheduler] Completed {symbol}")
+
+        await _send_scheduled_report_notifications(user_id, job_id, symbol)
+
+        # [B-002] OpenClaw callback: notify 主控 AI so it can decide whether to push to 飞书
+        await _send_openclaw_callback(
+            user_id, job_id, symbol, actual_trade_date, horizon,
+            "scheduled" if mark_schedule_run else "scheduled_manual",
+        )
+
+        # [M-010] Feishu webhook: auto-generate pending notification drafts
+[0m
+[0m$ [0msed -n '1,80p' tests/test_upstream081_runtime_resilience.py
+"""[UPSTREAM-081-001] Selective absorption of upstream 89754c5 (#202).
+
+Covers the three real gaps the local tree had versus upstream v0.8.1:
+
+1. Thread-pool saturation: `_fetch_all` gains a whole-round hard cap
+   (``TA_DATA_FETCH_TIMEOUT``) so a stuck provider cannot pin the per-key
+   lock and silently starve the asyncio default executor (origin 524).
+   The `/healthz` starvation probe is observable and never re-executes jobs.
+2. Stock identification: the deterministic regex path stays authoritative;
+   when the intent LLM fails AND regex finds no code, the original text is
+   resolved once against the warm local stock-name map (fail-closed on
+   ambiguity / cold cache); unresolved text keeps the explicit error.
+3. Error semantics: user-facing failure messages are humanized AND
+   sanitized — they must never leak API keys, URLs, or internal stack
+   frames.
+
+Fix round 2 (review round2 3×P1 + 2×P2) additionally locks down:
+
+4. The LHB force upgrade runs strictly inside the whole-round deadline.
+5. All fetch rounds share a bounded daemon pool: leaked (stuck) threads are
+   capped process-wide and observable on ``/healthz`` instead of growing
+   one-thread-per-abandoned-worker per round.
+6. ``Authorization: Bearer <token>`` (incl. JWT) is redacted whole, and the
+   humanize idempotency shortcut can no longer bypass sanitization.
+7. ``FETCH_LOCK_TIMEOUT`` is derived from the fetch budget so a custom
+   ``TA_DATA_FETCH_TIMEOUT`` can no longer violate the queueing invariant.
+
+Fix round 3 (review round3 2×P1) additionally locks down:
+
+8. The shared pool's queue is bounded and enforceable: saturation raises an
+   explicit rejection (counted on ``rejected_total``) instead of silently
+   enqueuing work; at round timeout, queued (not-yet-started) futures are
+   cancelled so they NEVER execute afterwards — the old behavior let
+   "timed-out" tasks run once stuck workers freed up, escaping the
+   whole-round deadline.
+9. The forced LHB query obeys the same rule: after ``forced_timeout`` no
+   force query may execute (queued futures are cancelled); a saturated pool
+   degrades explicitly (``forced_rejected_saturated``) instead of faking a
+   queued success.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
+
+import pytest
+
+import api.main as api_main
+from tradingagents.graph import data_collector as data_collector_module
+from tradingagents.graph.data_collector import DataCollector, _run_bounded_fetch
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class _FakeTool:
+    def __init__(self, name: str, result="ok", delay: float = 0.0) -> None:
+        self.name = name
+        self._result = result
+        self._delay = delay
+
+    def invoke(self, payload):
+        time.sleep(self._delay)
+        return self._result
+
+
+class _GateTool(_FakeTool):
+    """Simulates a stuck provider: invoke() blocks until the gate is set."""
+
+    def __init__(self, name: str, gate: threading.Event) -> None:
+        super().__init__(name, result="late")
+[0m
+[0m$ [0msource .venv/bin/activate 2>/dev/null; python -c "import fakeredis; print('fakeredis OK')" 2>&1; python -c "import redis; print('redis OK')" 2>&1; grep -rn "fakeredis\|RedisJobStore" tests/ | head -5
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'fakeredis'
+redis OK
+tests/test_job_store_redis.py:1:"""Tests for RedisJobStore.
+tests/test_job_store_redis.py:35:from api.job_store_redis import RedisJobStore  # noqa: E402
+tests/test_job_store_redis.py:44:    """Create a RedisJobStore with a unique prefix and flush matching keys after."""
+tests/test_job_store_redis.py:46:    s = RedisJobStore(_REDIS_TEST_URL, prefix=prefix)
+tests/test_job_store_redis.py:57:def test_set_and_get(store: RedisJobStore):
+[0m
+现在我来检查一下用于 Redis 测试和 DB 隔离的测试依赖项：
+[0m$ [0mgrep -rn "monkeypatch.*_resolve_job_timeout\|_resolve_job_timeout\|_JOB_TIMEOUT" tests/*.py | head; grep -rln "_run_job" tests/*.py | head
+tests/test_api_smoke.py
+tests/test_portfolio_import.py
+tests/test_upstream081_runtime_resilience.py
+[0m
+[0m→ [0mRead tests/test_job_store_redis.py[90m [limit=70][0m
+[0m
+[0m$ [0mgrep -n "_run_job\|_set_job\|job_store" tests/test_api_smoke.py | head -30
+348:            patch("api.main._run_job") as run_job,
+375:            patch("api.main._run_job") as run_job,
+466:            patch("api.main._run_job", side_effect=_capture_run),
+[0m
+[0m$ [0msed -n '5440,5510p' api/main.py
+)
+
+    tier_meta = tier_to_meta(resolved_tier)
+
+    def _load_user_context() -> Dict[str, Any]:
+        with get_db_ctx() as db:
+            return _compose_analysis_user_context(
+                db,
+                current_user.id,
+                request.symbol,
+                explicit_context=explicit_context,
+            )
+
+    # Don't block the event loop on a sync SQLite read while the scheduler
+    # process may be holding write locks.
+    merged_user_context = await asyncio.to_thread(_load_user_context)
+    _apply_user_context_to_request(request, merged_user_context)
+    direct_query_needs_parser = bool(request.query and request.user_intent is None)
+    analysis_intent_hint = _ensure_query_and_user_intent(
+        request,
+        request.symbol,
+        materialize_missing_intent=not direct_query_needs_parser,
+        numeric_position_was_explicit="current_position" in explicit_context,
+        position_pct_was_explicit="current_position_pct" in explicit_context,
+    )
+
+    resolved_profile: Optional[TAProfile] = None
+    if request.runtime_profile:
+        try:
+            resolved_profile = TAProfile(request.runtime_profile)
+        except ValueError:
+            resolved_profile = None
+    if resolved_profile is None and resolved_tier == RuntimeTier.LIGHT_RESEARCH:
+        analysis_intent = analysis_intent_hint
+        if request.user_intent and isinstance(request.user_intent, dict):
+            analysis_intent = str(request.user_intent.get("analysis_intent", ""))
+        resolved_profile = recommend_profile(
+            analysis_intent=analysis_intent,
+            has_position=_resolve_has_position(request.user_intent, request),
+        )
+    elif resolved_profile is None and resolved_tier == RuntimeTier.FULL_TA:
+        resolved_profile = TAProfile.FULL_TA
+    elif resolved_profile is None:
+        resolved_profile = TAProfile.FULL_TA
+
+    profile_meta = profile_to_meta(resolved_profile)
+    if resolved_profile != TAProfile.FULL_TA:
+        request.selected_analysts = filter_analysts_for_profile(
+            resolved_profile, request.selected_analysts,
+        )
+
+    job_id = uuid4().hex
+    now = _utcnow_iso()
+    _set_job(
+        job_id,
+        job_id=job_id,
+        user_id=current_user.id,
+        status="pending",
+        created_at=now,
+        started_at=None,
+        finished_at=None,
+        symbol=request.symbol,
+        trade_date=request.trade_date,
+        error=None,
+        overtime=False,
+        overtime_at=None,
+        result=None,
+        decision=None,
+    )
+    _emit_job_event(
+        job_id,
+[0m
+[0m$ [0mgrep -n "vitest\|\"test\"" frontend/package.json; ls frontend/vitest.config.* frontend/vite.config.* 2>/dev/null
+47:    "vitest": "^4.1.5"
+zsh:1: no matches found: frontend/vitest.config.*
+[0m
+[0m→ [0mRead frontend/package.json
+[0m
+[0m$ [0mgrep -rn "job.overtime\|_run_job\b" api/main.py | grep -n "def \|await _run_job\|_create_tracked_task" | head; sed -n '5930,5960p' api/main.py
+2:api/main.py:825:        await _run_job(job_id, req, False, True, user_id, "scheduled_manual")
+5:api/main.py:2651:async def _run_job(
+9:api/main.py:5515:        await _run_job(job_id, request, True, True, current_user.id, "api")
+10:api/main.py:5526:    _create_tracked_task(_run_job(job_id, request, True, True, current_user.id, "api"))
+11:api/main.py:5931:                await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+12:api/main.py:6028:        await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+13:api/main.py:6051:    _create_tracked_task(_run_job(job_id, analyze_req, True, True, current_user.id, "chat"))
+                )
+                await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+            except Exception as exc:
+                _log(f"[chat] _extract_and_run failed: {exc}")
+                _emit_job_event(
+                    job_id,
+                    "job.failed",
+                    {"error": _humanize_analysis_error(str(exc))},
+                )
+
+        _create_tracked_task(_extract_and_run())
+        return StreamingResponse(
+            _stream_job_events(job_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    # ── 非流式模式：保持原有阻塞行为 ─────────────────────────────────────────────
+    symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
+        await asyncio.to_thread(_ai_extract_symbol_and_date, text, config)
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。")
+    symbol = _normalize_analysis_symbol(symbol)
+    if not _is_valid_analysis_symbol(symbol):
+        raise HTTPException(status_code=400, detail="分析标的格式或交易所后缀无效。")
+    trade_date = _resolve_analysis_trade_date(
+        symbol=symbol,
+        current_trade_date=trade_date or market_today_str(symbol),
+        parsed_query_date=trade_date,
+        trade_date_was_explicit=False,
+[0m
+[0m$ [0mls frontend/; grep -rn "vitest" frontend/*.ts frontend/*.json frontend/*.js 2>/dev/null | head; ls frontend/src/utils/
+LICENSE
+NOTICE
+README.md
+dist
+eslint.config.js
+index.html
+node_modules
+package-lock.json
+package.json
+postcss.config.js
+public
+src
+tailwind.config.js
+tsconfig.json
+tsconfig.node.json
+vercel.json
+vite.config.ts
+frontend/package-lock.json:45:        "vitest": "^4.1.5"
+frontend/package-lock.json:2408:    "node_modules/@vitest/expect": {
+frontend/package-lock.json:2410:      "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-4.1.5.tgz",
+frontend/package-lock.json:2417:        "@vitest/spy": "4.1.5",
+frontend/package-lock.json:2418:        "@vitest/utils": "4.1.5",
+frontend/package-lock.json:2423:        "url": "https://opencollective.com/vitest"
+frontend/package-lock.json:2426:    "node_modules/@vitest/mocker": {
+frontend/package-lock.json:2428:      "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-4.1.5.tgz",
+frontend/package-lock.json:2433:        "@vitest/spy": "4.1.5",
+frontend/package-lock.json:2438:        "url": "https://opencollective.com/vitest"
+decisionPresentation.test.ts
+decisionPresentation.ts
+jobLifecycle.test.ts
+jobLifecycle.ts
+kb011KnowledgeContract.test.ts
+knowledgeContract.ts
+knowledgeEvidenceCard.test.ts
+observeVisuals.test.ts
+observeVisuals.ts
+portfolioSync.ts
+progressFeedback.test.ts
+progressFeedback.ts
+reportText.test.ts
+reportText.ts
+researchEvidenceCenter.test.ts
+tradeflowFocus.test.ts
+tradeflowFocus.ts
+[0m
+[0m$ [0mgrep -rln "create_report\|ReportDB" tests/*.py | head -8; grep -n "def client\|TestClient" tests/test_api_smoke.py | head -5; sed -n '1,60p' tests/conftest.py
+tests/test_api_smoke.py
+tests/test_b002_openclaw_callback.py
+tests/test_dashboard_tracking.py
+tests/test_data021_report_data_blockers.py
+tests/test_decision_semantics.py
+tests/test_email_report_service.py
+tests/test_hy004_half_year_report_block.py
+tests/test_hy008_half_year_e2e_acceptance.py
+1:"""API smoke tests using FastAPI TestClient (no external server needed).
+18:from fastapi.testclient import TestClient
+57:    """Create a TestClient for the FastAPI app."""
+59:    return TestClient(app, raise_server_exceptions=False)
+62:def _auth(client: TestClient) -> str:
+"""Pytest-wide safeguards.
+
+Some API smoke tests import the real FastAPI app and use ``api.database``.
+Without an early DATABASE_URL override those tests write to the local
+``tradingagents.db``. Keep test runs isolated by default.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROD_DB = (PROJECT_ROOT / "tradingagents.db").resolve()
+
+
+def _is_prod_sqlite_url(url: str | None) -> bool:
+    if not url or not url.startswith("sqlite"):
+        return False
+    raw_path = url.replace("sqlite:///", "").replace("sqlite://", "")
+    if raw_path in (":memory:", ""):
+        return False
+    return Path(raw_path).resolve() == PROD_DB
+
+
+def _install_isolated_database_url() -> None:
+    current = os.environ.get("DATABASE_URL")
+    if current and not _is_prod_sqlite_url(current):
+        return
+    temp_dir = Path(tempfile.mkdtemp(prefix="tradingagents-pytest-"))
+    os.environ["DATABASE_URL"] = f"sqlite:///{temp_dir / 'tradingagents-test.db'}"
+
+
+_install_isolated_database_url()
+[0m
+[0m$ [0msed -n '40,110p' tests/test_api_smoke.py
+def test_symbol_is_optional(self):
+        from api.main import AnalyzeRequest
+        # should not raise
+        req = AnalyzeRequest()
+        assert req.symbol == ""
+
+    def test_dry_run_defaults_false(self):
+        from api.main import AnalyzeRequest
+        req = AnalyzeRequest(symbol="600519.SH")
+        assert req.dry_run is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_client():
+    """Create a TestClient for the FastAPI app."""
+    from api.main import app
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _auth(client: TestClient) -> str:
+    """Register a test user and return a valid JWT token."""
+    r = client.post("/v1/auth/request-code", json={"email": "apitest@test.com"})
+    code = r.json()["dev_code"]
+    r2 = client.post("/v1/auth/verify-code", json={"email": "apitest@test.com", "code": code})
+    return r2.json()["access_token"]
+
+
+def _auth_unique(client: TestClient) -> str:
+    from api.database import UserDB, get_db_ctx, init_db
+    from api.services import auth_service
+
+    init_db()
+    email = auth_service.normalize_email(f"apitest-{uuid4().hex[:8]}@test.com")
+    now = datetime.now(timezone.utc)
+    with get_db_ctx() as db:
+        user = auth_service.get_user_by_email(db, email)
+        if not user:
+            user = UserDB(
+                id=str(uuid4()),
+                email=email,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+                last_login_at=now,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+    return auth_service.create_access_token(user)
+
+
+def _wait_job(client: TestClient, token: str, job_id: str, timeout: float = 5.0) -> dict:
+    """Poll until job is no longer running, return result dict."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = client.get(f"/v1/jobs/{job_id}", headers={"Authorization": f"Bearer {token}"})
+        status = r.json().get("status")
+        if status in ("completed", "failed"):
+            break
+        time.sleep(0.2)
+    r2 = client.get(f"/v1/jobs/{job_id}/result", headers={"Authorization": f"Bearer {token}"})
+    return r2.json()
+
+
+# ---------------------------------------------------------------------------
+# API integration tests
+# ---------------------------------------------------------------------------
+[0m
+[0m# [0mTodos
+[✓] 盘点 round1 已实现/缺失（完成：后端双超时+overtime 字段+恢复接线已在，缺后端测试文件）
+[•] 编写 tests/test_upstream081_timeout_recovery.py 覆盖四态/防双写/硬超时/历史 failed 不重写
+[ ] 补 Redis store bool 往返一致性测试（test_job_store_redis.py）
+[ ] 后端测试：新文件 + test_api_smoke.py 回归
+[ ] 前端：npm run build 零错误 + vitest 跑 jobLifecycle.test.ts
+[ ] 文档：DEVLOG round2 条目 + task_runs continuation 记录
+[0m
+[0m$ [0mgrep -n "import report_service\|from api.services" api/main.py | head -5; grep -n "^import time\|^import " api/main.py | head -15
+45:from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service, controller_briefing_payload_service, local_knowledge_context_service, research_evidence_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run  # [IC-TA-004] controller_briefing_payload  # [KB-006] local_knowledge_context_api  # [KB-020] research_evidence_api
+46:from api.services import feishu_export_service  # [B-003] feishu_doc_export
+47:from api.services import holdings_sync_service  # [B-004] holdings_sync
+48:from api.services import feishu_webhook_service  # [M-010] feishu_webhook_notification
+49:from api.services import notification_confirmation_service  # [M-010] feishu_notification_confirmation
+3:import asyncio
+4:import hashlib
+5:import json
+6:import os
+7:import re
+8:import traceback
+20:import logging
+21:import time
+41:import pandas as pd
+[0m
+我已经了解了整体情况。让我先制定好计划，并确认最后一个 import 细节：
+我来查看一下现有的测试是如何调用 `create_report` 的，以便复用最简设置：
+[0m$ [0mgrep -rn "create_report(" tests/*.py | head -5; grep -rn "create_report(\|mark_report_failed(" tests/test_api_smoke.py | head
+tests/test_api_smoke.py:991:    def _create_report(self, symbol: str, trade_date: str, decision: str, result_data: dict | None = None):
+tests/test_api_smoke.py:1002:        self._create_report("600519.SH", "2026-03-28", "HOLD")
+tests/test_api_smoke.py:1003:        self._create_report("600519.SH", "2026-03-30", "BUY", {
+tests/test_api_smoke.py:1008:        self._create_report("300750.SZ", "2026-03-29", "SELL")
+tests/test_api_smoke.py:1025:        first = self._create_report("600519.SH", "2026-03-28", "HOLD")
+tests/test_api_smoke.py:991:    def _create_report(self, symbol: str, trade_date: str, decision: str, result_data: dict | None = None):
+tests/test_api_smoke.py:1002:        self._create_report("600519.SH", "2026-03-28", "HOLD")
+tests/test_api_smoke.py:1003:        self._create_report("600519.SH", "2026-03-30", "BUY", {
+tests/test_api_smoke.py:1008:        self._create_report("300750.SZ", "2026-03-29", "SELL")
+tests/test_api_smoke.py:1025:        first = self._create_report("600519.SH", "2026-03-28", "HOLD")
+tests/test_api_smoke.py:1026:        second = self._create_report("300750.SZ", "2026-03-29", "SELL")
+tests/test_api_smoke.py:1027:        third = self._create_report("000001.SZ", "2026-03-30", "BUY")
+[0m
+[0m$ [0msed -n '975,1000p' tests/test_api_smoke.py
+r = self.client.post("/v1/watchlist", headers=self.headers, json={
+                "text": "600519.SH 贵州茅台",
+            })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["summary"] == {"total": 2, "added": 1, "duplicate": 1, "failed": 0}
+        assert [item["status"] for item in body["results"]] == ["added", "duplicate"]
+
+
+class TestReportsEndpoint:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.client = _get_client()
+        self.token = _auth_unique(self.client)
+        self.headers = {"Authorization": f"Bearer {self.token}"}
+
+    def _create_report(self, symbol: str, trade_date: str, decision: str, result_data: dict | None = None):
+        response = self.client.post("/v1/reports", headers=self.headers, json={
+            "symbol": symbol,
+            "trade_date": trade_date,
+            "decision": decision,
+            **({"result_data": result_data} if result_data is not None else {}),
+        })
+        assert response.status_code == 200
+        return response.json()
+[0m
+现在我来编写后端测试文件：
+[0m← [0mWrite tests/test_upstream081_timeout_recovery.py
+Wrote file successfully.
+[0m
+我来检查一下 `pytest-asyncio` 是否可用，并简化第一个测试中复杂的 hook 逻辑：
+[0m$ [0msource .venv/bin/activate 2>/dev/null; pip list 2>/dev/null | grep -i "pytest\|anyio"; grep -rn "asyncio_mode\|pytest.mark.asyncio" pytest.ini setup.cfg pyproject.toml tox.ini 2>/dev/null | head
+(no output)
+[0m
+[0m$ [0mls .venv 2>/dev/null | head -3; which python3; python3 -c "import pytest; print(pytest.__version__)" 2>&1; python3 -m pip list 2>/dev/null | grep -iE "pytest|anyio|asyncio" | head
+CACHEDIR.TAG
+bin
+lib
+/opt/homebrew/bin/python3
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import pytest; print(pytest.__version__)
+    ^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'pytest'
+anyio                     4.13.0
+[0m
+[0m$ [0m.venv/bin/python -m pip list 2>/dev/null | grep -iE "^(pytest|anyio|asyncio|redis|fastapi|mock)" ; grep -rn "asyncio" pytest.ini pyproject.toml setup.cfg 2>/dev/null | head -5; ls pytest.ini pyproject.toml setup.cfg 2>/dev/null
+pyproject.toml
+[0m
+[0m$ [0m.venv/bin/python -m pip list 2>/dev/null | grep -iE "pytest|anyio|redis" ; echo ---; grep -n -A5 "\[tool.pytest" pyproject.toml
+---
+[0m
+[0m$ [0m.venv/bin/python -m pip list 2>&1 | head -30; echo ===; .venv/bin/python -c "import pytest; print('pytest', pytest.__version__)"
+/Users/maybee/TradingAgents-AShare/.venv/bin/python: No module named pip
+zsh:1: == not found
+[0m
+[0m$ [0m.venv/bin/python -c "import pytest; print('pytest', pytest.__version__)"; .venv/bin/python -c "import pytest_asyncio; print('pytest_asyncio', pytest_asyncio.__version__)" 2>&1 | tail -1; .venv/bin/python -c "import anyio; print('anyio', anyio.__version__)" 2>&1 | tail -1
+pytest 9.0.2
+ModuleNotFoundError: No module named 'pytest_asyncio'
+AttributeError: module 'anyio' has no attribute '__version__'
+[0m
+[0m$ [0mgrep -rn "pytest.mark.asyncio\|asyncio.run\|anyio" tests/test_upstream081_runtime_resilience.py | head -8; grep -n -B2 -A8 "\[tool.pytest" pyproject.toml
+tests/test_upstream081_runtime_resilience.py:788:        result = asyncio.run(
+tests/test_upstream081_runtime_resilience.py:1023:        asyncio.run(
+[0m
+No pytest-asyncio — sibling tests use `asyncio.run()`. Rewriting the test file accordingly:
+[0m← [0mWrite tests/test_upstream081_timeout_recovery.py
+Wrote file successfully.
+[0m
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -322,13 +322,8 @@
+     assert "job.completed" not in names
+     no_db_failure_mark.assert_called_once()
+ 
+ 
+-@pytest.mark.asyncio
+-async def _unused_asyncio_mark_placeholder():  # pragma: no cover
+-    pass
+-
+-
+ def test_save_report_or_raise_never_fakes_completion():
+     """报告持久化失败必须抛回失败边界，不能被日志吞掉后伪装 completed。"""
+ 
+     async def _scenario() -> None:
+
+[0m
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py -q --tb=short 2>&1 | tail -25
+......F...                                                               [100%]/Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/_pytest/unraisableexception.py:33: RuntimeWarning: coroutine 'test_save_report_or_raise_never_fakes_completion.<locals>._scenario.<locals>._ok' was never awaited
+  gc.collect()
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+
+=================================== FAILURES ===================================
+_______________ test_save_report_or_raise_never_fakes_completion _______________
+tests/test_upstream081_timeout_recovery.py:341: in test_save_report_or_raise_never_fakes_completion
+    asyncio.run(_scenario())
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_upstream081_timeout_recovery.py:333: in _scenario
+    assert await api_main._save_report_or_raise("j1", _ok, stage="save") == "report-1"
+E   AssertionError: assert <coroutine object test_save_report_or_raise_never_fakes_completion.<locals>._scenario.<locals>._ok at 0x10bc635e0> == 'report-1'
+=========================== short test summary info ============================
+FAILED tests/test_upstream081_timeout_recovery.py::test_save_report_or_raise_never_fakes_completion
+1 failed, 9 passed in 5.78s
+[0m
+9/10 pass. The failing test misuses `to_thread` semantics — the real callables are sync. Fixing:
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -324,18 +324,18 @@
+ 
+ 
+ def test_save_report_or_raise_never_fakes_completion():
+     """报告持久化失败必须抛回失败边界，不能被日志吞掉后伪装 completed。"""
++    # 与生产用法一致：传入同步 DB 落盘函数，由 to_thread 执行
++    def _ok():
++        return "report-1"
+ 
+-    async def _scenario() -> None:
+-        async def _ok():
+-            return "report-1"
++    def _boom():
++        raise ValueError("disk full")
+ 
++    async def _scenario() -> None:
+         assert await api_main._save_report_or_raise("j1", _ok, stage="save") == "report-1"
+ 
+-        async def _boom():
+-            raise ValueError("disk full")
+-
+         with pytest.raises(RuntimeError, match="Failed to save report for job j2"):
+             await api_main._save_report_or_raise("j2", _boom, stage="save")
+ 
+     asyncio.run(_scenario())
+
+[0m
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py -q --tb=short 2>&1 | tail -5
+..........                                                               [100%]
+10 passed in 5.47s
+[0m
+10/10 通过。现在我来添加 Redis bool 往返一致性测试：
+[0m→ [0mRead tests/test_job_store_redis.py[90m [limit=104, offset=70][0m
+[0m
+[0m← [0mEdit tests/test_job_store_redis.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
+@@ -84,8 +84,41 @@
+     job = store.get_job("j1")
+     assert job["result"] is None
+ 
+ 
++def test_bool_roundtrip_matches_memory_store(store: RedisJobStore):
++    """[UPSTREAM-081-002] Booleans must round-trip as real bools.
++
++    ``overtime`` is produced by the soft-timeout path and consumed by
++    ``get_job_status`` (``bool(job.get("overtime", False))``). If Redis stored
++    ``str(True) == "True"``, any string encoding would be truthy on read and
++    Redis semantics would diverge from the in-memory store.
++    """
++    store.set_job("j1", status="running", overtime=False, overtime_at=None)
++    store.set_job("j2", status="running", overtime=True, overtime_at="2026-09-07T00:00:00+00:00")
++
++    j1 = store.get_job("j1")
++    j2 = store.get_job("j2")
++
++    # Exact types matter: no "False"/"True" string encoding may survive.
++    assert j1["overtime"] is False
++    assert j2["overtime"] is True
++    assert isinstance(j1["overtime"], bool)
++    assert isinstance(j2["overtime"], bool)
++    # None still round-trips as None for overtime_at.
++    assert j1["overtime_at"] is None
++    assert j2["overtime_at"] == "2026-09-07T00:00:00+00:00"
++
++    # Same writes through the in-memory store must observe identical values.
++    memory = InMemoryJobStore()
++    memory.set_job("j1", status="running", overtime=False, overtime_at=None)
++    memory.set_job("j2", status="running", overtime=True, overtime_at="2026-09-07T00:00:00+00:00")
++    assert memory.get_job("j1")["overtime"] is j1["overtime"]
++    assert memory.get_job("j2")["overtime"] is j2["overtime"]
++    assert memory.get_job("j1")["overtime_at"] == j1["overtime_at"]
++    assert memory.get_job("j2")["overtime_at"] == j2["overtime_at"]
++
++
+ def test_complex_value_roundtrip(store: RedisJobStore):
+     """Dict and list values should round-trip via JSON serialization."""
+     store.set_job("j1", report={"score": 8, "tags": ["buy", "hold"]}, items=[1, 2, 3])
+     job = store.get_job("j1")
+
+[0m
+[0m← [0mEdit tests/test_job_store_redis.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
+@@ -11,8 +11,10 @@
+ 
+ import pytest
+ import redis
+ 
++from api.job_store import InMemoryJobStore  # noqa: E402
++
+ # ---------------------------------------------------------------------------
+ # Skip guard: skip the entire module when Redis is unreachable
+ # ---------------------------------------------------------------------------
+ 
+
+[0m
+[0m$ [0m.venv/bin/python -m pytest tests/test_job_store_redis.py -q --tb=short 2>&1 | tail -5
+ssssssssss                                                               [100%]
+10 skipped in 0.07s
+[0m
+Redis 未运行，因此这些跳过。我来添加一个不需要 Redis 的序列化器级测试，以确保 bool 修复确实得到了验证：
+[0m→ [0mRead tests/test_job_store_redis.py[90m [limit=25, offset=30][0m
+`pytestmark` 跳过逻辑适用于整个 Redis 模块。现在将非跳过的序列化器测试添加到我的新文件中：
+[0m
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -341,8 +341,36 @@
+     asyncio.run(_scenario())
+ 
+ 
+ # ---------------------------------------------------------------------------
++# Redis 与内存 store 布尔语义一致（序列化层，无需 Redis 连接）
++# ---------------------------------------------------------------------------
++
++
++def test_redis_bool_serialization_matches_memory_store():
++    """overtime 布尔经 Redis 序列化后必须还原为真实布尔，与内存 store 一致。
++
++    get_job_status 用 bool(job.get("overtime", False)) 读取；若 Redis 以
++    str(True)="True" 存储，任何字符串读回都是真值，两边语义就会分裂。
++    """
++    from api.job_store_redis import _deserialize_value, _serialize_value
++
++    for value in (False, True):
++        raw = _serialize_value(value)
++        restored = _deserialize_value(raw)
++        assert isinstance(restored, bool)
++        assert restored is value
++        # 与内存 store 的原生布尔完全一致
++        memory = InMemoryJobStore()
++        memory.set_job("j", overtime=value)
++        assert memory.get_job("j")["overtime"] is restored
++
++    # None / 常规标量语义保持不变
++    assert _deserialize_value(_serialize_value(None)) is None
++    assert _deserialize_value(_serialize_value("2026-09-07T00:00:00+00:00")) == "2026-09-07T00:00:00+00:00"
++
++
++# ---------------------------------------------------------------------------
+ # 状态读路径：overtime 字段与历史 failed(timeout) 不改写
+ # ---------------------------------------------------------------------------
+ 
+ 
+
+[0m
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py -q --tb=short 2>&1 | tail -3 && .venv/bin/python -m pytest tests/test_api_smoke.py -q --tb=short 2>&1 | tail -3
+...........                                                              [100%]
+11 passed in 5.46s
+........................................................................ [ 82%]
+...............                                                          [100%]
+87 passed in 24.40s
+[0m
+后端 green (11 + 87)。现在进行前端构建和 vitest：
+[0m$ [0mgrep -n "alias\|test:" frontend/vite.config.ts | head
+44:    alias: {
+[0m
+[0m$ [0mcd frontend && npx vitest run src/utils/jobLifecycle.test.ts 2>&1 | tail -15
+10|         expect(classifyRecoveredJobStatus('completed')).toBe('complete…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Start at  20:04:34
+   Duration  116ms (transform 19ms, setup 0ms, import 0ms, tests 0ms, environment 0ms)
+
+npm notice
+npm notice New major version of npm available! 11.12.1 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice
+[0m
+[0m$ [0mcd frontend && npx vitest run src/utils/jobLifecycle.test.ts 2>&1 | head -30
+RUN  v4.1.5 /Users/maybee/TradingAgents-AShare/frontend
+
+(node:75460) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+ ❯ src/utils/jobLifecycle.test.ts (0 test)
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/utils/jobLifecycle.test.ts [ src/utils/jobLifecycle.test.ts ]
+ReferenceError: describe is not defined
+ ❯ src/utils/jobLifecycle.test.ts:8:1
+      6| } from '@/utils/jobLifecycle'
+      7|
+      8| describe('classifyRecoveredJobStatus', () => {
+       | ^
+      9|     it('maps completed to completed', () => {
+     10|         expect(classifyRecoveredJobStatus('completed')).toBe('complete…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Start at  20:04:38
+   Duration  139ms (transform 16ms, setup 0ms, import 0ms, tests 0ms, environment 0ms)
+[0m
+[0m$ [0mhead -12 frontend/src/utils/decisionPresentation.test.ts; grep -ln "from 'vitest'\|from \"vitest\"" frontend/src/utils/*.test.ts
+import { describe, expect, it } from 'vitest'
+import { shouldSuppressTargetPrice } from './decisionPresentation'
+
+describe('shouldSuppressTargetPrice', () => {
+    it('suppresses bearish WAIT targets', () => {
+        expect(shouldSuppressTargetPrice({
+            execution_action: 'WAIT',
+            research_direction: '偏空',
+            action_label: '回避',
+        })).toBe(true)
+    })
+
+frontend/src/utils/decisionPresentation.test.ts
+frontend/src/utils/kb011KnowledgeContract.test.ts
+frontend/src/utils/knowledgeEvidenceCard.test.ts
+frontend/src/utils/observeVisuals.test.ts
+frontend/src/utils/progressFeedback.test.ts
+frontend/src/utils/reportText.test.ts
+frontend/src/utils/researchEvidenceCenter.test.ts
+frontend/src/utils/tradeflowFocus.test.ts
+[0m
+Round1 测试缺少显式的 vitest 导入（全局变量未启用）。正在修复：
+[0m← [0mEdit frontend/src/utils/jobLifecycle.test.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/utils/jobLifecycle.test.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/utils/jobLifecycle.test.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/utils/jobLifecycle.test.ts
+@@ -1,10 +1,11 @@
++import { describe, expect, it } from 'vitest'
+ import {
+     classifyRecoveredJobStatus,
+     DEFAULT_OVERTIME_NOTICE,
+     getJobLifecycleUpdate,
+     hasRecoveryPollingReachedLimit,
+-} from '@/utils/jobLifecycle'
++} from './jobLifecycle'
+ 
+ describe('classifyRecoveredJobStatus', () => {
+     it('maps completed to completed', () => {
+         expect(classifyRecoveredJobStatus('completed')).toBe('completed')
+
+[0m
+[0m$ [0mcd frontend && npx vitest run src/utils/jobLifecycle.test.ts 2>&1 | grep -E "Test Files|Tests|✓|✗|FAIL|PASS" | head -10
+Test Files  1 passed (1)
+      Tests  14 passed (14)
+[0m
+[0m$ [0mcd frontend && npx vitest run 2>&1 | grep -E "Test Files|Tests " | head -4 && npm run build 2>&1 | tail -6
+Test Files  11 passed (11)
+      Tests  157 passed (157)
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.56s
+[0m
+全部通过。正在运行同级的 UPSTREAM-081-001 回归测试（相同的文件，依赖任务）：
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -3
+.........  [Timer] get_stock_data took 0.62s
+........................................                        [100%]
+49 passed in 5.80s
+[0m
+测试全部通过 (49)。现在开始编写文档 — DEVLOG round2 条目以及继续执行记录：
+[0m$ [0mtail -12 docs/DEVLOG.md
+- **验证**: test_market_facts_contract 32 passed、test_api_market_facts 8 passed；兼容回归 test_api_smoke 87 passed、tushare 契约/证据/治理包 95 passed、test_price_intent_contract 199 passed。
+- **安全**: /v1/market/kline 未改动（KNOWN-GAP-1 无鉴权现状入契约）；fixture 无凭据（测试断言）；LLM 调用 0 次；Live smoke NOT_RUN。
+- **Run archive**: docs/task_runs/TA-MF-01-20260907-122509/
+
+## 2026-09-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode timed out after 1800s
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/
+[0m
+[0m$ [0mcat >> docs/DEVLOG.md << 'EOF'
+
+## 2026-09-07 | MANUAL round2 (continuation) — UPSTREAM-081-002
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Status**: round2 continuation 完成，未提交（等待独立 Codex review）
+- **round1 遗留盘点**: 后端软/硬双超时（`_run_job` 重写、`overtime/overtime_at` 字段、`job.overtime` 非终态事件、`_save_report_or_raise` 持久化失败不伪装完成、Redis bool 序列化修复、`create_report` 清除陈旧 error）；前端 `jobLifecycle.ts` 纯函数工具 + SSE/store/ChatCopilot 接线（软超时横幅、断线/刷新回查同一 job、isAnalyzing 阻止重复提交）。缺：后端专项测试文件。
+- **round2 补齐**:
+  - 新增 `tests/test_upstream081_timeout_recovery.py`（11 tests）：软超时后 job 保持 running+overtime 且终态只写一次（防双写）；硬超时 fail-closed（cancel 内层、`mark_report_failed` 一次、硬超时文案与旧软超时可区分）；软=硬与软禁用边界不发误导性加班事件；真实失败/持久化失败与完成可区分；`get_job_status` 暴露 overtime 字段；历史 `failed(timeout)` 读路径只读不改写；Redis 序列化层 bool 与内存 store 一致（无需 Redis 连接）；`create_report` 完成时清除陈旧 failed 痕迹。
+  - `tests/test_job_store_redis.py` 补 `test_bool_roundtrip_matches_memory_store`（Redis 可用时运行）。
+  - 修复 `frontend/src/utils/jobLifecycle.test.ts` 缺失 `vitest` 显式导入（round1 写法依赖未启用的 globals，collection 即失败）。
+- **测试证据**: `pytest tests/test_upstream081_timeout_recovery.py` 11 passed；`pytest tests/test_api_smoke.py` 87 passed；`pytest tests/test_upstream081_runtime_resilience.py` 49 passed；`npx vitest run` 157 passed（11 files）；`npm run build` 零错误。
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md）
+EOF
+echo done
+done
+[0m
+[0m← [0mWrite docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md
+Wrote file successfully.
+[0m
+最终验证 —— 修改后的完整文件列表和约束检查：
+[0m$ [0mgit status --short; echo ===; git diff --stat | tail -3; echo ===; git diff --name-only | grep -E "prompts|\.env" || echo "no prompts/.env changes ✓"; ls tradingagents.db docs/task_runs/UPSTREAM-081-002-20260907-190004/
+M api/job_store_redis.py
+ M api/main.py
+ M api/services/report_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/components/ChatCopilotPanel.tsx
+ M frontend/src/hooks/useSSE.ts
+ M frontend/src/stores/analysisStore.ts
+ M frontend/src/types/index.ts
+ M tests/test_job_store_redis.py
+?? docs/task_runs/UPSTREAM-081-002-20260907-190004/
+?? frontend/src/utils/jobLifecycle.test.ts
+?? frontend/src/utils/jobLifecycle.ts
+?? tests/test_upstream081_timeout_recovery.py
+zsh:1: == not found
+[0m
+[0m$ [0mgit diff --name-only | grep -E "prompts|\.env" ; echo "grep exit: $? (1=no matches, good)"; ls -la tradingagents.db | awk '{print $6,$7,$8,$9}'
+grep exit: 1 (1=no matches, good)
+Aug 28 18:14 tradingagents.db
+[0m
+[0m# [0mTodos
+[✓] 盘点 round1 已实现/缺失（完成：后端双超时+overtime 字段+恢复接线已在，缺后端测试文件）
+[✓] 编写 tests/test_upstream081_timeout_recovery.py 覆盖四态/防双写/硬超时/历史 failed 不重写
+[✓] 补 Redis store bool 往返一致性测试（test_job_store_redis.py + 序列化层）
+[✓] 后端测试：新文件 11 passed + api_smoke 87 passed + resilience 49 passed
+[✓] 前端：npm run build 零错误 + vitest 157 passed（修复缺 vitest import）
+[✓] 文档：DEVLOG round2 条目 + task_runs implementation-round2.md
+[0m
+UPSTREAM-081-002 round2 续跑收尾完成。未 commit，等待独立 Codex review。
+
+## 已实现（round1 遗留，保留未动）
+- **后端**：`_run_job` 软/硬双门（软超时只发 `job.overtime` 非终态事件 + `running/overtime=True`；硬超时 `TA_JOB_HARD_TIMEOUT` cancel 内层后 fail-closed）；`_save_report_or_raise` 持久化失败不伪装 completed；`JobStatusResponse.overtime/overtime_at`；Redis bool JSON 序列化；`create_report` 清陈旧 error
+- **前端**：`jobLifecycle.ts` 纯函数生命周期映射（仅历史软超时文案按 running 续等，硬超时/真实失败保持 failed）；SSE/store/ChatCopilot 接线（软超时横幅、刷新/断线回查同一 job、`isAnalyzing` 阻止重复提交）
+
+## 本次补齐
+1. **新增 `tests/test_upstream081_timeout_recovery.py`（11 tests）**——round1 缺失的验收主测试：软超时后终态只写一次（防双写）、硬超时 cancel + `mark_report_failed` 恰一次 + 文案可区分、软=硬/软禁用边界不发误导加班事件、真实失败/持久化失败与完成可区分、`get_job_status` 暴露 overtime、历史 `failed(timeout)` 读路径只读不改写、Redis 序列化 bool 与内存 store 一致、DB 验证完成收口清陈旧失败
+2. `tests/test_job_store_redis.py` 补 store 级 bool 往返一致性用例
+3. 修复 `jobLifecycle.test.ts` 缺 `vitest` 显式 import（round1 版本无法运行）
+
+## 测试证据
+```
+pytest tests/test_upstream081_timeout_recovery.py  → 11 passed
+pytest tests/test_api_smoke.py                     → 87 passed
+pytest tests/test_upstream081_runtime_resilience.py → 49 passed
+npx vitest run                                     → Test Files 11 passed, Tests 157 passed
+npm run build                                      → ✓ built in 1.56s（仅既有 chunk-size 警告）
+```
+
+## 遗留缺口
+- Redis 未运行时 `test_job_store_redis.py` 整模块 skip（与基线一致）；bool 一致性已由序列化层测试实际覆盖
+- 独立 Codex review 未跑（按约束不 commit，等待 review）
+- SSE 重连错过 `job.overtime` 时靠轮询 `status.overtime` 补偿（已接线，设计内行为）
+
+文档已更新：`docs/DEVLOG.md` round2 条目、`docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md`（含逐文件盘点表）。未动 prompts/、生产 DB、TASKS.md 状态、默认模型、门禁、scheduler 时间、.env.example。

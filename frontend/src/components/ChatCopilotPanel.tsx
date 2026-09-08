@@ -9,6 +9,14 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '@/services/api'
 import { useAnalysisStore } from '@/stores/analysisStore'
+import {
+    classifyRecoveredJobStatus,
+    DEFAULT_OVERTIME_NOTICE,
+    getJobLifecycleUpdate,
+    hasRecoveryPollingReachedLimit,
+    RECOVERY_POLL_INTERVAL_MS,
+    RECOVERY_POLL_TIMEOUT_MESSAGE,
+} from '@/utils/jobLifecycle'
 import type {
     AgentReportEvent,
     AgentSnapshotEvent,
@@ -163,17 +171,20 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     const abortControllerRef = useRef<AbortController | null>(null)
     const stopHandledRef = useRef(false)
     const terminalEventSeenRef = useRef(false)
+    const recoveryAbortRef = useRef<AbortController | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
     const messagesContainerRef = useRef<HTMLDivElement>(null)
 
     const {
         chatMessages,
         isAnalyzing,
+        analysisOvertimeNotice,
         setCurrentJobId,
         setCurrentSymbol,
         setIsAnalyzing,
         setIsConnected,
         setAnalysisRunState,
+        setAnalysisOvertimeNotice,
         setCurrentHorizon,
         updateAgentStatus,
         updateAgentSnapshot,
@@ -192,59 +203,113 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         reset,
     } = useAnalysisStore()
 
-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    const sleepUntilRetry = (ms: number, signal: AbortSignal) => new Promise<boolean>(resolve => {
+        if (signal.aborted) {
+            resolve(false)
+            return
+        }
+        const timer = window.setTimeout(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve(true)
+        }, ms)
+        const onAbort = () => {
+            window.clearTimeout(timer)
+            resolve(false)
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+    })
 
-    const recoverInterruptedJob = async () => {
+    const recoverInterruptedJob = async (signal: AbortSignal): Promise<boolean> => {
+        // [UPSTREAM-081-002] 断线/刷新后回查同一个 job，禁止重复提交昂贵分析。
         const { currentJobId } = useAnalysisStore.getState()
         if (!currentJobId) return false
+        let recoveryPollAttempts = 0
 
         pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
+        setIsConnected(false)
+        setIsAnalyzing(true)
+        setAnalysisRunState('running')
 
-        for (let attempt = 0; attempt < 8; attempt += 1) {
-            const status = await api.getJobStatus(currentJobId)
+        while (!signal.aborted) {
+            if (hasRecoveryPollingReachedLimit(recoveryPollAttempts)) {
+                pushAssistant(RECOVERY_POLL_TIMEOUT_MESSAGE)
+                setCurrentHorizon(null)
+                setIsAnalyzing(false)
+                setAnalysisRunState('failed', RECOVERY_POLL_TIMEOUT_MESSAGE)
+                return true
+            }
+            recoveryPollAttempts += 1
 
-            if (status.status === 'completed') {
-                const result = await api.getJobResult(currentJobId)
-                setReport(result.result)
+            try {
+                const status = await api.getJobStatus(currentJobId)
+                if (signal.aborted) return false
+                const disposition = classifyRecoveredJobStatus(status.status, status.error)
 
-                const symbol = result.result.symbol
-                const tradeDate = result.result.trade_date
-                if (symbol) {
-                    setCurrentSymbol(symbol)
-                    onSymbolDetected(symbol)
-                }
+                if (disposition === 'completed') {
+                    const result = await api.getJobResult(currentJobId)
+                    if (signal.aborted) return false
+                    setReport(result.result)
 
-                try {
-                    const history = await api.getReports(symbol, 0, 10)
-                    const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
-                    if (matched) {
-                        setStructuredData({
-                            riskItems: matched.risk_items,
-                            keyMetrics: matched.key_metrics,
-                            confidence: matched.confidence,
-                            targetPrice: matched.target_price,
-                            stopLoss: matched.stop_loss_price,
-                        })
+                    const symbol = result.result.symbol
+                    const tradeDate = result.result.trade_date
+                    if (symbol) {
+                        setCurrentSymbol(symbol)
+                        onSymbolDetected(symbol)
                     }
-                } catch {
-                    // 历史报告回填失败时，至少保留主报告正文
+
+                    try {
+                        const history = await api.getReports(symbol, 0, 10)
+                        const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
+                        if (matched) {
+                            setStructuredData({
+                                riskItems: matched.risk_items,
+                                keyMetrics: matched.key_metrics,
+                                confidence: matched.confidence,
+                                targetPrice: matched.target_price,
+                                stopLoss: matched.stop_loss_price,
+                            })
+                        }
+                    } catch {
+                        // 历史报告回填失败时，至少保留主报告正文
+                    }
+
+                    pendingAgentMsgIdsRef.current = new Set()
+                    forceUpdate(n => n + 1)
+                    markAgentMessagesComplete()
+                    pushAssistant(
+                        `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.research_direction || result.result.direction || '未知')}**\n\n执行动作：**${String(result.result.action_label || result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
+                    )
+                    setCurrentHorizon(null)
+                    setIsAnalyzing(false)
+                    setAnalysisRunState('completed')
+                    return true
                 }
 
-                pushAssistant(
-                    `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.research_direction || result.result.direction || '未知')}**\n\n执行动作：**${String(result.result.action_label || result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
-                )
-                setAnalysisRunState('completed')
-                return true
+                if (disposition === 'failed') {
+                    const message = status.error || 'unknown error'
+                    finalizeFailedRun(message)
+                    pushAssistant(`分析失败：${message}`)
+                    return true
+                }
+
+                // running / 软超时加班：持续提示后台继续，保持回查
+                if (status.overtime || status.status === 'failed') {
+                    setAnalysisOvertimeNotice(DEFAULT_OVERTIME_NOTICE)
+                }
+            } catch (error) {
+                if (signal.aborted) return false
+                // 任务记录不存在（服务重启清空了内存 store / 超过 TTL）：
+                // 停止回查并按失败收口，避免无限轮询；不自动重新提交。
+                const message = error instanceof Error ? error.message : String(error)
+                if (/job not found|404/i.test(message)) {
+                    finalizeFailedRun('任务状态已失效（服务端无此任务记录），请到历史报告中查看是否已生成报告。')
+                    pushAssistant('任务状态已失效（服务端无此任务记录）。为避免重复消耗，未自动重新发起分析；请到历史报告中查看。')
+                    return true
+                }
+                console.warn('任务状态回查失败，将继续重试:', error)
             }
 
-            if (status.status === 'failed') {
-                const message = status.error || 'unknown error'
-                finalizeFailedRun(message)
-                pushAssistant(`分析失败：${message}`)
-                return true
-            }
-
-            await sleep(1500)
+            if (!await sleepUntilRetry(RECOVERY_POLL_INTERVAL_MS, signal)) return false
         }
 
         return false
@@ -258,6 +323,29 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             behavior: 'smooth',
         })
     }, [chatMessages])
+
+    // [UPSTREAM-081-002] 卸载时中止回查，避免离开页面后继续轮询。
+    useEffect(() => () => {
+        recoveryAbortRef.current?.abort()
+    }, [])
+
+    // [UPSTREAM-081-002] 刷新恢复：挂载时若存在仍在运行的 job，回查同一任务
+    // 而不是让用户重新提交。running 态下 isAnalyzing=true 已阻止重复提交。
+    const mountRecoveryRanRef = useRef(false)
+    useEffect(() => {
+        if (mountRecoveryRanRef.current) return
+        mountRecoveryRanRef.current = true
+        const { currentJobId, analysisRunState } = useAnalysisStore.getState()
+        if (!currentJobId || analysisRunState !== 'running') return
+        const controller = new AbortController()
+        recoveryAbortRef.current = controller
+        void recoverInterruptedJob(controller.signal).finally(() => {
+            if (recoveryAbortRef.current === controller) {
+                recoveryAbortRef.current = null
+            }
+        })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
 
     const pushAssistant = (content: string) => {
         addChatMessage({
@@ -296,9 +384,21 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
 
     const parseAndDispatch = (event: StreamEvent) => {
         const { event: eventName, data } = event
+        // [UPSTREAM-081-002] 运行态统一由生命周期映射维护，软超时不再误判为失败
+        const lifecycleUpdate = getJobLifecycleUpdate(eventName, data)
+        if (lifecycleUpdate) {
+            setIsAnalyzing(lifecycleUpdate.isAnalyzing)
+            setAnalysisRunState(
+                lifecycleUpdate.runState,
+                eventName === 'job.failed' ? String(data.error || 'unknown error') : null,
+            )
+            setAnalysisOvertimeNotice(lifecycleUpdate.overtimeNotice)
+        }
+
         switch (eventName) {
             case 'job.ready':
                 setIsConnected(true)
+                if (data.job_id) setCurrentJobId(String(data.job_id))
                 // 把 typing indicator 换成"解析中"提示，告知用户正在识别标的
                 if (typingIndicatorIdRef.current) {
                     setMessageContent(typingIndicatorIdRef.current, '__parsing__')
@@ -324,12 +424,14 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 break
             }
             case 'job.running':
-                setIsAnalyzing(true)
-                setAnalysisRunState('running')
+                // 运行态已由 lifecycle hook 统一设置
                 // 切换 indicator 到"分析启动"阶段
                 if (typingIndicatorIdRef.current) {
                     setMessageContent(typingIndicatorIdRef.current, '__status:analyzing__')
                 }
+                break
+            case 'job.overtime':
+                // 软超时：保持流、进度与运行态不变，横幅提示由 lifecycle hook 设置
                 break
             case 'agent.horizon_start': {
                 const h = String(data.horizon || '')
@@ -342,8 +444,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             case 'job.completed': {
                 terminalEventSeenRef.current = true
                 setCurrentHorizon(null)
-                setIsAnalyzing(false)
-                setAnalysisRunState('completed')
+                // 终态设置已由 lifecycle hook 统一处理
                 // 任务结束：所有 agent 消息标记为已完成（持久化到 store）
                 pendingAgentMsgIdsRef.current = new Set()
                 forceUpdate(n => n + 1)
@@ -375,6 +476,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 break
             }
             case 'job.failed':
+                // 历史软超时文案按“后台继续”处理：不算终态，不置 terminal 标记
+                if (classifyRecoveredJobStatus('failed', typeof data.error === 'string' ? data.error : null) === 'running') {
+                    break
+                }
                 terminalEventSeenRef.current = true
                 setCurrentHorizon(null)
                 {
@@ -625,7 +730,8 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 if (!dataLine) continue
                 if (dataLine === '[DONE]' || currentEvent === 'done') {
                     setIsConnected(false)
-                    setIsAnalyzing(false)
+                    // [UPSTREAM-081-002] 流结束≠任务结束：若未见终态事件，
+                    // 保持运行态并交由回查流程收口，不在此关闭 analyzing。
                     return terminalEventSeenRef.current
                 }
                 
@@ -643,14 +749,14 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         }
 
         setIsConnected(false)
-        setIsAnalyzing(false)
         return terminalEventSeenRef.current
     }
 
     const handleSubmit = async (e: FormEvent) => {
         e.preventDefault()
         const prompt = input.trim()
-        if (!prompt || streaming) return
+        // [UPSTREAM-081-002] isAnalyzing（含软超时加班与回查等待）时禁止重复提交昂贵分析
+        if (!prompt || streaming || isAnalyzing) return
 
         // Inject custom analysis prompt from settings if set
         const customPrompt = localStorage.getItem('ta-custom-prompt')?.trim() || ''
@@ -686,13 +792,18 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         const abortController = new AbortController()
         abortControllerRef.current = abortController
         stopHandledRef.current = false
+        recoveryAbortRef.current?.abort()
+        const recoveryController = new AbortController()
+        recoveryAbortRef.current = recoveryController
 
         try {
             const sawTerminalEvent = await streamChat(fullPrompt, abortController.signal)
             if (!sawTerminalEvent && !abortController.signal.aborted) {
-                const recovered = await recoverInterruptedJob()
-                if (!recovered) {
-                    pushAssistant('分析流已结束，但没有收到最终完成事件；后端任务可能仍在收尾，请稍后到历史报告中查看结果。')
+                // 流断了但后端任务可能仍在跑：回查同一个 job，不重复提交
+                const recovered = await recoverInterruptedJob(recoveryController.signal)
+                if (!recovered && !recoveryController.signal.aborted) {
+                    finalizeFailedRun('分析流在任务编号返回前中断')
+                    pushAssistant('请求中断：未能取得任务编号，无法继续回查任务状态。')
                 }
             }
         } catch (error) {
@@ -705,10 +816,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 pushAssistant('已停止本次分析。')
                 return
             }
-            const shouldRecover = /network|fetch|stream|sse|body/i.test(errorMessage)
-            if (shouldRecover) {
-                const recovered = await recoverInterruptedJob()
-                if (!recovered) {
+            const canRecover = Boolean(useAnalysisStore.getState().currentJobId)
+            if (canRecover) {
+                const recovered = await recoverInterruptedJob(recoveryController.signal)
+                if (!recovered && !recoveryController.signal.aborted) {
                     finalizeFailedRun(errorMessage)
                     pushAssistant(`请求中断：${errorMessage}\n\n后端任务可能仍在执行，请稍后到历史报告中查看结果。`)
                 }
@@ -720,6 +831,9 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             if (abortControllerRef.current === abortController) {
                 abortControllerRef.current = null
             }
+            if (recoveryAbortRef.current === recoveryController) {
+                recoveryAbortRef.current = null
+            }
             setStreaming(false)
         }
     }
@@ -728,6 +842,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         if (!streaming && !isAnalyzing) return
         stopHandledRef.current = true
         abortControllerRef.current?.abort()
+        recoveryAbortRef.current?.abort()
         finalizeFailedRun('用户已停止本次分析')
         pushAssistant('已停止本次分析。')
         setStreaming(false)
@@ -764,7 +879,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     >
                         <Trash2 className="w-3 h-3" />
                     </button>
-                    {streaming && (
+                    {(streaming || isAnalyzing) && (
                         <span className="badge-blue inline-flex items-center gap-1">
                             <Loader2 className="w-3 h-3 animate-spin" />
                             分析中
@@ -819,6 +934,17 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     </button>
                 ))}
             </div>
+
+            {/* [UPSTREAM-081-002] 软超时提示：后台继续，非失败态 */}
+            {analysisOvertimeNotice && (
+                <div
+                    role="status"
+                    className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+                >
+                    <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                    <span>{analysisOvertimeNotice}</span>
+                </div>
+            )}
 
             {/* 聊天内容 */}
             <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
@@ -1030,7 +1156,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     />
                     <button
                         type="submit"
-                        disabled={!input.trim() || streaming}
+                        disabled={!input.trim() || streaming || isAnalyzing}
                         className="btn-primary px-3 py-2 inline-flex items-center gap-1"
                     >
                         <Send className="w-4 h-4" />

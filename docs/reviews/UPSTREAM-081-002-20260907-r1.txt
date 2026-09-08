@@ -1,0 +1,35 @@
+# UPSTREAM-081-002 r1 独立 review（Codex gpt-5.5，2026-09-07 21:00-21:45）
+# 结论 FAIL（1×P1+1×P2）；原始输出: docs/task_runs/UPSTREAM-081-002-20260907-190004/codex-review-r1-raw.txt
+
+结论: FAIL
+
+1. 软超时后 job 仍运行，最终一次终态：基本满足。`_run_job` 软超时只写 `status="running" + overtime=True` 并发 `job.overtime`，不 cancel 内层，见 [api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:2667)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:2688)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:2695)。完成/失败路径清 `overtime`，见 [api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:3336)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:3596)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:3631)。测试断言一次 `job.overtime`、一次 `job.completed`、无 `job.failed`，见 [tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:159)。
+
+2. 硬超时 fail-closed / 不重写历史 failed(timeout) / 复用 `_job_timeout_for_config`：基本满足。软超时来源 `_resolve_job_timeout -> _job_timeout_for_config`，见 [api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:1020)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:1027)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:2667)。硬超时独立 `_JOB_HARD_TIMEOUT`，见 [api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:1016)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:2707)。历史 `failed(timeout)` 读路径保持 failed，见 [tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:398)。
+
+3. 刷新/断线恢复不重复创建 job：前端代码路径满足。持久化 running `currentJobId`，挂载恢复只调用 `api.getJobStatus/getJobResult`，不重新 submit，见 [frontend/src/stores/analysisStore.ts](/Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts:558)、[frontend/src/stores/analysisStore.ts](/Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts:570)、[frontend/src/components/ChatCopilotPanel.tsx](/Users/maybee/TradingAgents-AShare/frontend/src/components/ChatCopilotPanel.tsx:332)、[frontend/src/components/ChatCopilotPanel.tsx](/Users/maybee/TradingAgents-AShare/frontend/src/components/ChatCopilotPanel.tsx:243)。提交按钮用 `isAnalyzing` 阻断重复昂贵分析，见 [frontend/src/components/ChatCopilotPanel.tsx](/Users/maybee/TradingAgents-AShare/frontend/src/components/ChatCopilotPanel.tsx:755)、[frontend/src/components/ChatCopilotPanel.tsx](/Users/maybee/TradingAgents-AShare/frontend/src/components/ChatCopilotPanel.tsx:1157)。
+
+4. Redis 与内存 store 语义一致：不满足。布尔序列化已对齐，见 [api/job_store_redis.py](/Users/maybee/TradingAgents-AShare/api/job_store_redis.py:31) 和测试 [tests/test_job_store_redis.py](/Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py:90)。但终态订阅恢复语义不一致：内存 store 在订阅错过终态事件后会按状态重放 `job.completed/job.failed`，见 [api/job_store.py](/Users/maybee/TradingAgents-AShare/api/job_store.py:260)；Redis store 只看到 `completed/failed` 状态后直接 `break`，不产出终态事件，见 [api/job_store_redis.py](/Users/maybee/TradingAgents-AShare/api/job_store_redis.py:169)。这是 FAIL 主因。
+
+5. 前端 SSE 断线重连 / overtime 轮询补偿：部分满足。`job.overtime` 已接入 lifecycle，见 [frontend/src/hooks/useSSE.ts](/Users/maybee/TradingAgents-AShare/frontend/src/hooks/useSSE.ts:52)、[frontend/src/hooks/useSSE.ts](/Users/maybee/TradingAgents-AShare/frontend/src/hooks/useSSE.ts:88)。Chat 面板恢复轮询用 `status.overtime || legacy failed` 补横幅，见 [frontend/src/components/ChatCopilotPanel.tsx](/Users/maybee/TradingAgents-AShare/frontend/src/components/ChatCopilotPanel.tsx:295)。但 Redis `/v1/jobs/{job_id}/events` 终态错过后不重放终态，会让 SSE 订阅端与内存端行为不同。
+
+6. 四态可区分：API/job store/前端大体贯通。API status 增加 `overtime/overtime_at`，见 [api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:1511)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:5548)。前端类型和 lifecycle 区分软超时、硬超时、真实失败、完成，见 [frontend/src/types/index.ts](/Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts:199)、[frontend/src/utils/jobLifecycle.ts](/Users/maybee/TradingAgents-AShare/frontend/src/utils/jobLifecycle.ts:32)、[frontend/src/utils/jobLifecycle.ts](/Users/maybee/TradingAgents-AShare/frontend/src/utils/jobLifecycle.ts:66)。
+
+7. 边界与约束：未见触碰 `prompts/`、生产 DB、scheduler 时间、强动作门禁、`.env.example`；`git diff --name-only` 仅列目标相关文件、`docs/TASKS.md` 和 `tests/test_job_store_redis.py`。`docs/TASKS.md` 按用户豁免不计 FAIL。`api/main.py` 存量端点有新增字段但旧字段保留，见 [api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:5548)。前端 build 未能在当前只读沙箱验证。
+
+8. 新测试质量：后端测试实际是 11 个，不是问题；覆盖软超时、硬超时、真实失败、报告保存失败、status 字段、历史 failed(timeout)、Redis bool 序列化，见 [tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:117)、[tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:215)、[tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:299)、[tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:398)。前端 `jobLifecycle.test.ts` 覆盖纯函数，但没有覆盖 store/ChatCopilot 接线，见 [frontend/src/utils/jobLifecycle.test.ts](/Users/maybee/TradingAgents-AShare/frontend/src/utils/jobLifecycle.test.ts:46)。
+
+新发现 findings:
+P1: Redis SSE 订阅错过终态事件后不会重放终态，与内存 store 不一致。内存 store 在轮询超时时检查 job 状态并 yield `job.completed/job.failed`，Redis store 同样检查到 `completed/failed` 后直接 break，导致 `/v1/jobs/{job_id}/events` 只发 `job.ready` 后结束，SSE 订阅端收不到终态/done。引用：[api/job_store.py](/Users/maybee/TradingAgents-AShare/api/job_store.py:264)、[api/job_store_redis.py](/Users/maybee/TradingAgents-AShare/api/job_store_redis.py:169)、[api/main.py](/Users/maybee/TradingAgents-AShare/api/main.py:4895)。
+
+P2: Redis store 级测试仍依赖 Redis 可用，当前语义盲区未被专项测试覆盖；新增测试只覆盖 bool 序列化，不覆盖 Redis 订阅终态重放/恢复语义。引用：[tests/test_job_store_redis.py](/Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py:90)、[tests/test_upstream081_timeout_recovery.py](/Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py:349)。
+
+实际运行的命令与结果:
+`git status --short --branch`：工作区含目标候选变更；另有 `tests/test_job_store_redis.py` 修改、`docs/TASKS.md` 状态变更。
+`.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py -q --tb=short`：未运行成功，pytest 无可用临时目录。
+`.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py -q --tb=short -s`：仍未运行成功，`tests/conftest.py` 创建临时 DB 目录失败。
+`cd frontend && npx vitest run src/utils/jobLifecycle.test.ts`：未运行成功，只读沙箱阻止写 `frontend/node_modules/.vite-temp/...`。
+`cd frontend && npm run build`：未运行成功，同样因 Vite 写 `.vite-temp` 被 EPERM 拦截。
+`git diff --check`：通过，无 whitespace error。
+
+

@@ -32,6 +32,46 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def terminal_replay_event(job_id: str, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """[UPSTREAM-081-002] Decide which terminal SSE event a subscriber should
+    receive when it missed the live ``job.completed``/``job.failed`` event.
+
+    Pure function of (job_id, job snapshot) — no store access, no I/O — shared
+    by the in-memory and Redis stores so their "missed terminal → replay"
+    semantics cannot drift. Returns the event envelope (``event`` + ``data``)
+    or None when the status is not terminal; the caller stamps its own
+    ``timestamp`` and must not write anything back to the store.
+    """
+    status = job.get("status")
+    if status == "completed":
+        # A malformed (non-dict) result must degrade to "no fallback fields"
+        # instead of crashing the SSE generator mid-stream.
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        return {
+            "event": "job.completed",
+            "data": {
+                "job_id": job_id,
+                "decision": job.get("decision"),
+                "direction": job.get("direction") or result.get("direction"),
+                "result": job.get("result"),
+                "risk_items": job.get("risk_items") or [],
+                "key_metrics": job.get("key_metrics") or [],
+                "confidence": job.get("confidence") or result.get("confidence"),
+                "target_price": job.get("target_price") or result.get("target_price"),
+                "stop_loss_price": job.get("stop_loss_price") or result.get("stop_loss_price"),
+            },
+        }
+    if status == "failed":
+        return {
+            "event": "job.failed",
+            "data": {
+                "job_id": job_id,
+                "error": job.get("error") or "job failed",
+            },
+        }
+    return None
+
+
 @runtime_checkable
 class JobStore(Protocol):
     """Interface for job state + event storage."""
@@ -260,33 +300,10 @@ class InMemoryJobStore:
                 except asyncio.TimeoutError:
                     with self._lock:
                         job = dict(self._jobs.get(job_id, {}))
-                        status = job.get("status")
-                    if status in ("completed", "failed"):
-                        if status == "completed":
-                            yield {
-                                "event": "job.completed",
-                                "data": {
-                                    "job_id": job_id,
-                                    "decision": job.get("decision"),
-                                    "direction": job.get("direction") or (job.get("result") or {}).get("direction"),
-                                    "result": job.get("result"),
-                                    "risk_items": job.get("risk_items") or [],
-                                    "key_metrics": job.get("key_metrics") or [],
-                                    "confidence": job.get("confidence") or (job.get("result") or {}).get("confidence"),
-                                    "target_price": job.get("target_price") or (job.get("result") or {}).get("target_price"),
-                                    "stop_loss_price": job.get("stop_loss_price") or (job.get("result") or {}).get("stop_loss_price"),
-                                },
-                                "timestamp": _utcnow_iso(),
-                            }
-                        else:
-                            yield {
-                                "event": "job.failed",
-                                "data": {
-                                    "job_id": job_id,
-                                    "error": job.get("error") or "job failed",
-                                },
-                                "timestamp": _utcnow_iso(),
-                            }
+                    replay = terminal_replay_event(job_id, job)
+                    if replay is not None:
+                        replay["timestamp"] = _utcnow_iso()
+                        yield replay
                         break
                     yield {
                         "event": "ping",

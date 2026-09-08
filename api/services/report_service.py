@@ -1537,6 +1537,12 @@ def create_report(
     if db_report:
         # Update existing
         db_report.status = "completed"
+        # [UPSTREAM-081-002] A report may previously have been marked failed by
+        # an older worker or timeout policy (e.g. the legacy watchdog flipped
+        # long analyses to failed while the workflow was still running).
+        # Successful finalisation is authoritative: clear the stale error so a
+        # completed report never carries a failure message.
+        db_report.error = None
         db_report.decision = decision
         db_report.direction = resolved["direction"]
         db_report.research_direction = resolved["research_direction"]

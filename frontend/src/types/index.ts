@@ -199,6 +199,9 @@ export interface JobStatus {
     symbol: string
     trade_date: string
     error?: string
+    // [UPSTREAM-081-002] 软超时加班态（status 仍为 running）
+    overtime?: boolean
+    overtime_at?: string | null
     waiting_ahead_count?: number | null
     scheduled_running_count?: number | null
     scheduled_concurrency_limit?: number | null
@@ -208,6 +211,7 @@ export interface JobStatus {
 export type SSEEventType =
     | 'job.created'
     | 'job.running'
+    | 'job.overtime'
     | 'job.completed'
     | 'job.failed'
     | 'agent.status'

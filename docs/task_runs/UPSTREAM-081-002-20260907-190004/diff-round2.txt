@@ -1,0 +1,1098 @@
+diff --git a/api/job_store_redis.py b/api/job_store_redis.py
+index b86da95..1ef1596 100644
+--- a/api/job_store_redis.py
++++ b/api/job_store_redis.py
+@@ -32,7 +32,11 @@ def _serialize_value(v: Any) -> str:
+     """Serialize a Python value for storage in a Redis Hash field."""
+     if v is None:
+         return ""
+-    if isinstance(v, (dict, list)):
++    # [UPSTREAM-081-002] Booleans must be JSON-encoded: str(True) == "True"
++    # would round-trip back as the string "True", making overtime=False in
++    # Redis differ from overtime=False in the in-memory store (bool("False")
++    # is also truthy, so any string encoding of booleans is unsafe).
++    if isinstance(v, (dict, list, bool)):
+         return json.dumps(v, ensure_ascii=False)
+     return str(v)
+ 
+@@ -78,7 +82,7 @@ class RedisJobStore:
+     def set_job(self, job_id: str, **fields: Any) -> None:
+         """Create or update job fields (merge semantics).
+ 
+-        Complex values (dict/list) are JSON-serialized; None becomes empty string.
++        Complex values and booleans are JSON-serialized; None becomes empty string.
+         Each call refreshes the TTL.
+         """
+         if not fields:
+diff --git a/api/main.py b/api/main.py
+index 7e5074a..26e2551 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -14,7 +14,7 @@ from copy import deepcopy
+ from datetime import datetime, timedelta, timezone
+ from threading import Lock
+ from fastapi import Body
+-from typing import Any, Dict, List, Literal, Optional, Tuple
++from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+ from uuid import uuid4
+ 
+ import logging
+@@ -1008,6 +1008,12 @@ def _utcnow_iso() -> str:
+ 
+ 
+ _JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "1800"))  # seconds
++# [UPSTREAM-081-002] Independent fail-closed backstop. Crossing the soft
++# deadline (_job_timeout_for_config) only emits a non-terminal overtime event;
++# the workflow keeps running in the background. The hard deadline is the
++# resource-safety backstop that actually terminates a wedged workflow. Set
++# either value to 0 to disable that deadline.
++_JOB_HARD_TIMEOUT = int(os.getenv("TA_JOB_HARD_TIMEOUT", "7200"))  # seconds
+ _ZHIPU_CODING_JOB_TIMEOUT = int(os.getenv("TA_ZHIPU_CODING_JOB_TIMEOUT", "2700"))  # seconds
+ 
+ 
+@@ -1511,6 +1517,9 @@ class JobStatusResponse(BaseModel):
+     symbol: str
+     trade_date: str
+     error: Optional[str] = None
++    # [UPSTREAM-081-002] 软超时加班态：status 仍为 running，仅提示后台继续。
++    overtime: bool = False
++    overtime_at: Optional[str] = None
+     waiting_ahead_count: Optional[int] = None
+     scheduled_running_count: Optional[int] = None
+     scheduled_concurrency_limit: Optional[int] = None
+@@ -2647,30 +2656,145 @@ async def _run_job(
+     user_id: Optional[str] = None,
+     request_source: str = "api",
+ ) -> None:
+-    # 用 asyncio.Task + sleep 竞速代替 wait_for，避免 cancel 卡在 to_thread 导致
+-    # semaphore 永远不释放的问题。超时后标记失败但不 cancel 内部协程（让线程自然结束）。
++    # [UPSTREAM-081-002] 软/硬超时双门。
++    # 软超时（_resolve_job_timeout → _job_timeout_for_config，按用户配置区分
++    # 普通通道与智谱 Coding 通道）到达后只发非终态 job.overtime 事件，任务继续
++    # 在后台运行，最终仍只会产生一次 completed/failed。
++    # 硬超时（_JOB_HARD_TIMEOUT）是独立的 fail-closed 兜底：到达后 cancel 内部
++    # 协程并标记 failed，释放调度槽位，避免僵尸任务永久占用线程池。
++    # 内层任务放在独立 task 中运行，跨软超时不 cancel to_thread 工作；
++    # 硬超时 cancel 协程，阻止其恢复执行后续的报告写入与终态写。
+     job_timeout = _resolve_job_timeout(request, user_id)
++    started_monotonic = time.monotonic()
+     inner_task = asyncio.create_task(
+         _run_job_inner(job_id, request, stream_events, save_report, user_id, request_source)
+     )
+-    done, _ = await asyncio.wait({inner_task}, timeout=job_timeout)
+-    if inner_task in done:
+-        # 正常完成（可能成功也可能异常）
+-        if not inner_task.cancelled() and inner_task.exception():
+-            _log(f"[Job {job_id}] failed: {inner_task.exception()}")
+-        return
+-    # 超时：标记失败，但不 cancel 内部 task（避免 cancel 卡住）
+-    err_msg = f"任务超时（超过 {job_timeout} 秒），已自动终止"
+-    _log(f"[Job {job_id}] {err_msg}")
+-    _set_job(job_id, status="failed", error=err_msg, finished_at=_utcnow_iso())
+-    # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
+-    # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
+     try:
+-        with get_db_ctx() as db:
+-            report_service.mark_report_failed(db, job_id, err_msg)
+-    except Exception:
+-        pass
+-    _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
++        if job_timeout > 0:
++            soft_wait_seconds = job_timeout
++            if _JOB_HARD_TIMEOUT > 0:
++                soft_wait_seconds = min(soft_wait_seconds, _JOB_HARD_TIMEOUT)
++            done, _ = await asyncio.wait({inner_task}, timeout=soft_wait_seconds)
++            if inner_task not in done and not inner_task.done():
++                # 硬上限不大于软上限时不发误导性的加班提示，直接落到下方硬超时处理。
++                if _JOB_HARD_TIMEOUT <= 0 or job_timeout < _JOB_HARD_TIMEOUT:
++                    overtime_at = _utcnow_iso()
++                    elapsed_seconds = time.monotonic() - started_monotonic
++                    message = (
++                        f"分析耗时较长（已超过 {job_timeout} 秒），后台仍在继续，"
++                        "正在等待最终结果，请勿重复提交。"
++                    )
++                    _log(f"[Job {job_id}] {message}")
++                    _set_job(
++                        job_id,
++                        status="running",
++                        overtime=True,
++                        overtime_at=overtime_at,
++                        error=None,
++                    )
++                    _emit_job_event(
++                        job_id,
++                        "job.overtime",
++                        {
++                            "job_id": job_id,
++                            "elapsed_seconds": elapsed_seconds,
++                            "soft_timeout_seconds": job_timeout,
++                            "overtime_at": overtime_at,
++                            "message": message,
++                        },
++                    )
++
++        if _JOB_HARD_TIMEOUT > 0 and not inner_task.done():
++            remaining_seconds = max(
++                0.0,
++                _JOB_HARD_TIMEOUT - (time.monotonic() - started_monotonic),
++            )
++            done, _ = await asyncio.wait({inner_task}, timeout=remaining_seconds)
++            if inner_task not in done and not inner_task.done() and inner_task.cancel():
++                try:
++                    await inner_task
++                except asyncio.CancelledError:
++                    pass
++
++                elapsed_seconds = time.monotonic() - started_monotonic
++                err_msg = (
++                    f"任务达到硬性运行上限（{_JOB_HARD_TIMEOUT} 秒），已终止。"
++                    "请检查模型或数据源的请求超时配置后重试。"
++                )
++                _log(f"[Job {job_id}] {err_msg}")
++                _set_job(
++                    job_id,
++                    status="failed",
++                    error=err_msg,
++                    overtime=False,
++                    overtime_at=None,
++                    finished_at=_utcnow_iso(),
++                )
++                # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
++                # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
++                try:
++                    with get_db_ctx() as db:
++                        report_service.mark_report_failed(db, job_id, err_msg)
++                except Exception:
++                    pass
++                _emit_job_event(
++                    job_id,
++                    "job.failed",
++                    {
++                        "job_id": job_id,
++                        "error": err_msg,
++                        "elapsed_seconds": elapsed_seconds,
++                        "hard_timeout_seconds": _JOB_HARD_TIMEOUT,
++                    },
++                )
++                return
++
++        await inner_task
++    except asyncio.CancelledError:
++        # Preserve normal application shutdown/caller cancellation semantics.
++        if not inner_task.done():
++            inner_task.cancel()
++        raise
++    except Exception as exc:
++        # _run_job_inner handles expected workflow errors itself. This guards
++        # failures before its try block (initialisation/configuration) as well.
++        err_msg = f"{type(exc).__name__}: {exc}"
++        _log(f"[Job {job_id}] failed: {err_msg}")
++        _set_job(
++            job_id,
++            status="failed",
++            error=err_msg,
++            overtime=False,
++            overtime_at=None,
++            finished_at=_utcnow_iso(),
++        )
++        try:
++            with get_db_ctx() as db:
++                report_service.mark_report_failed(db, job_id, err_msg)
++        except Exception:
++            pass
++        _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
++
++
++async def _save_report_or_raise(
++    job_id: str,
++    save_callable: Callable[[], Any],
++    *,
++    stage: str,
++) -> Any:
++    """[UPSTREAM-081-002] Run a report DB finalizer without turning persistence
++    errors into success.
++
++    此前报告保存失败只会打日志，job 随后被标成 completed，出现“无报告的完成”
++    幻觉状态。现在持久化失败会抛回 _run_job_inner 的失败边界，保证“真实失败”
++    与“完成”两态可区分。
++    """
++    try:
++        return await asyncio.to_thread(save_callable)
++    except Exception as exc:
++        message = f"Failed to {stage} report for job {job_id}: {exc}"
++        _log(message)
++        raise RuntimeError(message) from exc
+ 
+ 
+ # [UPSTREAM-081-001] 分析失败错误语义：把常见 LLM/网络原始报错翻译成用户能
+@@ -2786,7 +2910,15 @@ async def _run_job_inner(
+ 
+     config = await asyncio.to_thread(_init_and_configure)
+ 
+-    _set_job(job_id, status="running", started_at=_utcnow_iso(), symbol=normalized_symbol)
++    _set_job(
++        job_id,
++        status="running",
++        started_at=_utcnow_iso(),
++        symbol=normalized_symbol,
++        error=None,
++        overtime=False,
++        overtime_at=None,
++    )
+ 
+     _emit_job_event(
+         job_id,
+@@ -2829,6 +2961,9 @@ async def _run_job_inner(
+                 status="completed",
+                 result=result,
+                 decision="DRY_RUN",
++                error=None,
++                overtime=False,
++                overtime_at=None,
+                 finished_at=_utcnow_iso(),
+             )
+             _emit_job_event(
+@@ -3189,14 +3324,13 @@ async def _run_job_inner(
+                         save_db.commit()
+                         return saved_report.id
+ 
+-                try:
+-                    saved_report_id = await asyncio.to_thread(_save_report_sync)
+-                    _create_tracked_task(
+-                        _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+-                        label=f"Bark report notification ({request.symbol})",
+-                    )
+-                except Exception as e:
+-                    _log(f"Failed to save report: {e}")
++                saved_report_id = await _save_report_or_raise(
++                    job_id, _save_report_sync, stage="save"
++                )
++                _create_tracked_task(
++                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
++                    label=f"Bark report notification ({request.symbol})",
++                )
+ 
+             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
+             _set_job(
+@@ -3210,6 +3344,9 @@ async def _run_job_inner(
+                 confidence=result["confidence"],
+                 target_price=result["target_price"],
+                 stop_loss_price=result["stop_loss_price"],
++                error=None,
++                overtime=False,
++                overtime_at=None,
+                 finished_at=_utcnow_iso(),
+             )
+             _emit_job_event(job_id, "job.completed", {
+@@ -3448,14 +3585,13 @@ async def _run_job_inner(
+                     save_db.commit()
+                     return saved_report.id
+ 
+-            try:
+-                saved_report_id = await asyncio.to_thread(_save_report_final_sync)
+-                _create_tracked_task(
+-                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+-                    label=f"Bark report notification ({request.symbol})",
+-                )
+-            except Exception as e:
+-                _log(f"Failed to finalize report: {e}")
++            saved_report_id = await _save_report_or_raise(
++                job_id, _save_report_final_sync, stage="finalize"
++            )
++            _create_tracked_task(
++                _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
++                label=f"Bark report notification ({request.symbol})",
++            )
+         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
+         _set_job(
+             job_id,
+@@ -3468,6 +3604,9 @@ async def _run_job_inner(
+             confidence=result["confidence"],
+             target_price=result["target_price"],
+             stop_loss_price=result["stop_loss_price"],
++            error=None,
++            overtime=False,
++            overtime_at=None,
+             finished_at=_utcnow_iso(),
+         )
+         _emit_job_event(
+@@ -3493,6 +3632,8 @@ async def _run_job_inner(
+             job_id,
+             status="failed",
+             error=err_msg,
++            overtime=False,
++            overtime_at=None,
+             traceback=traceback.format_exc(),
+             finished_at=_utcnow_iso(),
+         )
+@@ -5360,6 +5501,8 @@ async def analyze(
+         symbol=request.symbol,
+         trade_date=request.trade_date,
+         error=None,
++        overtime=False,
++        overtime_at=None,
+         result=None,
+         decision=None,
+     )
+@@ -5414,6 +5557,8 @@ def get_job_status(job_id: str, current_user: UserDB = Depends(_require_api_user
+         symbol=job["symbol"],
+         trade_date=job["trade_date"],
+         error=job.get("error"),
++        overtime=bool(job.get("overtime", False)),
++        overtime_at=job.get("overtime_at"),
+         waiting_ahead_count=job.get("waiting_ahead_count"),
+         scheduled_running_count=job.get("scheduled_running_count"),
+         scheduled_concurrency_limit=job.get("scheduled_concurrency_limit"),
+@@ -5773,6 +5918,8 @@ async def chat_completions(
+                     symbol=analyze_req.symbol,
+                     trade_date=analyze_req.trade_date,
+                     error=None,
++                    overtime=False,
++                    overtime_at=None,
+                     result=None,
+                     decision=None,
+                 )
+@@ -5867,6 +6014,8 @@ async def chat_completions(
+         symbol=analyze_req.symbol,
+         trade_date=analyze_req.trade_date,
+         error=None,
++        overtime=False,
++        overtime_at=None,
+         result=None,
+         decision=None,
+     )
+diff --git a/api/services/report_service.py b/api/services/report_service.py
+index dd51d26..87f1e4c 100644
+--- a/api/services/report_service.py
++++ b/api/services/report_service.py
+@@ -1537,6 +1537,12 @@ def create_report(
+     if db_report:
+         # Update existing
+         db_report.status = "completed"
++        # [UPSTREAM-081-002] A report may previously have been marked failed by
++        # an older worker or timeout policy (e.g. the legacy watchdog flipped
++        # long analyses to failed while the workflow was still running).
++        # Successful finalisation is authoritative: clear the stale error so a
++        # completed report never carries a failure message.
++        db_report.error = None
+         db_report.decision = decision
+         db_report.direction = resolved["direction"]
+         db_report.research_direction = resolved["research_direction"]
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 7d0fbf9..6490565 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -16251,3 +16251,24 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
+ - **验证**: test_market_facts_contract 32 passed、test_api_market_facts 8 passed；兼容回归 test_api_smoke 87 passed、tushare 契约/证据/治理包 95 passed、test_price_intent_contract 199 passed。
+ - **安全**: /v1/market/kline 未改动（KNOWN-GAP-1 无鉴权现状入契约）；fixture 无凭据（测试断言）；LLM 调用 0 次；Live smoke NOT_RUN。
+ - **Run archive**: docs/task_runs/TA-MF-01-20260907-122509/
++
++## 2026-09-07 | AUTO-002 Auto Dev Loop
++
++- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
++- **Priority**: P1
++- **Rounds**: 1 (max)
++- **Status**: FAIL NEEDS_HUMAN
++- **Reason**: OpenCode timed out after 1800s
++- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/
++
++## 2026-09-07 | MANUAL round2 (continuation) — UPSTREAM-081-002
++
++- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
++- **Status**: round2 continuation 完成，未提交（等待独立 Codex review）
++- **round1 遗留盘点**: 后端软/硬双超时（`_run_job` 重写、`overtime/overtime_at` 字段、`job.overtime` 非终态事件、`_save_report_or_raise` 持久化失败不伪装完成、Redis bool 序列化修复、`create_report` 清除陈旧 error）；前端 `jobLifecycle.ts` 纯函数工具 + SSE/store/ChatCopilot 接线（软超时横幅、断线/刷新回查同一 job、isAnalyzing 阻止重复提交）。缺：后端专项测试文件。
++- **round2 补齐**:
++  - 新增 `tests/test_upstream081_timeout_recovery.py`（11 tests）：软超时后 job 保持 running+overtime 且终态只写一次（防双写）；硬超时 fail-closed（cancel 内层、`mark_report_failed` 一次、硬超时文案与旧软超时可区分）；软=硬与软禁用边界不发误导性加班事件；真实失败/持久化失败与完成可区分；`get_job_status` 暴露 overtime 字段；历史 `failed(timeout)` 读路径只读不改写；Redis 序列化层 bool 与内存 store 一致（无需 Redis 连接）；`create_report` 完成时清除陈旧 failed 痕迹。
++  - `tests/test_job_store_redis.py` 补 `test_bool_roundtrip_matches_memory_store`（Redis 可用时运行）。
++  - 修复 `frontend/src/utils/jobLifecycle.test.ts` 缺失 `vitest` 显式导入（round1 写法依赖未启用的 globals，collection 即失败）。
++- **测试证据**: `pytest tests/test_upstream081_timeout_recovery.py` 11 passed；`pytest tests/test_api_smoke.py` 87 passed；`pytest tests/test_upstream081_runtime_resilience.py` 49 passed；`npx vitest run` 157 passed（11 files）；`npm run build` 零错误。
++- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md）
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 9db6544..350d48e 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -385,7 +385,7 @@
+ ### UPSTREAM-081-002: 长时分析软/硬超时与断线恢复（P1）
+ - **描述**：参考上游 `3e32c89`（#204），把软超时改成“继续后台运行”的非终态事件，并保留独立硬超时；前端断线后可恢复同一 job，禁止重复提交昂贵分析。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — round1 超时(1800s)留下451行半成品，主控派 OpenCode 续跑收尾中（2026-09-07 19:45）
+ - **depends_on**：UPSTREAM-081-001
+ - **auto_release**：true
+ - **预计耗时**：60-100 分钟
+diff --git a/frontend/src/components/ChatCopilotPanel.tsx b/frontend/src/components/ChatCopilotPanel.tsx
+index 7f1c5a3..75617fc 100644
+--- a/frontend/src/components/ChatCopilotPanel.tsx
++++ b/frontend/src/components/ChatCopilotPanel.tsx
+@@ -9,6 +9,14 @@ import ReactMarkdown from 'react-markdown'
+ import remarkGfm from 'remark-gfm'
+ import { api } from '@/services/api'
+ import { useAnalysisStore } from '@/stores/analysisStore'
++import {
++    classifyRecoveredJobStatus,
++    DEFAULT_OVERTIME_NOTICE,
++    getJobLifecycleUpdate,
++    hasRecoveryPollingReachedLimit,
++    RECOVERY_POLL_INTERVAL_MS,
++    RECOVERY_POLL_TIMEOUT_MESSAGE,
++} from '@/utils/jobLifecycle'
+ import type {
+     AgentReportEvent,
+     AgentSnapshotEvent,
+@@ -163,17 +171,20 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+     const abortControllerRef = useRef<AbortController | null>(null)
+     const stopHandledRef = useRef(false)
+     const terminalEventSeenRef = useRef(false)
++    const recoveryAbortRef = useRef<AbortController | null>(null)
+     const messagesEndRef = useRef<HTMLDivElement>(null)
+     const messagesContainerRef = useRef<HTMLDivElement>(null)
+ 
+     const {
+         chatMessages,
+         isAnalyzing,
++        analysisOvertimeNotice,
+         setCurrentJobId,
+         setCurrentSymbol,
+         setIsAnalyzing,
+         setIsConnected,
+         setAnalysisRunState,
++        setAnalysisOvertimeNotice,
+         setCurrentHorizon,
+         updateAgentStatus,
+         updateAgentSnapshot,
+@@ -192,59 +203,113 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         reset,
+     } = useAnalysisStore()
+ 
+-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
++    const sleepUntilRetry = (ms: number, signal: AbortSignal) => new Promise<boolean>(resolve => {
++        if (signal.aborted) {
++            resolve(false)
++            return
++        }
++        const timer = window.setTimeout(() => {
++            signal.removeEventListener('abort', onAbort)
++            resolve(true)
++        }, ms)
++        const onAbort = () => {
++            window.clearTimeout(timer)
++            resolve(false)
++        }
++        signal.addEventListener('abort', onAbort, { once: true })
++    })
+ 
+-    const recoverInterruptedJob = async () => {
++    const recoverInterruptedJob = async (signal: AbortSignal): Promise<boolean> => {
++        // [UPSTREAM-081-002] 断线/刷新后回查同一个 job，禁止重复提交昂贵分析。
+         const { currentJobId } = useAnalysisStore.getState()
+         if (!currentJobId) return false
++        let recoveryPollAttempts = 0
+ 
+         pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
++        setIsConnected(false)
++        setIsAnalyzing(true)
++        setAnalysisRunState('running')
+ 
+-        for (let attempt = 0; attempt < 8; attempt += 1) {
+-            const status = await api.getJobStatus(currentJobId)
++        while (!signal.aborted) {
++            if (hasRecoveryPollingReachedLimit(recoveryPollAttempts)) {
++                pushAssistant(RECOVERY_POLL_TIMEOUT_MESSAGE)
++                setCurrentHorizon(null)
++                setIsAnalyzing(false)
++                setAnalysisRunState('failed', RECOVERY_POLL_TIMEOUT_MESSAGE)
++                return true
++            }
++            recoveryPollAttempts += 1
+ 
+-            if (status.status === 'completed') {
+-                const result = await api.getJobResult(currentJobId)
+-                setReport(result.result)
++            try {
++                const status = await api.getJobStatus(currentJobId)
++                if (signal.aborted) return false
++                const disposition = classifyRecoveredJobStatus(status.status, status.error)
+ 
+-                const symbol = result.result.symbol
+-                const tradeDate = result.result.trade_date
+-                if (symbol) {
+-                    setCurrentSymbol(symbol)
+-                    onSymbolDetected(symbol)
+-                }
++                if (disposition === 'completed') {
++                    const result = await api.getJobResult(currentJobId)
++                    if (signal.aborted) return false
++                    setReport(result.result)
+ 
+-                try {
+-                    const history = await api.getReports(symbol, 0, 10)
+-                    const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
+-                    if (matched) {
+-                        setStructuredData({
+-                            riskItems: matched.risk_items,
+-                            keyMetrics: matched.key_metrics,
+-                            confidence: matched.confidence,
+-                            targetPrice: matched.target_price,
+-                            stopLoss: matched.stop_loss_price,
+-                        })
++                    const symbol = result.result.symbol
++                    const tradeDate = result.result.trade_date
++                    if (symbol) {
++                        setCurrentSymbol(symbol)
++                        onSymbolDetected(symbol)
+                     }
+-                } catch {
+-                    // 历史报告回填失败时，至少保留主报告正文
++
++                    try {
++                        const history = await api.getReports(symbol, 0, 10)
++                        const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
++                        if (matched) {
++                            setStructuredData({
++                                riskItems: matched.risk_items,
++                                keyMetrics: matched.key_metrics,
++                                confidence: matched.confidence,
++                                targetPrice: matched.target_price,
++                                stopLoss: matched.stop_loss_price,
++                            })
++                        }
++                    } catch {
++                        // 历史报告回填失败时，至少保留主报告正文
++                    }
++
++                    pendingAgentMsgIdsRef.current = new Set()
++                    forceUpdate(n => n + 1)
++                    markAgentMessagesComplete()
++                    pushAssistant(
++                        `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.research_direction || result.result.direction || '未知')}**\n\n执行动作：**${String(result.result.action_label || result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
++                    )
++                    setCurrentHorizon(null)
++                    setIsAnalyzing(false)
++                    setAnalysisRunState('completed')
++                    return true
+                 }
+ 
+-                pushAssistant(
+-                    `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.research_direction || result.result.direction || '未知')}**\n\n执行动作：**${String(result.result.action_label || result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
+-                )
+-                setAnalysisRunState('completed')
+-                return true
+-            }
++                if (disposition === 'failed') {
++                    const message = status.error || 'unknown error'
++                    finalizeFailedRun(message)
++                    pushAssistant(`分析失败：${message}`)
++                    return true
++                }
+ 
+-            if (status.status === 'failed') {
+-                const message = status.error || 'unknown error'
+-                finalizeFailedRun(message)
+-                pushAssistant(`分析失败：${message}`)
+-                return true
++                // running / 软超时加班：持续提示后台继续，保持回查
++                if (status.overtime || status.status === 'failed') {
++                    setAnalysisOvertimeNotice(DEFAULT_OVERTIME_NOTICE)
++                }
++            } catch (error) {
++                if (signal.aborted) return false
++                // 任务记录不存在（服务重启清空了内存 store / 超过 TTL）：
++                // 停止回查并按失败收口，避免无限轮询；不自动重新提交。
++                const message = error instanceof Error ? error.message : String(error)
++                if (/job not found|404/i.test(message)) {
++                    finalizeFailedRun('任务状态已失效（服务端无此任务记录），请到历史报告中查看是否已生成报告。')
++                    pushAssistant('任务状态已失效（服务端无此任务记录）。为避免重复消耗，未自动重新发起分析；请到历史报告中查看。')
++                    return true
++                }
++                console.warn('任务状态回查失败，将继续重试:', error)
+             }
+ 
+-            await sleep(1500)
++            if (!await sleepUntilRetry(RECOVERY_POLL_INTERVAL_MS, signal)) return false
+         }
+ 
+         return false
+@@ -259,6 +324,29 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         })
+     }, [chatMessages])
+ 
++    // [UPSTREAM-081-002] 卸载时中止回查，避免离开页面后继续轮询。
++    useEffect(() => () => {
++        recoveryAbortRef.current?.abort()
++    }, [])
++
++    // [UPSTREAM-081-002] 刷新恢复：挂载时若存在仍在运行的 job，回查同一任务
++    // 而不是让用户重新提交。running 态下 isAnalyzing=true 已阻止重复提交。
++    const mountRecoveryRanRef = useRef(false)
++    useEffect(() => {
++        if (mountRecoveryRanRef.current) return
++        mountRecoveryRanRef.current = true
++        const { currentJobId, analysisRunState } = useAnalysisStore.getState()
++        if (!currentJobId || analysisRunState !== 'running') return
++        const controller = new AbortController()
++        recoveryAbortRef.current = controller
++        void recoverInterruptedJob(controller.signal).finally(() => {
++            if (recoveryAbortRef.current === controller) {
++                recoveryAbortRef.current = null
++            }
++        })
++        // eslint-disable-next-line react-hooks/exhaustive-deps
++    }, [])
++
+     const pushAssistant = (content: string) => {
+         addChatMessage({
+             id: `${Date.now()}-${Math.random()}`,
+@@ -296,9 +384,21 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+ 
+     const parseAndDispatch = (event: StreamEvent) => {
+         const { event: eventName, data } = event
++        // [UPSTREAM-081-002] 运行态统一由生命周期映射维护，软超时不再误判为失败
++        const lifecycleUpdate = getJobLifecycleUpdate(eventName, data)
++        if (lifecycleUpdate) {
++            setIsAnalyzing(lifecycleUpdate.isAnalyzing)
++            setAnalysisRunState(
++                lifecycleUpdate.runState,
++                eventName === 'job.failed' ? String(data.error || 'unknown error') : null,
++            )
++            setAnalysisOvertimeNotice(lifecycleUpdate.overtimeNotice)
++        }
++
+         switch (eventName) {
+             case 'job.ready':
+                 setIsConnected(true)
++                if (data.job_id) setCurrentJobId(String(data.job_id))
+                 // 把 typing indicator 换成"解析中"提示，告知用户正在识别标的
+                 if (typingIndicatorIdRef.current) {
+                     setMessageContent(typingIndicatorIdRef.current, '__parsing__')
+@@ -324,13 +424,15 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 break
+             }
+             case 'job.running':
+-                setIsAnalyzing(true)
+-                setAnalysisRunState('running')
++                // 运行态已由 lifecycle hook 统一设置
+                 // 切换 indicator 到"分析启动"阶段
+                 if (typingIndicatorIdRef.current) {
+                     setMessageContent(typingIndicatorIdRef.current, '__status:analyzing__')
+                 }
+                 break
++            case 'job.overtime':
++                // 软超时：保持流、进度与运行态不变，横幅提示由 lifecycle hook 设置
++                break
+             case 'agent.horizon_start': {
+                 const h = String(data.horizon || '')
+                 setCurrentHorizon(h || null)
+@@ -342,8 +444,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+             case 'job.completed': {
+                 terminalEventSeenRef.current = true
+                 setCurrentHorizon(null)
+-                setIsAnalyzing(false)
+-                setAnalysisRunState('completed')
++                // 终态设置已由 lifecycle hook 统一处理
+                 // 任务结束：所有 agent 消息标记为已完成（持久化到 store）
+                 pendingAgentMsgIdsRef.current = new Set()
+                 forceUpdate(n => n + 1)
+@@ -375,6 +476,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 break
+             }
+             case 'job.failed':
++                // 历史软超时文案按“后台继续”处理：不算终态，不置 terminal 标记
++                if (classifyRecoveredJobStatus('failed', typeof data.error === 'string' ? data.error : null) === 'running') {
++                    break
++                }
+                 terminalEventSeenRef.current = true
+                 setCurrentHorizon(null)
+                 {
+@@ -625,7 +730,8 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 if (!dataLine) continue
+                 if (dataLine === '[DONE]' || currentEvent === 'done') {
+                     setIsConnected(false)
+-                    setIsAnalyzing(false)
++                    // [UPSTREAM-081-002] 流结束≠任务结束：若未见终态事件，
++                    // 保持运行态并交由回查流程收口，不在此关闭 analyzing。
+                     return terminalEventSeenRef.current
+                 }
+                 
+@@ -643,14 +749,14 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         }
+ 
+         setIsConnected(false)
+-        setIsAnalyzing(false)
+         return terminalEventSeenRef.current
+     }
+ 
+     const handleSubmit = async (e: FormEvent) => {
+         e.preventDefault()
+         const prompt = input.trim()
+-        if (!prompt || streaming) return
++        // [UPSTREAM-081-002] isAnalyzing（含软超时加班与回查等待）时禁止重复提交昂贵分析
++        if (!prompt || streaming || isAnalyzing) return
+ 
+         // Inject custom analysis prompt from settings if set
+         const customPrompt = localStorage.getItem('ta-custom-prompt')?.trim() || ''
+@@ -686,13 +792,18 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         const abortController = new AbortController()
+         abortControllerRef.current = abortController
+         stopHandledRef.current = false
++        recoveryAbortRef.current?.abort()
++        const recoveryController = new AbortController()
++        recoveryAbortRef.current = recoveryController
+ 
+         try {
+             const sawTerminalEvent = await streamChat(fullPrompt, abortController.signal)
+             if (!sawTerminalEvent && !abortController.signal.aborted) {
+-                const recovered = await recoverInterruptedJob()
+-                if (!recovered) {
+-                    pushAssistant('分析流已结束，但没有收到最终完成事件；后端任务可能仍在收尾，请稍后到历史报告中查看结果。')
++                // 流断了但后端任务可能仍在跑：回查同一个 job，不重复提交
++                const recovered = await recoverInterruptedJob(recoveryController.signal)
++                if (!recovered && !recoveryController.signal.aborted) {
++                    finalizeFailedRun('分析流在任务编号返回前中断')
++                    pushAssistant('请求中断：未能取得任务编号，无法继续回查任务状态。')
+                 }
+             }
+         } catch (error) {
+@@ -705,10 +816,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 pushAssistant('已停止本次分析。')
+                 return
+             }
+-            const shouldRecover = /network|fetch|stream|sse|body/i.test(errorMessage)
+-            if (shouldRecover) {
+-                const recovered = await recoverInterruptedJob()
+-                if (!recovered) {
++            const canRecover = Boolean(useAnalysisStore.getState().currentJobId)
++            if (canRecover) {
++                const recovered = await recoverInterruptedJob(recoveryController.signal)
++                if (!recovered && !recoveryController.signal.aborted) {
+                     finalizeFailedRun(errorMessage)
+                     pushAssistant(`请求中断：${errorMessage}\n\n后端任务可能仍在执行，请稍后到历史报告中查看结果。`)
+                 }
+@@ -720,6 +831,9 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+             if (abortControllerRef.current === abortController) {
+                 abortControllerRef.current = null
+             }
++            if (recoveryAbortRef.current === recoveryController) {
++                recoveryAbortRef.current = null
++            }
+             setStreaming(false)
+         }
+     }
+@@ -728,6 +842,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+         if (!streaming && !isAnalyzing) return
+         stopHandledRef.current = true
+         abortControllerRef.current?.abort()
++        recoveryAbortRef.current?.abort()
+         finalizeFailedRun('用户已停止本次分析')
+         pushAssistant('已停止本次分析。')
+         setStreaming(false)
+@@ -764,7 +879,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                     >
+                         <Trash2 className="w-3 h-3" />
+                     </button>
+-                    {streaming && (
++                    {(streaming || isAnalyzing) && (
+                         <span className="badge-blue inline-flex items-center gap-1">
+                             <Loader2 className="w-3 h-3 animate-spin" />
+                             分析中
+@@ -820,6 +935,17 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 ))}
+             </div>
+ 
++            {/* [UPSTREAM-081-002] 软超时提示：后台继续，非失败态 */}
++            {analysisOvertimeNotice && (
++                <div
++                    role="status"
++                    className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
++                >
++                    <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
++                    <span>{analysisOvertimeNotice}</span>
++                </div>
++            )}
++
+             {/* 聊天内容 */}
+             <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+                 {chatMessages.map((msg) => {
+@@ -1030,7 +1156,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                     />
+                     <button
+                         type="submit"
+-                        disabled={!input.trim() || streaming}
++                        disabled={!input.trim() || streaming || isAnalyzing}
+                         className="btn-primary px-3 py-2 inline-flex items-center gap-1"
+                     >
+                         <Send className="w-4 h-4" />
+diff --git a/frontend/src/hooks/useSSE.ts b/frontend/src/hooks/useSSE.ts
+index b8de46e..59198d8 100644
+--- a/frontend/src/hooks/useSSE.ts
++++ b/frontend/src/hooks/useSSE.ts
+@@ -2,6 +2,11 @@ import { useEffect, useRef, useCallback } from 'react'
+ import { useAnalysisStore } from '@/stores/analysisStore'
+ import type { AnalysisReport, RiskItem, KeyMetric } from '@/types'
+ import { getBaseUrl } from '@/services/api'
++import {
++    classifyRecoveredJobStatus,
++    DEFAULT_OVERTIME_NOTICE,
++    getJobLifecycleUpdate,
++} from '@/utils/jobLifecycle'
+ 
+ export function useSSE(jobId: string | null) {
+     const eventSourceRef = useRef<EventSource | null>(null)
+@@ -23,6 +28,8 @@ export function useSSE(jobId: string | null) {
+         addChatMessage,
+         appendToChatMessage,
+         setMessageContent,
++        setAnalysisRunState,
++        setAnalysisOvertimeNotice,
+     } = useAnalysisStore()
+ 
+     const connect = useCallback(() => {
+@@ -43,6 +50,16 @@ export function useSSE(jobId: string | null) {
+         }
+ 
+         const handleEvent = (eventType: string, data: Record<string, unknown>) => {
++            // [UPSTREAM-081-002] Lifecycle state is derived in one place so
++            // soft-timeout overtime events keep the run alive instead of
++            // flipping the console to a terminal state.
++            const lifecycleUpdate = getJobLifecycleUpdate(eventType, data)
++            if (lifecycleUpdate) {
++                setIsAnalyzing(lifecycleUpdate.isAnalyzing)
++                setAnalysisRunState(lifecycleUpdate.runState, eventType === 'job.failed' ? String(data.error || '未知错误') : null)
++                setAnalysisOvertimeNotice(lifecycleUpdate.overtimeNotice)
++            }
++
+             switch (eventType) {
+                 case 'job.created':
+                     addLog({
+@@ -54,7 +71,6 @@ export function useSSE(jobId: string | null) {
+                     break
+ 
+                 case 'job.running':
+-                    setIsAnalyzing(true)
+                     addChatMessage({
+                         id: `job-running-${Date.now()}`,
+                         role: 'system',
+@@ -69,8 +85,16 @@ export function useSSE(jobId: string | null) {
+                     })
+                     break
+ 
++                case 'job.overtime':
++                    addLog({
++                        id: Date.now().toString(),
++                        timestamp: new Date().toISOString(),
++                        type: 'system',
++                        content: lifecycleUpdate?.overtimeNotice || DEFAULT_OVERTIME_NOTICE
++                    })
++                    break
++
+                 case 'job.completed':
+-                    setIsAnalyzing(false)
+                     setReport((data.result || null) as AnalysisReport | null)
+                     setStructuredData({
+                         riskItems: (data.risk_items as RiskItem[] | undefined) ?? [],
+@@ -94,7 +118,16 @@ export function useSSE(jobId: string | null) {
+                     break
+ 
+                 case 'job.failed':
+-                    setIsAnalyzing(false)
++                    if (classifyRecoveredJobStatus('failed', typeof data.error === 'string' ? data.error : null) === 'running') {
++                        // 历史软超时文案：后台仍在继续，不显示失败。
++                        addLog({
++                            id: Date.now().toString(),
++                            timestamp: new Date().toISOString(),
++                            type: 'system',
++                            content: DEFAULT_OVERTIME_NOTICE
++                        })
++                        break
++                    }
+                     addChatMessage({
+                         id: `job-failed-${Date.now()}`,
+                         role: 'system',
+@@ -181,6 +214,7 @@ export function useSSE(jobId: string | null) {
+             'job.ready',
+             'job.created',
+             'job.running',
++            'job.overtime',
+             'job.completed',
+             'job.failed',
+             'agent.status',
+diff --git a/frontend/src/stores/analysisStore.ts b/frontend/src/stores/analysisStore.ts
+index 5e129bd..fd88da0 100644
+--- a/frontend/src/stores/analysisStore.ts
++++ b/frontend/src/stores/analysisStore.ts
+@@ -79,6 +79,8 @@ interface AnalysisState {
+     isConnected: boolean
+     analysisRunState: 'idle' | 'running' | 'completed' | 'failed'
+     analysisRunError: string | null
++    // [UPSTREAM-081-002] 软超时提示：非终态，运行期间持续展示
++    analysisOvertimeNotice: string | null
+ 
+     // Current analysis horizon (for badge display)
+     currentHorizon: string | null
+@@ -112,6 +114,7 @@ interface AnalysisState {
+     setIsAnalyzing: (isAnalyzing: boolean) => void
+     setIsConnected: (isConnected: boolean) => void
+     setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
++    setAnalysisOvertimeNotice: (notice: string | null) => void
+     failRun: (error: string) => void
+     setCurrentHorizon: (horizon: string | null) => void
+     // [TA-UI-001] analysis_console_horizon_intent
+@@ -216,6 +219,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     isConnected: false,
+     analysisRunState: 'idle',
+     analysisRunError: null,
++    analysisOvertimeNotice: null,
+     currentHorizon: null,
+     analysisHorizon: 'short',
+     analysisIntent: 'watch',
+@@ -433,6 +437,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         isConnected: false,
+         analysisRunState: 'idle',
+         analysisRunError: null,
++        analysisOvertimeNotice: null,
+         currentHorizon: null,
+         analysisHorizon: 'short',
+         analysisIntent: 'watch',
+@@ -466,8 +471,12 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     setAnalysisRunState: (analysisRunState, error = null) => set({
+         analysisRunState,
+         analysisRunError: analysisRunState === 'failed' ? error : null,
++        // 离开 running 态时清掉软超时提示；运行中保留
++        ...(analysisRunState === 'running' ? {} : { analysisOvertimeNotice: null }),
+     }),
+ 
++    setAnalysisOvertimeNotice: (analysisOvertimeNotice) => set({ analysisOvertimeNotice }),
++
+     failRun: (error) => set((state) => {
+         const finishedAt = Date.now()
+         const streamingSections = Object.fromEntries(
+@@ -487,6 +496,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+             isConnected: false,
+             analysisRunState: 'failed',
+             analysisRunError: error,
++            analysisOvertimeNotice: null,
+             currentHorizon: null,
+             streamingSections,
+             agents: state.agents.map(agent => (
+@@ -525,6 +535,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         isConnected: false,
+         analysisRunState: 'idle',
+         analysisRunError: null,
++        analysisOvertimeNotice: null,
+         currentHorizon: null,
+         // [TA-UI-001] 保留用户选择的分析上下文
+         analysisHorizon: state.analysisHorizon,
+@@ -544,6 +555,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         jobTargetPrice: state.jobTargetPrice,
+         jobStopLoss: state.jobStopLoss,
+         chatMessages: normalizePersistedChatMessages(state.chatMessages) ?? [],
++        // [UPSTREAM-081-002] 刷新后可回查同一个 job，避免重复提交昂贵分析。
++        // currentJobId 只在 running 态下有意义：终态时挂载恢复逻辑会清理它。
++        currentJobId: state.currentJobId,
++        analysisRunState: state.analysisRunState,
+         // [TA-UI-001] analysis_console_horizon_intent
+         analysisHorizon: state.analysisHorizon,
+         analysisIntent: state.analysisIntent,
+@@ -552,10 +567,16 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     merge: (persistedState, currentState) => {
+         const persisted = (persistedState ?? {}) as Partial<AnalysisState>
+         const chatMessages = normalizePersistedChatMessages(persisted.chatMessages)
++        const resumeRun = persisted.analysisRunState === 'running' && Boolean(persisted.currentJobId)
+         return {
+             ...currentState,
+             ...persisted,
+-            currentJobId: null,
++            // [UPSTREAM-081-002] 保留 running 中的 job 供挂载恢复；其余状态回 idle
++            currentJobId: resumeRun ? persisted.currentJobId! : null,
++            isAnalyzing: resumeRun,
++            analysisRunState: resumeRun ? 'running' : 'idle',
++            analysisRunError: null,
++            analysisOvertimeNotice: null,
+             jobStatus: null,
+             agents: initialAgents.map(a => ({ ...a, status: 'pending' })),
+             streamingSections: {},
+@@ -563,10 +584,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         debateScrollTick: 0,
+             milestones: [],
+             logs: [],
+-            isAnalyzing: false,
+             isConnected: false,
+-            analysisRunState: 'idle',
+-            analysisRunError: null,
+             chatMessages: chatMessages?.length ? chatMessages : currentState.chatMessages,
+         }
+     },
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 06d3679..922193a 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -199,6 +199,9 @@ export interface JobStatus {
+     symbol: string
+     trade_date: string
+     error?: string
++    // [UPSTREAM-081-002] 软超时加班态（status 仍为 running）
++    overtime?: boolean
++    overtime_at?: string | null
+     waiting_ahead_count?: number | null
+     scheduled_running_count?: number | null
+     scheduled_concurrency_limit?: number | null
+@@ -208,6 +211,7 @@ export interface JobStatus {
+ export type SSEEventType =
+     | 'job.created'
+     | 'job.running'
++    | 'job.overtime'
+     | 'job.completed'
+     | 'job.failed'
+     | 'agent.status'
+diff --git a/tests/test_job_store_redis.py b/tests/test_job_store_redis.py
+index d941ec5..abc9060 100644
+--- a/tests/test_job_store_redis.py
++++ b/tests/test_job_store_redis.py
+@@ -12,6 +12,8 @@ import uuid
+ import pytest
+ import redis
+ 
++from api.job_store import InMemoryJobStore  # noqa: E402
++
+ # ---------------------------------------------------------------------------
+ # Skip guard: skip the entire module when Redis is unreachable
+ # ---------------------------------------------------------------------------
+@@ -85,6 +87,39 @@ def test_none_roundtrip(store: RedisJobStore):
+     assert job["result"] is None
+ 
+ 
++def test_bool_roundtrip_matches_memory_store(store: RedisJobStore):
++    """[UPSTREAM-081-002] Booleans must round-trip as real bools.
++
++    ``overtime`` is produced by the soft-timeout path and consumed by
++    ``get_job_status`` (``bool(job.get("overtime", False))``). If Redis stored
++    ``str(True) == "True"``, any string encoding would be truthy on read and
++    Redis semantics would diverge from the in-memory store.
++    """
++    store.set_job("j1", status="running", overtime=False, overtime_at=None)
++    store.set_job("j2", status="running", overtime=True, overtime_at="2026-09-07T00:00:00+00:00")
++
++    j1 = store.get_job("j1")
++    j2 = store.get_job("j2")
++
++    # Exact types matter: no "False"/"True" string encoding may survive.
++    assert j1["overtime"] is False
++    assert j2["overtime"] is True
++    assert isinstance(j1["overtime"], bool)
++    assert isinstance(j2["overtime"], bool)
++    # None still round-trips as None for overtime_at.
++    assert j1["overtime_at"] is None
++    assert j2["overtime_at"] == "2026-09-07T00:00:00+00:00"
++
++    # Same writes through the in-memory store must observe identical values.
++    memory = InMemoryJobStore()
++    memory.set_job("j1", status="running", overtime=False, overtime_at=None)
++    memory.set_job("j2", status="running", overtime=True, overtime_at="2026-09-07T00:00:00+00:00")
++    assert memory.get_job("j1")["overtime"] is j1["overtime"]
++    assert memory.get_job("j2")["overtime"] is j2["overtime"]
++    assert memory.get_job("j1")["overtime_at"] == j1["overtime_at"]
++    assert memory.get_job("j2")["overtime_at"] == j2["overtime_at"]
++
++
+ def test_complex_value_roundtrip(store: RedisJobStore):
+     """Dict and list values should round-trip via JSON serialization."""
+     store.set_job("j1", report={"score": 8, "tags": ["buy", "hold"]}, items=[1, 2, 3])

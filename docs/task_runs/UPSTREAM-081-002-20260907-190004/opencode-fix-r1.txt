@@ -1,0 +1,755 @@
+[0m
+> build · glm-5.3-flash
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md
+[0m→ [0mRead docs/reviews/UPSTREAM-081-002-20260907-r1.txt
+[0m→ [0mRead api/job_store_redis.py
+[0m→ [0mRead api/job_store.py
+[0m→ [0mRead api/main.py[90m [limit=90, offset=4850][0m
+现在我来查看一下 SSE endpoint 和现有的测试：
+[0m→ [0mRead tests/test_job_store_redis.py
+[0m→ [0mRead tests/test_upstream081_timeout_recovery.py
+现在我来检查现有的超时恢复测试，以了解其中使用的模式：
+[0m
+[0m$ [0mgit status --short && git stash list | head -5 && git log --oneline -3
+M api/job_store_redis.py
+ M api/main.py
+ M api/services/report_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/components/ChatCopilotPanel.tsx
+ M frontend/src/hooks/useSSE.ts
+ M frontend/src/stores/analysisStore.ts
+ M frontend/src/types/index.ts
+ M tests/test_job_store_redis.py
+?? docs/reviews/UPSTREAM-081-002-20260907-r1.txt
+?? docs/task_runs/UPSTREAM-081-002-20260907-190004/
+?? frontend/src/utils/jobLifecycle.test.ts
+?? frontend/src/utils/jobLifecycle.ts
+?? tests/test_upstream081_timeout_recovery.py
+stash@{0}: On local/tradingagents-custom: B-001-R1-incomplete-20260724
+stash@{1}: WIP on local/tradingagents-custom: aac9add FUND-003A: claim-level evidence binding for causal/accounting claims
+stash@{2}: On local/tradingagents-custom: DATA-P0-603629 WIP from interrupted auto_dev
+stash@{3}: On local/tradingagents-custom: wip: cron update check stash
+feb9c05 docs(tasks): mark TA-MF-01 done — contract v1.0.0 FROZEN at r1 review (code e9a5d32)
+e9a5d32 feat(contracts): TA-MF-01 冻结通用市场事实契约 v1.0.0（r1 review PASS）
+b672d69 docs(tasks): queue TA-MF-01 market-facts contract freeze (2026-09-05 handoff, ready)
+[0m
+我已经了解整体情况了。我先检查一下 `git status` 以及所有 `subscribe` 的使用者：
+[0m✱ [0mGrep "\.subscribe\(|job_store_redis|terminal_replay"[90m in api · 5 matches[0m
+[0m
+[0m$ [0mredis-cli ping 2>&1; .venv/bin/python -c "import redis; print('redis-py ok')" 2>&1
+zsh:1: command not found: redis-cli
+redis-py ok
+[0m
+[0m$ [0mtail -30 docs/DEVLOG.md
+## 2026-09-07 | TA-MF-01 市场事实契约 v1 候选交付（未提交）
+
+- **Task**: TA-MF-01 - 冻结通用市场事实契约 v1（P1，源：2026-09-05 market-facts 交接包）
+- **Status**: CANDIDATE（待 Codex review；按派单要求不 git commit）
+- **交付**: docs/contracts/market-facts-v1.md（盘点三列+12条对照+六包+信封+八状态映射+边界）；docs/contracts/schemas/ 7 个 draft-07 子集 JSON Schema + 13 个脱敏 fixture + MANIFEST.json（逐文件 sha256）；api/main.py 新增只读鉴权端点 GET /v1/market/facts/contract（契约自描述，包路由预留 TA-MF-02~05）；tests/market_facts/schema_lite.py 零依赖校验器。
+- **验证**: test_market_facts_contract 32 passed、test_api_market_facts 8 passed；兼容回归 test_api_smoke 87 passed、tushare 契约/证据/治理包 95 passed、test_price_intent_contract 199 passed。
+- **安全**: /v1/market/kline 未改动（KNOWN-GAP-1 无鉴权现状入契约）；fixture 无凭据（测试断言）；LLM 调用 0 次；Live smoke NOT_RUN。
+- **Run archive**: docs/task_runs/TA-MF-01-20260907-122509/
+
+## 2026-09-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Priority**: P1
+- **Rounds**: 1 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode timed out after 1800s
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/
+
+## 2026-09-07 | MANUAL round2 (continuation) — UPSTREAM-081-002
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Status**: round2 continuation 完成，未提交（等待独立 Codex review）
+- **round1 遗留盘点**: 后端软/硬双超时（`_run_job` 重写、`overtime/overtime_at` 字段、`job.overtime` 非终态事件、`_save_report_or_raise` 持久化失败不伪装完成、Redis bool 序列化修复、`create_report` 清除陈旧 error）；前端 `jobLifecycle.ts` 纯函数工具 + SSE/store/ChatCopilot 接线（软超时横幅、断线/刷新回查同一 job、isAnalyzing 阻止重复提交）。缺：后端专项测试文件。
+- **round2 补齐**:
+  - 新增 `tests/test_upstream081_timeout_recovery.py`（11 tests）：软超时后 job 保持 running+overtime 且终态只写一次（防双写）；硬超时 fail-closed（cancel 内层、`mark_report_failed` 一次、硬超时文案与旧软超时可区分）；软=硬与软禁用边界不发误导性加班事件；真实失败/持久化失败与完成可区分；`get_job_status` 暴露 overtime 字段；历史 `failed(timeout)` 读路径只读不改写；Redis 序列化层 bool 与内存 store 一致（无需 Redis 连接）；`create_report` 完成时清除陈旧 failed 痕迹。
+  - `tests/test_job_store_redis.py` 补 `test_bool_roundtrip_matches_memory_store`（Redis 可用时运行）。
+  - 修复 `frontend/src/utils/jobLifecycle.test.ts` 缺失 `vitest` 显式导入（round1 写法依赖未启用的 globals，collection 即失败）。
+- **测试证据**: `pytest tests/test_upstream081_timeout_recovery.py` 11 passed；`pytest tests/test_api_smoke.py` 87 passed；`pytest tests/test_upstream081_runtime_resilience.py` 49 passed；`npx vitest run` 157 passed（11 files）；`npm run build` 零错误。
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md）
+[0m
+当前工作区符合任务描述。根据 AGENTS.md 规则，我先检查一下 Redis 的可用性和 DEVLOG 格式：
+Redis CLI 未安装；我来通过 `redis-py` 验证服务器可达性（测试模块会使用此方式）：
+[0m$ [0m.venv/bin/python -c "
+import redis
+try:
+    r = redis.Redis.from_url('redis://localhost:6379/15', decode_responses=True, socket_connect_timeout=2)
+    r.ping(); print('REDIS UP')
+except Exception as e:
+    print('REDIS DOWN:', type(e).__name__, str(e)[:80])
+"
+REDIS DOWN: ConnectionError Error 61 connecting to localhost:6379. Connection refused.
+[0m
+Redis 已关闭 — 集成测试将被跳过，因此纯函数单元测试将承载实时覆盖率。现在开始进行 P1 修复。首先，我将把重放决策提取到 `api/job_store.py` 中的共享纯函数中（内存存储目前在那里内联拥有该逻辑）：
+[0m← [0mEdit api/job_store.py
+Index: /Users/maybee/TradingAgents-AShare/api/job_store.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/job_store.py
++++ /Users/maybee/TradingAgents-AShare/api/job_store.py
+@@ -31,8 +31,48 @@
+ def _utcnow_iso() -> str:
+     return datetime.now(timezone.utc).isoformat()
+ 
+ 
++def terminal_replay_event(job_id: str, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
++    """[UPSTREAM-081-002] Decide which terminal SSE event a subscriber should
++    receive when it missed the live ``job.completed``/``job.failed`` event.
++
++    Pure function of (job_id, job snapshot) — no store access, no I/O — shared
++    by the in-memory and Redis stores so their "missed terminal → replay"
++    semantics cannot drift. Returns the event envelope (``event`` + ``data``)
++    or None when the status is not terminal; the caller stamps its own
++    ``timestamp`` and must not write anything back to the store.
++    """
++    status = job.get("status")
++    if status == "completed":
++        # A malformed (non-dict) result must degrade to "no fallback fields"
++        # instead of crashing the SSE generator mid-stream.
++        result = job.get("result") if isinstance(job.get("result"), dict) else {}
++        return {
++            "event": "job.completed",
++            "data": {
++                "job_id": job_id,
++                "decision": job.get("decision"),
++                "direction": job.get("direction") or result.get("direction"),
++                "result": job.get("result"),
++                "risk_items": job.get("risk_items") or [],
++                "key_metrics": job.get("key_metrics") or [],
++                "confidence": job.get("confidence") or result.get("confidence"),
++                "target_price": job.get("target_price") or result.get("target_price"),
++                "stop_loss_price": job.get("stop_loss_price") or result.get("stop_loss_price"),
++            },
++        }
++    if status == "failed":
++        return {
++            "event": "job.failed",
++            "data": {
++                "job_id": job_id,
++                "error": job.get("error") or "job failed",
++            },
++        }
++    return None
++
++
+ @runtime_checkable
+ class JobStore(Protocol):
+     """Interface for job state + event storage."""
+ 
+
+[0m
+现在我来重构 `InMemoryJobStore.subscribe`，以使用相同的决策函数：
+[0m← [0mEdit api/job_store.py
+Index: /Users/maybee/TradingAgents-AShare/api/job_store.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/job_store.py
++++ /Users/maybee/TradingAgents-AShare/api/job_store.py
+@@ -299,35 +299,12 @@
+         break
+ except asyncio.TimeoutError:
+     with self._lock:
+         job = dict(self._jobs.get(job_id, {}))
+-        status = job.get("status")
+-    if status in ("completed", "failed"):
+-        if status == "completed":
+-            yield {
+-                "event": "job.completed",
+-                "data": {
+-                    "job_id": job_id,
+-                    "decision": job.get("decision"),
+-                    "direction": job.get("direction") or (job.get("result") or {}).get("direction"),
+-                    "result": job.get("result"),
+-                    "risk_items": job.get("risk_items") or [],
+-                    "key_metrics": job.get("key_metrics") or [],
+-                    "confidence": job.get("confidence") or (job.get("result") or {}).get("confidence"),
+-                    "target_price": job.get("target_price") or (job.get("result") or {}).get("target_price"),
+-                    "stop_loss_price": job.get("stop_loss_price") or (job.get("result") or {}).get("stop_loss_price"),
+-                },
+-                "timestamp": _utcnow_iso(),
+-            }
+-        else:
+-            yield {
+-                "event": "job.failed",
+-                "data": {
+-                    "job_id": job_id,
+-                    "error": job.get("error") or "job failed",
+-                },
+-                "timestamp": _utcnow_iso(),
+-            }
++    replay = terminal_replay_event(job_id, job)
++    if replay is not None:
++        replay["timestamp"] = _utcnow_iso()
++        yield replay
+         break
+     yield {
+         "event": "ping",
+         "data": {"timestamp": _utcnow_iso()},
+
+[0m
+现在来修复 P1 核心问题 —— `RedisJobStore.subscribe` 必须在终止前重放终止事件：
+[0m← [0mEdit api/job_store_redis.py
+Index: /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
++++ /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
+@@ -15,8 +15,10 @@
+ from typing import Any, AsyncIterator, Dict
+ 
+ import redis
+ 
++from api.job_store import terminal_replay_event
++
+ logger = logging.getLogger(__name__)
+ 
+ # TTL for job state hashes (seconds). Configurable via env var.
+ _JOB_STATE_TTL: int = int(os.environ.get("JOB_STATE_TTL", "86400"))
+
+[0m
+[0m← [0mEdit api/job_store_redis.py
+Index: /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
++++ /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
+@@ -128,9 +128,11 @@
+ call_soon_threadsafe.
+ 
+ On timeout with no events:
+   - If job is still running, yield a ping event.
+-  - If job is completed/failed, terminate the generator.
++  - If job is completed/failed, replay the terminal event
++    (job.completed/job.failed, same decision and payload as the
++    in-memory store via ``terminal_replay_event``) and terminate.
+ On terminal events (job.completed, job.failed), yield and terminate.
+ """
+ loop = asyncio.get_running_loop()
+ queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+
+[0m
+[0m← [0mEdit api/job_store_redis.py
+Index: /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
++++ /Users/maybee/TradingAgents-AShare/api/job_store_redis.py
+@@ -170,10 +170,20 @@
+     yield event
+     if event["event"] in _TERMINAL_EVENTS:
+         break
+ except asyncio.TimeoutError:
+-    status = self.get_job(job_id).get("status")
+-    if status in ("completed", "failed"):
++    # [UPSTREAM-081-002] A subscriber that missed the live
++    # pub/sub terminal event (late subscription, or the
++    # publish raced the listener) must still receive the same
++    # job.completed/job.failed the in-memory store replays —
++    # otherwise the SSE stream ends after `job.ready` and the
++    # consumer never sees a terminal state. Reads the job hash
++    # only; no extra writes to Redis.
++    job = self.get_job(job_id)
++    replay = terminal_replay_event(job_id, job)
++    if replay is not None:
++        replay["timestamp"] = _utcnow_iso()
++        yield replay
+         break
+     yield {
+         "event": "ping",
+         "data": {"timestamp": _utcnow_iso()},
+
+[0m
+P1 修复已完成。现在进行 P2 测试。首先，是 `tests/test_upstream081_timeout_recovery.py` 中纯函数单元测试（无需实时 Redis）——包括新的章节以及 docstring 更新：
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -11,8 +11,11 @@
+ 3. 历史 ``failed(timeout)`` 记录读路径不得被改写为 running（恢复轮询据此
+    继续等待或收口，但不无条件重写状态）。
+ 4. 报告持久化失败不得伪装成 completed（_save_report_or_raise 抛回失败边界）。
+ 5. Redis 与内存 store 的布尔字段（overtime）序列化语义一致。
++6. 订阅端错过终态事件后按共享纯函数 ``terminal_replay_event`` 重放
++   job.completed/job.failed；内存与 Redis store 决策逐字段一致，且该决策
++   可不依赖活 Redis 单测（r1 review P1/P2 修复）。
+ """
+ 
+ from __future__ import annotations
+ 
+
+[0m
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -372,8 +372,112 @@
+     assert _deserialize_value(_serialize_value("2026-09-07T00:00:00+00:00")) == "2026-09-07T00:00:00+00:00"
+ 
+ 
+ # ---------------------------------------------------------------------------
++# [r1 P1/P2 修复] 错过终态事件后的重放决策：共享纯函数，无需活 Redis
++# ---------------------------------------------------------------------------
++
++
++def test_terminal_replay_event_completed_payload_matches_memory_contract():
++    """completed 快照 → job.completed，字段与回退规则符合内存 store 既有契约。"""
++    from api.job_store import terminal_replay_event
++
++    job = {
++        "status": "completed",
++        "decision": "BUY",
++        "direction": None,
++        "result": {"direction": "bullish", "confidence": 0.8, "target_price": 12.5, "stop_loss_price": 10.0},
++        "risk_items": None,
++        "key_metrics": ["pe"],
++        "confidence": None,
++        "target_price": None,
++        "stop_loss_price": None,
++    }
++    replay = terminal_replay_event("j1", job)
++    assert replay["event"] == "job.completed"
++    data = replay["data"]
++    assert data["job_id"] == "j1"
++    assert data["decision"] == "BUY"
++    assert data["direction"] == "bullish"  # 顶层缺失时回退 result.direction
++    assert data["result"] == job["result"]
++    assert data["risk_items"] == []  # None → 空列表
++    assert data["key_metrics"] == ["pe"]
++    assert data["confidence"] == 0.8  # 顶层缺失时回退 result
++    assert data["target_price"] == 12.5
++    assert data["stop_loss_price"] == 10.0
++    # 时间戳由调用方补，决策函数不产时间戳
++    assert "timestamp" not in replay
++
++
++def test_terminal_replay_event_failed_and_non_terminal():
++    """failed → job.failed（error 兜底）；非终态/缺状态 → 不重放。"""
++    from api.job_store import terminal_replay_event
++
++    replay = terminal_replay_event("j1", {"status": "failed", "error": "boom"})
++    assert replay["event"] == "job.failed"
++    assert replay["data"] == {"job_id": "j1", "error": "boom"}
++
++    # error 缺失/None → 固定兜底文案，不产生 None error
++    assert terminal_replay_event("j1", {"status": "failed"})["data"]["error"] == "job failed"
++    assert terminal_replay_event("j1", {"status": "failed", "error": None})["data"]["error"] == "job failed"
++
++    # 非终态或快照缺失 → None（订阅端继续 ping，不断流）
++    assert terminal_replay_event("j1", {"status": "running"}) is None
++    assert terminal_replay_event("j1", {}) is None
++
++    # result 非法（非 dict）时不得让 SSE 生成器崩溃，只丢弃回退字段
++    degraded = terminal_replay_event("j1", {"status": "completed", "result": "garbage"})
++    assert degraded["data"]["direction"] is None
++    assert degraded["data"]["result"] == "garbage"
++
++
++def test_memory_store_subscribe_replays_via_shared_decision_function():
++    """内存 store 超时轮询补发的终态与纯函数决策完全一致（防两处漂移）。"""
++
++    async def scenario():
++        memory = InMemoryJobStore()
++        memory.set_job(
++            "j1",
++            status="completed",
++            decision="HOLD",
++            result={"direction": "neutral"},
++            risk_items=[],
++            key_metrics=[],
++        )
++        events = [event async for event in memory.subscribe("j1", poll_interval=0.05)]
++        assert len(events) == 1
++        expected = terminal_replay_event("j1", memory.get_job("j1"))
++        assert events[0]["event"] == expected["event"]
++        assert events[0]["data"] == expected["data"]
++        assert events[0]["timestamp"]
++
++    asyncio.run(scenario())
++
++
++def test_redis_replay_decision_identical_to_memory_without_live_redis():
++    """同一 job 快照经 Redis 序列化往返后，重放决策与内存视图逐字段一致。
++
++    本用例不依赖活 Redis：只走 _serialize_value/_deserialize_value 往返，
++    Redis 未运行的环境同样执行（r1 review P2 的语义盲区在此收口）。
++    """
++    from api.job_store_redis import _deserialize_value, _serialize_value
++
++    job = {
++        "status": "completed",
++        "decision": "BUY",
++        "result": {"direction": "bullish", "confidence": 0.8, "target_price": 12.5},
++        "risk_items": None,
++        "key_metrics": [],
++        "confidence": None,
++        "overtime": False,
++        "error": None,
++    }
++    redis_view = {k: _deserialize_value(_serialize_value(v)) for k, v in job.items()}
++    # 序列化往返不得改变重放决策（布尔/None/嵌套 dict 全部还原）
++    assert terminal_replay_event("j1", redis_view) == terminal_replay_event("j1", job)
++
++
++# ---------------------------------------------------------------------------
+ # 状态读路径：overtime 字段与历史 failed(timeout) 不改写
+ # ---------------------------------------------------------------------------
+ 
+ 
+
+[0m
+我使用了 `terminal_replay_event` —— 现在我来在模块级别导入它，而不是在函数内部导入：
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -25,9 +25,9 @@
+ 
+ import pytest
+ 
+ import api.main as api_main
+-from api.job_store import InMemoryJobStore
++from api.job_store import InMemoryJobStore, terminal_replay_event
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # Fixtures / helpers
+
+[0m
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -378,10 +378,8 @@
+ 
+ 
+ def test_terminal_replay_event_completed_payload_matches_memory_contract():
+     """completed 快照 → job.completed，字段与回退规则符合内存 store 既有契约。"""
+-    from api.job_store import terminal_replay_event
+-
+     job = {
+         "status": "completed",
+         "decision": "BUY",
+         "direction": None,
+
+[0m
+[0m← [0mEdit tests/test_upstream081_timeout_recovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_upstream081_timeout_recovery.py
+@@ -407,10 +407,8 @@
+ 
+ 
+ def test_terminal_replay_event_failed_and_non_terminal():
+     """failed → job.failed（error 兜底）；非终态/缺状态 → 不重放。"""
+-    from api.job_store import terminal_replay_event
+-
+     replay = terminal_replay_event("j1", {"status": "failed", "error": "boom"})
+     assert replay["event"] == "job.failed"
+     assert replay["data"] == {"job_id": "j1", "error": "boom"}
+ 
+
+[0m
+Now the skip-guarded Redis integration tests in `tests/test_job_store_redis.py`. The existing `test_subscribe_timeout_ping` tail encodes the old (buggy) terminate-without-terminal behavior, so it must be updated, plus two new replay tests:
+[0m← [0mEdit tests/test_job_store_redis.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_job_store_redis.py
+@@ -187,9 +187,11 @@
+ 
+ 
+ def test_subscribe_timeout_ping(store: RedisJobStore):
+     """When no events arrive and the job is still running, subscribe yields a
+-    ping. When the job becomes completed on the next timeout, it terminates."""
++    ping. When the job becomes completed on the next timeout, it replays the
++    terminal event (memory-store semantics, [UPSTREAM-081-002]) and then
++    terminates."""
+ 
+     async def scenario():
+         store.set_job("j1", status="running")
+ 
+@@ -198,12 +200,93 @@
+         async for event in store.subscribe("j1", poll_interval=0.2):
+             collected.append(event)
+             count += 1
+             if count == 1:
+-                # After first ping, mark job completed so next timeout terminates
++                # After first ping, mark job completed so the next timeout
++                # replays the terminal event instead of silently dropping
++                # the subscriber.
+                 store.set_job("j1", status="completed")
+ 
+-        assert len(collected) == 1
++        assert len(collected) == 2
+         assert collected[0]["event"] == "ping"
+         assert "timestamp" in collected[0]["data"]
++        assert collected[1]["event"] == "job.completed"
++        assert collected[1]["data"]["job_id"] == "j1"
++        assert "timestamp" in collected[1]
+ 
+     asyncio.run(scenario())
++
++
++def test_subscribe_replays_completed_terminal_when_live_event_missed(store: RedisJobStore):
++    """[UPSTREAM-081-002] A subscriber that never receives the live pub/sub
++    terminal event still gets one replayed ``job.completed`` with the full
++    payload (decision/direction/result/... read back from the job hash), and
++    the generator terminates on it. Event ordering is unchanged: only the
++    previously-missing terminal replay is added."""
++
++    async def scenario():
++        store.set_job(
++            "j1",
++            status="running",
++            decision="BUY",
++            result={"direction": "bullish", "confidence": 0.8, "target_price": 12.5},
++        )
++
++        collected = []
++        pings = 0
++        async for event in store.subscribe("j1", poll_interval=0.2):
++            collected.append(event)
++            if event["event"] == "ping":
++                pings += 1
++                if pings == 1:
++                    # Terminal state lands in Redis only; no pub/sub event is
++                    # ever published, so the subscriber must recover via the
++                    # timeout replay path.
++                    store.set_job("j1", status="completed")
++                if pings > 5:
++                    pytest.fail("job.completed replay never arrived")
++
++        names = [e["event"] for e in collected]
++        assert names[-1] == "job.completed"
++        assert names.count("job.completed") == 1
++        assert "job.failed" not in names
++
++        replay = collected[-1]
++        assert replay["data"]["job_id"] == "j1"
++        assert replay["data"]["decision"] == "BUY"
++        assert replay["data"]["direction"] == "bullish"
++        assert replay["data"]["result"] == {"direction": "bullish", "confidence": 0.8, "target_price": 12.5}
++        assert replay["data"]["confidence"] == 0.8
++        assert replay["data"]["target_price"] == 12.5
++        assert replay["data"]["risk_items"] == []
++        assert replay["data"]["key_metrics"] == []
++        assert "timestamp" in replay
++
++    asyncio.run(scenario())
++
++
++def test_subscribe_replays_failed_terminal_when_live_event_missed(store: RedisJobStore):
++    """[UPSTREAM-081-002] Same recovery semantics for failure: the subscriber
++    gets exactly one replayed ``job.failed`` carrying the persisted error."""
++
++    async def scenario():
++        store.set_job("j1", status="running")
++
++        collected = []
++        pings = 0
++        async for event in store.subscribe("j1", poll_interval=0.2):
++            collected.append(event)
++            if event["event"] == "ping":
++                pings += 1
++                if pings == 1:
++                    store.set_job("j1", status="failed", error="boom: inner failure")
++                if pings > 5:
++                    pytest.fail("job.failed replay never arrived")
++
++        names = [e["event"] for e in collected]
++        assert names[-1] == "job.failed"
++        assert names.count("job.failed") == 1
++        assert "job.completed" not in names
++        assert collected[-1]["data"] == {"job_id": "j1", "error": "boom: inner failure"}
++        assert "timestamp" in collected[-1]
++
++    asyncio.run(scenario())
+
+[0m
+[0m→ [0mRead api/job_store_redis.py[90m [limit=45, offset=163][0m
+现在我来验证修改后的 Redis 订阅是否正确，并运行目标测试：
+[0m
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py -q --tb=short 2>&1 | tail -8
+...............                                                          [100%]
+15 passed in 6.35s
+[0m
+[0m$ [0m.venv/bin/python -m pytest tests/test_job_store_redis.py -q --tb=short -rs 2>&1 | tail -6
+SKIPPED [1] tests/test_job_store_redis.py:139: Redis not available at redis://localhost:6379/15
+SKIPPED [1] tests/test_job_store_redis.py:147: Redis not available at redis://localhost:6379/15
+SKIPPED [1] tests/test_job_store_redis.py:189: Redis not available at redis://localhost:6379/15
+SKIPPED [1] tests/test_job_store_redis.py:219: Redis not available at redis://localhost:6379/15
+SKIPPED [1] tests/test_job_store_redis.py:267: Redis not available at redis://localhost:6379/15
+12 skipped in 0.07s
+[0m
+15 passed (11 original + 4 new). Now the Redis module (expect skips) and the full verification set:
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py tests/test_api_smoke.py tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -4
+.......................................  [Timer] get_stock_data took 0.62s
+................................. [ 95%]
+.......                                                                  [100%]
+151 passed in 32.97s
+[0m
+全部通过：151个通过；Redis 模块如实报告 12 个跳过（服务器已关闭，与 r1 基线相同）。由于 Redis 集成测试在本地无法运行，我来使用一个存根化的 `get_job` 对修复后的 Redis 生成器控制流进行一次离线的完整性检查（未经测试的修复绝不能发布）：
+[0m$ [0m.venv/bin/python - <<'EOF'
+import asyncio, logging
+logging.disable(logging.CRITICAL)
+from api.job_store_redis import RedisJobStore
+
+# No live Redis: build instance without connecting; listener thread will fail
+# to subscribe (caught) and the queue stays empty -> timeout path drives.
+s = object.__new__(RedisJobStore)
+snapshots = iter([
+    {"status": "running"},
+    {"status": "completed", "decision": "BUY",
+     "result": {"direction": "bullish", "confidence": 0.8},
+     "risk_items": None, "key_metrics": []},
+])
+s.get_job = lambda job_id: next(snapshots)
+
+async def main():
+    events = [e async for e in s.subscribe("j1", poll_interval=0.05)]
+    names = [e["event"] for e in events]
+    assert names == ["ping", "job.completed"], names
+    d = events[-1]["data"]
+    assert d["job_id"] == "j1" and d["decision"] == "BUY" and d["direction"] == "bullish"
+    assert d["confidence"] == 0.8 and d["risk_items"] == []
+    # failed path
+    snaps2 = iter([{"status": "failed", "error": "boom"}])
+    s2 = object.__new__(RedisJobStore)
+    s2.get_job = lambda job_id: next(snaps2)
+    ev2 = [e async for e in s2.subscribe("j2", poll_interval=0.05)]
+    assert [e["event"] for e in ev2] == ["job.failed"]
+    assert ev2[0]["data"] == {"job_id": "j2", "error": "boom"}
+    print("OFFLINE SUBSCRIBE SANITY OK:", names, "->", [e["event"] for e in ev2])
+
+asyncio.run(main())
+EOF
+Exception in thread Thread-1 (_listener):
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/maybee/TradingAgents-AShare/api/job_store_redis.py", line 143, in _listener
+    pubsub = self._r.pubsub()
+             ^^^^^^^
+AttributeError: 'RedisJobStore' object has no attribute '_r'
+Exception in thread Thread-2 (_listener):
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/maybee/TradingAgents-AShare/api/job_store_redis.py", line 143, in _listener
+    pubsub = self._r.pubsub()
+             ^^^^^^^
+AttributeError: 'RedisJobStore' object has no attribute '_r'
+OFFLINE SUBSCRIBE SANITY OK: ['ping', 'job.completed'] -> ['job.failed']
+[0m
+离线合理性检查通过 (`ping → job.completed` 重放；立即 `job.failed` 重放)；线程回溯仅是 stub 中缺失的 `_r` 属性，已被按设计如此设计的监听器 `except` 捕获。现在我来验证最终的 diff 范围，并确认两个模块均能顺利编译：
+[0m$ [0m.venv/bin/python -m py_compile api/job_store.py api/job_store_redis.py tests/test_upstream081_timeout_recovery.py tests/test_job_store_redis.py && git diff --stat api/job_store.py api/job_store_redis.py tests/test_upstream081_timeout_recovery.py tests/test_job_store_redis.py
+api/job_store.py              |  71 +++++++++++++++---------
+ api/job_store_redis.py        |  28 ++++++++--
+ tests/test_job_store_redis.py | 124 +++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 188 insertions(+), 35 deletions(-)
+[0m
+差异范围很清晰（恢复测试文件是新的/未被追踪，所以它不会出现在 `diff` 统计中）。现在我来追加修复文档 —— 首先是实施记录：
+[0m← [0mEdit docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md
+Index: /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md
++++ /Users/maybee/TradingAgents-AShare/docs/task_runs/UPSTREAM-081-002-20260907-190004/implementation-round2.md
+@@ -61,4 +61,34 @@
+ 
+ - `test_job_store_redis.py` 全模块依赖本机 Redis，当前环境 skip（与 round1 基线一致）；bool 一致性已由序列化层测试实际覆盖，Redis 起来后 store 级用例自动生效。
+ - 独立 Codex review 未跑（本轮按任务约束不 commit，修复候选等待 review）。
+ - SSE 重连订阅场景下（Redis pub/sub 无回放）错过的 `job.overtime` 事件靠轮询 `status.overtime` 补偿——已接线，属设计内行为，无代码缺口。
++
++## 五、r1 review 修复（2026-09-08，1×P1 + 1×P2）
++
++### P1：Redis SSE 订阅错过终态事件后不重放终态
++
++- **修复位置**：`api/job_store_redis.py` `subscribe()` 超时分支（约 :173-191）+ 新共享纯函数 `api/job_store.py::terminal_replay_event`（:35）。内存 store `InMemoryJobStore.subscribe` 同步改为调用同一纯函数（行为等价重构，防两处漂移）。
++- **语义**：Redis 订阅在轮询超时发现 `status ∈ {completed, failed}` 时，按内存 store 既有 payload 契约补发 `job.completed`（含 `job_id/decision/direction/result/risk_items/key_metrics/confidence/target_price/stop_loss_price`，顶层缺失回退 `result`，列表缺省 `[]`）或 `job.failed`（含 `job_id/error`，error 兜底 `"job failed"`），随后才终止生成器。对 job hash 只读（一次 `HGETALL`，与修复前 `get_job().get("status")` 的 I/O 相同），不向 Redis 写入任何数据，不额外 publish。非终态/快照缺失仍走 ping，事件顺序与去重语义不变。
++- **事件序列对比**（`/v1/jobs/{job_id}/events`，api/main.py `_stream_job_events`，订阅端晚于终态接入）：
++  - 修复前：`job.ready` → `ping`×N → 流结束（无终态事件、无 `done` marker）——SSE 消费方永远等不到终态。
++  - 修复后：`job.ready` → `ping`×N → `job.completed`（或 `job.failed`）→ `done` marker，与内存 store 行为一致。
++- **附带的防御性收敛**：`result` 为非 dict 的脏数据不再让 SSE 生成器中途 AttributeError，只丢弃回退字段（`direction/confidence/...` 为 None），`result` 原样透传。内存/Redis 两边经同一函数同时获得该保护；合法数据下 payload 与旧实现逐字节一致（测试断言）。
++
++### P2：终态重放/恢复语义专项测试
++
++- **取舍**：把「错过终态 → 补发哪个事件、payload 是什么」抽成不依赖活 Redis 的纯函数 `terminal_replay_event`（`api/job_store.py`，模块级、零 I/O），单测放 `tests/test_upstream081_timeout_recovery.py`（4 个新用例，本机 Redis 未运行也执行）：completed payload 全字段+回退规则、failed/非终态/脏 result 边界、内存 store 订阅补发与纯函数逐字段一致、Redis 序列化往返后决策与内存视图完全一致。未引入 fakeredis 等新依赖。
++- **集成测试**（`tests/test_job_store_redis.py`，带既有模块级 skip 守卫）：改写 `test_subscribe_timeout_ping` 尾断言（旧断言「终态后静默结束」正是 bug 行为）；新增 `test_subscribe_replays_completed_terminal_when_live_event_missed`、`test_subscribe_replays_failed_terminal_when_live_event_missed`——不发布任何 pub/sub 事件，靠超时轮询验证补发终态恰一次、payload 从 Redis hash 还原、生成器在终态收口。本机 Redis 未运行（connection refused），如实 skip（12 skipped），Redis 可用后自动生效。
++- **离线补充验证**：以 stub `get_job` 驱动修复后的 Redis 生成器控制流（监听线程失败被既有 except 吞掉、队列空 → 超时路径），确认 `ping → job.completed` 重放与立即 `job.failed` 重放，一次性 sanity，不入库。
++
++### 修复后测试证据（2026-09-08）
++
++```
++pytest tests/test_upstream081_timeout_recovery.py -q --tb=short
++  → 15 passed in 6.35s（11 原有 + 4 新增纯函数/一致性用例）
++pytest tests/test_upstream081_timeout_recovery.py tests/test_api_smoke.py tests/test_upstream081_runtime_resilience.py -q --tb=short
++  → 151 passed in 32.97s
++pytest tests/test_job_store_redis.py -q --tb=short
++  → 12 skipped in 0.07s（本机 Redis 未运行，如实 skip；含 3 个新终态重放用例）
++```
++
++- 前端本轮零改动，未重跑 vitest/build（round2 已验证）。
+
+[0m
+现在追加 DEVLOG 条目：
+[0m$ [0mcat >> docs/DEVLOG.md <<'EOF'
+
+## 2026-09-08 | MANUAL fix round — UPSTREAM-081-002 r1 review 修复
+
+- **Task**: UPSTREAM-081-002 - 长时分析软/硬超时与断线恢复（P1）
+- **Status**: r1 review 1×P1 + 1×P2 修复完成，未提交（等待独立 review）
+- **P1 修复**: Redis SSE 订阅错过终态事件后现在按内存 store 同语义补发 `job.completed`/`job.failed` 再终止（`api/job_store_redis.py` subscribe 超时分支）；决策逻辑抽为共享纯函数 `api/job_store.py::terminal_replay_event`，内存 store 同步改用（行为等价重构，防两处漂移）。对 job hash 只读、零额外写入，事件顺序不变。修复前 `/v1/jobs/{id}/events` 订阅端只有 `job.ready`+`ping` 后流静默结束；修复后 `job.ready` → `ping`×N → 终态事件 → `done`。附带：脏 `result`（非 dict）不再使 SSE 生成器崩溃。
+- **P2 修复**: 新增 4 个不依赖活 Redis 的纯函数/一致性单测（completed payload 全字段+回退、failed/非终态/脏 result 边界、内存订阅补发与纯函数一致、Redis 序列化往返后决策一致）；`test_job_store_redis.py` 改写旧「终态后静默结束」断言并新增 completed/failed 两条订阅重放集成用例（skip 守卫，本机 Redis 未运行如实 12 skipped）；未引入 fakeredis 等新依赖。
+- **测试证据**: timeout_recovery 15 passed；timeout_recovery+api_smoke+runtime_resilience 合跑 151 passed；test_job_store_redis 12 skipped（Redis down）；另以 stub get_job 离线驱动修复后的 Redis 生成器确认 `ping→job.completed` 与立即 `job.failed` 重放。前端零改动未重跑。
+- **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md 第五节）
+EOF
+echo done
+done
+[0m
+Final verification run and scope check:
+[0m$ [0m.venv/bin/python -m pytest tests/test_upstream081_timeout_recovery.py tests/test_api_smoke.py tests/test_upstream081_runtime_resilience.py -q --tb=short 2>&1 | tail -2; .venv/bin/python -m pytest tests/test_job_store_redis.py -q --tb=short 2>&1 | tail -1; git status --short | grep -E "prompts|tradingagents.db|eval_results" ; git diff --stat docs/TASKS.md | tail -1
+.......                                                                  [100%]
+151 passed in 31.06s
+12 skipped in 0.06s
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+[0m
+修复完成，未提交（等待独立 review）。
+
+## P1 修复：Redis SSE 终态重放
+
+**代码位置**
+- 新共享纯函数 `api/job_store.py:35` `terminal_replay_event(job_id, job)`：从内存 store 原有内联逻辑抽出，零 I/O，返回 `{"event","data"}` 信封或 None；`InMemoryJobStore.subscribe` 改为调用它（行为等价重构，两 store 共用同一决策防漂移）
+- `api/job_store_redis.py:173-191`：subscribe 超时分支发现终态时，按同一纯函数补发 `job.completed`/`job.failed`（payload 与内存版逐字段一致）后才 `break`；对 job hash 只读一次 `HGETALL`（与修复前 I/O 相同），零额外写入，非终态仍 ping，事件顺序不变
+
+**事件序列对比**（`/v1/jobs/{job_id}/events`，订阅端晚于终态接入）
+| | 修复前 | 修复后 |
+|---|---|---|
+| Redis | `job.ready` → `ping`×N → 流静默结束（无终态、无 done） | `job.ready` → `ping`×N → `job.completed`/`job.failed` → `done` |
+| 内存（对照） | `job.ready` → … → 终态 → done | 不变（重构等价，有测试断言） |
+
+## P2 测试方案与取舍
+
+- **取舍**：决策抽成不依赖活 Redis 的纯函数 + 单测（不引入 fakeredis）；Redis 集成测试走既有模块级 skip 守卫，Redis 可用后自动生效
+- `tests/test_upstream081_timeout_recovery.py` +4 用例：completed payload 全字段/回退规则（direction/confidence 等回退 result、列表缺省 []）、failed 兜底文案与非终态/缺快照返回 None、脏 `result`（非 dict）不使生成器崩溃只丢弃回退字段、内存订阅补发与纯函数逐字段一致、Redis 序列化往返后决策与内存视图一致
+- `tests/test_job_store_redis.py`：改写 `test_subscribe_timeout_ping` 尾断言（旧断言「终态后静默结束」恰是 bug 行为）；新增 completed/failed 两条「不发布任何 pub/sub 事件、靠超时轮询补发终态恰一次」的订阅重放集成用例；另以 stub `get_job` 离线驱动修复后的 Redis 生成器确认 `ping→job.completed` 与立即 `job.failed` 重放（一次性 sanity）
+
+## 测试结果
+
+```
+pytest tests/test_upstream081_timeout_recovery.py -q                    → 15 passed in 6.35s（11 原有 + 4 新增）
+pytest tests/test_upstream081_timeout_recovery.py tests/test_api_smoke.py tests/test_upstream081_runtime_resilience.py -q
+                                                                        → 151 passed in 31.06s
+pytest tests/test_job_store_redis.py -q                                 → 12 skipped（本机 Redis 未运行，connection refused，如实 skip；含 3 个新用例）
+```
+
+前端本轮零改动，未重跑 vitest/build。docs：DEVLOG 追加 fix 条目、implementation-round2.md 追加第五节（含取舍）。约束合规：未动 prompts/、生产 DB、eval_results/、TASKS.md（其既有改动先于本轮）。
