@@ -58,7 +58,7 @@
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
 29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）。
 30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32）。
-30. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，blocked-auto）。
+30. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，done — r2 修复通过，离线测试直审补位，commit f0f3814）。
 31. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked-auto）。
 32. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
 33. `UPSTREAM-081-005`：Investoday 数据源权限、许可与真值审计（P2，blocked — NEEDS_HUMAN）。
@@ -385,7 +385,7 @@
 ### UPSTREAM-081-002: 长时分析软/硬超时与断线恢复（P1）
 - **描述**：参考上游 `3e32c89`（#204），把软超时改成“继续后台运行”的非终态事件，并保留独立硬超时；前端断线后可恢复同一 job，禁止重复提交昂贵分析。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — r1 review FAIL(1P1)→修复→r2 实质通过，离线测试主控直审补位；code f0f3814；review 链见 docs/reviews/UPSTREAM-081-002-20260907-r1.txt 与 task_runs 档案
 - **depends_on**：UPSTREAM-081-001
 - **auto_release**：true
 - **预计耗时**：60-100 分钟
