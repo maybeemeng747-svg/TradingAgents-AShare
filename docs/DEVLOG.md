@@ -16281,3 +16281,18 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **P2 修复**: 新增 4 个不依赖活 Redis 的纯函数/一致性单测（completed payload 全字段+回退、failed/非终态/脏 result 边界、内存订阅补发与纯函数一致、Redis 序列化往返后决策一致）；`test_job_store_redis.py` 改写旧「终态后静默结束」断言并新增 completed/failed 两条订阅重放集成用例（skip 守卫，本机 Redis 未运行如实 12 skipped）；未引入 fakeredis 等新依赖。
 - **测试证据**: timeout_recovery 15 passed；timeout_recovery+api_smoke+runtime_resilience 合跑 151 passed；test_job_store_redis 12 skipped（Redis down）；另以 stub get_job 离线驱动修复后的 Redis 生成器确认 `ping→job.completed` 与立即 `job.failed` 重放。前端零改动未重跑。
 - **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md 第五节）
+
+## 2026-09-08 | UPSTREAM-081-003 自动执行中止
+
+- 状态：NEEDS_HUMAN。实际 diff 将龙虎榜所有 TypeError 归为正常无数据并反转原失败保护测试；无对应真实失败证据，协调员按 P1 打回并停止本轮进程树。
+- 保留未提交 provider/测试草稿，未运行验收测试或 Codex CLI review，未提交。
+- 档案：docs/task_runs/UPSTREAM-081-003-20260908-200214/summary.md。
+
+## 2026-09-09 | UPSTREAM-081-003 re-dispatch — 按 fail-closed 正向重做（round2）
+
+- **Task**: UPSTREAM-081-003 — AKShare v0.8.1 差异审计与最小修复（P1）；round1 方向已被协调员否决，本轮按孟拍板的 fail-closed 方向重做。
+- **round1 diff 处置**：`cn_akshare_provider.py` 的 `except TypeError → LHB_NORMAL_NO_DATA`（+10 行）**整体还原**，TypeError 恢复走 `LHB_FAILED` 并触发路由降级；`tests/test_upstream_v081_absorption.py` 被反转的 `test_lhb_type_error_fails_closed` **还原**（LHB_FAILED + TypeError 断言复位）。
+- **差异审计**（上游 `aa79bca` vs 本地，akshare 1.18.30 实测签名 + 低频只读 live 探测，共 5 次调用不触 LLM）：5 项均无需移植新代码。雪球 token（本地已移植 `XQ_A_TOKEN`）、行业资金流（本地 `stock_fund_flow_industry` 主源 + `stock_sector_fund_flow_rank` fallback，超集）、龙虎榜去 symbol 参数（已移植且代码列缺失单独归类）——三项上游修复本地早已存在；全球新闻 sina zhibo 替换（破坏 look_back_days/limit 契约且 fail-open）与热搜"本周新增"替换（1.18.30 实测"最热门"返回 5640 行可用）——两项不移植。news_cctv 实测 20260908 返回 12 行；龙虎榜 20260908 返回 59 行、600036 本地过滤 0 行（正常未上榜，走 NORMAL_NO_DATA），"TypeError=未发布"场景两轮均未复现。
+- **测试**：`tests/test_upstream081_akshare_gap.py` 按 fail-closed 语义重写完成（22 个用例函数；r2 review 曾指出记录误写 26，已修正：TypeError→LHB_FAILED 且被 `_is_failure_result` 识别触发降级；接口缺失 AttributeError 单独归类；空数据/未上榜才是 NORMAL_NO_DATA；全市场结果不得混入目标股票；Tushare 主源优先级不降低；1.18.30 签名漂移守卫）。gap+absorption 合跑 **66 passed**；api_smoke 回归 **87 passed**。审计文档：docs/data_source_reports/akshare-v081-upstream-audit-2026-09-09.md（round1 引用悬空的审计文档本轮补齐）。
+- **约束遵守**：未改 `tradingagents/prompts/`、未提交/推送、未改 TASKS.md 状态（主控管理）、未写生产 DB、未做全市场扫描与个股深度 TA；无 provider 生产代码改动（本轮结论为零移植，仅测试与文档）。
+- **待办**：独立 Codex review 通过后才允许提交。

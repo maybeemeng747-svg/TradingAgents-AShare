@@ -1,0 +1,462 @@
+[0m
+> build · glm-5.3-flash
+[0m
+[0m$ [0mgit status && git log --oneline -5
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 29 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/DEVLOG.md
+	修改：     tests/test_upstream_v081_absorption.py
+	修改：     tradingagents/dataflows/providers/cn_akshare_provider.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/UPSTREAM-081-003-20260908-200214/
+	tests/test_upstream081_akshare_gap.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+0991428 docs(tasks): UPSTREAM-081-003 队列行对齐详情 blocked-NEEDS_HUMAN（协调员已停首轮，待人工定方向）
+ad97779 docs(tasks): 修队列编号重复+TA-MF-01详情状态被解析器误翻回ready恢复done; UPSTREAM-081-003 ready
+5807135 docs(tasks): mark UPSTREAM-081-002 done — 软/硬超时与断线恢复 (code f0f3814)
+f0f3814 feat(api): UPSTREAM-081-002 长时分析软/硬超时与断线恢复（r2 review 修复通过）
+feb9c05 docs(tasks): mark TA-MF-01 done — contract v1.0.0 FROZEN at r1 review (code e9a5d32)
+[0m
+[0m✱ [0mGrep "UPSTREAM-081-003"[90m in docs/TASKS.md · 5 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=390, limit=45][0m
+[0m→ [0mRead docs/task_runs/UPSTREAM-081-003-20260908-200214/summary.md
+[0m
+[0m$ [0mgit diff tradingagents/dataflows/providers/cn_akshare_provider.py
+diff --git a/tradingagents/dataflows/providers/cn_akshare_provider.py b/tradingagents/dataflows/providers/cn_akshare_provider.py
+index 66b0758..cdde76a 100644
+--- a/tradingagents/dataflows/providers/cn_akshare_provider.py
++++ b/tradingagents/dataflows/providers/cn_akshare_provider.py
+@@ -1526,6 +1526,16 @@ class CnAkshareProvider(BaseMarketDataProvider):
+             if matched.empty:
+                 return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+             return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{matched.head(20).to_string(index=False)}"
++        except TypeError:
++            # [UPSTREAM-081-003] 东财 datacenter 在当日龙虎榜尚未发布时返回
++            # result=null，akshare 内部 data_json["result"]["pages"] 触发 TypeError。
++            # 查询本身成功，仅数据未发布：按八态契约归类为 NORMAL_NO_DATA
++            # （正常无数据），不再误报 FAILED，避免路由层对同一东财数据源
++            # 发起重复的全市场查询。
++            return (
++                f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据"
++                "（数据尚未更新，盘中或非发布时段查询当日数据属正常）。"
++            )
+         except Exception as exc:
+             return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+[0m
+[0m$ [0mgit diff tests/test_upstream_v081_absorption.py
+diff --git a/tests/test_upstream_v081_absorption.py b/tests/test_upstream_v081_absorption.py
+index ef32a5c..84f454a 100644
+--- a/tests/test_upstream_v081_absorption.py
++++ b/tests/test_upstream_v081_absorption.py
+@@ -133,7 +133,9 @@ def test_lhb_non_matching_symbol_is_normal_no_data():
+     assert "LHB_NORMAL_NO_DATA" in result
+ 
+ 
+-def test_lhb_type_error_fails_closed():
++def test_lhb_type_error_means_not_yet_published():
++    # [UPSTREAM-081-003] 东财当日数据未发布时 akshare 抛 TypeError（查询成功、
++    # 数据未更新），按八态契约归类为 NORMAL_NO_DATA，不再误报 FAILED。
+     fake = _FakeAkshare()
+     fake.lhb_error = TypeError("'NoneType' object is not subscriptable")
+ 
+@@ -143,8 +145,9 @@ def test_lhb_type_error_fails_closed():
+         force=True,
+     )
+ 
+-    assert "LHB_FAILED" in result
+-    assert "TypeError" in result
++    assert "LHB_NORMAL_NO_DATA" in result
++    assert "LHB_FAILED" not in result
++    assert "尚未更新" in result
+ 
+ 
+ def test_lhb_failed_marker_triggers_provider_fallback():
+[0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=110, offset=1440][0m
+[0m→ [0mRead tests/test_upstream081_akshare_gap.py
+[0m
+[0m# [0mTodos
+[•] 审计工作区 round1 既有 diff，逐项处置（纠正 TypeError→NORMAL_NO_DATA、还原 fail-closed 回归）
+[ ] 记录当前 AKShare 版本与相关函数签名
+[ ] 逐接口差异审计（雪球token/全球新闻/行业资金流/龙虎榜参数/热门接口）上游 aa79bca vs 本地
+[ ] 按正确语义补完 tests/test_upstream081_akshare_gap.py（fail-closed 方向）
+[ ] 跑验证：gap + absorption + api_smoke 测试
+[ ] 更新 docs/DEVLOG.md（re-dispatch 条目）与 task_runs 本轮记录
+[0m
+[0m$ [0mgit remote -v && git cat-file -t aa79bca 2>&1 | head -1
+myfork	https://github.com/maybeemeng747-svg/TradingAgents-AShare.git (fetch)
+myfork	https://github.com/maybeemeng747-svg/TradingAgents-AShare.git (push)
+origin	https://github.com/KylinMountain/TradingAgents-AShare.git (fetch)
+origin	https://github.com/KylinMountain/TradingAgents-AShare.git (push)
+commit
+[0m
+Upstream commit `aa79bca` 可在本地访问。第一步：纠正 round1 既有 diff——先确认变更范围仅这两处，然后还原。
+[0m$ [0mgit diff --stat && git diff docs/DEVLOG.md | head -40
+docs/DEVLOG.md                                           |  6 ++++++
+ docs/TASKS.md                                            |  2 +-
+ tests/test_upstream_v081_absorption.py                   |  9 ++++++---
+ tradingagents/dataflows/providers/cn_akshare_provider.py | 10 ++++++++++
+ 4 files changed, 23 insertions(+), 4 deletions(-)
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 3c7a2f3..5fd7467 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -16281,3 +16281,9 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
+ - **P2 修复**: 新增 4 个不依赖活 Redis 的纯函数/一致性单测（completed payload 全字段+回退、failed/非终态/脏 result 边界、内存订阅补发与纯函数一致、Redis 序列化往返后决策一致）；`test_job_store_redis.py` 改写旧「终态后静默结束」断言并新增 completed/failed 两条订阅重放集成用例（skip 守卫，本机 Redis 未运行如实 12 skipped）；未引入 fakeredis 等新依赖。
+ - **测试证据**: timeout_recovery 15 passed；timeout_recovery+api_smoke+runtime_resilience 合跑 151 passed；test_job_store_redis 12 skipped（Redis down）；另以 stub get_job 离线驱动修复后的 Redis 生成器确认 `ping→job.completed` 与立即 `job.failed` 重放。前端零改动未重跑。
+ - **Run archive**: docs/task_runs/UPSTREAM-081-002-20260907-190004/（implementation-round2.md 第五节）
++
++## 2026-09-08 | UPSTREAM-081-003 自动执行中止
++
++- 状态：NEEDS_HUMAN。实际 diff 将龙虎榜所有 TypeError 归为正常无数据并反转原失败保护测试；无对应真实失败证据，协调员按 P1 打回并停止本轮进程树。
++- 保留未提交 provider/测试草稿，未运行验收测试或 Codex CLI review，未提交。
++- 档案：docs/task_runs/UPSTREAM-081-003-20260908-200214/summary.md。
+[0m
+[0m$ [0mgit diff docs/TASKS.md
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index dac7623..a64f8b8 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -59,7 +59,7 @@
+ 29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）。
+ 30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32）。
+ 31. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，done — r2 修复通过，离线测试直审补位，commit f0f3814）。
+-32. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked — NEEDS_HUMAN：OpenCode 首轮方向错误被协调员停止，见 task_runs/20260908-200214/summary.md）。
++32. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，in_progress — round1 方向错误被停，孟拍板按 fail-closed 正向重派，09-09 12:26）
+ 33. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
+ 34. `UPSTREAM-081-005`：Investoday 数据源权限、许可与真值审计（P2，blocked — NEEDS_HUMAN）。
+[0m
+TASKS.md 的未提交变更是主控（孟）的重派状态更新，按约束保留不动。现在纠正 round1 的两处代码方向错误：
+[0m$ [0mgit restore tradingagents/dataflows/providers/cn_akshare_provider.py tests/test_upstream_v081_absorption.py && git status --short && git diff --stat
+M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/task_runs/UPSTREAM-081-003-20260908-200214/
+?? tests/test_upstream081_akshare_gap.py
+ docs/DEVLOG.md | 6 ++++++
+ docs/TASKS.md  | 2 +-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+[0m
+Round1 代码方向已还原（provider 恢复 fail-closed，absorption 回归恢复原断言）。现在记录当前 AKShare 版本与签名，并审计上游 `aa79bca` 的实际改动：
+[0m$ [0mgit show --stat aa79bca | head -30
+commit aa79bca7a4d7d51a5d1efc8ed44d5bb965b70505
+Author: Kylin <kose2livs@gmail.com>
+Date:   Fri Jul 10 15:00:36 2026 +0800
+
+    fix: fix akshare API issues in cn_akshare_provider (#195)
+    
+    - Add XQ_A_TOKEN env var support for stock_individual_spot_xq
+    - Replace get_global_news with get_sina_global_news (sina zhibo API)
+    - Add get_sina_global_news method with configurable page/tag params
+    - Fix get_board_fund_flow: use stock_fund_flow_industry instead of stock_board_industry_fund_flow_em
+    - Fix get_lhb_detail: remove unsupported symbol param, filter locally
+    - Fix get_hot_stocks_xq: use '本周新增' instead of '最热门'
+    - Improve error messages for lhb TypeError (data not yet updated)
+    
+    Co-authored-by: data.lite <data.lite@dlite.com>
+    Co-authored-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+ .../dataflows/providers/cn_akshare_provider.py     | 148 +++++++++++++--------
+ 1 file changed, 96 insertions(+), 52 deletions(-)
+[0m
+[0m$ [0msource .venv/bin/activate && python -c "
+import inspect, akshare as ak
+print('akshare version:', ak.__version__)
+for fn in ['stock_individual_spot_xq','news_cctv','stock_fund_flow_industry','stock_lhb_detail_em','stock_hot_follow_xq','stock_board_industry_fund_flow_em','stock_sector_fund_flow_rank']:
+    f = getattr(ak, fn, None)
+    if f is None:
+        print(f'{fn}: NOT_PRESENT')
+    else:
+        print(f'{fn}{inspect.signature(f)}')
+"
+akshare version: 1.18.30
+stock_individual_spot_xq(symbol: str = 'SH600000', token: str = None, timeout: float = None) -> pandas.core.frame.DataFrame
+news_cctv(date: str = '20240424') -> pandas.core.frame.DataFrame
+stock_fund_flow_industry(symbol: str = '即时') -> pandas.core.frame.DataFrame
+stock_lhb_detail_em(start_date: str = '20230403', end_date: str = '20230417') -> pandas.core.frame.DataFrame
+stock_hot_follow_xq(symbol: str = '最热门') -> pandas.core.frame.DataFrame
+stock_board_industry_fund_flow_em: NOT_PRESENT
+stock_sector_fund_flow_rank(indicator: str = '今日', sector_type: str = '行业资金流') -> pandas.core.frame.DataFrame
+[0m
+[0m$ [0mgit show aa79bca -- tradingagents/dataflows/providers/cn_akshare_provider.py > /Users/maybee/.openclaw/tmp/opencode/aa79bca.diff && wc -l /Users/maybee/.openclaw/tmp/opencode/aa79bca.diff
+233 /Users/maybee/.openclaw/tmp/opencode/aa79bca.diff
+[0m
+[0m→ [0mRead /Users/maybee/.openclaw/tmp/opencode/aa79bca.diff
+上游 diff 已拿到。现在逐项对照本地实现（雪球 token / 全球新闻 / 行业资金流 / 龙虎榜 / 热搜）：
+[0m
+[0m$ [0mrg -n "_fetch_realtime_row_unlocked|XQ_A_TOKEN|stock_individual_spot_xq|def get_global_news|def get_board_fund_flow|def get_hot_stocks_xq|stock_lhb_detail_em|stock_hot_follow_xq|stock_fund_flow_industry|stock_sector_fund_flow_rank" tradingagents/dataflows/providers/cn_akshare_provider.py
+406:    def _fetch_realtime_row_unlocked(self, symbol: str) -> pd.DataFrame:
+409:        spot = ak.stock_individual_spot_xq(
+411:            token=os.getenv("XQ_A_TOKEN"),
+435:            return self._fetch_realtime_row_unlocked(symbol)
+1004:    def get_global_news(
+1347:    def get_board_fund_flow(self) -> str:
+1349:        # Primary: stock_fund_flow_industry
+1358:                df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
+1372:        """Primary board fund flow via stock_fund_flow_industry."""
+1376:                df = ak.stock_fund_flow_industry(symbol="即时")
+1508:                df = ak.stock_lhb_detail_em(
+1549:    def get_hot_stocks_xq(self) -> str:
+1554:                df = ak.stock_hot_follow_xq(symbol="最热门")
+[0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=45, offset=400][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=80, offset=1004][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=70, offset=1345][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=40, offset=1546][0m
+[0m
+[0m$ [0mls docs/data_source_reports/ 2>/dev/null | rg -i "akshare|v081" ; echo "---" ; rg -n "XQ_A_TOKEN|token" tradingagents/dataflows/providers/cn_akshare_provider.py | head -5
+---
+35:def reset_scheduled_task_context(token: contextvars.Token) -> None:
+37:    _is_scheduled_task.reset(token)
+411:            token=os.getenv("XQ_A_TOKEN"),
+[0m
+[0m→ [0mRead tests/test_upstream_v081_absorption.py[90m [limit=60, offset=100][0m
+本地实现已核对。检查 round1 引用的审计文档是否存在，并核对 absorption 回归的原始断言：
+本地回归 `test_lhb_type_error_fails_closed` 已恢复原断言（LHB_FAILED + TypeError）。round1 测试文件引用的审计文档 `docs/data_source_reports/akshare-v081-upstream-audit-2026-09-08.md` 并不存在——引用悬空，需要补真实审计文档。先核对测试依赖的几个内部符号：
+[0m
+[0m$ [0mrg -n "def _xq_symbol" -A 8 tradingagents/dataflows/providers/cn_akshare_provider.py && rg -n "def _is_failure_result" -A 15 tradingagents/dataflows/interface.py && rg -n "get_lhb_detail" tradingagents/default_config.py
+207:    def _xq_symbol(self, symbol: str) -> str:
+208-        code = self._normalize_symbol(symbol)
+209-        if code.startswith(("4", "8", "920")):
+210-            return f"BJ{code}"
+211-        if code.startswith(("5", "6", "9")):
+212-            return f"SH{code}"
+213-        return f"SZ{code}"
+214-
+215-    def _is_likely_etf_symbol(self, symbol: str) -> bool:
+147:def _is_failure_result(result) -> bool:
+148-    if not isinstance(result, str):
+149-        return False
+150-    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+151-
+152-
+153-def _is_degraded_result(result) -> bool:
+154-    if not isinstance(result, str):
+155-        return False
+156-    return any(marker in result for marker in _DEGRADED_RESULT_MARKERS)
+157-
+158-
+159-_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+160-
+161-
+162-def _summarize_args(args: tuple, kwargs: dict) -> str:
+45:        "get_lhb_detail": "cn_tushare,cn_akshare,cn_astock",
+[0m
+[0m$ [0mrg -n "_FAILURE_RESULT_PATTERNS" -A 12 tradingagents/dataflows/interface.py | head -20
+114:_FAILURE_RESULT_PATTERNS = (
+115-    "数据获取失败",
+116-    "ProxyError",
+117-    "ConnectionError",
+118-    "Max retries exceeded",
+119-    "Unable to connect",
+120-    "暂不可用",
+121-    "获取失败",
+122-    "TimeoutError",
+123-    "ConnectTimeout",
+124-    "ReadTimeout",
+125-    "LHB_FAILED",
+126-    "BUYBACK_FAILED",
+--
+150:    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+151-
+152-
+153-def _is_degraded_result(result) -> bool:
+154-    if not isinstance(result, str):
+155-        return False
+[0m
+路由层已把 `LHB_FAILED` 认定为失败并触发 provider 降级——fail-closed 链路完整。现在做小范围只读 live 探测（各 1 次调用、不调用 LLM、不做全市场扫描），为审计决策取证：
+[0m← [0mWrite /Users/maybee/.openclaw/tmp/opencode/up081003_probe.py
+Wrote file successfully.
+[0m
+[0m$ [0msource .venv/bin/activate && timeout 90 python /Users/maybee/.openclaw/tmp/opencode/up081003_probe.py 2>/dev/null
+(no output)
+[0m
+[0m$ [0msource .venv/bin/activate && timeout 90 python /Users/maybee/.openclaw/tmp/opencode/up081003_probe.py > /Users/maybee/.openclaw/tmp/opencode/probe_out.json 2>/Users/maybee/.openclaw/tmp/opencode/probe_err.txt; echo "exit=$?"; wc -c /Users/maybee/.openclaw/tmp/opencode/probe_out.json
+exit=127
+       0 /Users/maybee/.openclaw/tmp/opencode/probe_out.json
+[0m
+[0m$ [0mcat /Users/maybee/.openclaw/tmp/opencode/probe_err.txt
+zsh:1: command not found: timeout
+[0m
+[0m$ [0msource .venv/bin/activate && python /Users/maybee/.openclaw/tmp/opencode/up081003_probe.py 2>/Users/maybee/.openclaw/tmp/opencode/probe_err.txt; echo "exit=$?"
+{
+  "akshare_version": "1.18.30",
+  "news_cctv_20260908": {
+    "rows": 12,
+    "cols": [
+      "date",
+      "title",
+      "content"
+    ]
+  },
+  "hot_xq_最热门": {
+    "rows": 5640,
+    "cols": [
+      "股票代码",
+      "股票简称",
+      "关注",
+      "最新价"
+    ]
+  },
+  "hot_xq_本周新增": {
+    "rows": 5640,
+    "cols": [
+      "股票代码",
+      "股票简称",
+      "关注",
+      "最新价"
+    ]
+  },
+  "lhb_20260908": {
+    "rows": 59,
+    "cols": [
+      "序号",
+      "代码",
+      "名称",
+      "上榜日",
+      "解读",
+      "收盘价",
+      "涨跌幅",
+      "龙虎榜净买额"
+    ],
+    "target_600036_rows": 0
+  }
+}
+exit=0
+[0m
+Live 探测全部成功，证据完整：
+- `news_cctv` 在 1.18.30 可用（20260908 返回 12 行）→ 上游 sina 替换不必移植
+- 雪球热搜 `"最热门"` 在 1.18.30 可用 → 不必换 `"本周新增"`
+- 龙虎榜 20260908 实际可取到 59 行，`600036` 本地过滤后 0 行（正常未上榜）→ 协调员结论复现：数据可取，TypeError 场景未发生，必须保持 fail-closed
+
+先核对 `get_global_news` 本地调用方是否依赖 `look_back_days/limit` 签名（上游把它删了），然后按正确语义重写测试：
+[0m$ [0mrg -rn "get_global_news" --type py | rg -v "test_|def get_global_news" | head
+tradingagents/prompts/en.py:    "news_system_message": "You are a news researcher analyzing recent market and macro trends over the past week. Use get_news for company-specific news and n for macro news. Write a comprehensive, detailed report and append a Markdown summary table at the end. At the very end, append this machine-readable line (fixed format, do not omit): <!-- VERDICT: {\"direction\": \"BULLISH\", \"reason\": \"one-sentence conclusion under 15 words\"} --> direction must be one of: BULLISH / LEAN_BULLISH / NEUTRAL / LEAN_BEARISH / BEARISH (use LEAN_BULLISH or LEAN_BEARISH when data leans directionally but lacks full confirmation; use NEUTRAL only when data is genuinely insufficient)",
+tradingagents/prompts/zh.py:2. 使用 n 获取宏观/行业层新闻。
+tradingagents/dataflows/yfinance_news.py:def n_yfinance(
+tradingagents/dataflows/alpha_vantage.py:from .alpha_vantage_news import get_news, n, get_insider_transactions
+tradingagents/dataflows/alpha_vantage_news.py:def n(curr_date, look_back_days: int = 7, limit: int = 50) -> dict[str, str] | str:
+tradingagents/dataflows/interface.py:            "n",
+tradingagents/dataflows/providers/base.py:    def n(
+tradingagents/dataflows/providers/yfinance_provider.py:from ..yfinance_news import get_news_yfinance, n_yfinance
+tradingagents/dataflows/providers/yfinance_provider.py:    def n(
+tradingagents/dataflows/providers/yfinance_provider.py:        return n_yfinance(curr_date, look_back_days, limit)
+[0m
+（上条输出里的 `n` 是我误用了 `rg -r` 替换显示，不影响结论：本地 `base.py` 接口契约声明了 `look_back_days/limit`，上游删除该签名属于破坏性变更，不移植。）
+
+现在按正确语义重写 gap 测试——核心纠正：TypeError 必须 fail-closed（LHB_FAILED + 触发路由降级），不得归为 NORMAL_NO_DATA：
+[0m← [0mWrite tests/test_upstream081_akshare_gap.py
+Wrote file successfully.
+[0m
+测试文件已按 fail-closed 语义重写。现在补上 round1 引用悬空的真实审计文档：
+[0m$ [0mls docs/data_source_reports/ | tail -5
+research-source-smoke-2026-07-10.md
+research_report_sources-2026-07-01.md
+[0m
+[0m← [0mWrite docs/data_source_reports/akshare-v081-upstream-audit-2026-09-09.md
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] 审计工作区 round1 既有 diff，逐项处置（纠正 TypeError→NORMAL_NO_DATA、还原 fail-closed 回归）
+[✓] 记录当前 AKShare 版本与相关函数签名
+[✓] 逐接口差异审计（雪球token/全球新闻/行业资金流/龙虎榜参数/热门接口）上游 aa79bca vs 本地
+[✓] 按正确语义补完 tests/test_upstream081_akshare_gap.py（fail-closed 方向）
+[•] 跑验证：gap + absorption + api_smoke 测试
+[ ] 更新 docs/DEVLOG.md（re-dispatch 条目）与 task_runs 本轮记录
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_upstream081_akshare_gap.py tests/test_upstream_v081_absorption.py -q --tb=short 2>&1 | tail -15
+..................................................................       [100%]
+66 passed in 1.63s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_api_smoke.py -q --tb=short 2>&1 | tail -8
+........................................................................ [ 82%]
+...............                                                          [100%]
+87 passed in 28.21s
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [offset=16275][0m
+全部通过：gap+absorption 66 passed，api_smoke 87 passed。更新 DEVLOG 与 task_runs 本轮记录：
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -16286,4 +16286,13 @@
+ 
+ - 状态：NEEDS_HUMAN。实际 diff 将龙虎榜所有 TypeError 归为正常无数据并反转原失败保护测试；无对应真实失败证据，协调员按 P1 打回并停止本轮进程树。
+ - 保留未提交 provider/测试草稿，未运行验收测试或 Codex CLI review，未提交。
+ - 档案：docs/task_runs/UPSTREAM-081-003-20260908-200214/summary.md。
++
++## 2026-09-09 | UPSTREAM-081-003 re-dispatch — 按 fail-closed 正向重做（round2）
++
++- **Task**: UPSTREAM-081-003 — AKShare v0.8.1 差异审计与最小修复（P1）；round1 方向已被协调员否决，本轮按孟拍板的 fail-closed 方向重做。
++- **round1 diff 处置**：`cn_akshare_provider.py` 的 `except TypeError → LHB_NORMAL_NO_DATA`（+10 行）**整体还原**，TypeError 恢复走 `LHB_FAILED` 并触发路由降级；`tests/test_upstream_v081_absorption.py` 被反转的 `test_lhb_type_error_fails_closed` **还原**（LHB_FAILED + TypeError 断言复位）。
++- **差异审计**（上游 `aa79bca` vs 本地，akshare 1.18.30 实测签名 + 低频只读 live 探测，共 5 次调用不触 LLM）：5 项均无需移植新代码。雪球 token（本地已移植 `XQ_A_TOKEN`）、行业资金流（本地 `stock_fund_flow_industry` 主源 + `stock_sector_fund_flow_rank` fallback，超集）、龙虎榜去 symbol 参数（已移植且代码列缺失单独归类）——三项上游修复本地早已存在；全球新闻 sina zhibo 替换（破坏 look_back_days/limit 契约且 fail-open）与热搜"本周新增"替换（1.18.30 实测"最热门"返回 5640 行可用）——两项不移植。news_cctv 实测 20260908 返回 12 行；龙虎榜 20260908 返回 59 行、600036 本地过滤 0 行（正常未上榜，走 NORMAL_NO_DATA），"TypeError=未发布"场景两轮均未复现。
++- **测试**：`tests/test_upstream081_akshare_gap.py` 按 fail-closed 语义重写完成（26 用例：TypeError→LHB_FAILED 且被 `_is_failure_result` 识别触发降级；接口缺失 AttributeError 单独归类；空数据/未上榜才是 NORMAL_NO_DATA；全市场结果不得混入目标股票；Tushare 主源优先级不降低；1.18.30 签名漂移守卫）。gap+absorption 合跑 **66 passed**；api_smoke 回归 **87 passed**。审计文档：docs/data_source_reports/akshare-v081-upstream-audit-2026-09-09.md（round1 引用悬空的审计文档本轮补齐）。
++- **约束遵守**：未改 `tradingagents/prompts/`、未提交/推送、未改 TASKS.md 状态（主控管理）、未写生产 DB、未做全市场扫描与个股深度 TA；无 provider 生产代码改动（本轮结论为零移植，仅测试与文档）。
++- **待办**：独立 Codex review 通过后才允许提交。
+
+[0m
+[0m← [0mWrite docs/task_runs/UPSTREAM-081-003-20260908-200214/redispatch-round2.md
+Wrote file successfully.
+[0m
+[0m$ [0mgit status --short && source .venv/bin/activate && python -m pytest tests/test_upstream081_akshare_gap.py tests/test_upstream_v081_absorption.py tests/test_api_smoke.py -q --tb=short 2>&1 | tail -3
+M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/data_source_reports/akshare-v081-upstream-audit-2026-09-09.md
+?? docs/task_runs/UPSTREAM-081-003-20260908-200214/
+?? tests/test_upstream081_akshare_gap.py
+........................................................................ [ 94%]
+.........                                                                [100%]
+153 passed in 26.38s
+[0m
+[0m# [0mTodos
+[✓] 审计工作区 round1 既有 diff，逐项处置（纠正 TypeError→NORMAL_NO_DATA、还原 fail-closed 回归）
+[✓] 记录当前 AKShare 版本与相关函数签名
+[✓] 逐接口差异审计（雪球token/全球新闻/行业资金流/龙虎榜参数/热门接口）上游 aa79bca vs 本地
+[✓] 按正确语义补完 tests/test_upstream081_akshare_gap.py（fail-closed 方向）
+[✓] 跑验证：gap + absorption + api_smoke 测试
+[✓] 更新 docs/DEVLOG.md（re-dispatch 条目）与 task_runs 本轮记录
+[0m
+任务完成，等待独立 Codex review。汇总如下：
+
+## 一、round1 既有 diff 处置清单
+
+| 文件 | round1 改动 | 处置 |
+| --- | --- | --- |
+| `cn_akshare_provider.py` | `except TypeError → LHB_NORMAL_NO_DATA`（+10 行） | **还原**（git restore）——TypeError 恢复走 `LHB_FAILED` 触发降级 |
+| `tests/test_upstream_v081_absorption.py` | `test_lhb_type_error_fails_closed` 断言被反转 | **还原**——fail-closed 断言（LHB_FAILED + TypeError）复位 |
+| `tests/test_upstream081_akshare_gap.py` | 未完成草稿，含 2 个错误方向用例 | **重写**（26 用例，fail-closed 语义） |
+| round1 引用的审计文档不存在（悬空引用） | — | **补齐**真实审计文档（-2026-09-09.md） |
+| DEVLOG round1 中止条目 / TASKS.md 主控状态更新 | — | 保留（TASKS.md 归主控管理） |
+
+## 二、差异审计结论（上游 `aa79bca` vs 本地，akshare **1.18.30** 实测签名 + 5 次低频只读 live 探测）
+
+| 接口 | 结论 | 证据 |
+| --- | --- | --- |
+| 雪球 token | 本地已移植，无缺口 | 签名含 `token`；KeyError 权限失败异常传播 |
+| 全球新闻 | **不移植**上游 sina 替换 | `news_cctv("20260908")`=12 行可用；上游删 `look_back_days/limit` 契约且 fail-open |
+| 行业资金流 | 本地为上游修复超集（+`stock_sector_fund_flow_rank` fallback） | 旧接口 `stock_board_industry_fund_flow_em` 在 1.18.30 NOT_PRESENT |
+| 龙虎榜参数 | 去 symbol 参数已移植且更强；**TypeError→"未更新" 纠正还原不移植** | 20260908 实测 59 行可取、600036 过滤 0 行（正常未上榜走 NORMAL_NO_DATA）；两轮均未复现“未发布"场景 |
+| 热门接口 | **不移植**"本周新增" | `"最热门"` 实测 5640 行可用，默认值未变；签名守卫防漂移 |
+
+净变更：**零 provider 生产代码改动**（round1 的 10 行已还原），仅测试重写 + 审计文档 + 日志。
+
+## 三、测试结果
+
+```
+pytest tests/test_upstream081_akshare_gap.py tests/test_upstream_v081_absorption.py -q
+→ 66 passed in 1.63s
+pytest tests/test_api_smoke.py -q
+→ 87 passed in 28.21s
+合跑 → 153 passed in 26.38s
+```
+
+风险点提示：龙虎榜 LHB_FAILED 后依赖 `cn_tushare → cn_astock` 降级链，若 Tushare 凭据失效该链路兜底能力需另行验证（本轮未触真实凭据）。未 commit / push / 改 prompts / 写生产 DB。
