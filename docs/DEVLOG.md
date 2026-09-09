@@ -16296,3 +16296,10 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **测试**：`tests/test_upstream081_akshare_gap.py` 按 fail-closed 语义重写完成（22 个用例函数；r2 review 曾指出记录误写 26，已修正：TypeError→LHB_FAILED 且被 `_is_failure_result` 识别触发降级；接口缺失 AttributeError 单独归类；空数据/未上榜才是 NORMAL_NO_DATA；全市场结果不得混入目标股票；Tushare 主源优先级不降低；1.18.30 签名漂移守卫）。gap+absorption 合跑 **66 passed**；api_smoke 回归 **87 passed**。审计文档：docs/data_source_reports/akshare-v081-upstream-audit-2026-09-09.md（round1 引用悬空的审计文档本轮补齐）。
 - **约束遵守**：未改 `tradingagents/prompts/`、未提交/推送、未改 TASKS.md 状态（主控管理）、未写生产 DB、未做全市场扫描与个股深度 TA；无 provider 生产代码改动（本轮结论为零移植，仅测试与文档）。
 - **待办**：独立 Codex review 通过后才允许提交。
+
+## 2026-09-09 | UPSTREAM-081-004 — Agent 协同图平移与节点完整显示
+
+- **Task**: UPSTREAM-081-004（P2）— 适配移植上游 `74b22ad`（#118 量价节点被裁）与 `06a0e28`（#203 协同图完整平移）到已分叉的本地 AgentCollaboration.tsx。
+- **改动**：`group-sources` 高度 760→860；移植 #203 的 FIT_VIEW_OPTIONS{padding:0.06,minZoom:0.72,maxZoom:1}、flowInstanceRef+onInit、分析结束（isAnalyzing false）requestAnimationFrame 重新 fit、resize 120ms 防抖重 fit、translateExtent 放宽 [[-300,-160],[2050,900]]、panOnDrag 显式 true。适配点：画布保留本地响应式高度（hidden lg:block，xl 700→810 对齐 #118），窄屏复用既有 mobile compact workflow（15 节点全覆盖，测试守卫）。
+- **测试**：新建 `tests/test_upstream081_agent_collaboration_ui.py`（19 用例，源码级断言 + 纯几何单测验证 translateExtent 覆盖全部节点坐标边界）**19 passed**；`npm run build`（tsc+vite）通过；eslint 组件 0 问题。Playwright 截图由主控浏览器工具补做。
+- **档案**：docs/task_runs/UPSTREAM-081-004-20260909-agent-collab-pan/task.md。

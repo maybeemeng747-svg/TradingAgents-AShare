@@ -1,4 +1,4 @@
-import { useMemo, useCallback, memo } from 'react'
+import { useMemo, useCallback, useEffect, useRef, memo } from 'react'
 import {
     ReactFlow,
     Handle,
@@ -8,6 +8,7 @@ import {
     type Edge,
     type NodeProps,
     type NodeTypes,
+    type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useAnalysisStore } from '@/stores/analysisStore'
@@ -139,10 +140,18 @@ interface GroupLabelDef {
 }
 
 const GROUP_LABELS: GroupLabelDef[] = [
-    { id: 'group-sources', label: '技术分析', position: { x: -16, y: -30 }, width: 248, height: 760 },
+    { id: 'group-sources', label: '技术分析', position: { x: -16, y: -30 }, width: 248, height: 860 },
     { id: 'group-research', label: '研究团队', position: { x: 454, y: 44 }, width: 410, height: 450 },
     { id: 'group-risk', label: '风控团队', position: { x: 1164, y: 44 }, width: 248, height: 450 },
 ]
+
+// fitView 统一参数：略收边距并限制最小缩放，保证高密度布局下文字可读，
+// 其余区域靠平移访问（translateExtent 已放宽覆盖全部节点）。
+const FIT_VIEW_OPTIONS = {
+    padding: 0.06,
+    minZoom: 0.72,
+    maxZoom: 1,
+} as const
 
 // ── 自定义节点组件 ────────────────────────────────────────────────────────────
 
@@ -163,6 +172,7 @@ type GroupLabelNodeData = {
     [key: string]: unknown
 }
 type GroupLabelFlowNode = Node<GroupLabelNodeData, 'groupLabel'>
+type CollaborationNode = AgentFlowNode | GroupLabelFlowNode
 
 function AgentNodeComponent({ data }: NodeProps<AgentFlowNode>) {
     const { meta, status, verdict, isParticipating, selected } = data
@@ -298,6 +308,36 @@ interface AgentCollaborationProps {
 
 export default function AgentCollaboration({ onSelectSection, onOpenDebate, selectedSection }: AgentCollaborationProps) {
     const { agents, isAnalyzing, streamingSections, report, currentHorizon } = useAnalysisStore()
+    const flowInstanceRef = useRef<ReactFlowInstance<CollaborationNode, Edge> | null>(null)
+
+    const fitGraph = useCallback((duration = 300) => {
+        void flowInstanceRef.current?.fitView({
+            ...FIT_VIEW_OPTIONS,
+            duration,
+        })
+    }, [])
+
+    // 完成态的节点卡片比待命态更高（verdict 展开）。分析收尾后等一帧
+    // 重新 fit，保证底部量价节点完整可见。
+    useEffect(() => {
+        if (isAnalyzing) return
+        const frameId = window.requestAnimationFrame(() => fitGraph())
+        return () => window.cancelAnimationFrame(frameId)
+    }, [isAnalyzing, fitGraph])
+
+    // 窗口尺寸变化（含跨越 lg 断点画布显隐）后防抖重新 fit。
+    useEffect(() => {
+        let timeoutId: ReturnType<typeof window.setTimeout> | undefined
+        const handleResize = () => {
+            if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+            timeoutId = window.setTimeout(() => fitGraph(0), 120)
+        }
+        window.addEventListener('resize', handleResize)
+        return () => {
+            window.removeEventListener('resize', handleResize)
+            if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+        }
+    }, [fitGraph])
 
     const cards = useMemo(() => META.map((meta) => {
         const agent = agents.find(a => a.name === meta.name)
@@ -326,7 +366,7 @@ export default function AgentCollaboration({ onSelectSection, onOpenDebate, sele
     ], [])
 
     // 构建 React Flow 节点
-    const nodes: (AgentFlowNode | GroupLabelFlowNode)[] = useMemo(() => {
+    const nodes: CollaborationNode[] = useMemo(() => {
         const agentNodes: AgentFlowNode[] = cards.map(card => ({
             id: card.meta.name,
             type: 'agent',
@@ -493,28 +533,31 @@ export default function AgentCollaboration({ onSelectSection, onOpenDebate, sele
                 ))}
             </div>
 
-            {/* React Flow 画布 */}
-            <div className="hidden lg:block h-[620px] xl:h-[700px] w-full">
+            {/* React Flow 画布（窄屏 <lg 由上方 mobile compact workflow 兜底展示全部节点） */}
+            <div className="hidden lg:block h-[620px] xl:h-[810px] w-full">
                 <ReactFlow
                     nodes={nodes}
                     edges={edges}
                     nodeTypes={nodeTypes}
                     onNodeClick={handleNodeClick}
+                    onInit={(instance) => {
+                        flowInstanceRef.current = instance
+                    }}
                     fitView
-                    fitViewOptions={{ padding: 0.08, includeHiddenNodes: false }}
+                    fitViewOptions={FIT_VIEW_OPTIONS}
                     minZoom={0.35}
                     maxZoom={1}
                     nodesDraggable={false}
                     nodesConnectable={false}
                     nodesFocusable={false}
                     edgesFocusable={false}
-                    panOnDrag
+                    panOnDrag={true}
                     panOnScroll={false}
                     zoomOnScroll={false}
                     zoomOnPinch={false}
                     zoomOnDoubleClick={false}
                     preventScrolling={false}
-                    translateExtent={[[-40, -40], [1730, 660]]}
+                    translateExtent={[[-300, -160], [2050, 900]]}
                     proOptions={{ hideAttribution: true }}
                 />
             </div>
