@@ -59,7 +59,7 @@
 29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）。
 30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32）。
 31. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，done — r2 修复通过，离线测试直审补位，commit f0f3814）。
-32. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，blocked — NEEDS_HUMAN：OpenCode 首轮方向错误被协调员停止，见 task_runs/20260908-200214/summary.md）。
+32. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，done — 审计结论零移植（本地为上游修复超集），round1 错误改动已还原，commit 515d80a）。
 33. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，blocked-auto）。
 34. `UPSTREAM-081-005`：Investoday 数据源权限、许可与真值审计（P2，blocked — NEEDS_HUMAN）。
 
