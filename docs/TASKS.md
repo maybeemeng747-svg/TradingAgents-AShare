@@ -60,7 +60,7 @@
 30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32）。
 31. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，done — r2 修复通过，离线测试直审补位，commit f0f3814）。
 32. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，done — 审计结论零移植（本地为上游修复超集），round1 错误改动已还原，commit 515d80a）。
-33. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，ready，依赖已闭环）。
+33. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，done — 2026-09-09 cron 自动交付，19 测试过+build 过，截图验收遗留，commit dafe285）。
 34. `UPSTREAM-081-005`：Investoday 数据源权限、许可与真值审计（P2，blocked — NEEDS_HUMAN）。
 
 > 先修确定性财务与动作门禁，再继续 SCORE-004/005/006、V-014/V-015 或新功能。真实 603629、live LLM、生产数据库写入和自动 push 继续保持人工确认。
@@ -409,7 +409,7 @@
 ### UPSTREAM-081-004: Agent 协同图平移与节点完整显示（P2）
 - **描述**：参考上游 `74b22ad`（#118）与 `06a0e28`（#203），让协同工作流可完整平移，量价分析等边缘节点不被裁切，同时保持本地深色高密度布局。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done（2026-09-09 19:00 cron 自动派发，OpenCode 适配实现，主控独立复核测试/构建/diff 通过，commit dafe285；遗留：前端登录墙致截图验收未做）
 - **depends_on**：UPSTREAM-081-003
 - **auto_release**：true
 - **预计耗时**：25-40 分钟
