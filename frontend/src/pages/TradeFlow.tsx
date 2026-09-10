@@ -11,6 +11,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon, Flame, Crosshair } from 'lucide-react'
 import { api } from '@/services/api'
+import { createLatestRequestGuard, extractWatchPoolCandidates } from '@/services/watchPoolService'  // [M-009-R1] watch_pool_independent_source
 import {
     RUNTIME_TIER_LABELS,
 } from '@/types'
@@ -2263,7 +2264,8 @@ function CompareTab({ candidates, sortBy, onSortChange, onRowClick }: {
 // strategy tags, trigger/invalid prices, filter reasons, and TA requirements.
 type WatchPoolView = 'watching' | 'need-ta' | 'filtered'
 
-function WatchPoolTab({
+// [M-009-R1] export 供离线 mock UI 验收截图使用（桌面/手机视口）
+export function WatchPoolTab({
     candidates,
     filteredItems,
     onRowClick,
@@ -2601,6 +2603,11 @@ export default function TradeFlow() {
     const [taQueueData, setTaQueueData] = useState<TradeFlowTAQueueResponse | null>(null)
     const [reviewData, setReviewData] = useState<TradeFlowReviewResponse | null>(null)
     const [filteredData, setFilteredData] = useState<TradeFlowFilteredResponse | null>(null)  // [UI-007] tradeflow_filtered_trace
+    // [M-009-R1] watch_pool_independent_source — 观察池独立数据源：
+    // 不继承候选页 tier/deep_ta/类型/池 服务端筛选与 observeFilter 客户端
+    // 过滤，必须读取完整观察状态集合
+    const [watchPoolCandidates, setWatchPoolCandidates] = useState<TradeFlowCandidateItem[]>([])
+    const watchPoolRequestGuardRef = useRef(createLatestRequestGuard())
 
     // [TF-UX-001] tiered candidates state
     const [tieredData, setTieredData] = useState<TradeFlowTieredCandidatesResponse | null>(null)
@@ -2812,6 +2819,28 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [M-009-R1] watch_pool_independent_source — 观察池专用加载：
+    // 不带候选页任何筛选参数（tier/deep_ta/candidate_type/pool 均不传），
+    // 也不应用 observeFilter；快速切换时过期响应由序号守卫丢弃。
+    const fetchWatchPool = useCallback(async (date: string) => {
+        const guard = watchPoolRequestGuardRef.current
+        const reqId = guard.next()
+        setLoading(true)
+        setError(null)
+        try {
+            const res = await api.getTradeFlowCandidates(date)
+            if (!guard.isCurrent(reqId)) return
+            setWatchPoolCandidates(extractWatchPoolCandidates(res))
+        } catch (e: unknown) {
+            if (!guard.isCurrent(reqId)) return
+            setError(e instanceof Error ? e.message : '加载观察池失败')
+        } finally {
+            if (guard.isCurrent(reqId)) {
+                setLoading(false)
+            }
+        }
+    }, [])
+
     // [TF-UX-003] generate review
     // [TF-REVIEW-004] review_empty_diagnostics — surface failure reason
     const [reviewGenerateError, setReviewGenerateError] = useState<string>('')
@@ -2889,8 +2918,9 @@ export default function TradeFlow() {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
         } else if (activeTab === 'watch-pool') {
-            // [M-009] tradeflow_watch_pool_panel — load both candidates and filtered data
-            await fetchCandidates(date)
+            // [M-009-R1] watch_pool_independent_source — 观察池加载不经过
+            // fetchCandidates（其携带候选页筛选），改用独立数据源
+            await fetchWatchPool(date)
             await fetchFiltered(date)
         } else if (activeTab === 'compare') {
             await fetchCompare(date)
@@ -2912,7 +2942,7 @@ export default function TradeFlow() {
         } else if (activeTab === 'paper-ledger') {
             await fetchPaperLedger()
         }
-    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchLiveSampling, fetchTopicHeatmap, fetchMandateDailyReport, fetchFiltered, fetchPaperLedger])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchLiveSampling, fetchTopicHeatmap, fetchMandateDailyReport, fetchFiltered, fetchPaperLedger, fetchWatchPool])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -3643,10 +3673,12 @@ export default function TradeFlow() {
         }
 
         // [M-009] tradeflow_watch_pool_panel
+        // [M-009-R1] candidates 来自独立数据源 watchPoolCandidates，
+        // 与候选页筛选解耦
         if (activeTab === 'watch-pool') {
             return (
                 <WatchPoolTab
-                    candidates={candidates}
+                    candidates={watchPoolCandidates}
                     filteredItems={filteredData?.filtered ?? []}
                     onRowClick={handleRowClick}
                     onNavigateToAnalysis={(url) => navigate(url)}

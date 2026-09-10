@@ -34,8 +34,8 @@
 | 2 | C-005-R1 止损语义与研究方向 | done（待统一 review） | 20-30 |
 | 3 | C-006-R1 财务质量指标生产接线 | done（待统一 review） | 30-45 |
 | 4 | HY-009-R1 增量缓存与冲突审计 | done（待统一 review） | 30-45 |
-| 5 | M-009-R1 观察池独立筛选 | in_progress | 25-40 |
-| 6 | UI-014-R1 研报证据契约与请求状态 | blocked-auto | 30-50 |
+| 5 | M-009-R1 观察池独立筛选 | done（待统一 review） | 25-40 |
+| 6 | UI-014-R1 研报证据契约与请求状态 | in_progress | 30-50 |
 | 7 | V-014 真实知识库只读验收 | blocked-auto | 25-45 |
 | 8 | V-015 研报全链路验收 | blocked-auto | 25-45 |
 
@@ -504,7 +504,7 @@
 ### M-009-R1: 观察池独立数据源补修（P2）
 - **描述**：观察池不得继承候选页隐藏筛选条件，必须读取完整观察状态集合。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：done — 代码已提交、vitest 5 passed + build 通过 + 离线 mock 双视口截图；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/M-009-R1-20260911-000000/`）
 - **depends_on**：HY-009-R1
 - **auto_release**：true
 - **允许修改**：`frontend/src/pages/TradeFlow.tsx`、相关 API client/types 和只读观察池 service、对应测试及任务档案。

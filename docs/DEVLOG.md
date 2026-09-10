@@ -1,5 +1,23 @@
 # 修改日志
 
+## 2026-09-11 | M-009-R1 观察池独立数据源补修（Z Code 连续模式第 5 项）
+
+- **根因**（`TradeFlow.tsx`）：观察池 tab 复用 `fetchCandidates`，该函数
+  把候选页筛选传给服务端（tier/need_deep_ta/candidate_type/pool）并套
+  客户端 `observeFilter` 过滤——候选页筛选后观察池只显示子集，完整
+  观察状态集合丢失。
+- **修复**：新增只读观察池 service（`watchPoolService.ts`：
+  `extractWatchPoolCandidates` 完整集合口径 + `createLatestRequestGuard`
+  快速切换守卫）；`TradeFlow.tsx` 新增 `fetchWatchPool`（不带任何筛选
+  参数，API client 无需改动），watch-pool 分支与 `WatchPoolTab` 数据源
+  解耦；请求失败/过期响应经守卫处理。
+- **测试**：vitest 5 passed；`tsc --noEmit` 干净；`npm run build` 通过；
+  离线 mock UI 截图验证桌面（1280×860）+ 手机（390×844）双视口——
+  候选页筛选场景下观察池仍显示完整观察集合（含 INVALIDATED/EXPIRED），
+  被过滤/空态视图正常，全程零 API 调用。截图存于运行档案。
+- **review**：按用户 2026-09-10 指示统一安排；运行档案
+  `docs/task_runs/M-009-R1-20260911-000000/`。
+
 ## 2026-09-11 | HY-009-R1 半年报增量缓存与冲突审计补修（Z Code 连续模式第 4 项）
 
 - **三缺陷复现**：①内容零改动仅 valid_until 随时间过期 → sha1 快速路径
