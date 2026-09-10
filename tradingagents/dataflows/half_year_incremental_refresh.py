@@ -106,6 +106,10 @@ CHANGE_DELETED = "deleted"
 CHANGE_EXPIRED = "expired"
 CHANGE_UNCHANGED = "unchanged"
 
+# [HY-009-R1] 冲突扫描专用上限：冲突检测必须覆盖全部命中页，
+# 不受展示用 max_pages 截断影响。
+_CONFLICT_SCAN_MAX_PAGES = 10 ** 9
+
 
 # ── 数据类 ────────────────────────────────────────────────────────────
 
@@ -350,6 +354,36 @@ def _detect_page_changes(
                 and old_entry.mtime_ns == new_entry.mtime_ns):
             if (old_entry.sha1_prefix and new_entry.sha1_prefix
                     and old_entry.sha1_prefix == new_entry.sha1_prefix):
+                # [HY-009-R1] 内容完全一致也要检测 expiry-only 变化：
+                # 缓存构建时未过期、按注入基准日期已过期的页面，必须标记
+                # 过期变更使缓存失效并进入审计，不得当作无变化静默复用。
+                # stale_risk 无需复查：内容一致则 frontmatter 一致，
+                # 构建时已把 stale_risk=高 计入快照。
+                cached_page = (cached_pages or {}).get(rel)
+                fm = (
+                    cached_page.frontmatter
+                    if cached_page is not None and isinstance(cached_page.frontmatter, dict)
+                    else {}
+                )
+                cached_snapshot_expired = bool(
+                    cached_page is not None
+                    and (cached_page.valid_until_expired or cached_page.stale_risk_high)
+                )
+                if (
+                    fm
+                    and _is_half_year_report(fm)
+                    and not cached_snapshot_expired
+                    and _is_expired(fm, today=today)
+                ):
+                    changes.append(PageChange(
+                        rel_path=rel,
+                        change_type=CHANGE_EXPIRED,
+                        old_hash=old_entry.sha1_prefix,
+                        new_hash=new_entry.sha1_prefix,
+                        old_period=_safe_str(fm.get("financial_period")) or None,
+                        new_period=_safe_str(fm.get("financial_period")) or None,
+                        reason="仅有效期状态变化（valid_until 过期或 stale_risk=高）",
+                    ))
                 continue  # 完全一致，跳过
             # mtime 相同但 sha1 不同（罕见：touch 后内容变化）
             # 继续检查
@@ -402,6 +436,21 @@ def _detect_page_changes(
         )
 
         if not content_changed and not metadata_changed:
+            # [HY-009-R1] 仅有效期状态变化（valid_until 随时间推移过期 /
+            # stale_risk=高，内容与其他元数据未动）也必须识别为过期变更，
+            # 使缓存失效并进入审计；否则过期页在增量层被当成无变化
+            if expired:
+                changes.append(PageChange(
+                    rel_path=rel,
+                    change_type=CHANGE_EXPIRED,
+                    old_hash=old_entry.sha1_prefix,
+                    new_hash=new_entry.sha1_prefix,
+                    old_period=old_period,
+                    new_period=new_period,
+                    old_disclosure_date=old_disclosure,
+                    new_disclosure_date=new_disclosure,
+                    reason="仅有效期状态变化（valid_until 过期或 stale_risk=高）",
+                ))
             continue  # 无实质变化
 
         change_type = CHANGE_EXPIRED if expired else CHANGE_REVISED
@@ -662,12 +711,28 @@ def incremental_refresh_half_year_facts(
     result.facts_result = facts
 
     # 4. 跨版本冲突检测
-    conflict_flags = _detect_cross_version_conflicts(facts.pages)
+    # [HY-009-R1] 冲突检查不得受 max_pages 截断：冲突证据落在截断之外时
+    # 不得伪装成无冲突。用不截断的全量查询扫描冲突，展示用结果仍按
+    # max_pages 截断。
+    full_facts = query_half_year_facts(
+        knowledge_root,
+        symbol=symbol,
+        name=name,
+        cache=new_cache,
+        today=today,
+        max_pages=_CONFLICT_SCAN_MAX_PAGES,
+    )
+    conflict_flags = _detect_cross_version_conflicts(full_facts.pages)
     result.fact_conflict_flags = conflict_flags
     result.conflict_count = len(conflict_flags)
 
     # 冲突页标记 data_status=conflict（与 HY-003 口径一致）
-    _detect_conflicts(facts.pages)
+    _detect_conflicts(full_facts.pages)
+
+    # [HY-009-R1] 只要存在冲突（含现金流冲突），附加到结果的查询级
+    # data_status 必须进入 conflict（不可用），不得保持 fresh 伪装 HAS_DATA
+    if conflict_flags and result.facts_result is not None:
+        result.facts_result.data_status = DATA_CONFLICT
 
     # 5. 待 Tree Work 复核项
     pending_review = 0

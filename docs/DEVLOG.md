@@ -1,5 +1,25 @@
 # 修改日志
 
+## 2026-09-11 | HY-009-R1 半年报增量缓存与冲突审计补修（Z Code 连续模式第 4 项）
+
+- **三缺陷复现**：①内容零改动仅 valid_until 随时间过期 → sha1 快速路径
+  `continue` 跳过，`expired_count=0`、缓存被静默复用；②模块级跨版本
+  冲突输出 `_detect_cross_version_conflicts(facts.pages)` 消费 provider
+  已按 max_pages 截断的页列表，冲突证据落在截断之外时伪装成
+  no_changes+fresh；③provider `_CONFLICT_METRIC_KEYS` 缺
+  `operating_cash_flow`，现金流冲突页保持 fresh 被聚合成 HAS_DATA。
+- **修复**：①sha1 一致路径增加 expiry-only 转移检测（缓存快照未过期
+  + 注入基准已过期 → CHANGE_EXPIRED，缓存失效进审计；生产真实时钟
+  下幂等）；②新增 `_CONFLICT_SCAN_MAX_PAGES` 全量冲突扫描，展示仍按
+  max_pages 截断；③冲突键补现金流（页级 conflict 不可用）+ 存在冲突时
+  `facts_result.data_status=DATA_CONFLICT`，不得伪装 HAS_DATA。
+- **测试**：验收 `pytest tests/test_hy009_half_year_incremental_refresh.py -q`
+  → **44 passed**（新增 7 项对抗）；半年报域 hy001-007 → **399 passed**；
+  hy008/kb 域 9 文件 → **524 passed**；`git diff --check` 干净。
+  知识库全程只读。
+- **review**：按用户 2026-09-10 指示统一安排；运行档案
+  `docs/task_runs/HY-009-R1-20260911-000000/`。
+
 ## 2026-09-11 | C-006-R1 财务质量指标生产接线补修（Z Code 连续模式第 3 项）
 
 - **根因**（`financial_validator.py` 规则 7）：比值

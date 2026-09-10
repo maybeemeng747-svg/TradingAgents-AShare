@@ -33,8 +33,8 @@
 | 1 | C-001-R1 持仓真源与 HOLD 门禁 | done（待统一 review） | 25-40 |
 | 2 | C-005-R1 止损语义与研究方向 | done（待统一 review） | 20-30 |
 | 3 | C-006-R1 财务质量指标生产接线 | done（待统一 review） | 30-45 |
-| 4 | HY-009-R1 增量缓存与冲突审计 | in_progress | 30-45 |
-| 5 | M-009-R1 观察池独立筛选 | blocked-auto | 25-40 |
+| 4 | HY-009-R1 增量缓存与冲突审计 | done（待统一 review） | 30-45 |
+| 5 | M-009-R1 观察池独立筛选 | in_progress | 25-40 |
 | 6 | UI-014-R1 研报证据契约与请求状态 | blocked-auto | 30-50 |
 | 7 | V-014 真实知识库只读验收 | blocked-auto | 25-45 |
 | 8 | V-015 研报全链路验收 | blocked-auto | 25-45 |
@@ -495,7 +495,7 @@
 ### HY-009-R1: 半年报增量缓存与冲突审计补修（P2）
 - **描述**：expiry-only 变化也使缓存失效；冲突检查不得受 max_pages 截断；现金流冲突进入不可用状态。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：done — 代码已提交、验收测试 44 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/HY-009-R1-20260911-000000/`）
 - **depends_on**：C-006-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/dataflows/half_year_incremental_refresh.py`、直接调用的本地知识缓存/事实审计工具、对应测试、任务档案。

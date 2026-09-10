@@ -738,7 +738,9 @@ def _is_page_stale_from_cache(
 # ── 冲突检测 ──────────────────────────────────────────────────────────
 
 
-_CONFLICT_METRIC_KEYS = ("revenue", "net_profit", "gross_margin")
+# [HY-009-R1] 经营现金流纳入关键指标冲突检测：现金流冲突同样把相关页
+# 标为 conflict（不可用），不得保持 fresh 被聚合成 HAS_DATA
+_CONFLICT_METRIC_KEYS = ("revenue", "net_profit", "gross_margin", "operating_cash_flow")
 
 
 def _detect_conflicts(pages: List[HalfYearFactsPage]) -> None:

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -1084,3 +1084,152 @@ class TestIntegration:
         # 新页面已加入
         byd_pages = [r for r in new_cache.pages if "比亚迪" in r]
         assert len(byd_pages) == 1
+
+
+# ── [HY-009-R1] expiry-only / 截断冲突 / 现金流冲突 ───────────────────────
+
+
+def _hy_page(symbol: str, period: str, *, cashflow: str = "经营现金流 15.0亿",
+             valid_until: str = "2099-12-31", title_suffix: str = "") -> str:
+    """构造带现金流事实的半年报页面。"""
+    return f"""---
+title: 测试股{symbol}-{period}半年报{title_suffix}
+created: 2025-08-29
+updated: 2025-08-29
+symbols: ["{symbol}.SZ 测试股"]
+report_type: 半年报
+evidence_level: A
+valid_until: {valid_until}
+source_quality: 高
+stale_risk: 低
+financial_period: {period}
+disclosure_date: 2025-08-29
+source_type: [exchange_filing, fact_table]
+financial_facts:
+  - 营收 100.0亿
+  - 归母净利 10.0亿
+  - {cashflow}
+---
+# 测试股 {period}
+"""
+
+
+class TestHY009R1ExpiryOnlyChange:
+    """仅有效期状态变化（内容未动）也必须识别为过期并失效缓存。"""
+
+    def test_expiry_only_change_detected(self, tmp_path: Path) -> None:
+        # valid_until=明天：缓存构建时未过期，注入日期推进 3 天后过期
+        valid_until = (date.today() + timedelta(days=1)).isoformat()
+        root = _build_kb_with_custom(tmp_path, {
+            "d-2024H1.md": _hy_page("000996", "2024H1", valid_until=valid_until),
+        })
+        old_cache = build_cache_from_scan(str(root))
+        future = date.today() + timedelta(days=3)
+
+        changes, _, _ = _detect_page_changes(
+            str(root),
+            cached_manifest=old_cache.manifest,
+            cached_pages=old_cache.pages,
+            today=future,
+        )
+        expired = [c for c in changes if c.change_type == CHANGE_EXPIRED]
+        assert len(expired) == 1
+        assert "仅有效期状态变化" in expired[0].reason
+
+    def test_expiry_only_invalidates_cache_and_audit(self, tmp_path: Path) -> None:
+        valid_until = (date.today() + timedelta(days=1)).isoformat()
+        root = _build_kb_with_custom(tmp_path, {
+            "d-2024H1.md": _hy_page("000996", "2024H1", valid_until=valid_until),
+        })
+        old_cache = build_cache_from_scan(str(root))
+        future = date.today() + timedelta(days=3)
+
+        result = incremental_refresh_half_year_facts(
+            str(root), symbol="000996", old_cache=old_cache, today=future,
+        )
+        assert result.expired_count == 1
+        assert result.reused_cache is False
+        assert result.status == "refreshed"
+
+    def test_unexpired_page_still_idempotent(self, tmp_path: Path) -> None:
+        # 回归：未过期页面重复执行保持 no_changes 幂等
+        root = _build_kb_with_custom(tmp_path, {
+            "ok.md": _hy_page("000996", "2024H1"),
+        })
+        cache = build_cache_from_scan(str(root))
+        for _ in range(2):
+            result = incremental_refresh_half_year_facts(
+                str(root), symbol="000996", old_cache=cache,
+                today=date.today() + timedelta(days=3),
+            )
+            assert result.status == "no_changes"
+            assert result.reused_cache is True
+            cache = build_cache_from_scan(str(root))
+
+
+class TestHY009R1ConflictScanNotTruncated:
+    """冲突检查不得受 max_pages 截断；现金流冲突进入不可用状态。"""
+
+    def _conflicting_kb(self, tmp_path: Path) -> Path:
+        # A/B 同为 2023H1（经营现金流 15 vs 9 冲突），C 为 2025H1 新期：
+        # max_pages=2 时 B 被截掉，冲突证据落在截断之外
+        return _build_kb_with_custom(tmp_path, {
+            "a-2023H1.md": _hy_page("000997", "2023H1"),
+            "b-2023H1-v2.md": _hy_page("000997", "2023H1",
+                                       cashflow="经营现金流 9.0亿",
+                                       title_suffix="（B版）"),
+            "c-2025H1.md": _hy_page("000997", "2025H1",
+                                    cashflow="经营现金流 18.0亿",
+                                    title_suffix="（新期）"),
+        })
+
+    def test_conflict_detected_despite_truncation(self, tmp_path: Path) -> None:
+        root = self._conflicting_kb(tmp_path)
+        old_cache = build_cache_from_scan(str(root))
+        result = incremental_refresh_half_year_facts(
+            str(root), symbol="000997", old_cache=old_cache,
+            today=date(2026, 9, 1), max_pages=2,
+        )
+        assert result.status == "conflict"
+        assert result.conflict_count >= 1
+
+    def test_cashflow_conflict_page_marked_unavailable(self, tmp_path: Path) -> None:
+        root = self._conflicting_kb(tmp_path)
+        old_cache = build_cache_from_scan(str(root))
+        result = incremental_refresh_half_year_facts(
+            str(root), symbol="000997", old_cache=old_cache,
+            today=date(2026, 9, 1), max_pages=10,
+        )
+        assert result.conflict_count >= 1
+        assert any("operating_cash_flow" in f.metric_key
+                   for f in result.fact_conflict_flags)
+        # 冲突页 data_status 必须是 conflict（不可用），不得保持 fresh
+        page_status = {p.rel_path: p.data_status for p in result.facts_result.pages}
+        assert page_status["wiki/investment/a-2023H1.md"] == DATA_CONFLICT
+        assert page_status["wiki/investment/b-2023H1-v2.md"] == DATA_CONFLICT
+
+    def test_conflict_result_never_claims_fresh(self, tmp_path: Path) -> None:
+        # 冲突不可被截断伪装 HAS_DATA/fresh：查询级 data_status 必须 conflict
+        root = self._conflicting_kb(tmp_path)
+        old_cache = build_cache_from_scan(str(root))
+        result = incremental_refresh_half_year_facts(
+            str(root), symbol="000997", old_cache=old_cache,
+            today=date(2026, 9, 1), max_pages=2,
+        )
+        assert result.fact_conflict_flags, "冲突必须被检出"
+        assert result.facts_result is not None
+        assert result.facts_result.data_status == DATA_CONFLICT
+
+    def test_provider_flags_cashflow_conflict(self, tmp_path: Path) -> None:
+        # provider 页级冲突检测也覆盖经营现金流
+        from tradingagents.dataflows.half_year_facts_provider import _detect_conflicts
+
+        root = _build_kb_with_custom(tmp_path, {
+            "a-2023H1.md": _hy_page("000995", "2023H1"),
+            "b-2023H1-v2.md": _hy_page("000995", "2023H1",
+                                       cashflow="经营现金流 9.0亿",
+                                       title_suffix="（B版）"),
+        })
+        result = query_half_year_facts(str(root), symbol="000995")
+        statuses = {p.data_status for p in result.pages}
+        assert DATA_CONFLICT in statuses
