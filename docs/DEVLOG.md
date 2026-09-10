@@ -16303,3 +16303,10 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **改动**：`group-sources` 高度 760→860；移植 #203 的 FIT_VIEW_OPTIONS{padding:0.06,minZoom:0.72,maxZoom:1}、flowInstanceRef+onInit、分析结束（isAnalyzing false）requestAnimationFrame 重新 fit、resize 120ms 防抖重 fit、translateExtent 放宽 [[-300,-160],[2050,900]]、panOnDrag 显式 true。适配点：画布保留本地响应式高度（hidden lg:block，xl 700→810 对齐 #118），窄屏复用既有 mobile compact workflow（15 节点全覆盖，测试守卫）。
 - **测试**：新建 `tests/test_upstream081_agent_collaboration_ui.py`（19 用例，源码级断言 + 纯几何单测验证 translateExtent 覆盖全部节点坐标边界）**19 passed**；`npm run build`（tsc+vite）通过；eslint 组件 0 问题。Playwright 截图由主控浏览器工具补做。
 - **档案**：docs/task_runs/UPSTREAM-081-004-20260909-agent-collab-pan/task.md。
+
+## 2026-09-10 | Z Code 项目交接入口
+
+- 新增项目级 `.zcode/commands/tasks.md`、`.zcode/rules/tradingagents-development.md` 和任务回执模板，Z Code 打开项目根目录后可用 `/tasks` 读取任务池、用 `/tasks run` 进入受控连续模式。
+- 更新 `AGENTS.md`，明确 Z Code 为主力实现者、Codex 为独立 reviewer，OpenCode 仅保留为既有自动脚本兼容执行器。
+- 新增 `docs/ZCODE_HANDOFF.md`，记录桌面客户端打开路径、首次交接提示词、连续执行闭环和当前 0 ready 状态。
+- 本次仅增加协作入口和文档，不释放 blocked/NEEDS_HUMAN 任务，不修改业务代码、生产数据库或模型配置。

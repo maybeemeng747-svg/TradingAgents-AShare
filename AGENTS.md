@@ -20,12 +20,22 @@ A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模�
   │     ├── 简单任务：直接 exec 执行（git/python/npm）
   │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
   │
-  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  ├── Z Code（主力代码执行器）── 读取项目任务真源 → 改代码 → 跑测试 → 输出候选 diff
   │
-  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+  ├── Codex（独立审查者）── 核验 diff、测试、失败路径与任务状态 → PASS / 打回
+  │
+  └── OpenCode（兼容执行器）── 仅在既有自动开发脚本或用户明确指定时使用
 ```
 
 **核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+### Z Code 项目入口
+
+- Z Code 必须以 `/Users/maybee/TradingAgents-AShare` 作为工作区根目录，不能只打开单个文件或 `docs/` 子目录。
+- 新会话先执行项目级 `/tasks`；命令定义在 `.zcode/commands/tasks.md`。
+- Z Code 的稳定规则在 `.zcode/rules/tradingagents-development.md`，人工操作说明在 `docs/ZCODE_HANDOFF.md`。
+- `docs/TASKS.md` 是唯一任务状态真源。没有 `status=ready` 时只汇报，不写代码、不自行创造或释放任务。
+- Z Code 负责实现与测试，Codex 负责独立 review；review 通过前不得提交、标记 done 或释放下游任务。
 
 ## 开发与验收思维模式
 
@@ -95,6 +105,12 @@ TradingAgents-AShare/
 - **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
 - **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
 - **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+### Z Code 直接开发方式
+- 在 Z Code 中打开项目根目录后运行 `/tasks` 查看可领取任务。
+- 用户明确要求连续开发时，执行 `/tasks run`；每次只处理一个 `ready` 任务，并在通过测试和独立 Codex review 后再进入下一项。
+- 任一 review 为 UNKNOWN/超时/配置失败，或出现 P0/P1/P2 correctness finding、测试失败、脏工作区来源不明，立即停止并标记 `NEEDS_HUMAN`。
+- Z Code 不得自动 push，也不得把自己的说明当作 Codex review 结果。
 
 ## 安全红线
 
