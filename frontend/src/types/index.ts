@@ -2006,43 +2006,78 @@ export interface ResearchEvidenceBucketFreshness {
     task: string
 }
 
+// [UI-014-R1] 以下 summary 接口对齐 KB-020 后端真实产出
+// （api/services/research_evidence_service.py 及其上游
+// matrix_to_ta_consumable_summary / audit_to_ta_consumable_summary /
+// timeline_to_ta_consumable_summary / snapshot_to_api_dict）。
+
+export interface ResearchEvidenceConsensusDimensionBrief {
+    disagreement_score?: number
+    dominant_stance?: string
+    bullish_count?: number
+    bearish_count?: number
+}
+
 export interface ResearchEvidenceConsensusSummary {
-    effective_report_count?: number
-    institution_dedup_count?: number
-    consensus_direction?: string
-    disagreement_count?: number
-    reports?: Array<{
-        source_path?: string
-        direction?: string
-        institution?: string
-        date?: string
-        summary?: string
-    }>
+    has_hit?: boolean
+    consensus_score?: number
+    disagreement_score?: number
+    attention_count_effective?: number
+    dominant_stance?: string
+    needs_fact_check?: boolean
+    fact_check_priority?: string
+    fact_check_reasons?: string[]
+    dimensions_brief?: Record<string, ResearchEvidenceConsensusDimensionBrief>
+    consensus_summary?: string
 }
 
 export interface ResearchEvidenceCitationAuditSummary {
-    total_claims?: number
-    supported_count?: number
-    contradicted_count?: number
-    pending_count?: number
-    items?: Array<{
-        claim?: string
-        status?: string
-        source_path?: string
-        detail?: string
-    }>
+    task?: string
+    citation_audit_status?: string
+    counts?: Record<string, number>
+    total_claim_count?: number
+    checked_claim_count?: number
+    weak_source_override_blocked_count?: number
+    needs_tree_work_review?: boolean
+    fact_period?: string | null
+    fact_source_tier?: string
+    fact_data_status?: string
+    audit_summary?: string[]
+}
+
+export interface ResearchEvidenceThesisBrief {
+    thesis_key?: string
+    theme?: string
+    theme_label?: string
+    base_direction?: string
+    current_direction?: string
+    consensus_drift_score?: number
+    version_count_effective?: number
+    reversed_count?: number
+    weakened_count?: number
+    reinforced_count?: number
+    stale_count?: number
+    pending_fact_check_count?: number
+    weak_source_overlay_count?: number
+    first_version_path?: string
+    latest_version_path?: string
+    first_report_date?: string | null
+    latest_report_date?: string | null
 }
 
 export interface ResearchEvidenceThesisTimelineSummary {
-    timeline?: Array<{
-        date?: string
-        thesis?: string
-        direction?: string
-        source_path?: string
-        status?: string
-    }>
-    drift_direction?: string
+    has_hit?: boolean
+    consensus_drift_score?: number
     total_versions?: number
+    effective_versions?: number
+    reversed_versions?: number
+    weakened_versions?: number
+    reinforced_versions?: number
+    stale_versions?: number
+    pending_fact_check_versions?: number
+    weak_source_overlay_count?: number
+    theses_brief?: ResearchEvidenceThesisBrief[]
+    timeline_summary?: string
 }
 
 export interface ResearchEvidenceHalfYearPage {
@@ -2056,20 +2091,57 @@ export interface ResearchEvidenceHalfYearPage {
     metric_keys?: string[]
 }
 
+// latest_period / latest_disclosure_date 在 bucket 层，不在 summary 内。
 export interface ResearchEvidenceHalfYearFactsSummary {
     pages?: ResearchEvidenceHalfYearPage[]
     summary_lines?: string[]
     risks?: string[]
-    latest_period?: string
-    latest_disclosure_date?: string
+}
+
+export interface ResearchEvidenceScoreSnapshotBody {
+    snapshot_id?: string
+    symbol?: string
+    name?: string
+    as_of?: string
+    status?: string
+    scores?: Record<string, unknown>
+    theses_summary?: Array<{
+        thesis_id?: string
+        topic?: string
+        direction?: string
+        status?: string
+        core_hypothesis?: string
+    }>
+    evidence_refs_summary?: Array<{
+        evidence_id?: string
+        claim?: string
+        claim_type?: string
+        source_quality_tier?: string
+        report_date?: string | null
+        financial_period?: string | null
+    }>
+    missing_evidence?: string[]
+    upgrade_conditions?: string[]
+    downgrade_conditions?: string[]
+    invalidation_conditions?: string[]
+    score_change_summary?: {
+        previous_snapshot_id?: string | null
+        reasons?: string[]
+    } | null
+    warnings?: string[]
 }
 
 export interface ResearchEvidenceScoreSnapshotSummary {
     status?: string
-    scores?: Record<string, unknown>
-    theses_summary?: string
-    missing_evidence?: string[]
+    snapshot_id?: string | null
+    schema_version?: string | null
+    rubric_id?: string | null
+    rubric_version?: string | null
+    degradation_reasons?: string[]
+    validation_warnings?: string[]
+    snapshot?: ResearchEvidenceScoreSnapshotBody | null
 }
+
 
 export interface ResearchEvidenceBucket {
     bucket: string

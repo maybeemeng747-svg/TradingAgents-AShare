@@ -1,5 +1,26 @@
 # 修改日志
 
+## 2026-09-11 | UI-014-R1 研报证据中心真实契约与请求状态补修（Z Code 连续模式第 6 项）
+
+- **三缺陷复现**：①组件按臆造 schema 渲染（consensus 读 reports[]/
+  effective_report_count，audit 读 items[]/total_claims，timeline 读
+  timeline[]，scores 读 summary 顶层，half_year 的 latest_* 从 summary
+  读而实际在 bucket 层）——绝大多数 chip 永远为空；②懒加载守卫
+  `data ||` 短路导致 symbol 切换后旧数据滞留；③失败后 data=null 且
+  loading 翻转令 effect 无限重发，错误界面无限重试。
+- **修复**：新增纯函数层 `utils/researchEvidenceCenter.ts`——KB-020
+  真实 schema 视图模型（对照 research_evidence_service 真实产出逐字段
+  对齐，缺字段不编造）+ 显式 phase 请求状态机（symbol 归属校验丢弃
+  慢响应/迟到失败、symbol_changed 清空、失败稳定 error 不自动重试、
+  手动重试上限 3 次、卸载冻结）；组件改 useReducer 接线；types 五个
+  summary 接口重写为真实 schema。后端零改动。
+- **测试**：KB-020 真实响应 fixture 驱动 17 项（完整/部分失败/空 +
+  状态机全场景）；前端全量 **157 passed**（12 文件）；`tsc --noEmit`
+  干净；`npm run build` 通过；离线 mock（页面内拦截 API，零网络）
+  桌面+手机截图核验真实 schema 渲染，存运行档案。
+- **review**：按用户 2026-09-10 指示统一安排；运行档案
+  `docs/task_runs/UI-014-R1-20260911-000000/`。
+
 ## 2026-09-11 | M-009-R1 观察池独立数据源补修（Z Code 连续模式第 5 项）
 
 - **根因**（`TradeFlow.tsx`）：观察池 tab 复用 `fetchCandidates`，该函数

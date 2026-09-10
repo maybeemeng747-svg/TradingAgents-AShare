@@ -35,8 +35,8 @@
 | 3 | C-006-R1 财务质量指标生产接线 | done（待统一 review） | 30-45 |
 | 4 | HY-009-R1 增量缓存与冲突审计 | done（待统一 review） | 30-45 |
 | 5 | M-009-R1 观察池独立筛选 | done（待统一 review） | 25-40 |
-| 6 | UI-014-R1 研报证据契约与请求状态 | in_progress | 30-50 |
-| 7 | V-014 真实知识库只读验收 | blocked-auto | 25-45 |
+| 6 | UI-014-R1 研报证据契约与请求状态 | done（待统一 review） | 30-50 |
+| 7 | V-014 真实知识库只读验收 | in_progress | 25-45 |
 | 8 | V-015 研报全链路验收 | blocked-auto | 25-45 |
 
 批次共同约束：每任务记录基线 HEAD、任务卡 hash、修改文件、测试退出码及独立 review 原始输出；P0/P1/P2 correctness finding、UNKNOWN、超时或测试失败停止整批。禁止改生产 DB、凭据、prompts、知识库/海瑞仓库和已冻结契约；禁止 live LLM、自动 push 或真实飞书发送。测试只用隔离 fixture/临时 DB。同一工作树只允许一个执行器，Z Code 直接执行时不得再启动 OpenCode 循环；无法确认独占则停止。
@@ -513,7 +513,7 @@
 ### UI-014-R1: 研报证据中心真实契约与请求状态补修（P2）
 - **描述**：按 KB-020 真实 summary schema 展示；symbol 变化清空旧数据；失败后稳定展示错误而非无限重试。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：done — 代码已提交、vitest 17 项（全量 157）+ build 通过 + 离线 mock 双视口截图；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/UI-014-R1-20260911-000000/`）
 - **depends_on**：M-009-R1
 - **auto_release**：true
 - **允许修改**：`frontend/src/components/ResearchEvidenceCenter.tsx`、`frontend/src/utils/researchEvidenceCenter.test.ts`、相关 API client/types、离线 UI 测试与档案。
