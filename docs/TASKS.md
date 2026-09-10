@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-08-31
+> 最后更新：2026-09-10
 
 ---
 
@@ -22,7 +22,26 @@
 4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
 5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
 
-### 当前执行队列（2026-08-31）
+### 当前执行队列（2026-09-10）
+
+#### Z Code 连续开发批次（2026-09-10）
+
+本批次为历史 correctness finding 补修，先复现当前代码；若已修复，只补有价值的回归与证据，不重复重写。只有 C-001-R1 初始 ready，其余按依赖在独立 review 通过后释放。预计 210-340 分钟，仅为计划估计。
+
+| 顺序 | 任务 | 状态 | 预计分钟 |
+|---|---|---|---:|
+| 1 | C-001-R1 持仓真源与 HOLD 门禁 | ready | 25-40 |
+| 2 | C-005-R1 止损语义与研究方向 | blocked-auto | 20-30 |
+| 3 | C-006-R1 财务质量指标生产接线 | blocked-auto | 30-45 |
+| 4 | HY-009-R1 增量缓存与冲突审计 | blocked-auto | 30-45 |
+| 5 | M-009-R1 观察池独立筛选 | blocked-auto | 25-40 |
+| 6 | UI-014-R1 研报证据契约与请求状态 | blocked-auto | 30-50 |
+| 7 | V-014 真实知识库只读验收 | blocked-auto | 25-45 |
+| 8 | V-015 研报全链路验收 | blocked-auto | 25-45 |
+
+批次共同约束：每任务记录基线 HEAD、任务卡 hash、修改文件、测试退出码及独立 review 原始输出；P0/P1/P2 correctness finding、UNKNOWN、超时或测试失败停止整批。禁止改生产 DB、凭据、prompts、知识库/海瑞仓库和已冻结契约；禁止 live LLM、自动 push 或真实飞书发送。测试只用隔离 fixture/临时 DB。同一工作树只允许一个执行器，Z Code 直接执行时不得再启动 OpenCode 循环；无法确认独占则停止。
+
+本次将 C-001-R1 的依赖从无业务关联的飞书 B-003-R1 改为已完成的 B-004-R1（持仓同步）和 F-001-R1（未持仓门禁）。B-003-R1、SCORE-004、SCORE-006、Investoday 授权及战略暂停继续保留人工门禁。
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -397,7 +416,7 @@
 ### UPSTREAM-081-003: AKShare v0.8.1 差异审计与最小修复（P1）
 - **描述**：审计上游 `aa79bca`（#195）对雪球 token、全球新闻、行业资金流、龙虎榜参数和热门数据接口的修复；逐项与本地多源 fallback、八态证据契约和 Tushare 主源比较，只移植仍有效且有真实小范围证据的修复。
 - **优先级**：P1
-- **状态**：blocked — NEEDS_HUMAN；协调员发现 TypeError 被宽泛归类为 NORMAL_NO_DATA 的 P1 风险并停止，见 docs/task_runs/UPSTREAM-081-003-20260908-200214/summary.md
+- **状态**：done — commit 515d80a；round1 TypeError 误分类已还原，最终零移植审计与 66+87 测试证据见 2026-09-09 DEVLOG；同步顶部已完成记录。
 - **depends_on**：UPSTREAM-081-002
 - **auto_release**：true
 - **预计耗时**：45-75 分钟
@@ -447,9 +466,11 @@
 ### C-001-R1: 持仓推断与 HOLD 绕门禁补修（P2）
 - **描述**：门禁使用显式+推断后的统一持仓上下文；正文出现“等待”不得让错误 HOLD 绕过转换。
 - **优先级**：P2
-- **状态**：blocked-auto
-- **depends_on**：B-003-R1
+- **状态**：ready
+- **depends_on**：B-004-R1, F-001-R1
 - **auto_release**：true
+- **允许修改**：`tradingagents/agents/utils/position_validation_gate.py`、`tradingagents/graph/intent_parser.py`、`tradingagents/graph/signal_processing.py`、对应测试与任务档案。跨模块扩大范围须先记录具体调用证据。
+- **验收方式**：`pytest tests/test_c001_position_validation_gate.py tests/test_decision_semantics.py -q`；增加显式空仓/推断持仓/未知持仓和正文含“等待”的对抗用例，证明空仓 HOLD 转 WAIT、已持仓 HOLD 保留、入口结果一致。缺数据不得猜成有持仓。
 
 ### C-005-R1: 止损文本方向识别补修（P2）
 - **描述**：止损条件属于风险控制，不得单独把研究方向判成偏空。
@@ -457,6 +478,8 @@
 - **状态**：blocked-auto
 - **depends_on**：C-001-R1
 - **auto_release**：true
+- **允许修改**：`tradingagents/graph/signal_processing.py`、delta/decision 相关工具及对应测试、任务档案。
+- **验收方式**：`pytest tests/test_c005_delta_check.py tests/test_decision_semantics.py -q`；看多正文附止损条件仍看多，真实看空/退出不被吞掉，否定词和系统覆盖文字不污染研究方向，回放持仓及未持仓两类输出。
 
 ### C-006-R1: 财务质量指标生产接线补修（P2）
 - **描述**：Phase 2 指标由真实 normalizer 产出；负利润时现金流质量比不得产生误导性正向结论。
@@ -464,6 +487,8 @@
 - **状态**：blocked-auto
 - **depends_on**：C-005-R1
 - **auto_release**：true
+- **允许修改**：`tradingagents/agents/utils/financial_validator.py`、实际财务 normalizer 与调用接线、对应测试、任务档案。
+- **验收方式**：`pytest tests/test_c006_financial_validator.py -q`；从生产 normalizer 驱动测试，覆盖双负值、零利润、缺现金流、跨期/单位不一致；双负比值不得解释成盈利质量良好。API/报告消费结果须保留状态及口径，不可只测孤立公式。
 
 ### HY-009-R1: 半年报增量缓存与冲突审计补修（P2）
 - **描述**：expiry-only 变化也使缓存失效；冲突检查不得受 max_pages 截断；现金流冲突进入不可用状态。
@@ -471,6 +496,8 @@
 - **状态**：blocked-auto
 - **depends_on**：C-006-R1
 - **auto_release**：true
+- **允许修改**：`tradingagents/dataflows/half_year_incremental_refresh.py`、直接调用的本地知识缓存/事实审计工具、对应测试、任务档案。
+- **验收方式**：`pytest tests/test_hy009_half_year_incremental_refresh.py -q`；覆盖仅有效期变化、冲突证据落在 max_pages 之后、经营现金流冲突、删除/修订/缓存损坏及重复执行。知识库只读，冲突不可被截断伪装 HAS_DATA。
 
 ### M-009-R1: 观察池独立数据源补修（P2）
 - **描述**：观察池不得继承候选页隐藏筛选条件，必须读取完整观察状态集合。
@@ -478,6 +505,8 @@
 - **状态**：blocked-auto
 - **depends_on**：HY-009-R1
 - **auto_release**：true
+- **允许修改**：`frontend/src/pages/TradeFlow.tsx`、相关 API client/types 和只读观察池 service、对应测试及任务档案。
+- **验收方式**：前端定向测试与 `npm run build`；候选页筛选后进入观察池仍显示完整观察集合；分页、空态、请求失败、快速切换不串数据。用离线 mock UI 截图验证桌面/手机，不触发分析或观察执行接口。
 
 ### UI-014-R1: 研报证据中心真实契约与请求状态补修（P2）
 - **描述**：按 KB-020 真实 summary schema 展示；symbol 变化清空旧数据；失败后稳定展示错误而非无限重试。
@@ -485,6 +514,8 @@
 - **状态**：blocked-auto
 - **depends_on**：M-009-R1
 - **auto_release**：true
+- **允许修改**：`frontend/src/components/ResearchEvidenceCenter.tsx`、`frontend/src/utils/researchEvidenceCenter.test.ts`、相关 API client/types、离线 UI 测试与档案。
+- **验收方式**：以 KB-020 实际响应 fixture 驱动组件测试，覆盖完整/空/部分失败、A→B 切股时 A 慢响应、重试上限和卸载取消；运行前端定向测试与 `npm run build`，提供桌面/手机 mock 截图。不得为迁就前端改写后端事实状态。
 
 #### FUND-003A-B 补修验收口径
 
@@ -506,7 +537,7 @@
 - **auto_release**：true
 - **验收方式**：重跑002837报告，10项全部通过
 
-### PLAYBOOK-002: 计划仓位上限与上车三笔法规则引擎（P1）
+#### 历史说明：PLAYBOOK-002 — 计划仓位上限与上车三笔法规则引擎（P1）
 - **描述**：把"计划最大仓位 + 试错仓/确认仓/进攻仓"写成可测试规则，禁止系统因为下跌简单提示补仓。
 - **优先级**：P1
 - **状态**：done -- commit 9cb66f0
@@ -623,7 +654,7 @@
 - **验收方式**：fixture覆盖新增、修订、删除、缓存损坏、同周期冲突和无变化六类。重复执行幂等；无变化不重建全量索引。
 - **代码标注要求**：`# [HY-009] half_year_incremental_refresh`
 
-### M-009: TradeFlow 前端观察池面板（P2）
+#### 历史说明：M-009 — TradeFlow 前端观察池面板（P2）
 - **描述**：在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA。
 - **优先级**：P2
 - **状态**：done -- commit 67e98e9
@@ -631,7 +662,7 @@
 - **depends_on**：M-003, M-005
 - **auto_release**：true
 
-### M-010: 飞书/通知链路人工确认版（P2）
+#### 历史说明：M-010 — 飞书/通知链路人工确认版（P2）
 - **描述**：把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发。
 - **优先级**：P2
 - **状态**：done -- commit 52cadc2
@@ -3346,7 +3377,7 @@
 
 ## A. 当前进行中
 
-### F-001: TA研报执行层修复（P0-P2共10项）
+#### 历史说明：F-001 — TA研报执行层修复（P0-P2共10项）
 - **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
 - **优先级**：P0（1-3）+ P1（4-7）+ P2（8-10）
 - **验收**：重跑002837报告，10项全部通过
@@ -5892,7 +5923,7 @@
   - 输出不含强动作词，不改变现有 decision/action_label。
 - **代码标注要求**：`# [KB-018] research_thesis_timeline`
 
-### HY-009: 半年报增量刷新、缓存失效与事实冲突审计（P2）
+#### 历史说明：HY-009 — 半年报增量刷新、缓存失效与事实冲突审计（P2）
 - **描述**：让 HY-003 半年报事实索引能识别新披露、修订稿和知识库页面更新，安全刷新缓存并标记跨版本事实冲突。
 - **优先级**：P2
 - **状态**：blocked — 等待 HY-008 完成
@@ -5915,7 +5946,10 @@
 ### V-014: 真实本地知识库只读 smoke 与研报主线验收日报（P2）
 - **描述**：在 fixture 验收之后，对 `~/Documents/knowledge/` 做一次只读 smoke，验证真实研报/半年报能否贯穿索引、共识、反证、报告区块和 briefing 契约。
 - **优先级**：P2
-- **状态**：blocked — 等待 HY-009 完成；作为本批次最终验收
+- **状态**：blocked-auto
+- **depends_on**：HY-009-R1, UI-014-R1, HY-008, KB-016, KB-017, KB-018
+- **auto_release**：true
+- **允许修改**：本任务只读验收脚本、隔离测试、`docs/knowledge_reports/` 与任务档案；业务缺陷记录为 finding，不在验收任务中跨范围改代码。
 - **前置条件**：HY-008、HY-009、KB-016、KB-017、KB-018 完成。
 - **执行约束**：
   - 只读真实知识库，不修改 Tree Work 页面，不写生产数据库。
@@ -5972,7 +6006,7 @@
   - 旧 `/v1/knowledge/local/search` 契约无回归。
 - **代码标注要求**：`# [KB-020] research_evidence_api`
 
-### UI-014: TA 研报证据中心与来源下钻（P2）
+#### 历史说明：UI-014 — TA 研报证据中心与来源下钻（P2）
 - **描述**：在报告查看体验中增加轻量"研报证据"入口，让用户看到同股研报共识、分歧、半年报事实、待验证项和来源路径，而不是只看到一个知识分数。
 - **优先级**：P2
 - **状态**：done
@@ -6015,7 +6049,10 @@
 ### V-015: 研报增量摄取→证据 API→前端→待更新清单端到端验收（P2）
 - **描述**：对 KB-019/KB-020/UI-014/HY-010 做最终 fixture + 真实知识库只读验收，确认半年报集中导入时链路可用、可追溯、不会影响交易动作。
 - **优先级**：P2
-- **状态**：blocked — 等待 KB-019、KB-020、UI-014、HY-010 完成
+- **状态**：blocked-auto
+- **depends_on**：V-014, KB-019, KB-020, UI-014-R1, HY-010
+- **auto_release**：true
+- **允许修改**：本任务端到端测试、隔离 fixture、验收报告和任务档案；真实资料只读，不写外部项目。
 - **前置条件**：KB-019、KB-020、UI-014、HY-010 完成。
 - **执行约束**：
   - fixture 与真实只读 smoke 分开报告；真实目录不可用不得伪造 PASS。
@@ -6373,7 +6410,7 @@
 >
 > **代码归属边界**：`research-scorer` 的公式、证据条目、投资假设和正式快照写入属于 ZCode 知识库接入项目，不在本仓库实现。本仓库的 SCORE-001~006 只负责读取、校验、动态补齐和裁决。现有 Tree Work 知识页继续作为历史上游输入，不做全局改名；新增评分与快照发布统一由 ZCode 负责。知识库侧任务包见 `docs/zcode_research_scorer_handoff.md`。
 
-### SCORE-001: TA 只读 research_score_snapshot 契约与安全接入（P1）
+#### 历史说明：SCORE-001 — TA 只读 research_score_snapshot 契约与安全接入（P1）
 - **描述**：建立 TA 侧只读快照 loader/provider，使 ZCode 发布的 `research_score_snapshot` v1.1.0 可被稳定读取和降级，但本任务不接 API/前端/TradeFlow，不重新计算知识库分数，也不接受知识库给出的交易动作。
 - **优先级**：P1
 - **状态**：done — 当前分支可达实现 `efeff84`，验收归档 `c6f6ea7`，后续加固 `f344b20`；73 tests passed
@@ -6531,25 +6568,25 @@
 
 ## B. 待办
 
-### B-001: 接入小米 MiMo 模型到 TA 系统
+#### 历史说明：B-001 — 接入小米 MiMo 模型到 TA 系统
 - **描述**：在 `llm_clients/` 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
 - **优先级**：高
 - **前置条件**：无
 - **验证方式**：前端设置页切换到小米模型，执行一次分析任务成功
 
-### B-002: 定时任务与 OpenClaw 联动
+#### 历史说明：B-002 — 定时任务与 OpenClaw 联动
 - **描述**：定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书
 - **优先级**：中
 - **前置条件**：OpenClaw API 可达
 - **验证方式**：定时任务完成后飞书收到通知
 
-### B-003: 研报导出为飞书文档
+#### 历史说明：B-003 — 研报导出为飞书文档
 - **描述**：分析结果支持导出为飞书云文档，方便分享和存档
 - **优先级**：中
 - **前置条件**：飞书 API 权限
 - **验证方式**：点击导出按钮，飞书生成对应文档
 
-### B-004: 持仓快照与 investment-controller 同步
+#### 历史说明：B-004 — 持仓快照与 investment-controller 同步
 - **描述**：TA 系统的持仓数据与 investment-controller 项目的 current_holdings.json 双向同步
 - **优先级**：中
 - **前置条件**：investment-controller API 可达
@@ -6884,7 +6921,7 @@
 
 > 以下 8 项基于 ChatGPT 建议 + 主控AI评估，按优先级排列。每项标注了实现要点和注意事项。
 
-### C-001: position_validation_gate（P0 — 最高优先）
+#### 历史说明：C-001 — position_validation_gate（P0 — 最高优先）
 - **描述**：每份报告生成前必须读取 `current_positions.json`，根据持仓状态决定可输出的动作类型
 - **实现要点**：
   - 文件不存在或为空 → 所有持仓相关策略（减仓/清仓/持有/止损/止盈）一律禁止输出
@@ -6903,7 +6940,7 @@
 - **代码标注要求**：`# [C-002] account_capability`
 - **验证方式**：`can_short=false` 时不生成做空策略
 
-### C-003: 禁止做空策略输出（P1）
+#### 历史说明：C-003 — 禁止做空策略输出（P1）
 - **描述**：如果 `can_short=false`，做空相关策略在生成阶段就不进入候选池
 - **实现要点**：
   - 不是生成后转换措辞，而是从候选策略池直接移除
@@ -6912,7 +6949,7 @@
 - **代码标注要求**：`# [C-003] short_filter`
 - **验证方式**：`can_short=false` 时，报告中不含任何做空相关表述
 
-### C-004: 动作枚举重设计（P1）
+#### 历史说明：C-004 — 动作枚举重设计（P1）
 - **描述**：将最终动作枚举精简为 5 个
 - **枚举值**：
   - `WAIT` — 观望/等条件（含回避，备注里说明原因）
@@ -6927,7 +6964,7 @@
 - **代码标注要求**：`# [C-004] action_enum`
 - **验证方式**：所有报告输出的动作值都在 5 个枚举内
 
-### C-005: same_symbol_delta_check（P2）
+#### 历史说明：C-005 — same_symbol_delta_check（P2）
 - **描述**：同一股票结论翻转时，必须输出对比信息
 - **实现要点**：
   - 时间窗口：72 小时（不是 48 小时，避免短线正常波动误报）
@@ -6937,7 +6974,7 @@
 - **代码标注要求**：`# [C-005] delta_check`
 - **验证方式**：同一股票 72 小时内结论翻转时，报告包含对比信息
 
-### C-006: financial_data_validator — 分期实现（P2）
+#### 历史说明：C-006 — financial_data_validator — 分期实现（P2）
 - **描述**：财报数据异常检测，分两期做
 - **一期（规则检测）**：
   - 毛利率跳变 > 20% → 标记
@@ -6950,7 +6987,7 @@
 - **代码标注要求**：`# [C-006] financial_validator`
 - **验证方式**：检测到异常时，报告中明确标注"需人工复核"
 
-### C-007: event_risk_gate（P1）
+#### 历史说明：C-007 — event_risk_gate（P1）
 - **描述**：重大事件发生时，进入风控优先模式
 - **事件类型**：
   - 大比例解禁（解禁比例 > 流通股本 5%）
@@ -6965,7 +7002,7 @@
 - **代码标注要求**：`# [C-007] event_risk_gate`
 - **验证方式**：检测到解禁事件时，报告标注"风控优先模式，不建议开仓"
 
-### C-008: execution_readiness_score — 简化版（P2）
+#### 历史说明：C-008 — execution_readiness_score — 简化版（P2）
 - **描述**：每份报告输出两个核心质量指标
 - **指标**：
   - `data_completeness` — 数据完整度（源数据覆盖了多少需要的字段，0-100%）
