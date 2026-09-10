@@ -1,5 +1,43 @@
 # 修改日志
 
+## 2026-09-10 | C-001-R1 持仓推断与 HOLD 绕门禁补修（Z Code 连续模式）
+
+- **[缺陷A] HOLD+"等待"绕过未持仓转换**（`position_validation_gate.py`）：
+  未持仓禁止列表的 HOLD 模式原带负向先行
+  `\bHOLD\b(?!.*(?:等待|观察|条件))`，正文同一行后续出现"等待/观察/
+  条件"即豁免，空仓报告输出"HOLD，等待回调"不被降级。现移除豁免，
+  HOLD 一律违规，经 `[C-001]` 警告 → `_has_gate_failure` →
+  `execution_action=WAIT` 完成转换；已持仓路径不含该模式，HOLD 保留。
+- **[缺陷B] 门禁缺失统一持仓上下文**：`validate_position_actions` 原只读
+  `user_context.current_position` 数字字段，文本否定空仓/关键词推断持仓
+  （意图解析的 `position_context`）到不了门禁，一律 unknown 不约束。
+  新增 `resolve_unified_has_position()`，优先级对齐入口契约
+  `api/main.py::_resolve_has_position`（position_context.has_position 且
+  `position_status_explicit is not False` → current_position →
+  current_position_pct → None）；`validate_position_actions` 增加可选
+  `position_context` 参数。缺数据返回 None，不猜持仓。跨模块扩展
+  （research_manager.py:344、risk_manager.py:467 各 1 行传参）的调用
+  证据记录于任务档案，risk_manager:452 已有同源先例。
+- **测试**：定向 `pytest tests/test_c001_position_validation_gate.py
+  tests/test_decision_semantics.py -q` → **112 passed**（新增对抗用例：
+  HOLD+等待/观察变体、显式文本空仓、推断持仓、legacy 默认不猜、
+  与 `_resolve_has_position` 的入口一致性表、调用点接线守卫、空仓
+  HOLD→WAIT 与已持仓 HOLD 保留的结构层证明）。相关回归
+  （p0_p1_acceptance / p11_has_position / research_manager_consensus /
+  decision_replay / v006_e2e / signal tags 等 8 文件）→ **237 passed,
+  1 failed**；api_smoke → **87 passed**；`git diff --check` 干净。
+- **预存失败（与本任务无关，stash 基线 b2397e0 复跑同样失败）**：
+  `tests/test_decision_replay.py::TestReplay603256::test_semantics`
+  断言触发价 180.0，样本提取得 163.61——历史样本触发价提取漂移，
+  属 DECISION-002 回放样本维护问题，不在 C-001-R1 允许修改范围，
+  待人工决定是否单独开卡修复。
+- **review 受阻**：`codex review --uncommitted` 于 2026-09-10 23:45
+  因 Codex 额度上限失败（重置 2026-09-11 04:05）。按规则不提交、
+  不标 done、不释放下游（含 C-005-R1 及后续批次）；TASKS.md 状态
+  维持 in_progress，工作区保留未提交修改待 review。额度恢复后重跑
+  `codex review --uncommitted` 即可继续闭环。
+- 运行档案：`docs/task_runs/C-001-R1-20260910-233716/`。
+
 ## 2026-09-07 | UPSTREAM-081-001 fix round 3：修复 round3 review 2×P1
 
 - **[P1] `_BoundedFetchPool` 队列无界、超时不取消**（`data_collector.py`）：

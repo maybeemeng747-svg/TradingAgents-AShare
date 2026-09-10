@@ -464,7 +464,13 @@ def create_risk_manager(llm, memory):
             validate_position_actions,
             format_position_validation_warning,
         )
-        gate_result = validate_position_actions(final_response, user_context)
+        # [C-001-R1] 传入统一持仓上下文：显式数字缺失时按意图解析的
+        # 推断结果约束动作（与 ：452 build_trade_quality_check 同源）
+        gate_result = validate_position_actions(
+            final_response,
+            user_context,
+            position_context=state.get("position_context"),
+        )
         if not gate_result["passed"]:
             final_response += format_position_validation_warning(gate_result)
 

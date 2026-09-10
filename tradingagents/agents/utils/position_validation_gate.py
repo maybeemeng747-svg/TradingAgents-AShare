@@ -61,8 +61,9 @@ _NO_POSITION_FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
     (r'止损(?!价|位|条件|线|红线)', '止损'),
     # 英文动作
     (r'\b(?:SELL|EXIT|REDUCE)\b', 'EXIT/REDUCE'),
-    # HOLD 在未持仓时也不合理
-    (r'\bHOLD\b(?!.*(?:等待|观察|条件))', 'HOLD'),
+    # HOLD 在未持仓时也不合理；正文带"等待/观察"不得让错误 HOLD 绕过
+    # 转换（C-001-R1），HOLD 一律违规后由警告驱动 WAIT 转换
+    (r'\bHOLD\b', 'HOLD'),
 ]
 
 # ── 已持仓时禁止的动作关键词（建仓/买入类） ──
@@ -148,15 +149,45 @@ def _split_body(text: str) -> str:
     return text[:earliest]
 
 
+def resolve_unified_has_position(
+    user_context: Optional[dict] = None,
+    position_context: Optional[dict] = None,
+) -> Optional[bool]:
+    """显式+推断统一持仓解析，优先级对齐入口契约 api.main._resolve_has_position。
+
+    1. position_context.has_position：意图解析折叠了显式数字字段、否定词与
+       持仓关键词推断的统一结果；``position_status_explicit=False`` 是无证据
+       时的 legacy 默认值，不信任（缺数据不得猜成有持仓）。
+    2. user_context.current_position / current_position_pct 显式数值字段。
+    3. 均缺失时返回 None（unknown，不约束动作）。
+    """
+    if isinstance(position_context, dict) and "has_position" in position_context:
+        if position_context.get("position_status_explicit") is not False:
+            return bool(position_context["has_position"])
+
+    if user_context:
+        cp = user_context.get("current_position")
+        if cp is not None:
+            return cp > 0
+        pct = user_context.get("current_position_pct")
+        if pct is not None:
+            return pct > 0
+    return None
+
+
 def validate_position_actions(
     text: str,
     user_context: Optional[dict] = None,
+    position_context: Optional[dict] = None,
 ) -> dict:
     """根据持仓状态校验报告文本中的动作关键词。
 
     Args:
         text: 报告文本（研究经理/风控经理的 LLM 输出）
         user_context: 用户上下文，包含 current_position 等字段
+        position_context: 意图解析产出的统一持仓上下文
+            （has_position / position_status_explicit），用于显式数字
+            字段缺失时按推断结果约束动作
 
     Returns:
         {
@@ -165,15 +196,11 @@ def validate_position_actions(
             "violations": list[dict],    # 违规详情
             "allowed_actions": list[str],# 当前持仓状态允许的动作
             "forbidden_actions": list[str],  # 当前持仓状态禁止的动作
-            "has_position": Optional[bool],  # 原始持仓布尔值
+            "has_position": Optional[bool],  # 统一解析后的持仓布尔值
         }
     """
-    # 解析持仓状态
-    has_position: Optional[bool] = None
-    if user_context is not None:
-        cp = user_context.get("current_position")
-        if cp is not None:
-            has_position = cp > 0
+    # 解析持仓状态（显式 + 推断统一结果）
+    has_position = resolve_unified_has_position(user_context, position_context)
 
     if has_position is True:
         position_status = "has_position"

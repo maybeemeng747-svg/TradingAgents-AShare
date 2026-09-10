@@ -341,7 +341,13 @@ def create_research_manager(llm, memory):
             validate_position_actions,
             format_position_validation_warning,
         )
-        gate_result = validate_position_actions(full_content, user_context)
+        # [C-001-R1] 传入统一持仓上下文：显式数字缺失时按意图解析的
+        # 推断结果约束动作（与入口 _resolve_has_position 契约一致）
+        gate_result = validate_position_actions(
+            full_content,
+            user_context,
+            position_context=state.get("position_context"),
+        )
         if not gate_result["passed"]:
             full_content += format_position_validation_warning(gate_result)
 

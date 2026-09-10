@@ -594,3 +594,40 @@ class TestNormalizeReportActionLabel:
         )
         normalize_report_action_label(report)
         assert report.action_label == "数据不足观察"
+
+
+class TestC001R1HoldWaitConversion:
+    """[C-001-R1] 空仓 HOLD 经门禁警告转 WAIT；已持仓 HOLD 保留。
+
+    门禁产出 [C-001] 警告后，结构层 _has_gate_failure 命中 GATE_BLOCKED，
+    execution_action 必须是 WAIT；正文带"等待"字样不得改变这一转换。
+    """
+
+    HOLD_WAIT_BODY = "建议 HOLD，等待回调后再考虑。"
+    GATE_WARNING = (
+        "\n\n⚠️ [C-001] 未持仓状态，以下持仓动作不适用：HOLD。"
+        "已自动降级为观察（WAIT）。"
+    )
+
+    def test_flat_hold_with_wait_text_converts_to_wait(self):
+        result = _extract_decision_semantics(
+            self.HOLD_WAIT_BODY + self.GATE_WARNING,
+            has_position=False,
+        )
+        assert result.execution_action == "WAIT"
+        assert "GATE_BLOCKED" in result.wait_reason_codes
+
+    def test_held_hold_with_wait_text_preserved(self):
+        result = _extract_decision_semantics(
+            self.HOLD_WAIT_BODY,
+            has_position=True,
+        )
+        assert result.execution_action == "HOLD"
+
+    def test_unknown_position_gate_warning_still_forces_wait(self):
+        # 未知持仓时门警文本同样触发 GATE_BLOCKED → WAIT（保守降级）
+        result = _extract_decision_semantics(
+            self.HOLD_WAIT_BODY + self.GATE_WARNING,
+            has_position=None,
+        )
+        assert result.execution_action == "WAIT"

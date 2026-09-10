@@ -9,6 +9,9 @@ Verifies that:
 6. Multiple violations are all detected
 7. format_position_validation_warning produces correct text
 8. Integration with research_manager and risk_manager nodes
+9. [C-001-R1] HOLD followed by 等待/观察 text does not bypass the no-position conversion
+10. [C-001-R1] unified position context (explicit + inferred) drives the gate;
+    missing data is never guessed as a holding
 """
 
 import asyncio
@@ -19,6 +22,7 @@ import pytest
 from tradingagents.agents.utils.position_validation_gate import (
     validate_position_actions,
     format_position_validation_warning,
+    resolve_unified_has_position,
     _detect_violations,
     _NO_POSITION_FORBIDDEN_PATTERNS,
     _HAS_POSITION_FORBIDDEN_PATTERNS,
@@ -334,6 +338,160 @@ class TestEdgeCases:
         assert result["passed"] is False
 
 
+# ── [C-001-R1] HOLD+等待 绕过封堵 ─────────────────────────────────────────────
+
+
+class TestHoldWaitBypassBlocked:
+    """正文出现"等待/观察/条件"不得让错误 HOLD 绕过未持仓转换。"""
+
+    def test_no_position_hold_with_wait_text_flagged(self):
+        text = "建议 HOLD，等待回调后再考虑。"
+        result = validate_position_actions(text, {"current_position": 0})
+        assert result["passed"] is False
+        assert any(v["action"] == "HOLD" for v in result["violations"])
+
+    def test_no_position_hold_with_observe_text_flagged(self):
+        text = "HOLD 观察一段时间，等待更明确的信号。"
+        result = validate_position_actions(text, {"current_position": 0})
+        assert result["passed"] is False
+        assert any(v["action"] == "HOLD" for v in result["violations"])
+
+    def test_no_position_hold_warning_mentions_wait_downgrade(self):
+        text = "建议 HOLD，等待回调。"
+        result = validate_position_actions(text, {"current_position": 0})
+        warning = format_position_validation_warning(result)
+        assert "WAIT" in warning
+        assert "HOLD" in warning
+
+    def test_no_position_non_hold_wait_text_still_passes(self):
+        # 纯观望文本（无 HOLD）不是违规，等待语义合法存在于 WAIT
+        text = "建议观望，等待入场条件成熟。"
+        result = validate_position_actions(text, {"current_position": 0})
+        assert result["passed"] is True
+
+    def test_has_position_hold_with_wait_text_preserved(self):
+        # 已持仓 HOLD 保留：HOLD 模式只存在于未持仓禁止列表
+        text = "建议 HOLD，等待回调后再考虑。"
+        result = validate_position_actions(text, {"current_position": 100})
+        assert result["passed"] is True
+        assert result["position_status"] == "has_position"
+
+
+# ── [C-001-R1] 显式+推断统一持仓上下文 ────────────────────────────────────────
+
+
+class TestUnifiedPositionContext:
+    """门禁必须消费意图解析的统一持仓上下文；缺数据不得猜成有持仓。"""
+
+    def test_explicit_flat_via_position_context_flags_hold(self):
+        # 文本否定空仓但无数字字段：门禁仍须判 no_position
+        result = validate_position_actions(
+            "建议 HOLD，等待回调。",
+            {},
+            position_context={"has_position": False, "position_status_explicit": True},
+        )
+        assert result["position_status"] == "no_position"
+        assert result["has_position"] is False
+        assert result["passed"] is False
+
+    def test_explicit_flat_via_position_context_flags_reduce(self):
+        result = validate_position_actions(
+            "建议减仓止损。",
+            {},
+            position_context={"has_position": False, "position_status_explicit": True},
+        )
+        assert result["passed"] is False
+
+    def test_inferred_holding_flags_buy(self):
+        result = validate_position_actions(
+            "建议买入建仓。",
+            {},
+            position_context={"has_position": True, "position_status_explicit": True},
+        )
+        assert result["position_status"] == "has_position"
+        assert result["passed"] is False
+
+    def test_inferred_holding_allows_hold_and_reduce(self):
+        held = {"has_position": True, "position_status_explicit": True}
+        assert validate_position_actions("建议 HOLD。", {}, position_context=held)["passed"] is True
+        assert validate_position_actions("建议减仓。", {}, position_context=held)["passed"] is True
+
+    def test_unknown_position_with_legacy_default_not_guessed(self):
+        # intent 解析无证据时返回 has_position=False + explicit=False 的
+        # legacy 默认；门禁不得把它当成真实空仓去约束动作
+        result = validate_position_actions(
+            "建议买入建仓。",
+            {},
+            position_context={"has_position": False, "position_status_explicit": False},
+        )
+        assert result["position_status"] == "unknown"
+        assert result["has_position"] is None
+        assert result["passed"] is True
+
+    def test_missing_data_not_guessed_as_holding(self):
+        result = validate_position_actions(
+            "建议 HOLD，等待回调。",
+            None,
+            position_context=None,
+        )
+        assert result["position_status"] == "unknown"
+        assert result["has_position"] is None
+        assert result["passed"] is True
+
+    def test_legacy_position_context_falls_back_to_numeric(self):
+        legacy = {"has_position": False, "position_status_explicit": False}
+        assert (
+            resolve_unified_has_position({"current_position": 100}, legacy) is True
+        )
+        assert (
+            resolve_unified_has_position({"current_position": 0}, legacy) is False
+        )
+
+    def test_numeric_explicit_beats_missing_position_context(self):
+        assert resolve_unified_has_position({"current_position": 0}, None) is False
+        assert resolve_unified_has_position({"current_position_pct": 5}, {}) is True
+
+    def test_unknown_position_uses_pct_fallback(self):
+        result = validate_position_actions(
+            "建议 HOLD。",
+            {"current_position_pct": 0},
+            position_context=None,
+        )
+        assert result["position_status"] == "no_position"
+
+
+class TestIntakeContractParity:
+    """入口结果一致：门禁解析与 api.main._resolve_has_position 契约对齐。"""
+
+    CASES = [
+        # (user_context, position_context)
+        ({}, {"has_position": False, "position_status_explicit": True}),
+        ({}, {"has_position": True, "position_status_explicit": True}),
+        ({}, {"has_position": False, "position_status_explicit": False}),
+        ({}, {"has_position": None, "position_status_explicit": False}),
+        ({"current_position": 0}, None),
+        ({"current_position": 100}, None),
+        ({"current_position_pct": 5}, {}),
+        # 冲突输入：统一上下文优先于数字字段（对齐入口契约第 1 优先级）
+        ({"current_position": 100}, {"has_position": False, "position_status_explicit": True}),
+        ({}, {}),
+        (None, None),
+    ]
+
+    def test_gate_resolution_matches_intake(self):
+        from api.main import _resolve_has_position
+
+        for user_context, position_context in self.CASES:
+            expected = _resolve_has_position(
+                {"user_context": user_context, "position_context": position_context},
+                None,
+            )
+            assert resolve_unified_has_position(user_context, position_context) == expected, (
+                f"mismatch for user_context={user_context!r}, "
+                f"position_context={position_context!r}"
+            )
+
+
 # ── Integration: research_manager / risk_manager ──────────────────────────────
 
 
@@ -359,3 +517,13 @@ class TestIntegrationWithManagers:
         from tradingagents.graph.signal_processing import _has_gate_failure
         text = "建议观望。\n\n⚠️ [C-001] 未持仓状态，以下持仓动作不适用：减仓。已自动降级为观察（WAIT）。"
         assert _has_gate_failure(text) is True
+
+    def test_managers_pass_position_context_to_gate(self):
+        """[C-001-R1] 两个调用点必须传入统一持仓上下文。"""
+        from tradingagents.agents.managers import research_manager, risk_manager
+        import inspect
+
+        research_src = inspect.getsource(research_manager)
+        risk_src = inspect.getsource(risk_manager)
+        assert 'position_context=state.get("position_context")' in research_src
+        assert 'position_context=state.get("position_context")' in risk_src

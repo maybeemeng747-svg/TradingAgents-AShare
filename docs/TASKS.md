@@ -30,8 +30,8 @@
 
 | 顺序 | 任务 | 状态 | 预计分钟 |
 |---|---|---|---:|
-| 1 | C-001-R1 持仓真源与 HOLD 门禁 | ready | 25-40 |
-| 2 | C-005-R1 止损语义与研究方向 | blocked-auto | 20-30 |
+| 1 | C-001-R1 持仓真源与 HOLD 门禁 | done（待统一 review） | 25-40 |
+| 2 | C-005-R1 止损语义与研究方向 | in_progress | 20-30 |
 | 3 | C-006-R1 财务质量指标生产接线 | blocked-auto | 30-45 |
 | 4 | HY-009-R1 增量缓存与冲突审计 | blocked-auto | 30-45 |
 | 5 | M-009-R1 观察池独立筛选 | blocked-auto | 25-40 |
@@ -42,6 +42,8 @@
 批次共同约束：每任务记录基线 HEAD、任务卡 hash、修改文件、测试退出码及独立 review 原始输出；P0/P1/P2 correctness finding、UNKNOWN、超时或测试失败停止整批。禁止改生产 DB、凭据、prompts、知识库/海瑞仓库和已冻结契约；禁止 live LLM、自动 push 或真实飞书发送。测试只用隔离 fixture/临时 DB。同一工作树只允许一个执行器，Z Code 直接执行时不得再启动 OpenCode 循环；无法确认独占则停止。
 
 本次将 C-001-R1 的依赖从无业务关联的飞书 B-003-R1 改为已完成的 B-004-R1（持仓同步）和 F-001-R1（未持仓门禁）。B-003-R1、SCORE-004、SCORE-006、Investoday 授权及战略暂停继续保留人工门禁。
+
+> **2026-09-10 用户破例指示**：本批次由 Z Code 连续开发完成后，Codex review 由用户统一安排。批次内各任务 `done` 仅表示"代码已提交、任务指定测试通过"，**不表示验收收口**；每个任务的运行档案记录真实命令、退出码与修改文件供统一 review 使用。验收纠偏原则（历史 done ≠ 验收通过）继续适用。
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -466,7 +468,7 @@
 ### C-001-R1: 持仓推断与 HOLD 绕门禁补修（P2）
 - **描述**：门禁使用显式+推断后的统一持仓上下文；正文出现“等待”不得让错误 HOLD 绕过转换。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 代码已提交、定向测试 112 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/C-001-R1-20260910-233716/`）
 - **depends_on**：B-004-R1, F-001-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/agents/utils/position_validation_gate.py`、`tradingagents/graph/intent_parser.py`、`tradingagents/graph/signal_processing.py`、对应测试与任务档案。跨模块扩大范围须先记录具体调用证据。
