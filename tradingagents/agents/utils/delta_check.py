@@ -28,10 +28,66 @@ _BULLISH_KEYWORDS = [
     "看多", "偏多", "买入", "建仓", "加仓", "积极",
     "BUY", "ENTER", "BULLISH", "LONG",
 ]
+# [C-005-R1] 裸"止损"是风险控制字段（止损位/止损价/止损条件），
+# 不构成研究方向；只有"止损离场/出局/清仓"等明确退出指令才算看空
 _BEARISH_KEYWORDS = [
-    "看空", "偏空", "卖出", "清仓", "减仓", "回避", "止损",
+    "看空", "偏空", "卖出", "清仓", "减仓", "回避",
+    "止损离场", "止损出局", "止损清仓",
     "SELL", "EXIT", "BEARISH", "SHORT", "REDUCE",
 ]
+
+# [C-005-R1] 系统追加区块起点：方向提取前先剥离，避免上一次的
+# delta 警告（含"看多 → 看空"字样）、执行质检与枚举文档污染提取
+_SYSTEM_BLOCK_MARKERS = [
+    "⚠️",
+    "📊",
+    "--- 报告质量评分",
+    "### 执行质检",
+    "### 执行等级与证据门禁",
+    "<!-- TA_SYSTEM_DIAGNOSTICS_START -->",
+]
+
+# [C-005-R1] 否定词识别：否定词必须锚定在关键词前（允许有限连接词），
+# 避免"反弹无力，止损出局"里"无力"的"无"被误判为否定
+_NEGATION_BEFORE_RE = re.compile(
+    r"(?:避免|暂缓|放弃|取消|禁止|停止"
+    r"|(?:不|未|勿|无)(?:宜|应|该|要|意|需|须|急于|建议|考虑|计划|打算|适合|二|再)?)"
+    r"\s*$"
+)
+_NEGATION_WINDOW = 6
+
+# [C-005-R1] 动作枚举文档行（ENTER/WAIT/HOLD/REDUCE/EXIT 等）不是结论
+_ACTION_ENUM_LINE_RE = re.compile(
+    r"(?im)(?:"
+    r"^.*(?:分类标签|动作枚举|决策枚举|可选动作|动作集合|动作标签)"
+    r".*(?:BUY\s*[/／]\s*SELL|ENTER\s*[/／]).*$"
+    r"|"
+    r"^\s*\**\s*(?:BUY\s*[/／]\s*SELL\s*[/／]\s*HOLD"
+    r"|ENTER\s*[/／]\s*WAIT\s*[/／]\s*HOLD\s*[/／]\s*REDUCE\s*[/／]\s*EXIT)"
+    r"\s*\**\s*$"
+    r")"
+)
+
+
+def _strip_system_blocks(text: str) -> str:
+    """剥离系统追加区块与动作枚举文档行，返回纯模型正文。"""
+    earliest = len(text)
+    for marker in _SYSTEM_BLOCK_MARKERS:
+        idx = text.find(marker)
+        if idx >= 0 and idx < earliest:
+            earliest = idx
+    text = text[:earliest]
+    return _ACTION_ENUM_LINE_RE.sub("", text)
+
+
+def _has_effective_keyword(text: str, keywords: list[str]) -> bool:
+    """存在未被否定的关键词出现。"""
+    for keyword in keywords:
+        for m in re.finditer(re.escape(keyword), text, re.IGNORECASE):
+            prefix = text[max(0, m.start() - _NEGATION_WINDOW):m.start()]
+            if not _NEGATION_BEFORE_RE.search(prefix):
+                return True
+    return False
 
 
 def _ensure_delta_log_dir():
@@ -77,12 +133,16 @@ def _extract_direction(text: str) -> str:
 
     使用 TradeAction 枚举进行标准化判断，同时保留中文关键词兼容。
 
+    [C-005-R1] 先剥离系统追加区块与枚举文档行，再否定感知地匹配关键词；
+    裸"止损"（止损位/止损条件等风险控制字段）不再单独构成看空。
+
     Returns:
         "bullish" / "bearish" / "neutral"
     """
     if not text:
         return "neutral"
 
+    text = _strip_system_blocks(text)
     text_upper = text.upper()
 
     # 使用 TradeAction 枚举判断
@@ -91,15 +151,27 @@ def _extract_direction(text: str) -> str:
     has_exit = TradeAction.EXIT.value in text_upper
     has_wait = TradeAction.WAIT.value in text_upper
 
-    # 中文关键词判断
-    has_bull = any(kw in text for kw in _BULLISH_KEYWORDS) or has_enter
-    has_bear = any(kw in text for kw in _BEARISH_KEYWORDS) or has_reduce or has_exit
+    # 中文关键词判断（否定感知）
+    has_bull = _has_effective_keyword(text, _BULLISH_KEYWORDS) or has_enter
+    has_bear = _has_effective_keyword(text, _BEARISH_KEYWORDS) or has_reduce or has_exit
 
     # 如果同时有看多和看空信号，根据强度判断
     if has_bull and has_bear:
         # 看看是否有更强的信号
-        strong_bull = any(kw in text for kw in ["强烈", "积极", "建议买入", "建议建仓"])
-        strong_bear = any(kw in text for kw in ["止损", "清仓", "建议卖出", "建议减仓"])
+        # [C-005-R1] strong_bear 不再包含裸"止损"，只有明确退出指令
+        strong_bull = _has_effective_keyword(text, ["强烈", "积极", "建议买入", "建议建仓"])
+        strong_bear = _has_effective_keyword(
+            text, ["止损离场", "止损出局", "止损清仓", "清仓", "建议卖出", "建议减仓"]
+        )
+        # [C-005-R1] 建议性卖出指令（建议卖出/清仓/减仓/止损离场）才与
+        # 强买入指令对抗；仅附止损保护条件（如"强烈建议买入，跌破150
+        # 止损离场"）不改变看多方向
+        operative_sell = _has_effective_keyword(
+            text,
+            ["建议卖出", "建议清仓", "建议减仓", "建议止损", "建议离场", "果断止损"],
+        )
+        if strong_bull and not operative_sell:
+            return "bullish"
         if strong_bear:
             return "bearish"
         if strong_bull:

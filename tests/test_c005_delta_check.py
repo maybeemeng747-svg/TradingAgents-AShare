@@ -485,3 +485,108 @@ class TestIntegration:
             # 000001 同方向
             result2 = check_delta("000001", "继续看空", ["market"])
             assert result2 is None
+
+
+# ── [C-005-R1] 止损字段不构成方向；否定/系统文字不污染 ──
+
+
+class TestC005R1StopLossNotDirection:
+    """止损条件属于风险控制，不得单独把研究方向判成偏空。"""
+
+    def test_bullish_with_stop_loss_field_stays_bullish(self):
+        assert _extract_direction("看多，建议买入，止损位设在150元。") == "bullish"
+
+    def test_bullish_with_stop_loss_clause_stays_bullish(self):
+        assert (
+            _extract_direction("突破180元买入做多；若跌破150元触发止损，则离场。")
+            == "bullish"
+        )
+
+    def test_strong_buy_with_protective_stop_stays_bullish(self):
+        assert (
+            _extract_direction("强烈建议买入建仓，跌破150元止损离场。") == "bullish"
+        )
+
+    def test_explicit_stop_loss_exit_still_bearish(self):
+        # 明确退出指令仍是看空：真实退出不被吞掉
+        assert _extract_direction("虽然基本面看多，但建议止损离场") == "bearish"
+        assert _extract_direction("反弹无力，止损出局。") == "bearish"
+
+    def test_negated_sell_not_bearish(self):
+        # 否定词不污染：不建议卖出 ≠ 看空
+        assert _extract_direction("不建议卖出，继续持有，回调可加仓。") != "bearish"
+        # "无力"的"无"不得误判为否定（回归 J）
+        assert _extract_direction("反弹无力，止损出局。") == "bearish"
+
+    def test_negated_buy_not_bullish(self):
+        assert _extract_direction("短线不宜买入，观望为宜。") != "bullish"
+
+    def test_action_enum_lines_do_not_pollute(self):
+        # 系统覆盖文字（动作枚举文档）不污染方向
+        text = "可选动作：ENTER/WAIT/HOLD/REDUCE/EXIT\n结论：看多，条件买入。"
+        assert _extract_direction(text) == "bullish"
+        text2 = "**ENTER / WAIT / HOLD / REDUCE / EXIT**\n最终看多，回调条件买入。"
+        assert _extract_direction(text2) == "bullish"
+
+    def test_previous_delta_warning_block_does_not_pollute(self):
+        # 上一次保存的结论尾部带有 [C-005] 警告区块，方向提取须剥离
+        text = (
+            "看多，建议买入。\n\n⚠️ [C-005] 同股票结论翻转警告\n"
+            "方向变化：看多 → 看空"
+        )
+        assert _extract_direction(text) == "bullish"
+
+
+class TestC005R1FalseFlipReplay:
+    """回放：看多+止损条件不再产生虚假"bullish→bearish"翻转警告。"""
+
+    def _make_conclusion_file(self, tmp_path, stock_code, conclusion, data_sources, hours_ago=0):
+        os.makedirs(tmp_path, exist_ok=True)
+        ts = datetime.now() - timedelta(hours=hours_ago)
+        record = {
+            "stock_code": stock_code,
+            "conclusion": conclusion,
+            "confidence": "medium",
+            "data_sources": data_sources,
+            "timestamp": ts.isoformat(),
+        }
+        path = tmp_path / f"{stock_code}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+    def test_bullish_with_stop_condition_no_false_flip(self, tmp_path):
+        self._make_conclusion_file(
+            tmp_path, "600519", "看多，建议买入建仓。", ["market"]
+        )
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            new_conclusion = "看多，建议买入，止损位设在150元。"
+            assert _extract_direction(new_conclusion) == "bullish"
+            assert check_delta("600519", new_conclusion, ["market"]) is None
+
+    def test_real_flip_still_detected(self, tmp_path):
+        self._make_conclusion_file(
+            tmp_path, "600519", "看多，建议买入建仓。", ["market"]
+        )
+        with patch("tradingagents.agents.utils.delta_check.DELTA_LOG_DIR", str(tmp_path)):
+            info = check_delta("600519", "看空，建议清仓离场。", ["market"])
+            assert info is not None
+            assert info["last_direction"] == "bullish"
+            assert info["new_direction"] == "bearish"
+
+    def test_replay_with_position_and_flat_outputs(self, tmp_path):
+        # 回放持仓/未持仓两类输出：方向不被止损条件污染，动作随持仓分化
+        from tradingagents.graph.signal_processing import _extract_decision_semantics
+
+        bullish_with_stop = "看多，建议买入，止损位设在150元。"
+        for has_position in (True, False):
+            semantics = _extract_decision_semantics(
+                bullish_with_stop, has_position=has_position, trigger_price=180.0
+            )
+            assert semantics.research_direction == "偏多", has_position
+        held = _extract_decision_semantics(
+            bullish_with_stop, has_position=True, trigger_price=180.0
+        )
+        flat = _extract_decision_semantics(
+            bullish_with_stop, has_position=False, trigger_price=180.0
+        )
+        assert held.execution_action == "HOLD"
+        assert flat.execution_action == "ENTER"

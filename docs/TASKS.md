@@ -477,7 +477,7 @@
 ### C-005-R1: 止损文本方向识别补修（P2）
 - **描述**：止损条件属于风险控制，不得单独把研究方向判成偏空。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：in_progress（Z Code 2026-09-11，运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
 - **depends_on**：C-001-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/graph/signal_processing.py`、delta/decision 相关工具及对应测试、任务档案。
