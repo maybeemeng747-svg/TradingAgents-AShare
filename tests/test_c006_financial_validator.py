@@ -692,3 +692,82 @@ class TestDeterminism:
         r1 = extract_financial_anomaly_inputs(facts)
         r2 = extract_financial_anomaly_inputs(facts)
         assert r1 == r2
+
+
+# ── [C-006-R1] 现金流质量状态与口径 ──────────────────────────────────────────
+
+
+class TestC006R1CashflowQualityStatus:
+    """双负/零利润/缺现金流/跨单位必须显式保留状态，双负不得静默放过。"""
+
+    @staticmethod
+    def _np_cf_facts(np_value, cf_value, np_unit="万元", cf_unit="万元",
+                     date="2025-12-31", scope="FY_YTD"):
+        return [
+            {"metric": "net_profit", "report_date": date, "period_scope": scope,
+             "value": np_value, "unit": np_unit, "status": "HAS_DATA"},
+            {"metric": "operating_cashflow", "report_date": date, "period_scope": scope,
+             "value": cf_value, "unit": cf_unit, "status": "HAS_DATA"},
+        ]
+
+    def test_double_negative_flagged_not_silent(self):
+        # 利润-5000万、现金流-8000万：比值 1.6 看似健康但毫无意义
+        inputs = extract_financial_anomaly_inputs(self._np_cf_facts(-5000.0, -8000.0))
+        result = check_financial_anomalies("TEST", **inputs)
+        assert "loss_with_cash_burn" in result["anomalies"]
+        assert result["cashflow_quality_status"] == "both_negative_loss"
+        assert result["needs_manual_review"] is True
+
+    def test_double_negative_warning_rejects_positive_interpretation(self):
+        inputs = extract_financial_anomaly_inputs(self._np_cf_facts(-5000.0, -8000.0))
+        warning = format_financial_anomaly_warning(check_financial_anomalies("TEST", **inputs))
+        assert "双负" in warning
+        assert "不得解读为盈利质量良好" in warning
+        assert "人工复核" in warning
+
+    def test_zero_profit_ratio_not_applicable(self):
+        inputs = extract_financial_anomaly_inputs(self._np_cf_facts(0.0, 500.0))
+        result = check_financial_anomalies("TEST", **inputs)
+        assert result["cashflow_quality_status"] == "profit_near_zero_ratio_not_applicable"
+        assert "negative_cashflow_quality" not in result["anomalies"]
+
+    def test_missing_cashflow_via_pipeline_fails_closed(self):
+        # FUND-004B-R1 同组契约：利润/现金流必须同组，缺一方整组不可用
+        facts = self._np_cf_facts(2000.0, 500.0)[:1]
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["net_profit"] is None and inputs["operating_cashflow"] is None
+        result = check_financial_anomalies("TEST", **inputs)
+        assert result["cashflow_quality_status"] == "missing_both"
+
+    def test_missing_inputs_direct_call_states(self):
+        # 验证器自身的细粒度状态（直调路径）
+        assert check_financial_anomalies("X", net_profit=1.0)[
+            "cashflow_quality_status"] == "missing_operating_cashflow"
+        assert check_financial_anomalies("X", operating_cashflow=1.0)[
+            "cashflow_quality_status"] == "missing_net_profit"
+        assert check_financial_anomalies("X")["cashflow_quality_status"] == "missing_both"
+
+    def test_loss_with_positive_cashflow_no_misleading_text(self):
+        # 旧代码给出"利润未转化为实际现金流入"的误导文本（利润本是负的）
+        result = check_financial_anomalies("X", net_profit=-5.0, operating_cashflow=3.0)
+        assert "negative_cashflow_quality" not in result["anomalies"]
+        assert result["cashflow_quality_status"] == "loss_with_positive_cashflow"
+
+    def test_cross_unit_groups_not_mixed(self):
+        # 利润(万元) vs 现金流(亿元)：跨单位不得混组出比值结论
+        facts = self._np_cf_facts(2000.0, 5.0, cf_unit="亿元")
+        inputs = extract_financial_anomaly_inputs(facts)
+        assert inputs["net_profit"] is None or inputs["operating_cashflow"] is None
+        result = check_financial_anomalies("TEST", **inputs)
+        assert result["cashflow_quality_status"] in (
+            "missing_both", "missing_net_profit", "missing_operating_cashflow"
+        )
+        assert "excessive_cashflow_quality" not in result["anomalies"]
+        assert "negative_cashflow_quality" not in result["anomalies"]
+
+    def test_profitable_company_still_evaluated(self):
+        # 回归：正常盈利企业比值检查照常评估
+        inputs = extract_financial_anomaly_inputs(self._np_cf_facts(2000.0, -500.0))
+        result = check_financial_anomalies("TEST", **inputs)
+        assert result["cashflow_quality_status"] == "evaluated"
+        assert "negative_cashflow_quality" in result["anomalies"]

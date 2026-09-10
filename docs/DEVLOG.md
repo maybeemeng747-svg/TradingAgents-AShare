@@ -1,5 +1,25 @@
 # 修改日志
 
+## 2026-09-11 | C-006-R1 财务质量指标生产接线补修（Z Code 连续模式第 3 项）
+
+- **根因**（`financial_validator.py` 规则 7）：比值
+  经营现金流/净利润仅以 `net_profit != 0` 为守卫——双负值（亏损+经营性
+  失血）比值落在正区间被静默放过（"健康"假象）；零利润/缺现金流静默
+  跳过无状态；亏损+正现金流误用"利润未转化为现金流入"文本。生产
+  normalizer（`extract_financial_anomaly_inputs`）经复现确认 FUND-004B-R1
+  分组 fail-closed 正确，无需改动。
+- **修复**：比值只在净利润>0 时评估；亏损期拆双负（新增异常
+  `loss_with_cash_burn`，文本明确"不得解读为盈利质量良好"）与亏损+
+  正现金流（非异常，留口径）；零利润/缺现金流/缺利润/双缺各给显式
+  状态；返回契约新增 `cashflow_quality_status`（7 态）供消费方区分
+  "评估通过"与"缺数据跳过"。
+- **测试**：验收 `pytest tests/test_c006_financial_validator.py -q` →
+  **79 passed**（新增 8 项管线驱动对抗：双负/零利润/缺现金流/跨单位
+  不混组/无误导文本/正常回归）；财务域回归 5 文件 → **258 passed**；
+  api_smoke → **87 passed**。
+- **review**：按用户 2026-09-10 指示统一安排；运行档案
+  `docs/task_runs/C-006-R1-20260911-000000/`。
+
 ## 2026-09-11 | C-005-R1 止损文本方向识别补修（Z Code 连续模式第 2 项）
 
 - **根因**（`delta_check.py::_extract_direction`）：`_BEARISH_KEYWORDS`

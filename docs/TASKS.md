@@ -31,9 +31,9 @@
 | 顺序 | 任务 | 状态 | 预计分钟 |
 |---|---|---|---:|
 | 1 | C-001-R1 持仓真源与 HOLD 门禁 | done（待统一 review） | 25-40 |
-| 2 | C-005-R1 止损语义与研究方向 | in_progress | 20-30 |
-| 3 | C-006-R1 财务质量指标生产接线 | blocked-auto | 30-45 |
-| 4 | HY-009-R1 增量缓存与冲突审计 | blocked-auto | 30-45 |
+| 2 | C-005-R1 止损语义与研究方向 | done（待统一 review） | 20-30 |
+| 3 | C-006-R1 财务质量指标生产接线 | done（待统一 review） | 30-45 |
+| 4 | HY-009-R1 增量缓存与冲突审计 | in_progress | 30-45 |
 | 5 | M-009-R1 观察池独立筛选 | blocked-auto | 25-40 |
 | 6 | UI-014-R1 研报证据契约与请求状态 | blocked-auto | 30-50 |
 | 7 | V-014 真实知识库只读验收 | blocked-auto | 25-45 |
@@ -477,7 +477,7 @@
 ### C-005-R1: 止损文本方向识别补修（P2）
 - **描述**：止损条件属于风险控制，不得单独把研究方向判成偏空。
 - **优先级**：P2
-- **状态**：in_progress（Z Code 2026-09-11，运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、验收测试 109 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
 - **depends_on**：C-001-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/graph/signal_processing.py`、delta/decision 相关工具及对应测试、任务档案。
@@ -486,7 +486,7 @@
 ### C-006-R1: 财务质量指标生产接线补修（P2）
 - **描述**：Phase 2 指标由真实 normalizer 产出；负利润时现金流质量比不得产生误导性正向结论。
 - **优先级**：P2
-- **状态**：blocked-auto
+- **状态**：done — 代码已提交、验收测试 79 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/C-006-R1-20260911-000000/`）
 - **depends_on**：C-005-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/agents/utils/financial_validator.py`、实际财务 normalizer 与调用接线、对应测试、任务档案。

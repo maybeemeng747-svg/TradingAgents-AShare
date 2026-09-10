@@ -45,6 +45,12 @@ def check_financial_anomalies(
             "anomalies": list[str],
             "anomaly_details": dict,
             "needs_manual_review": bool,
+            # [C-006-R1] 现金流质量检查状态：evaluated /
+            # both_negative_loss / loss_with_positive_cashflow /
+            # profit_near_zero_ratio_not_applicable /
+            # missing_operating_cashflow / missing_net_profit /
+            # missing_both
+            "cashflow_quality_status": str,
         }
     """
     anomalies = []
@@ -133,8 +139,19 @@ def check_financial_anomalies(
                 )
 
     # 7. 现金流质量：经营现金流/净利润比值异常
-    if operating_cashflow is not None and net_profit is not None and net_profit != 0:
+    # [C-006-R1] 比值仅在净利润为正时有"盈利质量"语义。亏损期（含双负）、
+    # 零利润、缺现金流等状态必须显式保留状态与口径：双负比值不得被静默
+    # 放过（比值看起来"健康"），也不得被解读成盈利质量良好。
+    cashflow_quality_status = "missing_both"
+    if net_profit is None and operating_cashflow is None:
+        cashflow_quality_status = "missing_both"
+    elif net_profit is None:
+        cashflow_quality_status = "missing_net_profit"
+    elif operating_cashflow is None:
+        cashflow_quality_status = "missing_operating_cashflow"
+    elif net_profit > 0:
         cf_ratio = operating_cashflow / net_profit
+        cashflow_quality_status = "evaluated"
         if cf_ratio < 0:
             anomalies.append("negative_cashflow_quality")
             anomaly_details["negative_cashflow_quality"] = (
@@ -147,6 +164,22 @@ def check_financial_anomalies(
                 f"经营现金流/净利润 = {cf_ratio:.2f}，"
                 f"现金流远超利润，可能存在非经常性因素"
             )
+    elif net_profit < 0:
+        if operating_cashflow < 0:
+            cashflow_quality_status = "both_negative_loss"
+            cf_ratio = operating_cashflow / net_profit
+            anomalies.append("loss_with_cash_burn")
+            anomaly_details["loss_with_cash_burn"] = (
+                f"净利润 {net_profit:.2f} 亿与经营现金流 {operating_cashflow:.2f} 亿双负，"
+                f"公司在亏损同时经营性失血；比值 {cf_ratio:.2f} 无经济意义，"
+                f"不得解读为盈利质量良好"
+            )
+        else:
+            # 亏损期现金流为正（如高折旧）：非异常，但比值不适用，保留口径
+            cashflow_quality_status = "loss_with_positive_cashflow"
+    else:
+        # net_profit == 0：比值不可计算
+        cashflow_quality_status = "profit_near_zero_ratio_not_applicable"
 
     # 8. 应收账款/营收背离：应收增速远超营收增速
     if (
@@ -190,6 +223,9 @@ def check_financial_anomalies(
         "anomalies": anomalies,
         "anomaly_details": anomaly_details,
         "needs_manual_review": has_anomaly,
+        # [C-006-R1] 现金流质量检查的状态与口径，供 API/报告消费方区分
+        # "评估通过"与"缺数据/不可计算而跳过"
+        "cashflow_quality_status": cashflow_quality_status,
     }
 
 
