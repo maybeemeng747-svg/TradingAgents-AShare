@@ -1,5 +1,23 @@
 # 修改日志
 
+## 2026-09-11 | V-015 研报全链路端到端验收（Z Code 连续模式第 8 项 / 批次末项）
+
+- **fixture 端到端**：新增 `tests/test_v015_research_operations_e2e.py`
+  （隔离 tmp 知识库）——五类回放（新增研报 ingest_key 幂等 / 重复研报
+  duplicate_of / 缺元数据 / 半年报修订贯穿证据 / 事实冲突传播到 HY-010
+  队列 conflict）+ 链路一致性（证据字段与 UI-014 视图模型消费字段
+  逐一对照 + 全链路无动作语义字段）+ 降级（局部失败/缓存损坏/空目录）。
+  **10 passed**。
+- **真实只读 smoke**：新增 `scripts/run_v015_operations_acceptance.py`
+  生成 `docs/knowledge_reports/research-operations-acceptance-2026-09-11.md`
+  ——KB-019 增量清单 total=1090（new 44 / duplicate 56 / needs_metadata
+  914 / stale 67 / conflict 2 / digested 7）；KB-020 抽样两 symbol fresh
+  无契约违例；HY-010 队列（合成 universe，不读生产 DB）正常。**PASS**。
+  fixture 与真实 smoke 分开报告。
+- **回归**：kb019/kb020/hy009/hy010/v015 五套件 **224 passed**。
+- **review**：按用户 2026-09-10 指示统一安排；运行档案
+  `docs/task_runs/V-015-20260911-000000/`。
+
 ## 2026-09-11 | V-014 真实知识库只读 smoke 验收（Z Code 连续模式第 7 项）
 
 - **执行**：新增只读验收脚本 `scripts/run_v014_knowledge_smoke.py`；
