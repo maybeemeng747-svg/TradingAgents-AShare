@@ -1,5 +1,22 @@
 # 修改日志
 
+## 2026-09-11 | V-014 真实知识库只读 smoke 验收（Z Code 连续模式第 7 项）
+
+- **执行**：新增只读验收脚本 `scripts/run_v014_knowledge_smoke.py`；
+  对 `~/Documents/knowledge`（435 页）做四类抽样（多研报同股/已有
+  半年报/无半年报/过期知识），逐 symbol 跑 KB-020 只读聚合并核验
+  TA/TradeFlow/IC 契约。**exit 0 PASS**；日报
+  `docs/knowledge_reports/research_mainline_acceptance-2026-09-11.md`。
+- **结果**：7 个抽样 symbol 聚合全部 fresh 且契约无违例（证据树无
+  decision/action_label/buy_level）；观点/事实分离覆盖率 23.7%；事实
+  冲突率 0%。
+- **Findings（只记录不改码）**：①部分页面 symbols 仅名称无代码；
+  ②7/8 citation 审计因半年报事实缺机读数据降级（fail-closed，非违例）；
+  ③3 个半年报页缺机读 financial_facts；④source_type 白名单覆盖率
+  23.7% 偏低。知识库全程只读。
+- **review**：按用户 2026-09-10 指示统一安排；运行档案
+  `docs/task_runs/V-014-20260911-000000/`。
+
 ## 2026-09-11 | UI-014-R1 研报证据中心真实契约与请求状态补修（Z Code 连续模式第 6 项）
 
 - **三缺陷复现**：①组件按臆造 schema 渲染（consensus 读 reports[]/
