@@ -1,5 +1,56 @@
 # 修改日志
 
+## 2026-09-12 | C-005-R1 修复轮 1：review findings 3/4（2×P2）
+
+- **[P2] 方向误判**：「此前看多，当前强烈看空，立即清仓」旧版判
+  bullish——裸"强烈"被计入强看多（命中"强烈看空"），"立即清仓"不在
+  建议性卖出清单。修复：①strong_bull 改方向绑定词组（强烈看多/
+  积极看多/强烈建议买入/建议买入/建议建仓）；②新增
+  `_HISTORICAL_DIRECTION_RE` 剥离历史观点（此前/曾经/之前/过去/去年/
+  上周/上月/上季度 + 8 字窗内方向词），历史观点不参与当前结论。
+- **[P2] 系统区块误删正文**：⚠️/📊 裸符号被当截断边界，正文
+  "⚠️ 风险提示：建议卖出"被截断后判 neutral。修复：⚠️ 边界收紧为
+  `⚠️ [`（后跟 [标签] 才是系统区块），📊 收紧为完整「📊 数据源可用性」。
+- **回归**：审核两案例 + 11 项矩阵全过；新增
+  `TestC005R1FixReviewFindings` 4 项；C-005 验收 **113 passed**；相关
+  后端 9 文件 **305 passed**（test_decision_replay::TestReplay603256
+  仍为已记录预存失败）。运行档案已追加"修复轮 1"。
+
+## 2026-09-12 | V-015 修复轮 1：review finding 2（P1）
+
+- **[P1] 空库误判 PASS**：真实 smoke 对"空目录 + 证据全 missing"仍判
+  PASS——混淆"fixture 降级测试通过"与"真实链路可用"，摄取错误只打印
+  不影响结论。修复：新增链路可用性门禁，任一未通过即总体 FAIL——
+  ①investment 分区存在且 ≥1 页；②KB-019 摄取 errors 为空；③抽样中
+  至少一只 consensus has_hit（全部 missing 只证明降级路径正常）；
+  ④证据/队列无动作语义字段、无聚合异常。
+- **验证**：审核复现场景（空目录）实跑 **exit 1 / FAIL**；真实库
+  437 页门禁全绿 **exit 0 / PASS**。报告重生成
+  `docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`，
+  删除带缺陷的 09-11 报告；fixture e2e 10 passed 与链路域回归
+  224 passed 不变。运行档案已追加"修复轮 1"。
+
+## 2026-09-12 | UI-014-R1 修复轮 1：review finding 1（P1）
+
+- **[P1] 证据中心永远停在"加载中"**：fetch effect 依赖含
+  `state.phase`/`state.attempts`——`load_started` 派发改变 phase，
+  effect 立即重建，cleanup 把刚发出的在飞请求标记 cancelled，响应
+  （审核以 200ms 延迟复现）到达即被丢弃。离线 mock 因合成响应在
+  microtask 内先于 cleanup 返回而漏检。
+- **修复**：请求生命周期与 loading 状态解耦——fetch effect 依赖改为
+  `expanded/fetchEpoch/symbol`，重触发只经显式 epoch 提升（切股、
+  手动重试）；在飞请求以 ticket ref 标记，cleanup 只取消"当前这一发"，
+  StrictMode 双调用自愈；状态机新增 `load_cancelled`（在飞被清理回
+  idle）；移除组件 unmounted 冻结派发（StrictMode 模拟卸载的 cleanup
+  无法与真实卸载区分，冻结致开发模式永久停机；真实卸载由 ticket 取消
+  + React 18 no-op dispatch 保证）。
+- **组件测试**（新增 `ResearchEvidenceCenter.test.tsx`，jsdom +
+  @testing-library/react + StrictMode 镜像真实应用，手动 deferred
+  精确控制时序）：延迟响应不卡加载 / A→B 慢响应丢弃 / 失败稳定+
+  重试上限。**3 passed**；前端全量 **160 passed（13 文件）**；tsc
+  干净；build 通过。新增 devDeps：jsdom、@testing-library/react、
+  @testing-library/dom。运行档案已追加"修复轮 1"。
+
 ## 2026-09-11 | V-015 研报全链路端到端验收（Z Code 连续模式第 8 项 / 批次末项）
 
 - **fixture 端到端**：新增 `tests/test_v015_research_operations_e2e.py`

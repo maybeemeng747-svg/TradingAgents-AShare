@@ -36,11 +36,12 @@ _BEARISH_KEYWORDS = [
     "SELL", "EXIT", "BEARISH", "SHORT", "REDUCE",
 ]
 
-# [C-005-R1] 系统追加区块起点：方向提取前先剥离，避免上一次的
-# delta 警告（含"看多 → 看空"字样）、执行质检与枚举文档污染提取
+# [C-005-R1] 系统追加区块起点：方向提取前先剥离。只用明确的系统区块
+# 标识做边界——⚠️ 后必须跟 [标签]（如 ⚠️ [C-005]），裸 ⚠️/📊 可能是
+# 模型正文（如"⚠️ 风险提示：建议卖出"），不得据此截断后文
 _SYSTEM_BLOCK_MARKERS = [
-    "⚠️",
-    "📊",
+    "⚠️ [",
+    "📊 数据源可用性",
     "--- 报告质量评分",
     "### 执行质检",
     "### 执行等级与证据门禁",
@@ -69,6 +70,14 @@ _ACTION_ENUM_LINE_RE = re.compile(
 )
 
 
+# [C-005-R1-fix] 历史观点表述：时间副词 + 方向词一起剥离
+_HISTORICAL_DIRECTION_RE = re.compile(
+    r"(?:此前|曾经|之前|过去|去年|上周|上月|上季度|前几年)"
+    r"[^，。；！？\n]{0,8}?"
+    r"(?:看多|看空|偏多|偏空|买入|卖出|清仓|减仓)"
+)
+
+
 def _strip_system_blocks(text: str) -> str:
     """剥离系统追加区块与动作枚举文档行，返回纯模型正文。"""
     earliest = len(text)
@@ -77,7 +86,10 @@ def _strip_system_blocks(text: str) -> str:
         if idx >= 0 and idx < earliest:
             earliest = idx
     text = text[:earliest]
-    return _ACTION_ENUM_LINE_RE.sub("", text)
+    text = _ACTION_ENUM_LINE_RE.sub("", text)
+    # [C-005-R1-fix] 历史观点剥离：此前/曾经等前缀的方向表述代表历史
+    # 观点，不得作为当前结论参与方向判定（如"此前看多，当前强烈看空"）
+    return _HISTORICAL_DIRECTION_RE.sub("", text)
 
 
 def _has_effective_keyword(text: str, keywords: list[str]) -> bool:
@@ -157,9 +169,11 @@ def _extract_direction(text: str) -> str:
 
     # 如果同时有看多和看空信号，根据强度判断
     if has_bull and has_bear:
-        # 看看是否有更强的信号
-        # [C-005-R1] strong_bear 不再包含裸"止损"，只有明确退出指令
-        strong_bull = _has_effective_keyword(text, ["强烈", "积极", "建议买入", "建议建仓"])
+        # [C-005-R1-fix] 程度词必须绑定方向：单独的"强烈/积极"会被
+        # "强烈看空"误判成强看多；只有修饰看多/买入的强度信号才算强看多
+        strong_bull = _has_effective_keyword(
+            text, ["强烈看多", "积极看多", "强烈建议买入", "建议买入", "建议建仓"]
+        )
         strong_bear = _has_effective_keyword(
             text, ["止损离场", "止损出局", "止损清仓", "清仓", "建议卖出", "建议减仓"]
         )

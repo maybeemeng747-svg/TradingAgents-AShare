@@ -590,3 +590,42 @@ class TestC005R1FalseFlipReplay:
         )
         assert held.execution_action == "HOLD"
         assert flat.execution_action == "ENTER"
+
+
+# ── [C-005-R1-fix] 审核 finding 回归：程度词绑定方向 / 历史观点 / 系统区块边界 ──
+
+
+class TestC005R1FixReviewFindings:
+    """统一 review 4 项 finding 的回归（2026-09-12 修复轮）。"""
+
+    def test_historical_bullish_with_current_strong_bear(self):
+        # finding 3：此前看多是历史观点；"强烈"绑定看空不算强买；
+        # "立即清仓"是当前退出指令 → 必须 bearish（旧版 bullish）
+        assert (
+            _extract_direction("此前看多，当前强烈看空，立即清仓。") == "bearish"
+        )
+
+    def test_intensity_word_bound_to_direction(self):
+        # 裸"强烈"修饰看空不得判强看多
+        assert _extract_direction("强烈看空，建议减仓。") == "bearish"
+        # 历史看空翻多
+        assert (
+            _extract_direction("曾经看空，当前强烈看多，建议买入。") == "bullish"
+        )
+
+    def test_warning_symbol_in_body_not_truncated(self):
+        # finding 4：⚠️ 正文（如"⚠️ 风险提示：建议卖出"）不是系统区块，
+        # 不得截断后文；建议卖出是真实看空指令（旧版 neutral）
+        assert (
+            _extract_direction("基本面看多。\n\n⚠️ 风险提示：建议卖出。")
+            == "bearish"
+        )
+
+    def test_explicit_system_warning_block_still_stripped(self):
+        # 回归：真正的系统警告区块（⚠️ [标签]）仍被剥离
+        assert (
+            _extract_direction(
+                "看多，建议买入。\n\n⚠️ [C-005] 同股票结论翻转警告\n方向变化：看多 → 看空"
+            )
+            == "bullish"
+        )

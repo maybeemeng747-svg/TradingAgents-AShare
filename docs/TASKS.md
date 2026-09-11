@@ -477,7 +477,7 @@
 ### C-005-R1: 止损文本方向识别补修（P2）
 - **描述**：止损条件属于风险控制，不得单独把研究方向判成偏空。
 - **优先级**：P2
-- **状态**：done — 代码已提交、验收测试 109 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、验收 109→113 passed；统一 review 修复轮 1 完成（2×P2 finding 已修复并补回归），待复审（运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
 - **depends_on**：C-001-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/graph/signal_processing.py`、delta/decision 相关工具及对应测试、任务档案。
@@ -513,7 +513,7 @@
 ### UI-014-R1: 研报证据中心真实契约与请求状态补修（P2）
 - **描述**：按 KB-020 真实 summary schema 展示；symbol 变化清空旧数据；失败后稳定展示错误而非无限重试。
 - **优先级**：P2
-- **状态**：done — 代码已提交、vitest 17 项（全量 157）+ build 通过 + 离线 mock 双视口截图；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/UI-014-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、vitest 17+3 项（全量 160）+ build 通过 + 双视口截图；统一 review 修复轮 1 完成（P1 卡加载中已修：请求生命周期解耦 + 组件级回归测试），待复审（运行档案 `docs/task_runs/UI-014-R1-20260911-000000/`）
 - **depends_on**：M-009-R1
 - **auto_release**：true
 - **允许修改**：`frontend/src/components/ResearchEvidenceCenter.tsx`、`frontend/src/utils/researchEvidenceCenter.test.ts`、相关 API client/types、离线 UI 测试与档案。
@@ -6051,7 +6051,7 @@
 ### V-015: 研报增量摄取→证据 API→前端→待更新清单端到端验收（P2）
 - **描述**：对 KB-019/KB-020/UI-014/HY-010 做最终 fixture + 真实知识库只读验收，确认半年报集中导入时链路可用、可追溯、不会影响交易动作。
 - **优先级**：P2
-- **状态**：done — 代码已提交、fixture e2e 10 passed + 真实只读 smoke PASS（报告 `docs/knowledge_reports/research-operations-acceptance-2026-09-11.md`）；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/V-015-20260911-000000/`）
+- **状态**：done — 代码已提交、fixture e2e 10 passed + 真实 smoke PASS；统一 review 修复轮 1 完成（P1 空库误判已修：新增链路可用性门禁，空目录实跑 FAIL/真实库 PASS），待复审（报告 `docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`，运行档案 `docs/task_runs/V-015-20260911-000000/`）
 - **depends_on**：V-014, KB-019, KB-020, UI-014-R1, HY-010
 - **auto_release**：true
 - **允许修改**：本任务端到端测试、隔离 fixture、验收报告和任务档案；真实资料只读，不写外部项目。
