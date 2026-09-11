@@ -363,6 +363,7 @@ export type EvidenceCenterEvent =
     | { type: 'load_started' }
     | { type: 'load_succeeded'; symbol: string; response: ResearchEvidenceResponse }
     | { type: 'load_failed'; symbol: string; message: string }
+    | { type: 'load_cancelled' }
     | { type: 'retry_clicked' }
     | { type: 'unmounted' }
 
@@ -394,6 +395,11 @@ export function reduceEvidenceCenter(
             if (event.symbol !== state.symbol || state.phase !== 'loading') return state
             // 稳定进入 error，不自动重试
             return { ...state, phase: 'error', error: event.message }
+        case 'load_cancelled':
+            // [UI-014-R1-fix] 在飞请求被清理（折叠/切换/StrictMode 双调用）
+            // 时回到 idle，允许下次展开重新发起；不视为失败
+            if (state.phase !== 'loading') return state
+            return { ...state, phase: 'idle' }
         case 'retry_clicked':
             if (state.phase !== 'error') return state
             if (state.attempts >= EVIDENCE_MAX_ATTEMPTS_PER_SYMBOL) return state

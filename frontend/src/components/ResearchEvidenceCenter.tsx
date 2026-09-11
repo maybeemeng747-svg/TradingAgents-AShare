@@ -14,7 +14,7 @@
 //     utils/researchEvidenceCenter.ts）；symbol 变化即清空旧数据；
 //     失败稳定展示错误，不自动重试，手动重试有上限，卸载丢弃迟到响应。
 
-import { useState, useEffect, useCallback, useReducer } from 'react'
+import { useState, useEffect, useCallback, useReducer, useRef } from 'react'
 import {
     ChevronDown,
     ChevronRight,
@@ -43,7 +43,6 @@ import {
     buildScoreSnapshotViewModel,
     initialEvidenceCenterState,
     reduceEvidenceCenter,
-    shouldFetchEvidence,
     EVIDENCE_MAX_ATTEMPTS_PER_SYMBOL,
     type EvidenceChip,
 } from '@/utils/researchEvidenceCenter'
@@ -413,35 +412,60 @@ export default function ResearchEvidenceCenter({ symbol, className }: ResearchEv
     )
     const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(new Set())
 
-    // [UI-014-R1] symbol 变化清空旧数据并回到 idle
+    // [UI-014-R1-fix] 请求生命周期与 loading 状态解耦：
+    // fetch effect 的依赖不含 phase/attempts（它们由请求自身改变），
+    // 重触发只经由 expanded / fetchEpoch / symbol。在飞请求用 ticket ref
+    // 标记，cleanup 只取消"当前这一发"，迟到响应按归属丢弃。
+    const [fetchEpoch, setFetchEpoch] = useState(0)
+    const stateRef = useRef(state)
+    stateRef.current = state
+    const inflightRef = useRef<{ symbol: string; cancelled: boolean } | null>(null)
+
+    // symbol 变化：清空旧数据并提升 epoch 触发新请求
     useEffect(() => {
         dispatch({ type: 'symbol_changed', symbol })
+        setFetchEpoch((e) => e + 1)
     }, [symbol])
 
-    // Lazy-load on first expand；phase='error' 时稳定展示错误不自动重试
     useEffect(() => {
-        if (!expanded || !shouldFetchEvidence(state, expanded)) return
-        const symbolAtStart = state.symbol
-        let cancelled = false
+        if (!expanded) return
+        // 在飞请求尚未返回：不重复发起（StrictMode 双调用自愈）
+        if (inflightRef.current) return
+        const current = stateRef.current
+        if (current.phase !== 'idle') return
+        if (current.symbol !== symbol) return
+        const ticket = { symbol, cancelled: false }
+        inflightRef.current = ticket
         dispatch({ type: 'load_started' })
-        api.getResearchEvidence(symbolAtStart)
+        api.getResearchEvidence(symbol)
             .then((res) => {
-                if (cancelled) return
-                dispatch({ type: 'load_succeeded', symbol: symbolAtStart, response: res })
+                if (ticket.cancelled || inflightRef.current !== ticket) return
+                inflightRef.current = null
+                dispatch({ type: 'load_succeeded', symbol, response: res })
             })
             .catch((err) => {
-                if (cancelled) return
+                if (ticket.cancelled || inflightRef.current !== ticket) return
+                inflightRef.current = null
                 dispatch({
                     type: 'load_failed',
-                    symbol: symbolAtStart,
+                    symbol,
                     message: err instanceof Error ? err.message : '加载研报证据失败',
                 })
             })
-        return () => { cancelled = true }
-    }, [expanded, state.phase, state.attempts, state.symbol, symbol])
+        return () => {
+            // 仅当被取消的是当前在飞请求（重触发/卸载/折叠）时回收
+            if (inflightRef.current === ticket) {
+                ticket.cancelled = true
+                inflightRef.current = null
+                dispatch({ type: 'load_cancelled' })
+            }
+        }
+    }, [expanded, fetchEpoch, symbol])
 
-    // 组件卸载：冻结状态机，迟到响应一律丢弃
-    useEffect(() => () => dispatch({ type: 'unmounted' }), [])
+    // [UI-014-R1-fix] 真实卸载安全由在飞 ticket 的 cleanup 取消保证；
+    // 不派发 unmounted 冻结——StrictMode 的"模拟卸载"清理无法与真实卸载
+    // 区分，冻结会让组件在开发模式下永久停机（React 18 对已卸载组件的
+    // dispatch 是安全的 no-op）。
 
     const toggleBucket = useCallback((bucketId: string) => {
         setExpandedBuckets((prev) => {
@@ -520,7 +544,10 @@ export default function ResearchEvidenceCenter({ symbol, className }: ResearchEv
                             </div>
                             {!retryExhausted ? (
                                 <button
-                                    onClick={() => dispatch({ type: 'retry_clicked' })}
+                                    onClick={() => {
+                                        dispatch({ type: 'retry_clicked' })
+                                        setFetchEpoch((e) => e + 1)
+                                    }}
                                     className="inline-flex items-center gap-1 rounded border border-rose-200 px-3 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:border-rose-500/30 dark:hover:bg-rose-500/10 transition-colors"
                                 >
                                     <RefreshCw className="w-3 h-3" />

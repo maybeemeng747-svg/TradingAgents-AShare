@@ -68,3 +68,37 @@ DOM 快照核验：共识 bucket 渲染共识分/分歧分/有效关注/主导�
 
 按用户 2026-09-10 指示统一安排，本任务不单独 review；本档案即
 统一 review 材料。
+
+## 修复轮 1（统一 review finding 1 [P1]，2026-09-12）
+
+审核确认（200ms 延迟复现）：fetch effect 依赖含 `state.phase`/
+`state.attempts`，`load_started` 派发改变 phase → effect 立即重建 →
+cleanup 把刚发出的在飞请求标记 cancelled → 响应被丢弃 → 永远停在
+"加载中"。离线 mock 因合成响应在 microtask 内先于 cleanup 返回而
+漏检。
+
+修复（`ResearchEvidenceCenter.tsx` + `researchEvidenceCenter.ts`）：
+
+- 请求生命周期与 loading 状态解耦：fetch effect 依赖改为
+  `expanded / fetchEpoch / symbol`，重触发只经由显式 epoch 提升
+  （symbol 变化、手动重试）；phase/attempts 经 ref 读取，不再进依赖；
+- 在飞请求以 ticket ref 标记，cleanup 只取消"当前这一发"；
+  StrictMode 双调用自愈（第二次进入见在飞 ticket 直接返回）；
+- 状态机新增 `load_cancelled` 事件：在飞请求被清理（折叠/切换）时
+  回到 idle 允许重新发起；
+- 移除组件的 unmounted 冻结派发——StrictMode 模拟卸载的 cleanup
+  无法与真实卸载区分，冻结会让机器永久停机；真实卸载安全由 ticket
+  取消 + React 18 卸载后 dispatch no-op 保证。
+
+组件测试（新增 `ResearchEvidenceCenter.test.tsx`，jsdom +
+@testing-library/react，StrictMode 包裹镜像真实应用，手动 deferred
+promise 精确控制时序）：延迟响应不卡加载、A→B 慢响应丢弃、失败稳定
++ 手动重试至上限后提示且不再请求。**3 passed**；前端全量
+**160 passed（13 文件）**；tsc 干净；build 通过。
+新增 devDependencies：jsdom、@testing-library/react、@testing-library/dom。
+
+## Codex review
+
+按用户 2026-09-10 指示统一安排。第一轮统一 review 结论为暂不通过
+（本任务占 1 项 P1，见上"修复轮 1"）；修复已完成并补组件级回归测试，
+待复审。
