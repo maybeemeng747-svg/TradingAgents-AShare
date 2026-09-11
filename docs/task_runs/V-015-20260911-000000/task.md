@@ -52,3 +52,32 @@
 
 按用户 2026-09-10 指示统一安排，本任务不单独 review；本档案、
 端到端测试与验收报告即统一 review 材料。
+
+## 修复轮 1（统一 review finding 2 [P1]，2026-09-12）
+
+审核确认：真实 smoke 对"空目录 + 证据全 missing"仍判 PASS——把
+"fixture 降级测试通过"误当"真实链路可用"；摄取错误只打印不影响结论。
+
+修复（`run_v015_operations_acceptance.py`）新增链路可用性门禁，任一
+未通过即总体 FAIL（exit 1）：
+
+1. 结构门禁：真实根必须有 `wiki/investment` 且 ≥1 页；
+2. 摄取门禁：KB-019 扫描 errors 非空 → FAIL；
+3. 可用性门禁：抽样中至少一只 consensus has_hit——全部 missing 只证明
+   降级路径正常，不能证明链路可用；
+4. 契约门禁：证据/队列出现动作语义字段或聚合异常 → FAIL。
+
+报告显式区分"fixture 回放"与"真实链路可用性"，门禁段落落盘。
+
+验证：审核复现场景（空目录）实跑 **exit 1 / FAIL**（报告注明必需
+目录缺失、全部 evidence missing）；真实库重跑 **exit 0 / PASS**，
+437 页、门禁全绿，报告重新生成为
+`docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`
+（旧的带缺陷 09-11 报告已删除）。fixture e2e 10 passed 不变；链路域
+回归 5 套件 224 passed 不变。
+
+## Codex review
+
+按用户 2026-09-10 指示统一安排。第一轮统一 review 结论为暂不通过
+（本任务占 1 项 P1，见上"修复轮 1"）；修复已完成并实跑正反两个场景
+验证，待复审。

@@ -67,6 +67,21 @@ def run_fixture_e2e() -> tuple[int, str]:
 
 def run_real_smoke(knowledge_root: Path) -> dict:
     out: dict = {"knowledge_root": str(knowledge_root)}
+    gates: list[str] = []
+
+    # ── 可用性门禁 0：真实库结构必须存在（区分"空数据降级测试"与"链路可用"）──
+    investment = knowledge_root / "wiki" / "investment"
+    page_count = (
+        sum(1 for p in investment.rglob("*.md")) if investment.is_dir() else 0
+    )
+    out["structure"] = {
+        "investment_dir_exists": investment.is_dir(),
+        "page_count": page_count,
+    }
+    if not investment.is_dir():
+        gates.append(f"必需目录缺失: {investment}")
+    elif page_count == 0:
+        gates.append(f"真实知识库 investment 分区为空（0 页）: {investment}")
 
     # KB-019：真实增量摄取清单（只读）
     delta = build_research_ingest_delta(str(knowledge_root))
@@ -80,9 +95,13 @@ def run_real_smoke(knowledge_root: Path) -> dict:
             for it in delta.items_by_status("new")[:3]
         ],
     }
+    # ── 可用性门禁 1：摄取阶段错误不得静默 ──
+    if delta.errors:
+        gates.append(f"KB-019 摄取扫描产生 {len(delta.errors)} 个错误（首个: {delta.errors[0]}）")
 
     # KB-020：真实证据聚合（沿用 V-014 抽样中的两只）
     probes = {}
+    usable_consensus = 0
     for sym in ("300750.SZ", "688041.SH"):
         try:
             evidence = research_evidence_service.build_research_evidence(
@@ -98,6 +117,8 @@ def run_real_smoke(knowledge_root: Path) -> dict:
                     "half_year_facts", "research_score_snapshot",
                 )
             }
+            if buckets["consensus"]["has_hit"]:
+                usable_consensus += 1
             hits: list[str] = []
             _walk_forbidden(evidence, "$", hits)
             probes[sym] = {
@@ -108,6 +129,20 @@ def run_real_smoke(knowledge_root: Path) -> dict:
         except Exception as exc:
             probes[sym] = {"error": f"{type(exc).__name__}: {exc}"}
     out["evidence_probes"] = probes
+    # ── 可用性门禁 2：至少一只抽样 symbol 的共识链路真实可用（has_hit）。
+    # 全部 missing 只说明"降级路径正常"，不能证明真实链路可用。
+    if usable_consensus == 0:
+        gates.append(
+            "KB-020 抽样全部无共识命中（consensus has_hit 均为 false）——"
+            "证据链路在真实库上不可用，不得判定 PASS"
+        )
+
+    # 契约违例也是门禁
+    for sym, probe in probes.items():
+        if probe.get("forbidden_action_keys"):
+            gates.append(f"KB-020 `{sym}` 契约违例: {probe['forbidden_action_keys']}")
+        if "error" in probe:
+            gates.append(f"KB-020 `{sym}` 聚合异常: {probe['error']}")
 
     # HY-010：真实知识根 + 合成 universe（不读生产 DB）
     context = {
@@ -135,6 +170,10 @@ def run_real_smoke(knowledge_root: Path) -> dict:
         "forbidden_action_keys": hits[:3],
         "note": "universe 为合成样本（不读取生产数据库）",
     }
+    if hits:
+        gates.append(f"HY-010 队列契约违例: {hits[:3]}")
+
+    out["usability_gates_failed"] = gates
     return out
 
 
@@ -190,7 +229,7 @@ def main() -> int:
     lines.append("")
 
     # ── Part 2: 真实只读 smoke ──
-    lines.append("## Part 2 — 真实知识库只读 smoke")
+    lines.append("## Part 2 — 真实知识库只读 smoke（含链路可用性门禁）")
     lines.append("")
     if not root.is_dir():
         overall_ok = False
@@ -198,23 +237,21 @@ def main() -> int:
     else:
         smoke = run_real_smoke(root)
         lines.append(f"- 知识库：`{root}`（只读）")
+        structure = smoke["structure"]
+        lines.append(
+            f"- 结构核验：investment 分区存在={structure['investment_dir_exists']}，"
+            f"页面数={structure['page_count']}"
+        )
         ingest = smoke["ingest_delta"]
-        if ingest["errors"]:
-            lines.append(f"- KB-019 errors（截断）：{ingest['errors']}")
         lines.append(
             f"- KB-019 增量清单：total={ingest['total']}，"
             f"状态分布 {json.dumps(ingest['status_counts'], ensure_ascii=False)}"
         )
-        if ingest["errors"]:
-            lines.append(f"- KB-019 errors（截断）：{ingest['errors']}")
         for sym, probe in smoke["evidence_probes"].items():
             if "error" in probe:
-                overall_ok = False
                 lines.append(f"- KB-020 `{sym}`：异常 {probe['error']}")
             else:
                 bad = probe["forbidden_action_keys"]
-                if bad:
-                    overall_ok = False
                 bucket_str = "；".join(
                     f"{k}={v['data_status']}/hit={str(v['has_hit']).lower()}"
                     for k, v in probe["buckets"].items()
@@ -230,8 +267,25 @@ def main() -> int:
             f"样本 symbol 状态={q['sample_symbol_status']}，"
             f"契约违例：{q['forbidden_action_keys'] or '无'}"
         )
-        if q["forbidden_action_keys"]:
+        # [V-015-fix] 链路可用性门禁：区分"空数据降级测试通过"与"真实链路可用"
+        gates = smoke["usability_gates_failed"]
+        lines.append("")
+        lines.append("### 链路可用性门禁")
+        lines.append("")
+        if gates:
             overall_ok = False
+            for g in gates:
+                lines.append(f"- **未通过**：{g}")
+            lines.append("")
+            lines.append(
+                "> 说明：fixture 降级回放通过 ≠ 真实链路可用。真实库必须"
+                "通过门禁（必需目录存在且非空、摄取无错误、至少一只抽样"
+                "共识命中、无契约违例）方可判定 PASS。"
+            )
+        else:
+            lines.append(
+                "- 全部通过：必需目录存在且非空、摄取无错误、抽样共识命中、无契约违例"
+            )
     lines.append("")
 
     lines.append("## 结论")
