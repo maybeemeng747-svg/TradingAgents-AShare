@@ -1,5 +1,23 @@
 # 修改日志
 
+## 2026-09-12 | V-015 修复轮 2：复审 P1 结构化失败门禁（Z Code）
+
+- **问题**（复审 fault-injection 确认）：共识正常命中、其余四模块返回
+  `data_status=failed` 时 `usability_gates_failed=[]`——真实 API 会把
+  部分异常转换成结构化失败 bucket（不抛异常），门禁只查共识命中/
+  except/禁用字段导致漏判。
+- **修复**：门禁评估器抽为纯函数 `evaluate_evidence_gates(probes)`；
+  探测收集携带各 bucket errors；新增结构化失败门禁——五模块任一
+  failed 即逐一点名 FAIL（errors 一并落盘），正常 missing 与查询失败
+  分开处理（missing 不阻断）；`run_real_smoke` 支持 probe_symbols 注入。
+- **回归**：新增 `tests/test_v015_acceptance_gates.py` **10 passed**
+  （空库/部分失败/全部失败/健康样本四场景，评估器 6 项 + 脚本集成
+  4 项，集成走真实 build_research_evidence + monkeypatch 构造器）；
+  双向实跑：空目录 exit 1 / 真实库 437 页 exit 0 PASS，报告重新生成；
+  链路域回归（gates/e2e/kb019/kb020）**138 passed**。
+- 运行档案已追加"修复轮 2"；待再次复审。
+
+
 ## 2026-09-12 | C-005-R1 修复轮 1：review findings 3/4（2×P2）
 
 - **[P2] 方向误判**：「此前看多，当前强烈看空，立即清仓」旧版判

@@ -8,7 +8,7 @@
 
 ```
 ..........                                                               [100%]
-10 passed in 1.12s
+10 passed in 1.23s
 ```
 
 覆盖：新增研报（ingest_key 幂等）/ 重复研报（duplicate_of）/ 缺元数据（needs_metadata）/ 半年报修订（HY-009 revised 贯穿）/ 事实冲突（证据 conflict + HY-010 conflict）；链路字段与前端 UI-014 视图模型消费字段一致；全链路无动作语义字段；局部失败/缓存损坏/空目录可解释降级。

@@ -81,3 +81,37 @@
 按用户 2026-09-10 指示统一安排。第一轮统一 review 结论为暂不通过
 （本任务占 1 项 P1，见上"修复轮 1"）；修复已完成并实跑正反两个场景
 验证，待复审。
+
+## 修复轮 2（复审 finding [P1]，2026-09-12）
+
+复审确认：故障注入"共识正常命中，引用审计/逻辑时间线/半年报事实/评分
+快照全部返回 failed"时 `usability_gates_failed = []`——门禁只查共识
+命中/except/禁用字段，未检查模块级结构化失败（真实 API 会把部分异常
+转换为 `data_status=failed` 的 bucket，不抛异常）。
+
+修复（`run_v015_operations_acceptance.py`）：
+
+1. 门禁评估器抽为纯函数 `evaluate_evidence_gates(probes)`（可注入
+   测试）；探测收集新增各 bucket 的 errors 携带；
+2. 新增结构化失败门禁：五个模块任一 `data_status=failed` 即逐一点名
+   FAIL（含其 errors），`failed` 不得宣称全链路可用；正常 `missing`
+   与查询失败分开处理（missing 不阻断，failed 阻断）；
+3. `run_real_smoke` 支持 `probe_symbols` 注入供回归使用。
+
+自动回归（新增 `tests/test_v015_acceptance_gates.py`，**10 passed**）：
+
+- 评估器 6 项：健康样本通过 / missing≠failed / 部分模块 failed 逐一点名
+  （审核注入场景）/ 全部 failed（5 failed + 共识门禁）/ 聚合异常 /
+  契约违例；
+- 脚本集成 4 项：空库结构门禁、部分结构化失败阻断 PASS、全部失败
+  阻断 PASS、健康样本通过（走真实 `build_research_evidence` +
+  monkeypatch 模块构造器注入状态）。
+
+双向实跑：空目录 **exit 1 / FAIL**；真实库 437 页 **exit 0 / PASS**，
+报告重新生成。链路域回归（gates/e2e/kb020/kb019）**138 passed**。
+
+## Codex review
+
+第一轮：暂不通过（本任务 P1 空库误判）→ 修复轮 1 完成。
+复审：其余通过，剩 1 项 P1 结构化失败门禁 → 修复轮 2 完成（本轮），
+待再次复审。

@@ -6051,7 +6051,7 @@
 ### V-015: 研报增量摄取→证据 API→前端→待更新清单端到端验收（P2）
 - **描述**：对 KB-019/KB-020/UI-014/HY-010 做最终 fixture + 真实知识库只读验收，确认半年报集中导入时链路可用、可追溯、不会影响交易动作。
 - **优先级**：P2
-- **状态**：done — 代码已提交、fixture e2e 10 passed + 真实 smoke PASS；统一 review 修复轮 1 完成（P1 空库误判已修：新增链路可用性门禁，空目录实跑 FAIL/真实库 PASS），待复审（报告 `docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`，运行档案 `docs/task_runs/V-015-20260911-000000/`）
+- **状态**：done — 代码已提交、fixture e2e 10 passed + 真实 smoke PASS；修复轮 1+2 完成（P1 空库误判 + P1 结构化失败门禁均已修：failed 模块逐一点名阻断、四场景门禁回归 10 项），待复审（报告 `docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`，运行档案 `docs/task_runs/V-015-20260911-000000/`）
 - **depends_on**：V-014, KB-019, KB-020, UI-014-R1, HY-010
 - **auto_release**：true
 - **允许修改**：本任务端到端测试、隔离 fixture、验收报告和任务档案；真实资料只读，不写外部项目。

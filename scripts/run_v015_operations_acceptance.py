@@ -65,7 +65,55 @@ def run_fixture_e2e() -> tuple[int, str]:
     return proc.returncode, tail
 
 
-def run_real_smoke(knowledge_root: Path) -> dict:
+EVIDENCE_BUCKETS = (
+    "consensus", "citation_audit", "thesis_timeline",
+    "half_year_facts", "research_score_snapshot",
+)
+
+
+def evaluate_evidence_gates(evidence_probes: dict) -> list[str]:
+    """评估 KB-020 证据探测的链路可用性门禁，返回未通过项（空 = 通过）。
+
+    [V-015-fix2] 结构化失败单独成门禁：真实 API 会把部分异常转换成
+    ``data_status=failed`` 的 bucket（而非抛异常），只靠 except 捕获
+    会漏判。"正常 missing"（无数据）与"查询失败"（failed）分开处理——
+    只有 failed / 聚合异常 / 契约违例 / 共识链路不可用阻断验收。
+    """
+    gates: list[str] = []
+    usable_consensus = 0
+    for sym, probe in evidence_probes.items():
+        if "error" in probe:
+            gates.append(f"KB-020 `{sym}` 聚合异常: {probe['error']}")
+            continue
+        buckets = probe.get("buckets") or {}
+        for name in EVIDENCE_BUCKETS:
+            info = buckets.get(name) or {}
+            if info.get("data_status") == "failed":
+                gates.append(
+                    f"KB-020 `{sym}` 模块 {name} 返回 failed（结构化查询失败，"
+                    f"errors={info.get('errors') or ['（未携带错误信息）']}）——"
+                    f"不得宣称全链路可用"
+                )
+        consensus = buckets.get("consensus") or {}
+        if consensus.get("has_hit") and consensus.get("data_status") != "failed":
+            usable_consensus += 1
+        if probe.get("forbidden_action_keys"):
+            gates.append(
+                f"KB-020 `{sym}` 契约违例: {probe['forbidden_action_keys']}"
+            )
+    if usable_consensus == 0:
+        gates.append(
+            "KB-020 抽样全部无共识命中（consensus has_hit 均为 false）——"
+            "证据链路在真实库上不可用，不得判定 PASS"
+        )
+    return gates
+
+
+def run_real_smoke(
+    knowledge_root: Path,
+    *,
+    probe_symbols: tuple = ("300750.SZ", "688041.SH"),
+) -> dict:
     out: dict = {"knowledge_root": str(knowledge_root)}
     gates: list[str] = []
 
@@ -99,10 +147,10 @@ def run_real_smoke(knowledge_root: Path) -> dict:
     if delta.errors:
         gates.append(f"KB-019 摄取扫描产生 {len(delta.errors)} 个错误（首个: {delta.errors[0]}）")
 
-    # KB-020：真实证据聚合（沿用 V-014 抽样中的两只）
+    # KB-020：真实证据聚合（沿用 V-014 抽样中的两只；probe_symbols 可注入
+    # 供门禁回归测试使用）
     probes = {}
-    usable_consensus = 0
-    for sym in ("300750.SZ", "688041.SH"):
+    for sym in probe_symbols:
         try:
             evidence = research_evidence_service.build_research_evidence(
                 sym, knowledge_root=str(knowledge_root)
@@ -111,14 +159,14 @@ def run_real_smoke(knowledge_root: Path) -> dict:
                 name: {
                     "has_hit": bool(evidence.get(name, {}).get("has_hit")),
                     "data_status": evidence.get(name, {}).get("data_status"),
+                    # [V-015-fix2] 携带模块级结构化失败原因
+                    "errors": [
+                        str(e)
+                        for e in (evidence.get(name, {}) or {}).get("errors") or []
+                    ][:1],
                 }
-                for name in (
-                    "consensus", "citation_audit", "thesis_timeline",
-                    "half_year_facts", "research_score_snapshot",
-                )
+                for name in EVIDENCE_BUCKETS
             }
-            if buckets["consensus"]["has_hit"]:
-                usable_consensus += 1
             hits: list[str] = []
             _walk_forbidden(evidence, "$", hits)
             probes[sym] = {
@@ -129,20 +177,8 @@ def run_real_smoke(knowledge_root: Path) -> dict:
         except Exception as exc:
             probes[sym] = {"error": f"{type(exc).__name__}: {exc}"}
     out["evidence_probes"] = probes
-    # ── 可用性门禁 2：至少一只抽样 symbol 的共识链路真实可用（has_hit）。
-    # 全部 missing 只说明"降级路径正常"，不能证明真实链路可用。
-    if usable_consensus == 0:
-        gates.append(
-            "KB-020 抽样全部无共识命中（consensus has_hit 均为 false）——"
-            "证据链路在真实库上不可用，不得判定 PASS"
-        )
-
-    # 契约违例也是门禁
-    for sym, probe in probes.items():
-        if probe.get("forbidden_action_keys"):
-            gates.append(f"KB-020 `{sym}` 契约违例: {probe['forbidden_action_keys']}")
-        if "error" in probe:
-            gates.append(f"KB-020 `{sym}` 聚合异常: {probe['error']}")
+    # ── 可用性门禁 2/3：共识可用性 + 模块结构化失败 + 契约（统一评估器）──
+    gates.extend(evaluate_evidence_gates(probes))
 
     # HY-010：真实知识根 + 合成 universe（不读生产 DB）
     context = {
