@@ -80,7 +80,7 @@
 27. `B-002-R2`：OpenClaw 回调 ORM 字段与 readiness 真源修复（P1，done — `7f1890d`，状态收口 `50267c0`）。
 28. `CONFIG-DS-SCHEDULE-R1`：DeepSeek 显式授权门禁与 13:15 前后端统一（P1，done — round7-10 Codex review 收口，见任务详情）。
 29. `UPSTREAM-081-001`：线程池饱和、股票识别与错误语义选择性吸收（P1，done — round4 review 修复通过，commit 30e2e96）。
-30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32）。
+30. `TA-MF-01`：冻结通用市场事实契约 v1：盘点/schema/八状态/接口清单/共享fixture（P1，done — r1 review PASS，commit e9a5d32。**更正 2026-09-12："契约 FROZEN 1.0.0"表述不准确**——文档先行标注 FROZEN，机器侧 MANIFEST 与运行端仍为 `1.0.0-candidate.1/CANDIDATE`，机器冻结由 `TA-MF-01-FREEZE-R1` 收口，HR-MF-01 继续保持 blocked）。
 31. `UPSTREAM-081-002`：长时分析软/硬超时与断线恢复（P1，done — r2 修复通过，离线测试直审补位，commit f0f3814）。
 32. `UPSTREAM-081-003`：AKShare v0.8.1 差异审计与最小修复（P1，done — 审计结论零移植（本地为上游修复超集），round1 错误改动已还原，commit 515d80a）。
 33. `UPSTREAM-081-004`：Agent 协同图平移与节点完整显示（P2，done — 2026-09-09 cron 自动交付，19 测试过+build 过，截图验收遗留，commit dafe285）。
@@ -7103,7 +7103,7 @@ Phase 3（优化期）：C-006 + C-008
 ### TA-MF-01: 冻结通用市场事实契约 v1（源：2026-09-05 market-facts 交接包）
 - **描述**：按 /Users/maybee/Documents/Codex/handoffs/2026-09-05-market-facts/README.md 与 TA-PLAN.md 执行 TA-MF-01：①盘点现有 HTTP 路由、认证、行情类型、provider 能力及已发布财务/治理包，区分可复用与真实缺口；②发布 docs/contracts/market-facts-v1.md + 可验证 JSON Schema + 跨仓脱敏共享 fixture；③固化八状态与包级可用性映射、证券类型/代码映射；④冻结只读接口清单（K线复用 /v1/market/kline），禁开放任意 Tushare endpoint 透传；⑤写清边界、缓存 TTL、超时与更新时间策略。
 - **优先级**：P1
-- **状态**：done — r1 review PASS，契约 FROZEN 1.0.0，commit e9a5d32（2026-09-08 修正：依赖解析器误将本详情行旧 blocked-review 翻回 ready，恢复真实状态；队列行本已 done）
+- **状态**：done — r1 review PASS，commit e9a5d32（2026-09-08 修正：依赖解析器误将本详情行旧 blocked-review 翻回 ready，恢复真实状态；队列行本已 done）。**2026-09-12 更正**：交付物为候选契约+fixture，文档标注 FROZEN 1.0.0 属超前表述；机器侧 MANIFEST.json 与 api 自描述端点仍为 `1.0.0-candidate.1/CANDIDATE`，"已冻结"以三方一致为准，由 `TA-MF-01-FREEZE-R1` 收口（HR-MF-01 因此继续保持 blocked）
 - **depends_on**：
 - **auto_release**：true
 - **预计耗时**：60-90 分钟
@@ -7113,4 +7113,21 @@ Phase 3（优化期）：C-006 + C-008
 - **实现约束**：先交契约候选+fixture，等独立 review，不提前实现全部包（TA-MF-02~06 后续）；不进入海瑞仓库；Tushare Token 留在 TA 侧。
 - **验收方式**：所有 fixture 通过 schema 校验；失败状态不混入假数值；路由只读且有鉴权测试；现有 K线/报告调用保持兼容；清单中每个包都有字段、状态、来源与日期约定；交付候选经 Codex review 后冻结版本。
 - **回报格式**：交接包 README「每张任务的回报格式」节（Task/Status/Owner/Base commit/Commit/Contract version/fixture digest/Tests/Live smoke/Security evidence/Open gaps）。
+
+### TA-MF-01-FREEZE-R1: 市场事实契约机器侧冻结收口（源：2026-09-12 状态冲突核查）
+- **描述**：消除 market-facts 契约"文档已冻结、机器契约未冻结"的三方状态冲突：文档（market-facts-v1.md）标注 `1.0.0/FROZEN`，但 MANIFEST.json 与运行端常量/自描述端点仍为 `1.0.0-candidate.1/CANDIDATE`。本任务把机器侧收敛到 FROZEN 1.0.0，并加一致性防回退测试；完成后才通知海瑞解除 HR-MF-01 阻塞。
+- **优先级**：P1
+- **状态**：ready（2026-09-12 用户指示补卡）
+- **depends_on**：TA-MF-01
+- **auto_release**：false
+- **允许修改**：`docs/contracts/schemas/MANIFEST.json`（版本/状态/哈希）、`docs/contracts/market-facts-v1.md`（仅一致性措辞，如残留"候选版"标题）、`api/main.py` 自描述端点常量（MARKET_FACTS_CONTRACT_VERSION / status）、一致性测试、任务档案、TASKS/DEVLOG。
+- **禁止修改**：schema 文件内容本体（冻结重算哈希必须与现文件一致，不一致先查原因再动手）、六个 RESERVED 事实接口（TA-MF-02~05 范围）、海瑞/知识库仓库、生产 DB、prompts、Tushare Token。
+- **验收方式**（=HR-MF-01 解锁条件，六项全过才算完成）：
+  1. MANIFEST.json 改为 `contract_version=1.0.0`、`contract_status=FROZEN`；
+  2. API 自描述端点同步返回 `1.0.0 / FROZEN`；
+  3. 重算并核对全部 Schema、fixture 和 Manifest 哈希（与现有文件逐字节一致）；
+  4. 新增测试：禁止文档、Manifest、运行端三方版本或状态不一致；
+  5. 重启 TA 后，用鉴权请求验证运行端返回值与 Manifest 摘要完全一致（重启 `com.tradingagents.backend` 前须向用户确认时机）；
+  6. Codex 独立 review PASS 后，才通知海瑞解除 HR-MF-01 阻塞（通知动作由用户/跨仓通道执行，本任务只产出证据）。
+- **实现约束**：只读验证不进入海瑞仓库；重启与鉴权实跑属 live 操作，须先征得用户确认；测试须覆盖"三方任一不一致即失败"。
 - **登记**：2026-09-07 主控AI 登记，孟批准派单计划。

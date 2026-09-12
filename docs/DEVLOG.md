@@ -1,5 +1,24 @@
 # 修改日志
 
+## 2026-09-12 | HR-MF-01 保持 blocked；补 TA-MF-01-FREEZE-R1 收口任务（任务池修订，无代码变更）
+
+- **状态冲突核实**（三处证据均确认）：market-facts-v1.md 标注
+  `1.0.0/FROZEN`，但 MANIFEST.json 与 api 自描述端点
+  （MARKET_FACTS_CONTRACT_VERSION + status="CANDIDATE"）仍为
+  `1.0.0-candidate.1/CANDIDATE`；文档标题残留"候选版"自身亦不一致；
+  六个正式事实接口仍 RESERVED（TA-MF-02~05 未实现）；既有 40 项测试
+  验证的是候选契约，不等于机器冻结。
+- **任务池修订**：①TA-MF-01 历史行与详情卡的"契约 FROZEN 1.0.0"
+  表述更正为"候选契约交付，机器冻结未完成"；②新增
+  `TA-MF-01-FREEZE-R1`（P1，ready，depends_on TA-MF-01，
+  auto_release=false），验收=HR-MF-01 六项解锁条件（Manifest 改
+  1.0.0/FROZEN、API 同步、全量哈希重算核对、三方一致性防回退测试、
+  重启后鉴权实跑比对、Codex review PASS 后才通知海瑞）；重启与鉴权
+  实跑为 live 操作，卡内注明须先征得用户确认。
+- **解析器核查**：TA-MF-01-FREEZE-R1 [P1] 已 ready 可领取。
+- 本轮仅文档与任务池修订，无代码变更、未 push。
+
+
 ## 2026-09-12 | 统一复审放行：Z Code 修复批次 8 项任务验收收口（Z Code）
 
 - 复审结论：`e36678e` 无新增 P0/P1/P2 correctness 问题，第一轮 4 项
