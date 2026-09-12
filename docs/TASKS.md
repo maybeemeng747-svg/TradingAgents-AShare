@@ -30,20 +30,22 @@
 
 | 顺序 | 任务 | 状态 | 预计分钟 |
 |---|---|---|---:|
-| 1 | C-001-R1 持仓真源与 HOLD 门禁 | done（待统一 review） | 25-40 |
-| 2 | C-005-R1 止损语义与研究方向 | done（待统一 review） | 20-30 |
-| 3 | C-006-R1 财务质量指标生产接线 | done（待统一 review） | 30-45 |
-| 4 | HY-009-R1 增量缓存与冲突审计 | done（待统一 review） | 30-45 |
-| 5 | M-009-R1 观察池独立筛选 | done（待统一 review） | 25-40 |
-| 6 | UI-014-R1 研报证据契约与请求状态 | done（待统一 review） | 30-50 |
-| 7 | V-014 真实知识库只读验收 | done（待统一 review） | 25-45 |
-| 8 | V-015 研报全链路验收 | done（待统一 review） | 25-45 |
+| 1 | C-001-R1 持仓真源与 HOLD 门禁 | done（review PASS） | 25-40 |
+| 2 | C-005-R1 止损语义与研究方向 | done（review PASS） | 20-30 |
+| 3 | C-006-R1 财务质量指标生产接线 | done（review PASS） | 30-45 |
+| 4 | HY-009-R1 增量缓存与冲突审计 | done（review PASS） | 30-45 |
+| 5 | M-009-R1 观察池独立筛选 | done（review PASS） | 25-40 |
+| 6 | UI-014-R1 研报证据契约与请求状态 | done（review PASS） | 30-50 |
+| 7 | V-014 真实知识库只读验收 | done（review PASS） | 25-45 |
+| 8 | V-015 研报全链路验收 | done（review PASS） | 25-45 |
 
 批次共同约束：每任务记录基线 HEAD、任务卡 hash、修改文件、测试退出码及独立 review 原始输出；P0/P1/P2 correctness finding、UNKNOWN、超时或测试失败停止整批。禁止改生产 DB、凭据、prompts、知识库/海瑞仓库和已冻结契约；禁止 live LLM、自动 push 或真实飞书发送。测试只用隔离 fixture/临时 DB。同一工作树只允许一个执行器，Z Code 直接执行时不得再启动 OpenCode 循环；无法确认独占则停止。
 
 本次将 C-001-R1 的依赖从无业务关联的飞书 B-003-R1 改为已完成的 B-004-R1（持仓同步）和 F-001-R1（未持仓门禁）。B-003-R1、SCORE-004、SCORE-006、Investoday 授权及战略暂停继续保留人工门禁。
 
 > **2026-09-10 用户破例指示**：本批次由 Z Code 连续开发完成后，Codex review 由用户统一安排。批次内各任务 `done` 仅表示"代码已提交、任务指定测试通过"，**不表示验收收口**；每个任务的运行档案记录真实命令、退出码与修改文件供统一 review 使用。验收纠偏原则（历史 done ≠ 验收通过）继续适用。
+>
+> **2026-09-12 复审放行**：统一 review 两轮（第一轮 4 项 finding：2×P1 + 2×P2；修复轮后复审通过，无新增 P0/P1/P2 correctness 问题）。本批次 8 项任务全部验收收口，提交 `145902c…e36678e` 已由复审独立验证（含故障注入与空库实跑），并已统一 push。
 
 > 本队列只放当前产品主线；下面的历史任务总表不代表自动领取顺序。
 
@@ -468,7 +470,7 @@
 ### C-001-R1: 持仓推断与 HOLD 绕门禁补修（P2）
 - **描述**：门禁使用显式+推断后的统一持仓上下文；正文出现“等待”不得让错误 HOLD 绕过转换。
 - **优先级**：P2
-- **状态**：done — 代码已提交、定向测试 112 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/C-001-R1-20260910-233716/`）
+- **状态**：done — 代码已提交、定向测试 112 passed；Codex review PASS（2026-09-12 统一复审放行）（运行档案 `docs/task_runs/C-001-R1-20260910-233716/`）
 - **depends_on**：B-004-R1, F-001-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/agents/utils/position_validation_gate.py`、`tradingagents/graph/intent_parser.py`、`tradingagents/graph/signal_processing.py`、对应测试与任务档案。跨模块扩大范围须先记录具体调用证据。
@@ -477,7 +479,7 @@
 ### C-005-R1: 止损文本方向识别补修（P2）
 - **描述**：止损条件属于风险控制，不得单独把研究方向判成偏空。
 - **优先级**：P2
-- **状态**：done — 代码已提交、验收 109→113 passed；统一 review 修复轮 1 完成（2×P2 finding 已修复并补回归），待复审（运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、验收 109→113 passed；统一 review 修复轮 1 完成（2×P2），Codex review PASS（2026-09-12 复审放行）（运行档案 `docs/task_runs/C-005-R1-20260911-000000/`）
 - **depends_on**：C-001-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/graph/signal_processing.py`、delta/decision 相关工具及对应测试、任务档案。
@@ -486,7 +488,7 @@
 ### C-006-R1: 财务质量指标生产接线补修（P2）
 - **描述**：Phase 2 指标由真实 normalizer 产出；负利润时现金流质量比不得产生误导性正向结论。
 - **优先级**：P2
-- **状态**：done — 代码已提交、验收测试 79 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/C-006-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、验收测试 79 passed；Codex review PASS（2026-09-12 统一复审放行）（运行档案 `docs/task_runs/C-006-R1-20260911-000000/`）
 - **depends_on**：C-005-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/agents/utils/financial_validator.py`、实际财务 normalizer 与调用接线、对应测试、任务档案。
@@ -495,7 +497,7 @@
 ### HY-009-R1: 半年报增量缓存与冲突审计补修（P2）
 - **描述**：expiry-only 变化也使缓存失效；冲突检查不得受 max_pages 截断；现金流冲突进入不可用状态。
 - **优先级**：P2
-- **状态**：done — 代码已提交、验收测试 44 passed；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/HY-009-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、验收测试 44 passed；Codex review PASS（2026-09-12 统一复审放行）（运行档案 `docs/task_runs/HY-009-R1-20260911-000000/`）
 - **depends_on**：C-006-R1
 - **auto_release**：true
 - **允许修改**：`tradingagents/dataflows/half_year_incremental_refresh.py`、直接调用的本地知识缓存/事实审计工具、对应测试、任务档案。
@@ -504,7 +506,7 @@
 ### M-009-R1: 观察池独立数据源补修（P2）
 - **描述**：观察池不得继承候选页隐藏筛选条件，必须读取完整观察状态集合。
 - **优先级**：P2
-- **状态**：done — 代码已提交、vitest 5 passed + build 通过 + 离线 mock 双视口截图；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/M-009-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、vitest 5 passed + build 通过 + 离线 mock 双视口截图；Codex review PASS（2026-09-12 统一复审放行）（运行档案 `docs/task_runs/M-009-R1-20260911-000000/`）
 - **depends_on**：HY-009-R1
 - **auto_release**：true
 - **允许修改**：`frontend/src/pages/TradeFlow.tsx`、相关 API client/types 和只读观察池 service、对应测试及任务档案。
@@ -513,7 +515,7 @@
 ### UI-014-R1: 研报证据中心真实契约与请求状态补修（P2）
 - **描述**：按 KB-020 真实 summary schema 展示；symbol 变化清空旧数据；失败后稳定展示错误而非无限重试。
 - **优先级**：P2
-- **状态**：done — 代码已提交、vitest 17+3 项（全量 160）+ build 通过 + 双视口截图；统一 review 修复轮 1 完成（P1 卡加载中已修：请求生命周期解耦 + 组件级回归测试），待复审（运行档案 `docs/task_runs/UI-014-R1-20260911-000000/`）
+- **状态**：done — 代码已提交、vitest 17+3 项（全量 160）+ build 通过 + 双视口截图；统一 review 修复轮 1 完成（P1 卡加载中），Codex review PASS（2026-09-12 复审放行）（运行档案 `docs/task_runs/UI-014-R1-20260911-000000/`）
 - **depends_on**：M-009-R1
 - **auto_release**：true
 - **允许修改**：`frontend/src/components/ResearchEvidenceCenter.tsx`、`frontend/src/utils/researchEvidenceCenter.test.ts`、相关 API client/types、离线 UI 测试与档案。
@@ -5948,7 +5950,7 @@
 ### V-014: 真实本地知识库只读 smoke 与研报主线验收日报（P2）
 - **描述**：在 fixture 验收之后，对 `~/Documents/knowledge/` 做一次只读 smoke，验证真实研报/半年报能否贯穿索引、共识、反证、报告区块和 briefing 契约。
 - **优先级**：P2
-- **状态**：done — 代码已提交、只读 smoke exit 0（日报 `docs/knowledge_reports/research_mainline_acceptance-2026-09-11.md`，4 条知识库侧 findings 已记录）；Codex review 按用户 2026-09-10 指示统一安排（运行档案 `docs/task_runs/V-014-20260911-000000/`）
+- **状态**：done — 代码已提交、只读 smoke exit 0（日报 `docs/knowledge_reports/research_mainline_acceptance-2026-09-11.md`，4 条知识库侧 findings 已记录）；Codex review PASS（2026-09-12 统一复审放行）（运行档案 `docs/task_runs/V-014-20260911-000000/`）
 - **depends_on**：HY-009-R1, UI-014-R1, HY-008, KB-016, KB-017, KB-018
 - **auto_release**：true
 - **允许修改**：本任务只读验收脚本、隔离测试、`docs/knowledge_reports/` 与任务档案；业务缺陷记录为 finding，不在验收任务中跨范围改代码。
@@ -6051,7 +6053,7 @@
 ### V-015: 研报增量摄取→证据 API→前端→待更新清单端到端验收（P2）
 - **描述**：对 KB-019/KB-020/UI-014/HY-010 做最终 fixture + 真实知识库只读验收，确认半年报集中导入时链路可用、可追溯、不会影响交易动作。
 - **优先级**：P2
-- **状态**：done — 代码已提交、fixture e2e 10 passed + 真实 smoke PASS；修复轮 1+2 完成（P1 空库误判 + P1 结构化失败门禁均已修：failed 模块逐一点名阻断、四场景门禁回归 10 项），待复审（报告 `docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`，运行档案 `docs/task_runs/V-015-20260911-000000/`）
+- **状态**：done — 代码已提交、fixture e2e 10 passed + 真实 smoke PASS；修复轮 1+2 完成（P1 空库误判 + P1 结构化失败门禁），Codex review PASS（2026-09-12 复审放行）（报告 `docs/knowledge_reports/research-operations-acceptance-2026-09-12.md`，运行档案 `docs/task_runs/V-015-20260911-000000/`）
 - **depends_on**：V-014, KB-019, KB-020, UI-014-R1, HY-010
 - **auto_release**：true
 - **允许修改**：本任务端到端测试、隔离 fixture、验收报告和任务档案；真实资料只读，不写外部项目。
